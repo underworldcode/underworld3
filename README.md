@@ -2,15 +2,15 @@
 
 **Milestones**
 
-Spherical stokes
+- Spherical stokes
 
-Buoyancy drive stokes
+- Buoyancy drive stokes
 
-Advection diffusion
+- Advection diffusion
 
-High Ra, constant viscosity
+- High Ra, constant viscosity
 
-Highly temp-dep viscosity
+- Highly temp-dep viscosity
 
 **Objectives**
 
