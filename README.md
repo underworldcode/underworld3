@@ -15,7 +15,7 @@ Highly temp-dep viscosity
 **Objectives**
 
 Topology 
-- spherical annulus
+- spherical annulus - https://github.com/julesghub/cubie
 
 Disc 
 - Cont Galerkin
@@ -45,4 +45,4 @@ Output
 
 Exact solutions
 - MMS
-- Analytical  
+- Analytical  - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
