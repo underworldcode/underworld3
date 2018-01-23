@@ -45,4 +45,6 @@ Output
 
 Exact solutions
 - MMS
-- Analytical  - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
+- Analytical 
+  - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
+  - https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
