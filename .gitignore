@@ -1,2 +1,7 @@
 src/ex1
 *.dSYM
+src/ex2
+src/mesh.dat
+src/mesh.h5
+src/mesh.xmf
+src/meshSmall.dat
