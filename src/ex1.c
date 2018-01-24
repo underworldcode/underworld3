@@ -32,6 +32,34 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
   return 0;
 }
 
+/*
+  In 3D we use exact solution:
+
+    u = x^2 + y^2
+    v = y^2 + z^2
+    w = x^2 + y^2 - 2(x+y)z
+    p = x + y + z - 3/2
+    f_x = f_y = f_z = 3
+
+  so that
+
+    -\Delta u + \nabla p + f = <-4, -4, -4> + <1, 1, 1> + <3, 3, 3> = 0
+    \nabla \cdot u           = 2x + 2y - 2(x + y)                   = 0
+*/
+PetscErrorCode quadratic_u_3d(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  u[0] = x[0]*x[0] + x[1]*x[1];
+  u[1] = x[1]*x[1] + x[2]*x[2];
+  u[2] = x[0]*x[0] + x[1]*x[1] - 2.0*(x[0] + x[1])*x[2];
+  return 0;
+}
+
+PetscErrorCode linear_p_3d(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *p, void *ctx)
+{
+  *p = x[0] + x[1] + x[2] - 1.5;
+  return 0;
+}
+
 static void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
@@ -199,11 +227,22 @@ static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
   ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  g3_uu);CHKERRQ(ierr);
   ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  g2_up, NULL);CHKERRQ(ierr);
   ierr = PetscDSSetJacobian(prob, 1, 0, NULL, g1_pu, NULL,  NULL);CHKERRQ(ierr);
-  ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL,  NULL,  NULL,  g3_uu);CHKERRQ(ierr);
-  ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL,  NULL,  g2_up, NULL);CHKERRQ(ierr);
-  ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL,  g1_pu, NULL,  NULL);CHKERRQ(ierr);
-  ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, g0_pp, NULL, NULL,  NULL);CHKERRQ(ierr);
-  ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 0, 1, &comp, (void (*)(void)) zero_vector, 2, ids, user);CHKERRQ(ierr);
+  //ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL,  NULL,  NULL,  g3_uu);CHKERRQ(ierr);
+  //ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL,  NULL,  g2_up, NULL);CHKERRQ(ierr);
+  //ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL,  g1_pu, NULL,  NULL);CHKERRQ(ierr);
+  //ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, g0_pp, NULL, NULL,  NULL);CHKERRQ(ierr);
+  switch (user->runType) {
+  case RUN_ANALYTIC_SIMPLE:
+    ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 0, 0, 0, (void (*)(void)) quadratic_u_3d, 2, ids, user);CHKERRQ(ierr);
+    ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 1, 0, 0, (void (*)(void)) linear_p_3d, 2, ids, user);CHKERRQ(ierr);
+    ierr = PetscDSSetExactSolution(prob, 0, quadratic_u_3d);CHKERRQ(ierr);
+    ierr = PetscDSSetExactSolution(prob, 1, linear_p_3d);CHKERRQ(ierr);
+    break;
+  case RUN_CONVECTION:
+    ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 0, 1, &comp, (void (*)(void)) zero_vector, 2, ids, user);CHKERRQ(ierr);
+    break;
+  default: SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Invalid run type: %d", (int) user->runType);
+  }
   /*
     Problem: We want to constrain the radial direction, but our global/local unknowns are x, y, z.
 
@@ -285,11 +324,13 @@ static PetscErrorCode CreatePressureNullSpace(DM dm, AppCtx *user, Vec *v, MatNu
 
 int main(int argc, char **argv)
 {
-  DM             dm;          /* Problem specification */
-  SNES           snes;        /* nonlinear solver */
-  Vec            u;           /* solution vector */
-  AppCtx         user;        /* user-defined work context */
-  PetscErrorCode ierr;
+  DM               dm;          /* Problem specification */
+  SNES             snes;        /* nonlinear solver */
+  Vec              u;           /* solution vector */
+  AppCtx           user;        /* user-defined work context */
+  PetscErrorCode (*exactFuncs[2])(PetscInt, PetscReal, const PetscReal[], PetscInt, PetscScalar *, void *);
+  PetscReal        ferrors[2];
+  PetscErrorCode   ierr;
 
   ierr = PetscInitialize(&argc, &argv, NULL,help);if (ierr) return ierr;
   ierr = ProcessOptions(PETSC_COMM_WORLD, &user);CHKERRQ(ierr);
@@ -305,12 +346,26 @@ int main(int argc, char **argv)
 
   ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
+
+  ierr = PetscDSGetExactSolution(prob, 0, &exactFuncs[0]);CHKERRQ(ierr);
+  ierr = PetscDSGetExactSolution(prob, 1, &exactFuncs[1]);CHKERRQ(ierr);
+
   /* Solve */
+  if (exactFuncs[0]) {
+    ierr = DMProjectFunction(dm, 0.0, exactFuncs, NULL, INSERT_ALL_VALUES, u);CHKERRQ(ierr);
+    ierr = DMSNESCheckFromOptions(snes, u, exactFuncs, NULL);CHKERRQ(ierr);
+  }
   {
     PetscErrorCode (*initialGuess[2])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {zero_vector, zero_scalar};
     MatNullSpace     nullSpace;
+    Mat              J;
     Vec              nullVec;
     PetscReal        pint;
+
+    ierr = CreatePressureNullSpace(dm, &user, &nullVec, &nullSpace);CHKERRQ(ierr);
+    ierr = DMCreateMatrix(dm, &J);CHKERRQ(ierr);
+    ierr = MatSetNullSpace(J, nullSpace);CHKERRQ(ierr);
+    ierr = SNESSetJacobian(snes, J, J, NULL, NULL);CHKERRQ(ierr);
 
     ierr = DMProjectFunction(dm, 0.0, initialGuess, NULL, INSERT_VALUES, u);CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
@@ -319,13 +374,16 @@ int main(int argc, char **argv)
     ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
     ierr = VecViewFromOptions(u, NULL, "-sol_vec_view");CHKERRQ(ierr);
 
-    ierr = CreatePressureNullSpace(dm, &user, &nullVec, &nullSpace);CHKERRQ(ierr);
     ierr = VecDot(nullVec, u, &pint);CHKERRQ(ierr);
     ierr = PetscPrintf(PETSC_COMM_WORLD, "Integral of pressure: %g\n", (double) (PetscAbsScalar(pint) < 1.0e-14 ? 0.0 : PetscRealPart(pint)));CHKERRQ(ierr);
     ierr = VecDestroy(&nullVec);CHKERRQ(ierr);
     ierr = MatNullSpaceDestroy(&nullSpace);CHKERRQ(ierr);
+    ierr = MatDestroy(&J);CHKERRQ(ierr);
   }
-
+  if (exactFuncs[0]) {
+    ierr = DMComputeL2FieldDiff(dm, 0.0, exactFuncs, NULL, u, ferrors);CHKERRQ(ierr);
+    ierr = PetscPrintf(PETSC_COMM_WORLD, "L_2 Error: [%g, %g]\n", ferrors[0], ferrors[1]);CHKERRQ(ierr);
+  }
 
   ierr = VecDestroy(&u);CHKERRQ(ierr);
   ierr = SNESDestroy(&snes);CHKERRQ(ierr);
