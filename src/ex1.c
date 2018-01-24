@@ -32,6 +32,7 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
   return 0;
 }
 
+/* [V] The exact solutions below are used in MMS to verify the discretization and solvers */
 /*
   In 3D we use exact solution:
 
@@ -68,6 +69,8 @@ static void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   PetscInt c;
   for (c = 0; c < dim; ++c) f0[c] = 3.0;
 }
+
+/* [P] The pointwise functions below describe all the problem physics */
 
 /* gradU[comp*dim+d] = {u_x, u_y, v_x, v_y} or {u_x, u_y, u_z, v_x, v_y, v_z, w_x, w_y, w_z}
    u[Ncomp]          = {p} */
@@ -212,6 +215,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   }
   ierr = DMLocalizeCoordinates(*dm);CHKERRQ(ierr); /* needed for periodic */
   ierr = DMSetFromOptions(*dm);CHKERRQ(ierr);
+  /* [O] The mesh is output to HDF5 using options */
   ierr = DMViewFromOptions(*dm, NULL, "-dm_view");CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -261,6 +265,7 @@ static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
+/* [D] This function creates a PetscFE object for each field */
 static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 {
   DM              cdm = dm;
@@ -346,6 +351,7 @@ int main(int argc, char **argv)
   ierr = DMPlexSetSNESLocalFEM(dm, &user, &user, &user);CHKERRQ(ierr);
 
   ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
+  /* [S] The solver is constructed dynamically from command-line arguments */
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
 
   ierr = PetscDSGetExactSolution(prob, 0, &exactFuncs[0]);CHKERRQ(ierr);
@@ -373,6 +379,7 @@ int main(int argc, char **argv)
     ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
     ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
+    /* [O] The solution is output to HDF5 using options */
     ierr = VecViewFromOptions(u, NULL, "-sol_vec_view");CHKERRQ(ierr);
 
     ierr = VecDot(nullVec, u, &pint);CHKERRQ(ierr);

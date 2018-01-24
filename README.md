@@ -17,19 +17,19 @@
 [T] Topology 
 - spherical annulus - https://github.com/julesghub/cubie
 
-Disc 
+[D] Disc 
 - Cont Galerkin
 - Disc Galerkin
 - Semi-lagrangian
 - Free-slip BC on surface
 
-Physics
+[P] Physics
 - Buoyancy driven convection
 - Stokes-Boussinesq
 - Temp-dep rheology
 - Energy equation, resolve bdry layers
 
-Solvers
+[S] Solvers
 - Block Stokes solvers
 - Semi-lagrangian
 - TS?
@@ -39,11 +39,11 @@ PIC for composition
 - Nearest neighbour?
 - L2 projection into FEM space?
 
-Output
+[O] Output
 - HDF5 -> XDMF -> Paraview
 - LavaVu
 
-Exact solutions
+[V] Exact solutions
 - MMS
 - Analytical 
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
