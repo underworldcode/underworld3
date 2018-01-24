@@ -242,10 +242,10 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   PetscFunctionBeginUser;
   ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
   /* Create finite element */
-  ierr = PetscFECreateDefault(dm, dim, dim, PETSC_FALSE, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(dm, dim, dim, PETSC_FALSE, "velocity_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[0], "velocity");CHKERRQ(ierr);
   ierr = PetscFEGetQuadrature(fe[0], &q);CHKERRQ(ierr);
-  ierr = PetscFECreateDefault(dm, dim, 1, PETSC_FALSE, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(dm, dim, 1, PETSC_FALSE, "pressure_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
   /* Set discretization and boundary conditions for each mesh */
