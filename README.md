@@ -14,22 +14,22 @@
 
 **Objectives**
 
-[T] Topology 
+[[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology 
 - spherical annulus - https://github.com/julesghub/cubie
 
-[D] Disc 
+[[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
 - Cont Galerkin
 - Disc Galerkin
 - Semi-lagrangian
 - Free-slip BC on surface
 
-[P] Physics
+[[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
 - Buoyancy driven convection
 - Stokes-Boussinesq
 - Temp-dep rheology
 - Energy equation, resolve bdry layers
 
-[S] Solvers
+[[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
 - Block Stokes solvers
 - Semi-lagrangian
 - TS?
@@ -39,11 +39,11 @@ PIC for composition
 - Nearest neighbour?
 - L2 projection into FEM space?
 
-[O] Output
+[[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
 - HDF5 -> XDMF -> Paraview
 - LavaVu
 
-[V] Exact solutions
+[[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
 - MMS
 - Analytical 
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
