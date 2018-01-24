@@ -14,7 +14,7 @@
 
 **Objectives**
 
-Topology 
+[T] Topology 
 - spherical annulus - https://github.com/julesghub/cubie
 
 Disc 

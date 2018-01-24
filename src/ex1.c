@@ -168,6 +168,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   PetscFunctionReturn(0);
 }
 
+/* [T] This function creates the mesh topolgoy and geometry from a file */
 static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
 {
   const char    *filename = user->filename;
