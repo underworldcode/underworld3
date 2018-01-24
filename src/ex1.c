@@ -70,15 +70,6 @@ static void f0_p(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   for (d = 0, f0[0] = 0.0; d < dim; ++d) f0[0] += u_x[d*dim+d];
 }
 
-static void f1_p(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
-{
-  PetscInt d;
-  for (d = 0; d < dim; ++d) f1[d] = 0.0;
-}
-
 /* < q, \nabla\cdot u >
    NcompI = 1, NcompJ = dim */
 static void g1_pu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -204,7 +195,7 @@ static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
 
   PetscFunctionBeginUser;
   ierr = PetscDSSetResidual(prob, 0, f0_u, f1_u);CHKERRQ(ierr);
-  ierr = PetscDSSetResidual(prob, 1, f0_p, f1_p);CHKERRQ(ierr);
+  ierr = PetscDSSetResidual(prob, 1, f0_p, NULL);CHKERRQ(ierr);
   ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  g3_uu);CHKERRQ(ierr);
   ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  g2_up, NULL);CHKERRQ(ierr);
   ierr = PetscDSSetJacobian(prob, 1, 0, NULL, g1_pu, NULL,  NULL);CHKERRQ(ierr);
