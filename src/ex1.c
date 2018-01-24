@@ -8,8 +8,11 @@ multilevel nonlinear solvers.\n\n\n";
 #include <petscsnes.h>
 #include <petscds.h>
 
+typedef enum {RUN_ANALYTIC_SIMPLE, RUN_ANALYTIC_FREE_SLIP, RUN_CONVECTION} RunType;
+
 typedef struct {
-  char filename[2048]; /* The mesh file */
+  char    filename[2048]; /* The mesh file */
+  RunType runType;        /* Type of run: analytic solution, convection */
 } AppCtx;
 
 static PetscErrorCode zero_scalar(PetscInt dim, PetscReal time, const PetscReal coords[], PetscInt Nf, PetscScalar *u, void *ctx)
@@ -128,14 +131,20 @@ static void g0_pp(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
 static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 {
+  const char    *runTypes[3] = {"analytic_simple", "analytic_free_slip", "convection"};
+  PetscInt       run;
   PetscBool      flg;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
   options->filename[0] = '\0';
+  options->runType     = RUN_ANALYTIC_SIMPLE;
 
   ierr = PetscOptionsBegin(comm, "", "Convection-Diffusion Problem Options", "DMPLEX");CHKERRQ(ierr);
   ierr = PetscOptionsString("-f", "Mesh filename to read", "ex1.c", options->filename, options->filename, sizeof(options->filename), &flg);CHKERRQ(ierr);
+  run  = options->runType;
+  ierr = PetscOptionsEList("-run_type", "The run type", "ex1.c", runTypes, 3, runTypes[options->runType], &run, NULL);CHKERRQ(ierr);
+  options->runType = (RunType) run;
   ierr = PetscOptionsEnd();
   PetscFunctionReturn(0);
 }
