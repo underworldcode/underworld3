@@ -5,6 +5,7 @@ ex1: ex1.o
 
 ex2: ex2.o
 	-${CLINKER} -o $@ $< ${PETSC_LIB}
+	${DSYMUTIL} $@
 	${RM} -f $<
 
 run: ex1
