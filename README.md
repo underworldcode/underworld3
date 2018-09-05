@@ -35,9 +35,10 @@ Ingredients in achieving the above
 - [ ] ~TS~  (address this later)
 
 PIC for composition
-- [ ] Viscosity
-- [ ] Nearest neighbour?
-- [ ] L2 projection into FEM space?
+- [x] Viscosity, buoyancy, ... 
+- [ ] Nearest neighbour (k-d tree ? 🌳 )
+- [x] 2D - L2 projection into FEM space (Petsc shall provide)
+- [ ] 3D - L2 projection into FEM space (Petsc shall provide but not in 3D)
 
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
 - [ ] HDF5 -> XDMF -> Paraview
