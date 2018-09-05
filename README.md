@@ -14,6 +14,8 @@
 
 **Objectives**
 
+Ingredients in achieving the above
+
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
 - [x] spherical annulus - https://github.com/julesghub/cubie
 - [x] Cartesian
@@ -50,3 +52,11 @@ PIC for composition
 - [ ] Analytical 
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
   - https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
+
+
+**Tasks**
+
+  - [ ] Investigate cython for functions
+  - [ ] Petsc4py compatibility 
+  
+  
