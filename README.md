@@ -30,6 +30,7 @@ Ingredients in achieving the above
 - [ ] Non-linear viscosity (Jacobian ?) and yielding in particular
 - [ ] Viscoelasticity
 - [ ] Energy equation, resolve bdry layers
+- [ ] kermit the 🐸 
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
 - [ ] Block Stokes solvers
@@ -44,13 +45,13 @@ PIC for composition
 
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
 - [ ] HDF5 -> XDMF -> Paraview
-- [ ] LavaVu
+- [ ] LavaVu  
 
 [[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
 - [ ] MMS
 - [ ] Analytical 
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
-  - https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
+  -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
 
 **Tasks**
@@ -61,5 +62,6 @@ PIC for composition
   - [ ] rejig a few models top down ... 
   - [ ] audit the petsc / petsc4py features corresponding to uw ones
   - [ ] Can we get early into TS (TS-lite)
+  - [ ] (Build a gLucifer equivalent for the DM - as generic as possible)
   
   
