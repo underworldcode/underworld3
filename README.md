@@ -24,9 +24,11 @@ Ingredients in achieving the above
 - [ ] Free-slip BC on surface
 
 [[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
+- [x] Stokes-Boussinesq
+- [x] Temp-dep rheology
 - [ ] Buoyancy driven convection
-- [ ] Stokes-Boussinesq
-- [ ] Temp-dep rheology
+- [ ] Non-linear viscosity (Jacobian ?) and yielding in particular
+- [ ] Viscoelasticity
 - [ ] Energy equation, resolve bdry layers
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
