@@ -58,5 +58,7 @@ PIC for composition
 
   - [ ] Investigate cython for functions
   - [ ] Petsc4py compatibility 
+  - [ ] alias .data and .array
+  - [ ] rejig a few models top down ... 
   
   
