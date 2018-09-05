@@ -4,9 +4,9 @@
 
 - [ ] Spherical stokes
 
-- [ ] Buoyancy drive stokes
+- [ x ] Buoyancy drive stokes
 
-- [ ]Advection diffusion
+- [ ] Advection diffusion
 
 - [ ] High Ra, constant viscosity
 
