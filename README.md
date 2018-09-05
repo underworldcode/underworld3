@@ -60,5 +60,6 @@ PIC for composition
   - [ ] Petsc4py compatibility 
   - [ ] alias .data and .array
   - [ ] rejig a few models top down ... 
+  - [ ] audit the petsc / petsc4py features corresponding to uw ones
   
   
