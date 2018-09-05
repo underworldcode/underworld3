@@ -15,36 +15,36 @@
 **Objectives**
 
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology 
-- spherical annulus - https://github.com/julesghub/cubie
+- [ ] spherical annulus - https://github.com/julesghub/cubie
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
-- Cont Galerkin
-- Disc Galerkin
-- Semi-lagrangian
-- Free-slip BC on surface
+- [ ] Cont Galerkin
+- [ ] Disc Galerkin
+- [ ] Semi-lagrangian
+- [ ] Free-slip BC on surface
 
 [[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
-- Buoyancy driven convection
-- Stokes-Boussinesq
-- Temp-dep rheology
-- Energy equation, resolve bdry layers
+- [ ] Buoyancy driven convection
+- [ ] Stokes-Boussinesq
+- [ ] Temp-dep rheology
+- [ ] Energy equation, resolve bdry layers
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
-- Block Stokes solvers
-- Semi-lagrangian
-- TS?
+- [ ] Block Stokes solvers
+- [ ] Semi-lagrangian
+- [ ] TS?
 
 PIC for composition
-- Viscosity
-- Nearest neighbour?
-- L2 projection into FEM space?
+- [ ] Viscosity
+- [ ] Nearest neighbour?
+- [ ] L2 projection into FEM space?
 
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
-- HDF5 -> XDMF -> Paraview
-- LavaVu
+- [ ] HDF5 -> XDMF -> Paraview
+- [ ] LavaVu
 
 [[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
-- MMS
-- Analytical 
+- [ ] MMS
+- [ ] Analytical 
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
   - https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
