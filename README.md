@@ -3,13 +3,9 @@
 **Milestones**
 
 - [ ] Spherical stokes
-
 - [x] Buoyancy drive stokes
-
 - [ ] Advection diffusion
-
 - [ ] High Ra, constant viscosity
-
 - [ ] Highly temp-dep viscosity
 
 **Objectives**
@@ -22,7 +18,7 @@ Ingredients in achieving the above
 - [x] Different element types (at least Linear / Quadratic & Hex, Tet)
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
-- [ ] Cont Galerkin 
+- [x] Cont Galerkin 
 - [ ] ~Disc Galerkin~
 - [ ] Semi-lagrangian
 - [ ] Free-slip BC on surface
@@ -36,7 +32,7 @@ Ingredients in achieving the above
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
 - [ ] Block Stokes solvers
 - [ ] Semi-lagrangian
-- [ ] TS?
+- [ ] ~TS~  (address this later)
 
 PIC for composition
 - [ ] Viscosity
@@ -61,5 +57,6 @@ PIC for composition
   - [ ] alias .data and .array
   - [ ] rejig a few models top down ... 
   - [ ] audit the petsc / petsc4py features corresponding to uw ones
+  - [ ] Can we get early into TS (TS-lite)
   
   
