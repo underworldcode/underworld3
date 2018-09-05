@@ -20,8 +20,8 @@
 - [x] Different element types (at least Linear / Quadratic & Hex, Tet)
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
-- [ ] Cont Galerkin
-- [ ] Disc Galerkin
+- [ ] Cont Galerkin 
+- [ ] ~Disc Galerkin~
 - [ ] Semi-lagrangian
 - [ ] Free-slip BC on surface
 
