@@ -2,7 +2,7 @@
 
 **Milestones**
 
-- Spherical stokes
+- [x] Spherical stokes
 
 - Buoyancy drive stokes
 
