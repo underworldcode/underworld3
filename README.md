@@ -15,7 +15,7 @@
 **Objectives**
 
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology 
-- [ ] spherical annulus - https://github.com/julesghub/cubie
+- [x] spherical annulus - https://github.com/julesghub/cubie
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
 - [ ] Cont Galerkin
