@@ -14,8 +14,10 @@
 
 **Objectives**
 
-[[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology 
+[[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
 - [x] spherical annulus - https://github.com/julesghub/cubie
+- [x] Cartesian
+- [x] Different element types (at least Linear / Quadratic & Hex, Tet)
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
 - [ ] Cont Galerkin
