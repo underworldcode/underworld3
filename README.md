@@ -63,5 +63,6 @@ PIC for composition
   - [ ] audit the petsc / petsc4py features corresponding to uw ones
   - [ ] Can we get early into TS (TS-lite)
   - [ ] (Build a gLucifer equivalent for the DM - as generic as possible)
+  - [ ] Evaluate Julian's C-based prototype
   
   
