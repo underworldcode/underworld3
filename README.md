@@ -4,7 +4,7 @@
 
 - [ ] Spherical stokes
 
-- [ x ] Buoyancy drive stokes
+- [x] Buoyancy drive stokes
 
 - [ ] Advection diffusion
 
