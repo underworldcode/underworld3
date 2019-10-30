@@ -6,18 +6,11 @@ Options: \n\
 -simplex 0      : use simplicies for mesh\n\
 -steps 3        : number of advection steps\n";
 
-#include <petsc.h>
-#include <petscsys.h>
-#include <petscdm.h>
-#include <petscdmda.h>
-#include <petscdmplex.h>
-#include <petscdmswarm.h>
-#include <petscviewerhdf5.h>
+#include "uw_swarm.h"
 
-PetscErrorCode vec_print(Vec* vec, const char *idstr);
 PetscErrorCode init_vector(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
-  double factor = 1.; //PetscCosReal(2*PETSC_PI*time/(1e-1*15)); // time dependent option
+  //double factor = 1.; //PetscCosReal(2*PETSC_PI*time/(1e-1*15)); // time dependent option
 
   u[0] = -(x[1]-0.5);
   u[1] =  (x[0]-0.5);
@@ -34,7 +27,6 @@ PetscErrorCode DMBuildVelocityPressureFields(DM dm, PetscBool is_simplex) {
 
   /* create a 2 "fields": velocity and pressure. Velocity will advect the swarm */
   PetscFunctionBegin;
-  PetscDS ds;
   PetscFE fe[2];
   PetscInt dim;
   PetscErrorCode ierr;
@@ -138,6 +130,13 @@ PetscErrorCode SwarmAdvectRK1(DM dm, Vec gridvel, DM swarm, PetscReal dt) {
   PetscFunctionReturn(0);
 }
 
+PetscErrorCode BuildMesh2( PetscInt dim,
+                          PetscBool is_simplex, 
+                          DM dm) {
+  printf("Hello world - i added 1 to the input: %d\n", dim+1);
+  return 0;
+}
+
 PetscErrorCode BuildMesh( PetscInt dim,
                           PetscInt* elements, 
                           PetscBool use_plex,
@@ -183,7 +182,6 @@ PetscErrorCode DMGetGlobalElementCount(DM dm, PetscInt* elCount ) {
   /*
    *  get the number of cells from the mesh dm
    */
-  PetscInt nel;
   PetscBool isdmplex, isdmda;
   PetscErrorCode ierr;
   DMType   dmtype;
@@ -196,12 +194,12 @@ PetscErrorCode DMGetGlobalElementCount(DM dm, PetscInt* elCount ) {
   if( isdmplex ) {
       PetscInt eStart,eEnd;
       ierr = DMPlexGetHeightStratum(dm, 0, &eStart, &eEnd);CHKERRQ(ierr);
-      nel = eEnd - eStart;
+      *elCount = eEnd - eStart;
   } else if( isdmda ) {
       PetscInt ne,nen;
       const PetscInt *elist;
       ierr = DMDAGetElements(dm, &ne, &nen, &elist);
-      nel  = ne;
+      *elCount = ne;
       ierr = DMDARestoreElements(dm, &ne, &nen, &elist);
   } else {
     return 666;
@@ -224,14 +222,78 @@ PetscErrorCode swarm_metric(DM swarm) {
           "\trank %d DMSwarm global size & local size: %d %d\n",
           rank, size, lsize );CHKERRQ(ierr);
   ierr = PetscSynchronizedFlush(PETSC_COMM_WORLD, PETSC_STDOUT);CHKERRQ(ierr);
+  return 0;
 }
 
+
+PetscErrorCode BuildSwarm2(DM dm, PetscInt ppcell, DM swarm) {
+    const char* fieldnames[] = {"eta0", "rank"};
+    int   nfields = 2;
+    PetscErrorCode ierr;
+
+    PetscInt    elCount,dim;
+
+    ierr = DMGetDimension(dm,&dim);CHKERRQ(ierr);
+    ierr = DMGetGlobalElementCount(dm, &elCount );
+
+    ierr = DMSetType(swarm,DMSWARM);CHKERRQ(ierr);
+    ierr = DMSetDimension(swarm,dim);CHKERRQ(ierr);
+    ierr = DMSwarmSetType(swarm,DMSWARM_PIC);CHKERRQ(ierr);
+    ierr = DMSwarmSetCellDM(swarm,dm);CHKERRQ(ierr);
+
+    /* Register two scalar fields within the DMSwarm */
+    ierr = DMSwarmRegisterPetscDatatypeField(swarm,fieldnames[0],1,PETSC_DOUBLE);CHKERRQ(ierr);
+    ierr = DMSwarmRegisterPetscDatatypeField(swarm,fieldnames[1],1,PETSC_INT);CHKERRQ(ierr);
+    ierr = DMSwarmFinalizeFieldRegister(swarm);CHKERRQ(ierr);
+
+    if (ppcell > 0) {
+        /* Set initial local sizes of the DMSwarm with a buffer length of zero */
+        ierr = DMSwarmSetLocalSizes(swarm,elCount*ppcell,0);CHKERRQ(ierr);
+        /* Insert swarm coordinates cell-wise */
+        ierr = DMSwarmInsertPointsUsingCellDM(swarm,DMSWARMPIC_LAYOUT_GAUSS,ppcell);CHKERRQ(ierr);
+    } else {
+        ierr = DMSwarmSetLocalSizes(swarm, elCount*abs(ppcell), 250 );
+        ierr = DMSwarmInsertPointsUsingCellDM(swarm,DMSWARMPIC_LAYOUT_SUBDIVISION,abs(ppcell));CHKERRQ(ierr);
+    }
+
+    { // initialise swarm variables 
+      PetscReal *coords,*eta,x,y,z;
+      PetscInt   p_i,bs,lsize,dim,*rank0;
+      PetscMPIInt rank;
+      PetscErrorCode ierr;
+      MPI_Comm_rank( PETSC_COMM_WORLD, &rank );
+
+      /* DMSwarmPICField_coord is a special field registered with DMSwarm during DMSwarmSetType() 
+      * Special fields are DMSwarmField_pid, DMSwarmField_rank, DMSwarmPICField_coor, DMSwarmPICField_cellid*/
+      ierr = DMSwarmGetField(swarm, DMSwarmPICField_coor, &bs, NULL, (void**)&coords );CHKERRQ(ierr);
+      ierr = DMSwarmGetField(swarm, fieldnames[0], NULL, NULL, (void**)&eta );CHKERRQ(ierr);
+      ierr = DMSwarmGetField(swarm, fieldnames[1], NULL, NULL, (void**)&rank0 );CHKERRQ(ierr);
+
+      ierr = DMSwarmGetLocalSize(swarm, &lsize);CHKERRQ(ierr);
+      for(p_i=0;p_i<lsize;p_i++) {
+        x = coords[p_i*(bs)+0];
+        y = coords[p_i*(bs)+1];
+        if (dim == 3) z = coords[p_i*(bs)+2];
+
+        rank0[p_i] = rank;
+        eta[p_i] = PetscCosReal(4*PETSC_PI*x)*PetscCosReal(2*PETSC_PI*y);
+      }
+      ierr = DMSwarmRestoreField(swarm, DMSwarmPICField_coor, &bs, NULL, (void**)&coords );CHKERRQ(ierr);
+      ierr = DMSwarmRestoreField(swarm, fieldnames[0], NULL, NULL, (void**)&eta );CHKERRQ(ierr);
+      ierr = DMSwarmRestoreField(swarm, fieldnames[1], NULL, NULL, (void**)&rank0 );CHKERRQ(ierr);
+    }
+
+    char prefix[PETSC_MAX_PATH_LEN];
+    // save
+    PetscSNPrintf( prefix, PETSC_MAX_PATH_LEN-1, "swarm-%05d.xmf", 0);
+    ierr = DMSwarmViewFieldsXDMF(swarm,prefix,nfields,fieldnames);CHKERRQ(ierr);
+    return ierr;
+}
 
 PetscErrorCode BuildSwarm(DM dm, PetscInt nfields, 
                           const char* fieldnames[], 
                           PetscInt ppcell, 
                           DM* swarm) {
-  DM          swarmcelldm;
   PetscInt    elCount,dim;
   PetscErrorCode ierr;
 
@@ -262,7 +324,7 @@ PetscErrorCode BuildSwarm(DM dm, PetscInt nfields,
 
   { // initialise swarm variables 
     PetscReal *coords,*eta,x,y,z;
-    PetscInt   p_i,t,bs,lsize,dim,*rank0;
+    PetscInt   p_i,bs,lsize,dim,*rank0;
     PetscMPIInt rank;
     PetscErrorCode ierr;
     MPI_Comm_rank( PETSC_COMM_WORLD, &rank );
@@ -286,7 +348,7 @@ PetscErrorCode BuildSwarm(DM dm, PetscInt nfields,
     ierr = DMSwarmRestoreField(*swarm, fieldnames[0], NULL, NULL, (void**)&eta );CHKERRQ(ierr);
     ierr = DMSwarmRestoreField(*swarm, fieldnames[1], NULL, NULL, (void**)&rank0 );CHKERRQ(ierr);
   }
-
+  return 0;
 }
 
 int main(int argc,char **args)
@@ -302,7 +364,8 @@ int main(int argc,char **args)
   PetscErrorCode (*initFuncs[2])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {init_vector, init_scalar};
   ierr = PetscInitialize(&argc,&args,(char*)0,help);if(ierr) return ierr;
 
-  { // grab cmd options
+  // grab cmd options
+  { 
     PetscBool found;
     ierr = PetscOptionsBegin(PETSC_COMM_WORLD,"","DMSwarm example options","");
     ierr = PetscOptionsIntArray("-elements", "initial elements/dimensions",NULL,elements,&dim,&found);CHKERRQ(ierr);

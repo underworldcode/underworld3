@@ -1,8 +1,10 @@
 #/Currently 
 H52XDMF=python3 ${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
 
-compile: swarm_advect.c
-	$(CC) -g swarm_advect.c -o run $(PETSC_CC_INCLUDES) $(PETSC_LIB)
+compile: uw_swarm.c
+	$(CC) -g $^ -o run $(PETSC_CC_INCLUDES) $(PETSC_LIB)
+	python3 setup.py build_ext --inplace
+
 	
 ###	valgrind --log-file=val.dat --leak-check=full --show-leak-kinds=all \
 	gdb --args \
