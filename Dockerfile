@@ -10,7 +10,11 @@ RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
      valgrind   \
      tmux       \
+     xterm      \
      python2.7-minimal \
+     python-pip        \
+     libmpfr-dev       \
+     python-setuptools \
      cgdb           && \
     apt-get clean   && \
     rm -rf /var/lib/apt/lists/* && \
@@ -19,5 +23,7 @@ RUN apt-get update -qq && \
 
 RUN pip3 install Cython
  
+ENV DISPLAY :0
+
 WORKDIR $NB_WORK
 USER $NB_USER
