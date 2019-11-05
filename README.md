@@ -1,5 +1,9 @@
 # underworld3
 
+**Docker to run examples**
+
+`julesg/uw3project:latest`
+
 **Milestones**
 
 - [ ] Spherical stokes
