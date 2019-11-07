@@ -54,8 +54,10 @@ RUN /usr/bin/python3 -m virtualenv --python=/usr/bin/python3 ${VIRTUAL_ENV}
 RUN pip3 install --no-cache-dir mpi4py
 # build petsc
 WORKDIR /tmp/petsc-build
+
+ENV PETSC_BRANCH=v3.12
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends git
-RUN git clone --single-branch --branch knepley/feature-plex-examples https://gitlab.com/petsc/petsc/
+RUN git clone --single-branch --branch ${PETSC_BRANCH} https://gitlab.com/petsc/petsc/
 WORKDIR /tmp/petsc-build/petsc
 RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
                 --with-zlib=1                   \
@@ -73,12 +75,12 @@ RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
                 --download-triangle
 RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug all
 RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug install
-# RUN pip3 install --no-cache-dir petsc4py
-RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py h5py
 ENV PETSC_DIR=/usr/local
 ENV PETSC_ARCH=arch-linux-c-debug
-ENV LD_LIBRARY_PATH=/usr/local/lib
 RUN pip3 install cython
+RUN pip3 install --no-cache-dir petsc4py
+RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py h5py
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # # FROM base_runtime AS minimal
 # # COPY --from=build_base $VIRTUAL_ENV $VIRTUAL_ENV
