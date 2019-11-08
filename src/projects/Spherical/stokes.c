@@ -45,7 +45,6 @@ P_2-P_1 Stokes element, we have from DMPlexVecGetClosure()
 Likewise, DMPlexVecSetClosure() takes data partitioned by field.
 */
 
-#include <petsc.h>
 #include <petscdmplex.h>
 #include <petscsnes.h>
 #include <petscds.h>
@@ -54,6 +53,8 @@ typedef struct {
   /* Domain and mesh definition */
   PetscInt  dim;     /* The topological mesh dimension */
   PetscBool simplex; /* Use simplices or tensor product cells */
+  PetscBool annular; /* Use an annular region */
+  PetscInt  elements[3];
 } AppCtx;
 
 PetscErrorCode zero(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nc, PetscScalar *u, void *ctx)
@@ -120,8 +121,7 @@ void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
   for (c = 0; c < Nc; ++c) {
     for (d = 0; d < dim; ++d) {
-      /* f1[c*dim+d] = 0.5*(u_x[c*dim+d] + u_x[d*dim+c]); */
-      f1[c*dim+d] = u_x[c*dim+d];
+      f1[c*dim+d] = 0.5*(u_x[c*dim+d] + u_x[d*dim+c]);
     }
     f1[c*dim+c] -= u[uOff[1]];
   }
@@ -164,8 +164,8 @@ void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
   for (c = 0; c < Nc; ++c) {
     for (d = 0; d < dim; ++d) {
-      g3[((c*Nc+c)*dim+d)*dim+d] = 1.0;
-      /*g3[((c*Nc+d)*dim+c)*dim+d] = 1.0;*/
+      g3[((c*Nc+c)*dim+d)*dim+d] = 0.5;
+      g3[((c*Nc+d)*dim+c)*dim+d] = 0.5;
     }
   }
 }
@@ -182,14 +182,24 @@ static void g0_pp(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 {
   PetscErrorCode ierr;
+  PetscBool specified;
 
   PetscFunctionBeginUser;
   options->dim     = 2;
   options->simplex = PETSC_TRUE;
+  options->annular = PETSC_FALSE;
+  PetscInt cells[3] = {4,4,4};
 
-  ierr = PetscOptionsBegin(comm, "", "Annular Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
+  ierr = PetscOptionsBegin(comm, NULL, "Annular Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
   ierr = PetscOptionsInt("-dim", "The topological mesh dimension", "ex4.c", options->dim, &options->dim, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-simplex", "Use simplices or tensor product cells", "ex4.c", options->simplex, &options->simplex, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-annular", "Use an annular region", "ex4.c", options->annular, &options->annular, NULL);CHKERRQ(ierr);
+    PetscInt n;
+  ierr = PetscOptionsIntArray("-cells", "element count (default: 5,5,5)", NULL,cells,&n,&specified);CHKERRQ(ierr);
+  memcpy(options->elements, cells, 3*sizeof(PetscInt));
+  if(!options->annular) {
+    if(n!=0) options->dim = n;
+  }
   ierr = PetscOptionsEnd();
   PetscFunctionReturn(0);
 }
@@ -199,7 +209,16 @@ PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
-  ierr = DMPlexCreateAnnularSectionMesh(comm, user->dim, user->simplex, NULL, NULL, NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
+  if (user->annular) {
+    ierr = DMPlexCreateAnnularSectionMesh(comm, user->dim, user->simplex, NULL, NULL, NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
+  } else {
+    double min[3] = {-1.0,-1.0,-1.0};
+    double max[3] = {1.0,1.0,1.0};
+    ierr = DMPlexCreateBoxMesh(comm, user->dim, 
+        user->simplex, user->elements, NULL, NULL, 
+        NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
+    printf("ElementRes %d %d\n", user->elements[0], user->elements[1]);
+  }
   {
     DM               pdm = NULL;
     PetscPartitioner part;
@@ -219,10 +238,21 @@ PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
 
 PetscErrorCode circle_shape(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
+  AppCtx* user = (AppCtx*)ctx; 
   PetscInt d;
-  PetscScalar circle;
+  PetscScalar circle, r, center[3];
+  
+  if(user->annular) {
+    center[0] = 0.0;
+    center[1] = 1.75;
+    r = 0.1;
+  } else {
+    center[0] = 0.5;
+    center[1] = 0.5;
+    r = 0.2;
+  }
 
-  circle = pow(x[0]-0.0, 2) + pow(x[1]-1.75, 2);
+  circle = pow(x[0]-center[0], 2) + pow(x[1]-center[1], 2);
 
   if( circle < pow(0.1, 2) ){ u[0] = 1.5; }
   else                      { u[0] = 0.;  }
@@ -235,6 +265,7 @@ static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
   Vec            paramVec;
   PetscInt       cStart, cEnd, cEndInterior;
   PetscErrorCode ierr;
+  void* ctx_array[1] = {user};
 
   PetscFunctionBeginUser;
   ierr = DMPlexGetHeightStratum(dmAux, 0, &cStart, &cEnd);CHKERRQ(ierr);
@@ -246,7 +277,7 @@ static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
   ierr = VecRestoreArray(paramVec, &p);CHKERRQ(ierr);
 #else
   PetscErrorCode (*matFuncs[1])( PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx) = {circle_shape};
-  DMProjectFunctionLocal(dmAux, 0.0, matFuncs, NULL, INSERT_ALL_VALUES, paramVec);
+  DMProjectFunctionLocal(dmAux, 0.0, matFuncs, ctx_array, INSERT_ALL_VALUES, paramVec);
   //ierr = VecSet(paramVec, 1.0);CHKERRQ(ierr);
 #endif
   ierr = PetscObjectCompose((PetscObject) dm, "A", (PetscObject) paramVec);CHKERRQ(ierr);
@@ -282,18 +313,26 @@ PetscErrorCode SetupProblem(DM dm, AppCtx *user)
   ierr = PetscDSSetJacobianPreconditioner(ds, 1, 0, NULL, g1_pu, NULL, NULL);CHKERRQ(ierr);
   ierr = PetscDSSetJacobianPreconditioner(ds, 1, 1, g0_pp, NULL, NULL, NULL);CHKERRQ(ierr);
 
-  id   = 1;
-  comp = 1;
-  ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallB", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
-  id   = 2;
-  comp = 0;
-  ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallR", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
-  id   = 3;
-  comp = 1;
-  ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallT", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
-  id   = 4;
-  comp = 0;
-  ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallL", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
+  if(user->annular) {
+    id   = 1;
+    comp = 1;
+    ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallB", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
+    id   = 2;
+    comp = 0;
+    ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallR", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
+    id   = 3;
+    comp = 1;
+    ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallT", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
+    id   = 4;
+    comp = 0;
+    ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "wallL", "marker", 0, 1, &comp, (void (*)(void)) zero, 1, &id, user);CHKERRQ(ierr);
+  } else {
+    PetscInt ids[4] = {1, 2,3,4};
+    
+    // no-slip dirichlet bc
+    ierr = PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, 
+            "wall", "marker", 0, 0, NULL, (void (*)(void)) zero, 4, ids, user);CHKERRQ(ierr);
+  }
 #if 0
   ierr = PetscDSSetExactSolution(ds, 0, user->exactFuncs[0], user);CHKERRQ(ierr);
   ierr = PetscDSSetExactSolution(ds, 1, user->exactFuncs[1], user);CHKERRQ(ierr);
@@ -446,7 +485,8 @@ int main(int argc, char **argv)
   ierr = DMSetApplicationContext(dm, &user);CHKERRQ(ierr);
 
   ierr = SetupDiscretization(dm, &user);CHKERRQ(ierr);
-  ierr = DMPlexCreateBasisSpherical(dm);CHKERRQ(ierr);
+  // if an annulus activate the spherical basis
+  if(user.annular) ierr = DMPlexCreateBasisSpherical(dm);CHKERRQ(ierr);
   ierr = DMPlexCreateClosureIndex(dm, NULL);CHKERRQ(ierr);
 
   ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
@@ -490,6 +530,12 @@ int main(int argc, char **argv)
 /*TEST
 
   # 2D serial P2-P1 tests
+  test:
+    suffix: box_2d_tri_p2_p1_0
+    args: -annular -dm_plex_separate_marker \
+          -vel_petscspace_degree 2 -pres_petscspace_degree 1 -dm_plex_print_fem 0 \
+          -pc_type lu
+
   test:
     suffix: 2d_tri_p2_p1_0
     args: -dm_plex_annular_faces 9,9 -dm_plex_annular_lower 1.5,1.374447 -dm_plex_annular_upper 2.,1.767146 -dm_plex_separate_marker \
