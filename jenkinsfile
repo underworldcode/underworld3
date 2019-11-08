@@ -14,7 +14,7 @@ pipeline {
   environment {
     // define environment variable active within pipeline
     CNAME = "${env.GIT_COMMIT}"
-    INAME = "${CNAME}"+"-image"
+    INAME = "underworldcode/carbonite:petsc_knep@sha256:3557a63d3ced99e43953242198876388e7f3dc791e25682f5dca4089ac3208f8"
   }
 
   options {
@@ -31,12 +31,12 @@ pipeline {
         // print environment variables
         sh 'printenv'
         // build the docker
-        sh 'docker build --force-rm --no-cache -t ${INAME} -f ./Dockerfile .'
+        //sh 'docker build --force-rm --no-cache -t ${INAME} -f ./Dockerfile .'
       }
     }
     
     // Test stage: runs the basic tests
-    stage('Basic Tests') {
+ /*   stage('Basic Tests') {
       // Run inside docker continer created
       steps {
               sh '''
@@ -51,23 +51,7 @@ pipeline {
         }
       }
     }
-    
-    // Run image_test.py separately, if it fails mark build 'UNSTABLE'
-    /*stage('image_tests') {
-      steps {
-        script {
-          try{
-            dir("./utils") {
-              sh './run_tests.py ../doc/test/image_tests.py'
-            }
-          }
-          catch(exc) {
-            currentBuild.result = 'UNSTABLE'
-            echo 'The image test phase failed. Not critical'
-          }
-        }
-      }
-    }*/
+    */
   }
   
   /* For post build analysis */
