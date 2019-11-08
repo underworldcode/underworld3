@@ -1,3 +1,6 @@
+# The code in this file only runs successfully under 
+# underworldcode/carbonite:petsc_knep@sha256:3557a63d3ced99e43953242198876388e7f3dc791e25682f5dca4089ac3208f8
+
 H52XMF=${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
 
 compile: stokes.c
