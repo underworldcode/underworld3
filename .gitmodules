@@ -1,0 +1,3 @@
+[submodule "petsc4py"]
+	path = petsc4py
+	url = git@github.com:underworldcode/petsc4py.git
