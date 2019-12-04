@@ -20,6 +20,7 @@ RUN pip3 install -U setuptools  \
         appdirs \
         numpy \
         jupyter \
+        jupytext \
         ipyparallel 
 
 FROM base_runtime AS build_base
