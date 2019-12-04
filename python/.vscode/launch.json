@@ -1,0 +1,47 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+    
+        
+        {
+            "name": "build_debug_spherical",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${fileDirname}/${fileBasenameNoExtension}",
+            "args": [
+	               "-dm_plex_annular_faces 60,32 $(opts)",
+		           "-dm_plex_annular_lower 1.5,1.3089969389957472",
+	               "-dm_plex_annular_upper 2.,1.8325957145940461",
+                   "-dm_plex_separate_marker",
+                   "-dm_partition_view",
+                   "-vel_petscspace_degree 2",
+                   "-pres_petscspace_degree 1",
+	               "-snes_monitor",
+		           "-simplex 1",
+                   "-dm_plex_print_fem 0",
+                   "-pc_type lu",
+                   "-dm_view hdf5:${PWD}/sol1.h5",
+                   "-sol_vec_view hdf5:${PWD}/sol1.h5::append",
+                   "-dm_aux_view hdf5:${PWD}/aux1.h5",
+                   "-vec_aux_view hdf5:${PWD}/aux1.h5::append"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [{"name":"OPENBLAS_NUM_THREADS", "value":"1"}],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "build swarm example",
+            "miDebuggerPath": "/usr/bin/gdb"
+        }
+    ]
+}
