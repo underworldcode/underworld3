@@ -1,22 +1,26 @@
 # The code in this file only runs successfully under 
 # underworldcode/carbonite:petsc_knep@sha256:3557a63d3ced99e43953242198876388e7f3dc791e25682f5dca4089ac3208f8
+#
+# A test, using the file branchComp.sh, is made to 
+# check for the REQUIRED petsc branch is available at $PETSC_DIR.
+# See ./branchComp.sh for details
 
-H52XMF=${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
+
+TEST := $(shell ./branchComp.sh; echo $$?)
+
+DOCKER_NAME = "underworldcode/carbonite:petsc_knep"
+H52XMF      = ${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
 
 compile: stokes.c
+ifeq ($(TEST),1)
+	@echo "*********************************"
+	@echo "WRONG PETSC BRANCH FOR THIS MODEL"
+	@echo "*********************************"
+	@echo "Use the docker image called:"
+	@echo "    $(DOCKER_NAME)"
+else
 	$(CC) -g -o carbonite $^ $(PETSC_CC_INCLUDES) $(PETSC_LIB)
-
-#-snes_view \
-#	-dm_plex_annular_lower 1.5,1.3089969389957472 \
-#		-dm_plex_annular_upper 2.,1.8325957145940461 \
-#		-snes_error_if_not_converged
-#		-dm_plex_annular_lower 1.5,1.374447 \
-#		-dm_plex_annular_upper 2.,1.767146  \
-#		-vel_petscspace_degree 2 -pres_petscspace_degree 1 \
-#	-simplex 1 \
-		
-#	mpirun -np 3 \
-
+endif
 
 run_annulus: carbonite 
 	./carbonite  $(opts)  \
@@ -45,5 +49,7 @@ run_cart: carbonite
 	${H52XMF} sol1.h5 aux1.h5
 
 
+clean:
+	rm carbonite aux1.* sol1.*
 
 include ${PETSC_DIR}/lib/petsc/conf/variables

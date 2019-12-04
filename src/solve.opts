@@ -1,7 +1,0 @@
-  -ksp_type fgmres
-  -pc_type fieldsplit
-  -fieldsplit_detect_saddlepoint
-    -pc_fieldsplit_type schur
-      -pc_fieldsplit_schur_factorization_type full
-      -fieldsplit_velocity_pc_type lu
-      -fieldsplit_pressure_ksp_rtol 1e-9
