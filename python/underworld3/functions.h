@@ -36,4 +36,6 @@ void f0_u_j(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], co
             PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[]);
 
 PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx);
+PetscErrorCode one_scalar(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx);
+PetscErrorCode SetupNullSpace(DM dm);
 PetscErrorCode SetupProblem(DM dm, void *user);

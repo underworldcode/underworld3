@@ -48,10 +48,17 @@ cdef extern from "functions.h":
     #                   const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[], PetscReal t, const PetscReal x[],
     #                   PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
     
+    PetscErrorCode SetupNullSpace(PetscDM dm);
     PetscErrorCode SetupProblem(PetscDM dm, void *user);
 
 def StokesSetup(DM dm):
     cdef int ierr
     ierr = SetupProblem(dm.dm, NULL)
+    if ierr != 0: raise Error(ierr)
+    return
+
+def NullSpaceSetup(DM dm):
+    cdef int ierr
+    ierr = SetupNullSpace(dm.dm)
     if ierr != 0: raise Error(ierr)
     return

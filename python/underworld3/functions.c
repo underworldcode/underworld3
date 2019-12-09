@@ -3,6 +3,8 @@
 
 PetscInt spatialDim;
 
+typedef PetscErrorCode (*InitFuncs)( PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx);
+
 /* gradU[comp*dim+d] = {u_x, u_y, v_x, v_y} or {u_x, u_y, u_z, v_x, v_y, v_z, w_x, w_y, w_z}
    u[Ncomp]          = {p} */
 void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -85,7 +87,7 @@ void f0_u_j(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
-  PetscScalar rho, circle;
+  PetscScalar rho;
   rho = a[0];
 
   f0[0] = rho * 0;
@@ -99,6 +101,46 @@ PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal x[], Pe
   PetscInt d;
   for (d = 0; d < spatialDim; ++d) u[d] = 0.0;
   return 0;
+}
+
+PetscErrorCode one_scalar(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  u[0] = 1.0;
+  return 0;
+}
+
+static PetscErrorCode CreatePressureNullSpace(DM dm, PetscInt dummy, MatNullSpace *nullspace)
+{
+  Vec              vec;
+  InitFuncs        funcs[2] = {zero_vector, one_scalar};
+  PetscErrorCode   ierr;
+
+  PetscFunctionBeginUser;
+  ierr = DMCreateGlobalVector(dm, &vec);CHKERRQ(ierr);
+  ierr = DMProjectFunction(dm, 0.0, funcs, NULL, INSERT_ALL_VALUES, vec);CHKERRQ(ierr);
+  ierr = VecNormalize(vec, NULL);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) vec, "Pressure Null Space");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(vec, NULL, "-pressure_nullspace_view");CHKERRQ(ierr);
+  ierr = MatNullSpaceCreate(PetscObjectComm((PetscObject)dm), PETSC_FALSE, 1, &vec, nullspace);CHKERRQ(ierr);
+  ierr = VecDestroy(&vec);CHKERRQ(ierr);
+  /* New style for field null spaces */
+  {
+    PetscObject  pressure;
+    MatNullSpace nullspacePres;
+
+    ierr = DMGetField(dm, 1, NULL, &pressure);CHKERRQ(ierr);
+    ierr = MatNullSpaceCreate(PetscObjectComm(pressure), PETSC_TRUE, 0, NULL, &nullspacePres);CHKERRQ(ierr);
+    ierr = PetscObjectCompose(pressure, "nullspace", (PetscObject) nullspacePres);CHKERRQ(ierr);
+    ierr = MatNullSpaceDestroy(&nullspacePres);CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode SetupNullSpace(DM dm)
+{
+  PetscErrorCode ierr;
+  ierr = DMSetNullSpaceConstructor(dm, 2, CreatePressureNullSpace);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
 }
 
 PetscErrorCode SetupProblem(DM dm, void *user)
@@ -121,3 +163,6 @@ PetscErrorCode SetupProblem(DM dm, void *user)
   ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 0, 0, NULL, (void (*)(void)) zero_vector, 1, &id, user);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
+
+
+
