@@ -6,10 +6,10 @@
 # See ./branchComp.sh for details
 
 
-TEST := $(shell ./branchComp.sh; echo $$?)
-
 DOCKER_NAME = "underworldcode/carbonite:petsc_knep"
 H52XMF      = ${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
+
+TEST := $(shell ./branchComp.sh; echo $$?)
 
 compile: stokes.c
 ifeq ($(TEST),1)
