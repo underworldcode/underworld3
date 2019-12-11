@@ -11,7 +11,7 @@ H52XMF      = ${PETSC_DIR}/lib/petsc/bin/petsc_gen_xdmf.py
 
 TEST := $(shell ./branchComp.sh; echo $$?)
 
-compile: stokes.c
+carbonite: stokes.c
 ifeq ($(TEST),1)
 	@echo "*********************************"
 	@echo "WRONG PETSC BRANCH FOR THIS MODEL"
