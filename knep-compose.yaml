@@ -1,0 +1,15 @@
+
+version: '3.0' 
+services:     
+    underworld:
+        container_name: underworld3-dev_knep
+        image: underworldcode/carbonite:petsc_knep
+        hostname: "uw3_knep-container"
+        volumes:
+            - $PWD:/workspace/
+        working_dir: "/workspace"
+        ports:
+            - "8881:8888"
+            - "9991:9999"
+        command: "jupyter notebook --ip='0.0.0.0' --no-browser --allow-root"
+
