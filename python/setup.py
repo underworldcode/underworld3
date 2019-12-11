@@ -50,6 +50,10 @@ extensions = [
               sources = ['underworld3/stokes.pyx',
                          'underworld3/functions.c'],
               **configure()),
+    Extension('underworld3.poisson',
+              sources = ['underworld3/poisson.pyx',
+                         'underworld3/poisson_setup.c'],
+              **configure()),
 ]
 
 setup(name = "underworld3",
