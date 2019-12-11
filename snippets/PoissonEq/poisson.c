@@ -237,12 +237,14 @@ int main(int argc, char**argv) {
       ierr = DMProjectFunction(dm, 0.0, initialGuess, (void**)ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
       ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
       ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
+      /*
       ierr = DMGetLocalVector(dm, &lu);CHKERRQ(ierr);
       ierr = DMPlexInsertBoundaryValues(dm, PETSC_TRUE, lu, 0.0, NULL, NULL, NULL);CHKERRQ(ierr);
       ierr = DMGlobalToLocalBegin(dm, u, INSERT_VALUES, lu);CHKERRQ(ierr);
       ierr = DMGlobalToLocalEnd(dm, u, INSERT_VALUES, lu);CHKERRQ(ierr);
 //      ierr = VecViewFromOptions(lu, NULL, "-local_vec_view");CHKERRQ(ierr);
       ierr = DMRestoreLocalVector(dm, &lu);CHKERRQ(ierr);
+      */
       ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
       ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
       ierr = VecViewFromOptions(u, NULL, "-sol_vec_view");CHKERRQ(ierr);
