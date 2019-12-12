@@ -8,9 +8,13 @@ $(EXE): $(SRC)
 	@echo ""
 	@echo "Built now execute:"
 	@echo "  make run opts='' "
-	
+
+					 
+
+
 run: $(EXE) 
-	-mpirun -np 4 ./$^ -elRes 10,10 -dm_plex_separate_marker -simplex 1 -temperature_petscspace_degree 1 -options_view \
+	-mpirun -np 4 \
+	./$^ -elRes 10,10 -dm_plex_separate_marker -simplex 1 -temperature_petscspace_degree 1 -options_view \
 	-sol_vec_view -dm_view hdf5:sol.h5 -initial_vec_view hdf5:sol.h5::append -sol_vec_view hdf5:sol.h5::append \
 	-ana_vec_view hdf5:sol.h5::append -dm_partition_view \
 	-snes_view $(opts)
