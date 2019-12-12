@@ -1,7 +1,7 @@
 #!groovy
 
 /* A Jenkins "Declarative" Pipeline file.
-See http://130.56.252.251:32779
+See http://115.146.85.138:32779/
 */
 
 pipeline {
@@ -14,7 +14,7 @@ pipeline {
   environment {
     // define environment variable active within pipeline
     CNAME = "${env.GIT_COMMIT}"
-    INAME = "underworldcode/carbonite:petsc_knep@sha256:3557a63d3ced99e43953242198876388e7f3dc791e25682f5dca4089ac3208f8"
+    INAME = "${CNAME}"+"-image"
   }
 
   options {
@@ -31,27 +31,19 @@ pipeline {
         // print environment variables
         sh 'printenv'
         // build the docker
-        //sh 'docker build --force-rm --no-cache -t ${INAME} -f ./Dockerfile .'
+        sh 'docker build --force-rm --no-cache -t ${INAME} -f ./Dockerfile .'
       }
     }
     
     // Test stage: runs the basic tests
- /*   stage('Basic Tests') {
+    stage('Basic Tests') {
       // Run inside docker continer created
       steps {
               sh '''
-              docker run -i -w /home/jovyan/development --name ${CNAME} ${INAME} ./test_suite.sh
+              docker run -i -v ${PWD}:/workspace --name ${CNAME} ${INAME} ls /workspace
               '''
-      }
-      post {
-        always {
-              sh '''
-                  docker cp ${CNAME}:/home/jovyan/development/testResults ./testResults
-              '''
-        }
       }
     }
-    */
   }
   
   /* For post build analysis */
@@ -62,7 +54,7 @@ pipeline {
           subject: "Failed Pipeline: ${currentBuild.fullDisplayName}",
           body: "Something is wrong with ${env.BUILD_URL}",
           // mimeType: 'text/html',
-          to: 'underworlddev@googlegroups.com'
+          to: 'julian.giordani@unimelb.edu.au'
         )
     }
     unstable {
@@ -71,17 +63,17 @@ pipeline {
           subject: "Unstable Pipeline: ${currentBuild.fullDisplayName}",
           body: "Something is unstable with ${env.BUILD_URL}",
           // mimeType: 'text/html',
-          to: 'underworlddev@googlegroups.com'
+          to: 'julian.giordani@unimelb.edu.au'
         )
     }
     success {
       script {
-        if (currentBuild.previousBuild != null && currentBuild.previousBuild.result != 'SUCCESS') {
+        if (currentBuild.previousBuild != null && currentBuild.result != 'SUCCESS') {
           emailext (
             subject: "Back to normal: ${currentBuild.fullDisplayName}",
             body: "Project is back to normal",
             // mimeType: 'text/html',
-            to: 'underworlddev@googlegroups.com'
+            to: 'julian.giordani@unimelb.edu.au'
           )
         }
       }
