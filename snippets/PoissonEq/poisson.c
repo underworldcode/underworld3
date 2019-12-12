@@ -17,14 +17,14 @@ typedef struct {
   PetscScalar y0, y1, T0, T1, k, h;
 } AppCtx;
 
-static PetscErrorCode top_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
+PetscErrorCode top_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                   PetscInt Nf, PetscScalar *u, void *ctx)
 {
   AppCtx* model = (AppCtx*)ctx;
   u[0] = model->T1;
   return 0;
 }
-static PetscErrorCode analytic(PetscInt dim, PetscReal time, const PetscReal coords[], 
+PetscErrorCode analytic(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                PetscInt Nf, PetscScalar *u, void *ctx)
 {
   AppCtx* model = (AppCtx*)ctx;
@@ -45,14 +45,14 @@ static PetscErrorCode analytic(PetscInt dim, PetscReal time, const PetscReal coo
   return 0;
 }
 
-static PetscErrorCode fn_x(PetscInt dim, PetscReal time, const PetscReal coords[], 
+PetscErrorCode fn_x(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                   PetscInt Nf, PetscScalar *u, void *ctx)
 {
   u[0] = coords[0];
   return 0;
 }
 
-static PetscErrorCode bottom_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
+PetscErrorCode bottom_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                  PetscInt Nf, PetscScalar *u, void *ctx)
 {
   AppCtx* model = (AppCtx*)ctx;
@@ -61,7 +61,7 @@ static PetscErrorCode bottom_bc(PetscInt dim, PetscReal time, const PetscReal co
 }
 
 
-static void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
@@ -69,7 +69,7 @@ static void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   f0[0] = -1*constants[1];
 }
 
-static void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
@@ -80,7 +80,7 @@ static void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
 /* < \nabla v, \nabla u + {\nabla u}^T >
    This just gives \nabla u, give the perdiagonal for the transpose */
-static void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                   PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
@@ -90,7 +90,7 @@ static void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   for ( d_i=0; d_i<dim; ++d_i ) { g3[d_i*dim+d_i] = 1.0; }
 }
 
-static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
+PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
 {
   const PetscInt          comp   = 0; /* scalar */
   PetscInt                ids[4] = {1,2,3,4};
@@ -121,13 +121,11 @@ static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
+PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 {
   DM              cdm = dm;
   PetscFE         fe;
-  //PetscQuadrature q;
   PetscDS         prob;
-  PetscSpace      space;
   PetscInt        dim;
   PetscErrorCode  ierr;
 
@@ -135,7 +133,6 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
   /* Create finite element */
   ierr = PetscFECreateDefault(PetscObjectComm((PetscObject)dm), dim, 1, user->simplex, "temperature_", PETSC_DEFAULT, &fe);CHKERRQ(ierr);
-  ierr = PetscFEGetBasisSpace(fe, &space);CHKERRQ(ierr);
   /* Set discretization and boundary conditions for each mesh */
   ierr = DMSetField(dm,0,NULL,(PetscObject)fe);CHKERRQ(ierr);
   ierr = DMCreateDS(dm);
@@ -231,12 +228,22 @@ int main(int argc, char**argv) {
       PetscErrorCode (*initialGuess[1])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {fn_x};
       PetscErrorCode (*exactFunc[1])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {analytic};
       AppCtx *ctxs[1];
-      Vec    lu;
       ctxs[0] = &user;
       
       ierr = DMProjectFunction(dm, 0.0, initialGuess, (void**)ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
       ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
+
+      /*
+      Vec    lu;
+      ierr = DMGetLocalVector(dm, &lu);CHKERRQ(ierr);
+      ierr = PetscObjectSetName((PetscObject) lu, "local Solution");CHKERRQ(ierr);
+      ierr = DMPlexInsertBoundaryValues(dm, PETSC_TRUE, lu, 0.0, NULL, NULL, NULL);CHKERRQ(ierr);
+      ierr = DMLocalToGlobalBegin(dm, lu, INSERT_VALUES, u);CHKERRQ(ierr);
+      ierr = DMLocalToGlobalEnd(dm, lu, INSERT_VALUES, u);CHKERRQ(ierr);
       ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
+      ierr = VecViewFromOptions(lu, NULL, "-local_vec_view");CHKERRQ(ierr);
+      ierr = DMRestoreLocalVector(dm, &lu);CHKERRQ(ierr);
+      */
 
       ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
       ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
