@@ -282,7 +282,7 @@ int main(int argc, char**argv) {
     DMDestroy(&dm);
 
     if( l2_error > tol ) { 
-      ierr = PetscPrintf(PETSC_COMM_WORLD, "\n*** L2 Error %.5e > tolerance (1e-10)\n", l2_error);
+      ierr = PetscPrintf(PETSC_COMM_WORLD, "\n*** L2 Error %.5e > tolerance %.5e\n", l2_error, tol);
       retCode = 1;
     } else {
       ierr = PetscPrintf(PETSC_COMM_WORLD, "\n*** L2 Error %.5e\n", l2_error); 

@@ -40,7 +40,11 @@ pipeline {
       // Run inside docker continer created
       steps {
               sh '''
-              docker run -i -v ${PWD}:/workspace --name ${CNAME} ${INAME} ls /workspace
+              docker run -i \
+              -v ${PWD}:/workspace \
+              -w /workspace \
+              --name ${CNAME} ${INAME} \
+              ./run_test.sh
               '''
       }
     }
@@ -54,7 +58,7 @@ pipeline {
           subject: "Failed Pipeline: ${currentBuild.fullDisplayName}",
           body: "Something is wrong with ${env.BUILD_URL}",
           // mimeType: 'text/html',
-          to: 'julian.giordani@unimelb.edu.au'
+          to: 'underworlddev@googlegroups.com'
         )
     }
     unstable {
@@ -63,7 +67,7 @@ pipeline {
           subject: "Unstable Pipeline: ${currentBuild.fullDisplayName}",
           body: "Something is unstable with ${env.BUILD_URL}",
           // mimeType: 'text/html',
-          to: 'julian.giordani@unimelb.edu.au'
+          to: 'underworlddev@googlegroups.com'
         )
     }
     success {
@@ -73,7 +77,7 @@ pipeline {
             subject: "Back to normal: ${currentBuild.fullDisplayName}",
             body: "Project is back to normal",
             // mimeType: 'text/html',
-            to: 'julian.giordani@unimelb.edu.au'
+            to: 'underworlddev@googlegroups.com'
           )
         }
       }
