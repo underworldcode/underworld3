@@ -116,7 +116,7 @@ static PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
+PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 {
   DM              cdm = dm;
   PetscFE         fe;
@@ -127,6 +127,7 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
+  ierr = DMSetApplicationContext(dm,user);
   ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
   /* Create finite element */
   ierr = PetscFECreateDefault(PetscObjectComm((PetscObject)dm), dim, 1, user->simplex, "temperature_", PETSC_DEFAULT, &fe);CHKERRQ(ierr);
@@ -270,7 +271,113 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 //}
 
 
-PetscErrorCode PetscJules() {
+PetscErrorCode PetscJulesUseDM(AppCtx* crap, DM _dm) {
+
+    PetscInt size;
+    DM dm = _dm;
+    Vec u;
+    AppCtx user;
+    SNES snes;
+    DMLabel label;
+    Vec gVec, lVec, xy;
+    PetscErrorCode ierr;    
+    PetscInt retCode=1;
+    PetscInt dim = 2;
+    PetscReal max[2],min[2];
+    PetscInt elements[2] = {4,3};
+    double l2_error, tol=1e-1;
+    
+#if 0
+    // read in some command line options
+    PetscOptionsBegin(PETSC_COMM_WORLD, "", "Julian 2D Poisson test", PETSC_NULL); // must call before options
+    /* Can force termperture element type with the following
+    ierr = PetscOptionsSetValue(NULL, "-temperature_petscspace_degree", "1");CHKERRQ(ierr); */
+    ierr=PetscOptionsBool("-simplex", "use simplicies", "n/a", crap->simplex, &crap->simplex, NULL);CHKERRQ(ierr);
+    ierr=PetscOptionsIntArray("-elRes", "element count (default: 4,4)", "n/a", elements, &dim, NULL);CHKERRQ(ierr);
+    PetscOptionsEnd();
+#endif
+
+    ierr = DMViewFromOptions(dm, NULL, "-dm_view");CHKERRQ(ierr);
+ //   SetupDiscretization(dm, crap);
+
+    /* Calculates the index of the 'default' section, should improve performance */
+ //   ierr = DMPlexCreateClosureIndex(dm, NULL);CHKERRQ(ierr);
+    /* Sets the fem routines for boundary, residual and Jacobian point wise operations */
+ //   ierr = DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL);CHKERRQ(ierr);
+    /* Get global vector */
+      
+    ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
+
+    /* Update SNES */
+    ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
+    ierr = SNESSetDM(snes, dm); CHKERRQ(ierr);
+    ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
+    
+    /* Solve and output*/
+    {
+      PetscErrorCode (*initialGuess[1])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {fn_x};
+      PetscErrorCode (*exactFunc[1])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {analytic};
+      AppCtx *ctxs[1];
+      Vec    lu;
+      //ctxs[0] = &user;
+      ctxs[0] = crap;
+      
+      ierr = DMProjectFunction(dm, 0.0, initialGuess, (void**)ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
+      ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
+      ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
+
+      ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
+      ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
+      ierr = VecViewFromOptions(u, NULL, "-sol_vec_view");CHKERRQ(ierr);
+      
+      // build an analytic field
+      Vec r;
+      ierr = DMGetGlobalVector(dm, &r);
+      ierr = DMProjectFunction(dm, 0.0, exactFunc, (void**)ctxs, INSERT_ALL_VALUES, r);
+      ierr = PetscObjectSetName((PetscObject) r, "Analytic");CHKERRQ(ierr);
+      ierr = VecViewFromOptions(r, NULL, "-ana_vec_view");CHKERRQ(ierr);
+      ierr = DMRestoreGlobalVector(dm, &r);
+ 
+      // test the L2 error
+      ierr = DMComputeL2Diff(dm, 0, exactFunc,(void**)ctxs, u, &l2_error );
+   }
+    /*************************************
+    // Output dm and temperature solution
+    // to a given filename
+    {
+      PetscViewer h5viewer;
+      PetscViewerHDF5Open(PETSC_COMM_WORLD, "sol.h5", FILE_MODE_WRITE, &h5viewer);
+      PetscViewerSetFromOptions(h5viewer);
+      DMView(dm, h5viewer);
+      PetscViewerDestroy(&h5viewer);
+
+      PetscViewerHDF5Open(PETSC_COMM_WORLD, "sol.h5", FILE_MODE_APPEND, &h5viewer);
+      PetscViewerSetFromOptions(h5viewer);
+      VecView(u, h5viewer);
+      PetscViewerDestroy(&h5viewer);
+    }
+    **************************************/
+	      
+    VecDestroy(&u);
+    SNESDestroy(&snes);
+    DMDestroy(&dm);
+
+    if( l2_error > tol ) { 
+      ierr = PetscPrintf(PETSC_COMM_WORLD, "\n*** L2 Error %.5e > tolerance (%.5e)\n", l2_error, tol);
+      retCode = 1;
+    } else {
+      ierr = PetscPrintf(PETSC_COMM_WORLD, "\n*** L2 Error %.5e\n", l2_error); 
+      retCode = 0;
+    }
+
+    retCode = 0;
+    ierr = PetscPrintf(PETSC_COMM_WORLD, "*** But debugging so don't care. Will change code later");
+
+    PetscFinalize();
+    return retCode;
+}
+
+PetscErrorCode PetscJules(AppCtx* crap) {
 
     PetscInt size;
     DM dm;
@@ -301,18 +408,17 @@ PetscErrorCode PetscJules() {
     PetscOptionsBegin(PETSC_COMM_WORLD, "", "Julian 2D Poisson test", PETSC_NULL); // must call before options
     /* Can force termperture element type with the following
     ierr = PetscOptionsSetValue(NULL, "-temperature_petscspace_degree", "1");CHKERRQ(ierr); */
-    ierr=PetscOptionsBool("-simplex", "use simplicies", "n/a", user.simplex, &user.simplex, NULL);CHKERRQ(ierr);
+    //ierr=PetscOptionsBool("-simplex", "use simplicies", "n/a", user.simplex, &user.simplex, NULL);CHKERRQ(ierr);
+    ierr=PetscOptionsBool("-simplex", "use simplicies", "n/a", crap->simplex, &crap->simplex, NULL);CHKERRQ(ierr);
     ierr=PetscOptionsIntArray("-elRes", "element count (default: 4,4)", "n/a", elements, &dim, NULL);CHKERRQ(ierr);
     PetscOptionsEnd();
 
-    ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
-    
     // user can only define y extent for now. Need to generalise.
     min[0] = 0; max[0] = 1;
-    min[1] = user.y0; max[1] = user.y1;
+    min[1] = crap->y0; max[1] = crap->y1;
 
     DMPlexCreateBoxMesh(PETSC_COMM_WORLD, 2, 
-                        user.simplex,       
+                        crap->simplex,       
                         elements, min, max,   
                         NULL, PETSC_TRUE,&dm);
     /* Distribute mesh over processes */
@@ -334,7 +440,8 @@ PetscErrorCode PetscJules() {
     /* The mesh is output to HDF5 using options */
     ierr = DMViewFromOptions(dm, NULL, "-dm_view");CHKERRQ(ierr);
 
-    SetupDiscretization(dm, &user);
+    //SetupDiscretization(dm, &user);
+    SetupDiscretization(dm, crap);
 
     /* Calculates the index of the 'default' section, should improve performance */
     ierr = DMPlexCreateClosureIndex(dm, NULL);CHKERRQ(ierr);
@@ -344,6 +451,7 @@ PetscErrorCode PetscJules() {
     ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
 
     /* Update SNES */
+    ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
     ierr = SNESSetDM(snes, dm); CHKERRQ(ierr);
     ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
     
@@ -353,7 +461,8 @@ PetscErrorCode PetscJules() {
       PetscErrorCode (*exactFunc[1])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {analytic};
       AppCtx *ctxs[1];
       Vec    lu;
-      ctxs[0] = &user;
+      //ctxs[0] = &user;
+      ctxs[0] = crap;
       
       ierr = DMProjectFunction(dm, 0.0, initialGuess, (void**)ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
       ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
