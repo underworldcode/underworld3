@@ -45,7 +45,7 @@ user = {"y0": -1.6,
 # In[5]:
 
 
-from underworld3.pyjules import *
+from underworld3.poisson import *
 
 
 # ## Create Mesh

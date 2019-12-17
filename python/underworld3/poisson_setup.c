@@ -7,6 +7,33 @@ static PetscErrorCode top_bc(PetscInt dim, PetscReal time, const PetscReal coord
   u[0] = model->T1;
   return 0;
 }
+static PetscErrorCode analytic(PetscInt dim, PetscReal time, const PetscReal coords[], 
+                               PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  AppCtx* model = (AppCtx*)ctx;
+  double y0 = model->y0; 
+  double y1 = model->y1;
+  double T0 = model->T0;
+  double T1 = model->T1;
+  double k = model->k;
+  double h = model->h;
+  double y = coords[1];
+  double c0, c1;
+
+  c0 = (T1-T0+h/(2*k)*(y1*y1-y0*y0)) / (y1-y0);
+  c1 = T1 + h/(2*k)*y1*y1 - c0*y1;
+
+  u[0] = -h /(2*k) * y * y + c0 * y + c1;
+
+  return 0;
+}
+
+static PetscErrorCode fn_x(PetscInt dim, PetscReal time, const PetscReal coords[], 
+                                  PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  u[0] = coords[0];
+  return 0;
+}
 
 static PetscErrorCode bottom_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                  PetscInt Nf, PetscScalar *u, void *ctx)
@@ -74,5 +101,33 @@ PetscErrorCode SetupProblem(DM dm, PetscDS prob, void *_user)
                             0, 0, NULL, /* field to constain and number of constained components */
                             (void (*)(void)) bottom_bc, 1, &ids[0], user);CHKERRQ(ierr);
 
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
+{
+  DM              cdm = dm;
+  PetscFE         fe;
+  //PetscQuadrature q;
+  PetscDS         prob;
+  PetscSpace      space;
+  PetscInt        dim;
+  PetscErrorCode  ierr;
+
+  PetscFunctionBeginUser;
+  ierr = DMSetApplicationContext(dm,user);
+  ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
+  /* Create finite element */
+  ierr = PetscFECreateDefault(PetscObjectComm((PetscObject)dm), dim, 1, user->simplex, "temperature_", PETSC_DEFAULT, &fe);CHKERRQ(ierr);
+  /* Set discretization and boundary conditions for each mesh */
+  ierr = DMSetField(dm,0,NULL,(PetscObject)fe);CHKERRQ(ierr);
+  ierr = DMCreateDS(dm);
+  ierr = DMGetDS(dm, &prob);
+  ierr = SetupProblem(dm, prob, user);CHKERRQ(ierr);
+  while (cdm) {
+    ierr = DMSetUp(cdm);
+    ierr = DMGetCoarseDM(cdm, &cdm);CHKERRQ(ierr);
+  }
+  ierr = PetscFEDestroy(&fe);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
