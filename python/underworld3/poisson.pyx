@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, DS, PetscDM, PetscDS
+from petsc4py.PETSc cimport DM, PetscDS, PetscDM, DS
 from petsc4py.PETSc import Error
 
 cdef extern from * nogil:
@@ -19,8 +19,22 @@ cdef extern from "poisson_setup.h":
         PetscScalar h
 
     PetscErrorCode SetupDiscretization(PetscDM dm, AppCtx *user)
+    PetscErrorCode SetupProblem(DM dm, DS ds, AppCtx *user)
 
 cdef AppCtx cuser
+
+#def PoissonSetup( DM dm, PetscDS ds, user ):
+#    cuser.simplex = user["simplex"]
+#    cuser.y0 = user["y0"]
+#    cuser.y1 = user["y1"]
+#    cuser.T0 = user["T0"]
+#    cuser.T1 = user["T1"]
+#    cuser.k = user["k"]
+#    cuser.h = user["h"]
+#    cdef int ierr
+#    ierr = SetupProblem( dm.dm, ds.ds, &cuser )
+#    if ierr != 0: raise Error(ierr)
+#    return
 
 def pySetupDiscretization( DM dm, user ):
     cuser.simplex = user["simplex"]

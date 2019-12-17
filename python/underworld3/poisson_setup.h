@@ -6,4 +6,4 @@ typedef struct {
 } AppCtx;
 
 PetscErrorCode SetupDiscretization(DM dm, AppCtx *user);
-
+PetscErrorCode SetupProblem(DM dm, PetscDS prob, void *_user);
