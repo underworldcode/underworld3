@@ -32,5 +32,5 @@ def pySetupDiscretization( DM dm, user ):
     cuser.h = user["h"]
     cdef int ierr
     ierr = SetupDiscretization( dm.dm, &cuser )
-    if err != 0: raise Error(ierr)
+    if ierr != 0: raise Error(ierr)
     return
