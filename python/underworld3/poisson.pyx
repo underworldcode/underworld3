@@ -18,10 +18,11 @@ cdef extern from "poisson_setup.h":
         PetscScalar k
         PetscScalar h
 
-    PetscErrorCode SetupProblem(PetscDM dm, PetscDS ds, void *user);
+    PetscErrorCode SetupDiscretization(PetscDM dm, AppCtx *user)
 
-def PoissonSetup(DM dm, DS ds, user):
-    cdef AppCtx cuser
+cdef AppCtx cuser
+
+def pySetupDiscretization( DM dm, user ):
     cuser.simplex = user["simplex"]
     cuser.y0 = user["y0"]
     cuser.y1 = user["y1"]
@@ -30,6 +31,6 @@ def PoissonSetup(DM dm, DS ds, user):
     cuser.k = user["k"]
     cuser.h = user["h"]
     cdef int ierr
-    ierr = SetupProblem(dm.dm, ds.ds, &cuser)
+    ierr = SetupDiscretization( dm.dm, &cuser )
     if ierr != 0: raise Error(ierr)
     return

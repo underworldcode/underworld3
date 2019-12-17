@@ -54,9 +54,13 @@ extensions = [
               sources = ['underworld3/poisson.pyx',
                          'underworld3/poisson_setup.c'],
               **configure()),
+#   Extension('underworld3.pyjules',
+#             sources = ['underworld3/pyjules.pyx',
+#                        'underworld3/poisson_jules.c'],
+#             **configure()),
 ]
 
 setup(name = "underworld3",
       ext_modules = cythonize(
-          extensions, 
+          extensions, gdb_debug=True, 
           include_path=[petsc4py.get_include()]) )
