@@ -1,4 +1,4 @@
 #!/bin/bash
 
-cd snippets/PoissonEq/ 
+cd examples/PoissonEq/ 
 make run
