@@ -1,8 +1,17 @@
 # underworld3
 
-**Docker to run examples**
+**Building**
 
-`julesg/uw3project:latest`
+Refer to the Dockerfile for uw3 build instructions.  
+
+For development, building inplace will prob be preferable.  Remove
+any existing installations, then run.
+
+```shell
+python setup.py build_ext --inplace
+```
+
+For in place usage, you will need to set an appropriate PYTHONPATH.
 
 **Milestones**
 

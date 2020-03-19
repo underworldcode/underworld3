@@ -3,7 +3,7 @@ version: '3.7'
 services:     
     underworld:
         container_name: underworld3-dev
-        image: underworldcode/carbonite:petsc_3.12
+        image: underworldcode/carbonite:petsc_dev
         hostname: "uw-container"
         volumes:
             - $PWD:/workspace/

@@ -56,9 +56,9 @@ RUN pip3 install --no-cache-dir mpi4py
 # build petsc
 WORKDIR /tmp/petsc-build
 
-ENV PETSC_BRANCH=v3.12
+#ENV PETSC_BRANCH=v3.12
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends git
-RUN git clone --single-branch --branch ${PETSC_BRANCH} https://gitlab.com/petsc/petsc/
+RUN git clone https://gitlab.com/petsc/petsc/
 WORKDIR /tmp/petsc-build/petsc
 RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
                 --with-zlib=1                   \
@@ -69,41 +69,21 @@ RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
                 --useThreads=0                  \
                 --with-shared-libraries         \
                 --with-cxx-dialect=C++11        \
-                --download-hdf5=1               \
+                --download-hdf5=https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.10/hdf5-1.10.6/src/hdf5-1.10.6.tar.gz               \
                 --with-make-np=8                \
                 --download-ctetgen              \
                 --download-eigen                \
-                --download-triangle
+                --download-triangle        
 RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug all
 RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug install
 ENV PETSC_DIR=/usr/local
 ENV PETSC_ARCH=arch-linux-c-debug
 RUN pip3 install cython
-RUN pip3 install --no-cache-dir petsc4py
-RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py h5py
+RUN pip3 install --no-cache-dir git+https://bitbucket.org/petsc/petsc4py/src/master
+RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py git+https://github.com/h5py/h5py
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
-# # FROM base_runtime AS minimal
-# # COPY --from=build_base $VIRTUAL_ENV $VIRTUAL_ENV
-# # COPY --from=build_base /usr/local /usr/local
-# # # Record Python packages, but only record system packages! 
-# # # Not venv packages, which will be copied directly in.
-# # RUN PYTHONPATH= /usr/bin/pip3 freeze >/opt/requirements.txt
-# # # Record manually install apt packages.
-# # RUN apt-mark showmanual >/opt/installed.txt
-
-# # # Add user environment
-# # FROM minimal
-# # EXPOSE 8888
-# # RUN ipcluster nbextension enable
-# # ADD https://github.com/krallin/tini/releases/download/v0.18.0/tini /tini
-# # RUN chmod +x /tini
-# # ENV NB_USER jovyan
-# # RUN useradd -m -s /bin/bash -N jovyan
-# # USER $NB_USER
-# # ENV NB_WORK /home/$NB_USER
-# # RUN ipython profile create --parallel --profile=mpi && \
-# #     echo "c.IPClusterEngines.engine_launcher_class = 'MPIEngineSetLauncher'" >> $NB_WORK/.ipython/profile_mpi/ipcluster_config.py
-# # VOLUME $NB_WORK/workspace
-# # WORKDIR $NB_WORK
-# # CMD ["jupyter", "notebook", "--no-browser", "--ip='0.0.0.0'"]
+# add uw
+COPY . /tmp/uw3
+WORKDIR /tmp/uw3
+RUN pip3 install .
