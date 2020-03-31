@@ -1,7 +1,9 @@
-src/ex1
-*.dSYM
-src/ex2
-src/mesh.dat
-src/mesh.h5
-src/mesh.xmf
-src/meshSmall.dat
+.devcontainer
+.vscode
+*.o
+cython_debug
+mesh.c
+poisson.c
+stokes.c
+__pycache__
+*.so

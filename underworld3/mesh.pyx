@@ -4,8 +4,11 @@ import numpy as np
 
 class FeMesh():
 
-    def __init__(self, elementRes=(10, 10), minCoords=(0., 0.),
+    def __init__(self, elementRes=(16, 16), minCoords=(0., 0.),
                  maxCoords=(1.0, 1.0), simplex=False):
+        options = PETSc.Options()
+
+        self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
 
         self.elementRes = elementRes
         self.minCoords = minCoords
@@ -16,7 +19,17 @@ class FeMesh():
             lower=minCoords, 
             upper=maxCoords,
             simplex=simplex)
+        part = self.plex.getPartitioner()
+        part.setFromOptions()
         self.plex.distribute()
+        self.plex.setFromOptions()
+
+        from sympy import MatrixSymbol
+        self._x = MatrixSymbol('x',  m=1,n=self.dim)
+
+    @property
+    def x(self):
+        return self._x
 
     @property
     def data(self):
