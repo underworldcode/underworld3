@@ -13,7 +13,9 @@ RUN apt-get update -qq \
         python3-minimal \
         python3-virtualenv \
         python3-pip \
-        libopenblas-base
+        libopenblas-base \ 
+        gdb \ 
+        cgdb
 RUN pip3 install -U setuptools  \
 &&  pip3 install --no-cache-dir \
         packaging \

@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DS
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 # TODO
@@ -6,29 +6,12 @@ from .petsc_types cimport PtrContainer
 # ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
 
 cdef extern from "petsc.h":
-    PetscErrorCode PetscDSAddBoundary( DS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), PetscInt, const PetscInt *, void *)
+    PetscErrorCode PetscDSAddBoundary( PetscDS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), PetscInt, const PetscInt *, void *)
 
 cdef extern from "petsc.h" nogil:
-    PetscErrorCode PetscDSSetResidual( DS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
-    PetscErrorCode PetscDSSetJacobian( DS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
-    PetscErrorCode DMPlexSetSNESLocalFEM( DM, void *, void *, void *)
-
-
-
-cdef void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[]):
-    f0[0] = -1#*constants[1]
-
-cdef void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[]):
-    cdef PetscInt d_i
-    for d_i in range(dim):
-        # f0[d_i] = constants[0] * u_x[d_i]
-        f0[d_i] = 1.*u_x[d_i]
+    PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
+    PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
+    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
 
 cdef void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
@@ -36,7 +19,7 @@ cdef void g3_uu(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                   PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[]):
     cdef PetscInt d_i
     for d_i in range(dim):
-        g3[d_i*dim+d_i] = 1.0; 
+        g3[d_i*dim+d_i] = 1.0 
 
 cdef PetscErrorCode top_bc(PetscInt dim, PetscReal time, const PetscReal coords[], 
                                   PetscInt Nf, PetscScalar *u, void *ctx):
@@ -59,6 +42,7 @@ class Poisson:
         mesh.plex.setField(0,self.fe_temp)
         mesh.plex.createDS()
         self._k = 1.
+        self._h = 0.
 
         super().__init__()
 
@@ -74,38 +58,77 @@ class Poisson:
         # should add test here to make sure k is conformal
         self._k = value
 
+    @property
+    def h(self):
+        return self._h
+    @h.setter
+    def h(self, value):
+        # should add test here to make sure h is conformal
+        self._h = value
+
     def solve(self):
         cdef PetscInt ids[4]
         ids[:] = [1,2,3,4]
         cdef DS ds = self.mesh.plex.getDS()
 
-        self._buildext()
-        import fn_ptr_ext
-        cdef PtrContainer clsguy = fn_ptr_ext.getptrobj()
+        cdef PtrContainer clsguy = self._getext()
 
-        PetscDSSetResidual(ds, 0, f0_u, clsguy.residual_ptr)
-        PetscDSSetJacobian(ds, 0, 0, NULL, NULL, NULL, g3_uu)
-        PetscDSAddBoundary(ds, 1, NULL, "marker", 0, 0, NULL, <void (*)()>top_bc,    1, &ids[2], NULL)
-        PetscDSAddBoundary(ds, 1, NULL, "marker", 0, 0, NULL, <void (*)()>bottom_bc, 1, &ids[0], NULL)
+        PetscDSSetResidual(ds.ds, 0, clsguy.f0_u, clsguy.f1_u)
+        PetscDSSetJacobian(ds.ds, 0, 0, NULL, NULL, NULL, g3_uu)
+        PetscDSAddBoundary(ds.ds, 1, NULL, "marker", 0, 0, NULL, <void (*)()>top_bc,    1, &ids[2], NULL)
+        PetscDSAddBoundary(ds.ds, 1, NULL, "marker", 0, 0, NULL, <void (*)()>bottom_bc, 1, &ids[0], NULL)
         self.mesh.plex.setUp()
 
         self.mesh.plex.createClosureIndex(None)
-        DMPlexSetSNESLocalFEM(self.mesh.plex, NULL, NULL, NULL)
-        u = self.mesh.plex.createGlobalVector()
+        cdef DM dm = self.mesh.plex
+        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
+        self.u = self.mesh.plex.createGlobalVector()
 
         self.mesh.snes.setDM(self.mesh.plex)
         self.mesh.snes.setFromOptions()
-        self.mesh.snes.solve(None,u)
+        self.mesh.snes.solve(None,self.u)
 
-    def _buildext(self):
+    _ext_dict = {}
+    def _getext(self):
+        """
+        Check if we've already created an equivalent extension
+        and use if available.
+        """
+        hashparams = abs(hash((self.k,self.h)))
+        try:
+            module = self._ext_dict[hashparams]
+        except KeyError:
+            self._createext(hashparams)
+            module = self._ext_dict[hashparams]
+        return module.getptrobj()
+
+    def _createext(self, name):
+        """
+        This creates the required extension which houses the JIT
+        fn pointer for PETSc. 
+
+        Note that it is not possible to replace loaded shared libraries
+        in Python, so we instead create a new extension for each new function. 
+
+        We hash the functions and create a dictionary of the generated extensions
+        to avoid redundantly creating new extensions.
+
+        Params
+        ------
+        name: str
+            Name for the extension. It will be prepended with "fn_ptr_ext_"
+        """
         from sympy import symbols, Eq
-        k_out = symbols("k_out")
-        eqn = Eq(k_out, self.k)
+        out = symbols("out")
+        eqnk = Eq(out, self.k)
+        eqnh = Eq(out, self.h)
 
-        NAME = "fn_ptr_ext"
+        # Generate C code from Sympy expressions
+        MODNAME = "fn_ptr_ext_" + str(name)
         from sympy.utilities.codegen import codegen
-        codeguys  = codegen((NAME, eqn), argument_sequence=(self.mesh.x, k_out), language='c')
+        codeguys  = codegen((("eqn_k", eqnk),("eqn_h", eqnh)), prefix="fns", argument_sequence=(self.mesh.x, out), language='c')
 
+        # Create a `setup.py`
         setup_py_str = """
 try:
     from setuptools import setup
@@ -117,7 +140,7 @@ from Cython.Build import cythonize
 import numpy as np
 
 ext_mods = [Extension(
-    'NAME', ['NAME_cy.pyx', 'NAME.c'],
+    'NAME', ['cy_ext.pyx', 'fns.c'],
     include_dirs=[np.get_include()],
     library_dirs=[],
     libraries=[],
@@ -125,37 +148,50 @@ ext_mods = [Extension(
     extra_link_args=[]
 )]
 setup(ext_modules=cythonize(ext_mods))
-        """.replace("NAME",NAME)
+        """.replace("NAME",MODNAME)
+        codeguys.append( ["setup.py", setup_py_str] )
 
-        codeguys.append( ["setup.py",setup_py_str])
-
+        # Create required Cython extension
         pyx_str = """
-cdef extern from "NAME.h":
-    void NAME(double *x, double *y);
+cdef extern from "fns.h":
+    void eqn_k(double*, double*)
+    void eqn_h(double*, double*)
  
 from underworld3.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.petsc_types cimport PtrContainer
 
-cdef void NAME_PETSc(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+cdef void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[]):
+
+    # now call the C function
+    cdef PetscReal h[1]
+    eqn_h(<double *> x, <double *> h)
+    f0[0] = h[0]
+
+cdef void f1_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[]):
 
     # now call the C function
     cdef PetscReal k[1]
-    NAME(<double *> x, <double *> k)
+    eqn_k(<double *> x, <double *> k)
     for d_i in range(dim):
         f0[d_i] = k[0]*u_x[d_i]
 
 cpdef PtrContainer getptrobj():
     clsguy = PtrContainer()
-    clsguy.residual_ptr = NAME_PETSc
+    clsguy.f0_u = f0_u
+    clsguy.f1_u = f1_u
     return clsguy
-        """.replace("NAME",NAME)
-        codeguys.append( [NAME+"_cy.pyx",pyx_str])
+        """
+        codeguys.append( ["cy_ext.pyx", pyx_str] )
 
+        # Write out files
         import os
-        tmpdir = os.path.join("/tmp",NAME)
+        tmpdir = os.path.join("/tmp",MODNAME)
         try:
             os.mkdir(tmpdir)
         except OSError:
@@ -166,13 +202,31 @@ cpdef PtrContainer getptrobj():
             with open(os.path.join(tmpdir,filename),'w') as f:
                 f.write(strguy)
 
+        # Build
         import subprocess
         process = subprocess.Popen('python setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
         process.communicate()
 
-        import sys
-        sys.path.insert(0,tmpdir)
+        # Load and add to dictionary
+        from importlib._bootstrap import _load
+        def load_dynamic(name, path, file=None):
+            """
+            Load an extension module.
+            Borrowed from:
+                https://stackoverflow.com/a/55172547
+            """
+            import importlib.machinery
+            loader = importlib.machinery.ExtensionFileLoader(name, path)
 
-        import fn_ptr_ext
-        from importlib import reload  
-        fn_ptr_ext = reload(fn_ptr_ext)
+            # Issue #24748: Skip the sys.modules check in _load_module_shims
+            # always load new extension
+            spec = importlib.machinery.ModuleSpec(
+                name=name, loader=loader, origin=path)
+            return _load(spec)
+
+        for _file in os.listdir(tmpdir):
+            if _file.endswith(".so"): 
+                self._ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir,_file))
+
+        if name not in self._ext_dict.keys():
+            raise RuntimeError("Extension module does not appear to have been created.")

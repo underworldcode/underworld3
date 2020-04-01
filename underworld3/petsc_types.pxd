@@ -15,4 +15,5 @@ ctypedef void (*PetscDSJacobianFn)(PetscInt, PetscInt, PetscInt,
                                                     PetscReal, PetscReal, const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[])
 
 cdef class PtrContainer:
-    cdef PetscDSResidualFn residual_ptr
+    cdef PetscDSResidualFn f0_u
+    cdef PetscDSResidualFn f1_u

@@ -25,7 +25,7 @@ class FeMesh():
         self.plex.setFromOptions()
 
         from sympy import MatrixSymbol
-        self._x = MatrixSymbol('x',  m=1,n=self.dim)
+        self._x = MatrixSymbol('x', m=1, n=self.dim)
 
     @property
     def x(self):
