@@ -70,33 +70,32 @@ class Poisson:
         self.bc_inds.append(indices)
 
     def solve(self):
-
-        cdef DS ds = self.mesh.plex.getDS()
-
         from sympy.vector import gradient
         import sympy
 
         def diff_fn_wrt_fn(fn_to_diff, wrt_fn):
+            if wrt_fn.is_zero:
+                return 0
             dummy = sympy.Symbol("dummy")
             return fn_to_diff.subs(wrt_fn,dummy).diff(dummy).subs(dummy,wrt_fn)
 
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = -self.h
+        self._f0 = self.h
         # f1 residual term
         self._f1 = gradient(self.u.fn)*self.k
         # g0 jacobian term
-        self._g0 = -diff_fn_wrt_fn(self.h,self.u)
+        self._g0 = -diff_fn_wrt_fn(self.h,self.u.fn)
         # g1 jacobian term
-        dk_du = diff_fn_wrt_fn(self.k,self.u)
+        dk_du = diff_fn_wrt_fn(self.k,self.u.fn)
         self._g1 = dk_du*gradient(self.u.fn)
         # g3 jacobian term
         dk_dux = diff_fn_wrt_fn(self.k, self.u.fn.diff(N.x))
         dk_duy = diff_fn_wrt_fn(self.k, self.u.fn.diff(N.y))
         dk_duz = diff_fn_wrt_fn(self.k, self.u.fn.diff(N.z))
         dk = dk_dux*N.i + dk_duy*N.j + dk_duz*N.k
-        self._g3  = dk|gradient(self.u.fn)                        # outer product for nonlinear part
+        self._g3 = dk|gradient(self.u.fn)                        # outer product for nonlinear part
         self._g3 += self.k*( (N.i|N.i) + (N.j|N.j) + (N.k|N.k) )  # linear part using dyadic identity
 
         fns_residual = (self._f0, self._f1)
@@ -107,6 +106,7 @@ class Poisson:
         cdef PtrContainer clsguy = self._getext(fns_residual, fns_jacobian, fns_bcs)
 
         # set functions 
+        cdef DS ds = self.mesh.plex.getDS()
         PetscDSSetResidual(ds.ds, 0, clsguy.fns_residual[0], clsguy.fns_residual[1])
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
