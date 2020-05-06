@@ -9,8 +9,6 @@ class Mesh():
                  maxCoords=(1.0, 1.0), simplex=False):
         options = PETSc.Options()
         options.setValue("dm_plex_separate_marker", None)
-        self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
-
         self.elementRes = elementRes
         self.minCoords = minCoords
         self.maxCoords = maxCoords

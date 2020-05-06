@@ -69,7 +69,7 @@ class Poisson:
         self.bc_fns.append(sympify(fn))
         self.bc_inds.append(indices)
 
-    def solve(self):
+    def _setup_terms(self):
         from sympy.vector import gradient
         import sympy
 
@@ -122,16 +122,23 @@ class Poisson:
 
         self.mesh.plex.createClosureIndex(None)
         cdef DM dm = self.mesh.plex
+        self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
+        self.snes.setDM(self.mesh.plex)
+        self.snes.setFromOptions()
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
         self.u_global = self.mesh.plex.createGlobalVector()
         self.u_local  = self.mesh.plex.createLocalVector()
 
-        self.mesh.snes.setDM(self.mesh.plex)
-        self.mesh.snes.setFromOptions()
-        self.mesh.snes.solve(None,self.u_global)
+
+    def solve(self, setup=True):
+        if setup:
+            self._setup_terms()
+        self.mesh.plex.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
+        self.snes.solve(None,self.u_global)
         self.mesh.plex.globalToLocal(self.u_global,self.u_local)
         # add back boundaries.. 
         cdef Vec lvec= self.u_local
+        cdef DM dm = self.mesh.plex
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>lvec.vec, NULL)
 
 
