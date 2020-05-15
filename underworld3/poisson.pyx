@@ -177,7 +177,7 @@ class Poisson:
 
         # note that the order here is important.
         fns = fns_residual + tuple(fns_bcs) + fns_jacobian
-        count_residual_sig = len(fns_residual) + len(fns_bcs)
+        count_residual_sig = len(fns_residual)
         count_jacobian_sig = len(fns_jacobian)
         # get fn/fn_grad component totals
         tot_fns = 0
