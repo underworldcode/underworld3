@@ -175,10 +175,6 @@ class Poisson:
         """
         from sympy import symbols, Eq, MatrixSymbol
 
-        # note that the order here is important.
-        fns = fns_residual + tuple(fns_bcs) + fns_jacobian
-        count_residual_sig = len(fns_residual)
-        count_jacobian_sig = len(fns_jacobian)
         # get fn/fn_grad component totals
         tot_fns = 0
         tot_grad_fns = 0
@@ -214,6 +210,11 @@ class Poisson:
                     u_x_i += 1
             else:
                 raise RuntimeError("TODO: Implement vector field codegen.")        
+
+        # note that the order here is important.
+        fns = fns_residual + tuple(fns_bcs) + fns_jacobian
+        count_residual_sig = len(fns_residual) + len(fns_bcs)
+        count_jacobian_sig = len(fns_jacobian)
 
         # do subsitutions
         subbedfns = []
@@ -292,7 +293,7 @@ cpdef PtrContainer getptrobj():
     clsguy.fns_residual = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
     clsguy.fns_jacobian = <PetscDSJacobianFn*> malloc({}*sizeof(PetscDSJacobianFn))
     clsguy.fns_bcs      = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
-""".format(count_residual_sig,count_jacobian_sig,len(fns_bcs)) 
+""".format(len(fns_residual),count_jacobian_sig,len(fns_bcs)) 
 
         for index,eqn in enumerate(eqns[0:len(fns_residual)]):
             pyx_str+="    clsguy.fns_residual[{}] = petsc_{}\n".format(index,eqn[0])
