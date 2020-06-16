@@ -39,7 +39,9 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
         libz-dev \ 
         less \ 
         vim \
-        valgrind valgrind-dbg valgrind-mpi
+        valgrind valgrind-dbg valgrind-mpi gdb cgdb \ 
+        libxml2-dev, swig3.0               # for UW2
+RUN ln -s /usr/bin/swig3.0 /usr/bin/swig   # for UW2
 # build mpi
 WORKDIR /tmp/mpich-build
 ARG MPICH_VERSION="3.1.4"
@@ -59,7 +61,7 @@ RUN pip3 install --no-cache-dir mpi4py
 # build petsc
 WORKDIR /tmp/petsc-build
 
-#ENV PETSC_BRANCH=v3.12
+#ENV PETSC_BRANCH=v3.13.2
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends git
 RUN git clone https://gitlab.com/petsc/petsc/
 WORKDIR /tmp/petsc-build/petsc
@@ -86,7 +88,9 @@ RUN pip3 install --no-cache-dir git+https://bitbucket.org/petsc/petsc4py/src/mas
 RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py git+https://github.com/h5py/h5py
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
-# add uw
+# add uw2
+RUN pip3 install underworld
+# add uw3
 COPY . /tmp/uw3
 WORKDIR /tmp/uw3
 RUN pip3 install .

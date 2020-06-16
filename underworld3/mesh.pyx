@@ -5,12 +5,18 @@ import sympy as sym
 
 class Mesh():
 
-    def __init__(self, elementRes=(16, 16), minCoords=(0., 0.),
-                 maxCoords=(1.0, 1.0), simplex=False):
+    def __init__(self, 
+                elementRes=(16, 16), 
+                minCoords=None,
+                maxCoords=None,
+                simplex=False,
+                interpolate=False):
         options = PETSc.Options()
-        options.setValue("dm_plex_separate_marker", None)
+        options["dm_plex_separate_marker"] = None
         self.elementRes = elementRes
+        if minCoords==None : minCoords=len(elementRes)*(0.,)
         self.minCoords = minCoords
+        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
         self.maxCoords = maxCoords
         self.isSimplex = simplex
         self.plex = PETSc.DMPlex().createBoxMesh(
@@ -22,6 +28,7 @@ class Mesh():
         part.setFromOptions()
         self.plex.distribute()
         self.plex.setFromOptions()
+        #self.plex.view()
 
         # from sympy import MatrixSymbol
         # self._x = MatrixSymbol('x', m=1, n=self.dim)
@@ -72,17 +79,37 @@ class Mesh():
 #         # return f"{type(self).__name__}({', '.join(printer._print(arg) for arg in self.args)})_bobobo"
 #         return f"petsc_u[0]"
 
+from enum import Enum
+class VarType(Enum):
+    SCALAR=1
+    VECTOR=2
+    OTHER=3  # add as required 
+
 class MeshVariable:
-    def __init__(self, mesh, num_components, name, isSimplex=False):
+
+    def __init__(self, mesh, num_components, name, vtype, isSimplex=False):
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
+        if not isinstance(vtype, VarType):
+            raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `uw.mesh.VarType.SCALAR`.")
+        self.vtype = vtype
         self.mesh = mesh
         self.num_components = num_components
         self.petsc_fe = PETSc.FE().createDefault(mesh.plex.getDimension(), num_components, isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
         self.field_id = mesh.plex.getNumFields()
         mesh.plex.setField(self.field_id,self.petsc_fe)
-        # create associated sympy undefined function
-        self._fn = sym.Function(name)(*self.mesh.N.base_scalars()[0:mesh.dim])
+        # create associated sympy function
+        if   vtype==VarType.SCALAR:
+            self._fn = sym.Function(name)(*self.mesh.N.base_scalars()[0:mesh.dim])
+        elif vtype==VarType.VECTOR:
+            if num_components!=mesh.dim:
+                raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
+            from sympy.vector import VectorZero
+            self._fn = VectorZero()
+            subnames = ["_x","_y","_z"]
+            for comp in range(num_components):
+                subfn = sym.Function(name+subnames[comp])(*self.mesh.N.base_scalars()[0:mesh.dim])
+                self._fn += subfn*self.mesh.N.base_vectors()[comp]
         super().__init__()
         # now add to mesh list
         self.mesh.vars[name] = self

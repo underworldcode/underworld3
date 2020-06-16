@@ -54,8 +54,10 @@ extensions = [
               sources = ['underworld3/petsc_types.pyx',],
               **configure()),
     Extension('underworld3.poisson',
-              sources = ['underworld3/poisson.pyx',
-                         'underworld3/poisson_setup.c'],
+              sources = ['underworld3/poisson.pyx',],
+              **configure()),
+    Extension('underworld3.stokes',
+              sources = ['underworld3/stokes.pyx',],
               **configure()),
 ]
 
@@ -63,5 +65,7 @@ setup(name = "underworld3",
     packages=['underworld3'],
     package_data={'underworld3':['*.pxd',]},
     ext_modules = cythonize(
-        extensions, gdb_debug=True, 
+        extensions, 
+        gdb_debug=True, 
+        compiler_directives={'language_level' : "3"},
         include_path=[petsc4py.get_include()]) )
