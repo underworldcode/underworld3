@@ -34,8 +34,7 @@ class Poisson:
         self._k = 1.
         self._h = 0.
 
-        self.bc_fns = []
-        self.bc_inds = []
+        self.bcs = []
 
         super().__init__()
 
@@ -59,13 +58,16 @@ class Poisson:
         # should add test here to make sure h is conformal
         self._h = sympify(value)
 
-    def add_dirichlet_bc(self, fn, indices):
+    def add_dirichlet_bc(self, fn, boundaries, comps=[0]):
         # switch to numpy arrays
+        # ndmin arg forces an array to be generated even
+        # where comps/indices is a single value.
         import numpy as np
-        indices = np.array(indices, dtype=np.int32, ndmin=1)
-        
-        self.bc_fns.append(sympify(fn))
-        self.bc_inds.append(indices)
+        comps      = np.array(comps,      dtype=np.int32, ndmin=1)
+        boundaries = np.array(boundaries, dtype=object,   ndmin=1)
+        from collections import namedtuple
+        BC = namedtuple('BC', ['comps', 'fn', 'boundaries'])
+        self.bcs.append(BC(comps,sympify(fn),boundaries))
 
     def _setup_terms(self):
         from sympy.vector import gradient
@@ -92,22 +94,24 @@ class Poisson:
 
         fns_residual = (self._f0, self._f1)
         fns_jacobian = (self._g0, self._g1, self._g3)
-        fns_bcs      = self.bc_fns
+        fns_bcs      = [x[1] for x in self.bcs]
 
         # generate JIT code
-        cdef PtrContainer clsguy = getext(self.mesh, fns_residual, fns_jacobian, fns_bcs)
+        cdef PtrContainer ext = getext(self.mesh, fns_residual, fns_jacobian, fns_bcs)
 
         # set functions 
         cdef DS ds = self.mesh.plex.getDS()
-        PetscDSSetResidual(ds.ds, 0, clsguy.fns_residual[0], clsguy.fns_residual[1])
+        PetscDSSetResidual(ds.ds, 0, ext.fns_residual[0], ext.fns_residual[1])
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
-        PetscDSSetJacobian(ds.ds, 0, 0, clsguy.fns_jacobian[0], clsguy.fns_jacobian[1], NULL, clsguy.fns_jacobian[2])
-        cdef int [:] narr_view   # for numpy memory view
-        for index,indices in enumerate(self.bc_inds):
-            narr_view = indices
-            # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            PetscDSAddBoundary(ds.ds, 5, NULL, "marker", 0, 0, NULL, <void (*)()>clsguy.fns_bcs[index], narr_view.shape[0], <const PetscInt *> &narr_view[0], NULL)
+        PetscDSSetJacobian(ds.ds, 0, 0, ext.fns_jacobian[0], ext.fns_jacobian[1], NULL, ext.fns_jacobian[2])
+        cdef int ind=1
+        cdef int [::1] comps_view  # for numpy memory view
+        for index,bc in enumerate(self.bcs):
+            comps_view = bc.comps
+            for boundary in bc.boundaries:
+                # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
+                PetscDSAddBoundary(ds.ds, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], 1, <const PetscInt *> &ind, NULL)
         self.mesh.plex.setUp()
 
         self.mesh.plex.createClosureIndex(None)

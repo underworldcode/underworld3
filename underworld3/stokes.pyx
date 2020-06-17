@@ -110,16 +110,16 @@ class Stokes:
         #     raise RuntimeError("Body force term must be a vector quantity.")
         self._bodyforce = symval
 
-    def add_dirichlet_bc(self, comps, fn, indices):
+    def add_dirichlet_bc(self, fn, boundaries, comps):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
         import numpy as np
-        indices = np.array(indices, dtype=np.int32, ndmin=1)
-        comps   = np.array(comps,   dtype=np.int32, ndmin=1)
+        comps      = np.array(comps,      dtype=np.int32, ndmin=1)
+        boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
-        BC = namedtuple('BC', ['comps', 'fn', 'indices'])
-        self.bcs.append(BC(comps,sympify(fn),indices))
+        BC = namedtuple('BC', ['comps', 'fn', 'boundaries'])
+        self.bcs.append(BC(comps,sympify(fn),boundaries))
 
     def _setup_terms(self):
         N = self.mesh.N
@@ -251,13 +251,13 @@ class Stokes:
         PetscDSSetJacobian(ds.ds, 0, 0, NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(ds.ds, 0, 1, NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(ds.ds, 1, 0, NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
-        cdef int [::1] inds_view   # for numpy memory view
+        cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         for index,bc in enumerate(self.bcs):
-            inds_view  = bc.indices
             comps_view = bc.comps
-            # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            PetscDSAddBoundary(ds.ds, 5, NULL, "marker", 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], inds_view.shape[0], <const PetscInt *> &inds_view[0], NULL)
+            for boundary in bc.boundaries:
+                # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
+                PetscDSAddBoundary(ds.ds, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], 1, <const PetscInt *> &ind, NULL)
         self.mesh.plex.setUp()
 
         self.mesh.plex.createClosureIndex(None)

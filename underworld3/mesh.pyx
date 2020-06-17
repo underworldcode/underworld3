@@ -28,7 +28,6 @@ class Mesh():
         part.setFromOptions()
         self.plex.distribute()
         self.plex.setFromOptions()
-        #self.plex.view()
 
         # from sympy import MatrixSymbol
         # self._x = MatrixSymbol('x', m=1, n=self.dim)
@@ -37,6 +36,35 @@ class Mesh():
         self._N = CoordSys3D("N")
         import weakref
         self._vars = weakref.WeakValueDictionary()
+
+        # sort bcs
+        from enum import Enum
+        class Boundary2D(Enum):
+            BOTTOM = 1
+            RIGHT  = 2
+            TOP    = 3
+            LEFT   = 4
+        class Boundary3D(Enum):
+            BOTTOM = 1
+            TOP    = 2
+            FRONT  = 3
+            BACK   = 4
+            RIGHT  = 5
+            LEFT   = 6
+        
+        if len(elementRes) == 2:
+            self.boundary = Boundary2D
+        else:
+            self.boundary = Boundary3D
+
+        for ind,val in enumerate(self.boundary):
+            boundary_set = self.plex.getStratumIS("marker",ind+1)        # get the set
+            self.plex.createLabel(str(val).encode('utf8'))               # create the label
+            boundary_label = self.plex.getLabel(str(val).encode('utf8')) # get label
+            if boundary_set:
+                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+
+        self.plex.view()
 
     @property
     def N(self):

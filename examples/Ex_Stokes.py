@@ -3,131 +3,72 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.poisson import Poisson
+from underworld3.stokes import Stokes
 import numpy as np
 
 options = PETSc.Options()
-# options["snes_monitor_short"] = True
-# options["snes_converged_reason"] = True
+# options["help"] = None
+
 options["pc_type"]  = "svd"
+
+options["ksp_rtol"] =  1.0e-8
+# options["ksp_monitor_short"] = None
+
 # options["snes_type"]  = "fas"
-# options["ksp_rtol"] =  1.0e-10
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
-options["snes_view"]=None
-options["ksp_rtol"] = 1.0e-10
-# options["ksp_monitor_short"] = None
-# options["snes_rtol"] = 1.0e-10
+# options["snes_view"]=None
+# options["snes_test_jacobian"] = None
+options["snes_rtol"] = 1.0e-8
 
 
 # %%
-mesh = uw.Mesh()
-
-
+n_els = 24
+mesh = uw.Mesh(elementRes=(n_els,n_els))
 # %%
-# Create Poisson object
-poisson = Poisson(mesh)
-
+v_degree = 1
+stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
 # Set some things
-poisson.k = 1. 
-poisson.h = 0.
-poisson.add_dirichlet_bc( 1., 1 )  # index 1 is bottom boundary
-poisson.add_dirichlet_bc( 0., 3 )  # index 3 is top boundary
-
+import sympy
+from sympy import Piecewise
+N = mesh.N
+eta_0 = 1.
+x_c   = 0.5
+f_0   = -1.
+stokes.viscosity = 1. 
+stokes.bodyforce = Piecewise((f_0, N.x>x_c,), \
+                            (  0.,    True) )*N.j
+# free slip.  
+# note with petsc we always need to provide a vector of correct cardinality. 
+bnds = mesh.boundary
+stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP, bnds.BOTTOM], 1 )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT], 0 )  # left/right: components, function, markers
 
 # %%
 # Solve time
-poisson.solve()
-soln = poisson.u_local
+stokes.solve()
+
+# %%
+import underworld as uw2
+solC = uw2.function.analytic.SolC()
+
+# %%
+vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
+
+# %%
+soln = stokes.u_local.array
+
 
 
 # %%
-# Check. Construct simple linear which is solution for 
-# above config.  Exclude boundaries from mesh data. 
-import numpy as np
-if not np.allclose((1. - mesh.data[:,1]),soln.array):
-    raise RuntimeError("Unexpected values encountered.")
-
+n_nodes = n_els*v_degree+1
+vel_soln = soln[(n_els*n_els)::].reshape((n_nodes*n_nodes,2)) 
 
 # %%
-# Now let's construct something a little more complex.
-# First get the coord system off the mesh/dm.
-N = mesh.N
-
+(vel_soln - vel_soln_analytic).min()
 
 # %%
-# Create some function using one of the base scalars N.x/N.y/N.z
-import sympy
-k = sympy.exp(-N.y)
-
-
-# %%
-# View
-k
-
-
-# %%
-# Don't forget to set the diffusivity
-poisson.k = k
-
-
-# %%
-poisson.solve()
-
-
-# %%
-# Simply confirm different results
-if np.allclose(soln.array, poisson.u_local.array):
-    raise RuntimeError("Unexpected values encountered.")
-
-
-# %%
-# nonlinear example
-mesh = uw.Mesh( elementRes=(8, 8), simplex=False )
-poisson = Poisson(mesh, degree=1)
-
-
-# %%
-u = poisson.u.fn
-
-
-# %%
-from sympy.vector import gradient
-nabla_u = gradient(u)
-poisson.k = 0.5*(nabla_u.dot(nabla_u))
-poisson.k
-
-
-# %%
-N = mesh.N
-abs_r2 = (N.x**2 + N.y**2)
-poisson.h = 16*abs_r2
-poisson.h
-
-
-# %%
-poisson.add_dirichlet_bc(abs_r2, [1,] )
-poisson.add_dirichlet_bc(abs_r2, [2,] )
-poisson.add_dirichlet_bc(abs_r2, [3,] )
-poisson.add_dirichlet_bc(abs_r2, [4,] )
-
-
-# %%
-poisson._setup_terms()
-soln = poisson.u_local
-
-
-# %%
-poisson.solve(setup=False)
-soln = poisson.u_local
-
-
-# %%
-exact = mesh.data[:,0]**2 + mesh.data[:,1]**2
-l2 = np.linalg.norm(exact-soln.array[:])
-print("L2 = {}".format(l2))
-if not np.allclose(soln.array,exact,rtol=7.e-2):
-    raise RuntimeError("Unexpected values encountered.")
-
+if not np.allclose(vel_soln, vel_soln_analytic,rtol=1.e-2):
+    raise RuntimeError("Solve did not produce expected result.")

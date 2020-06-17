@@ -7,22 +7,21 @@ from underworld3.poisson import Poisson
 import numpy as np
 
 options = PETSc.Options()
-# options["snes_monitor_short"] = True
-# options["snes_converged_reason"] = True
 options["pc_type"]  = "svd"
+
+options["ksp_rtol"] = 1.0e-7
+# options["ksp_monitor_short"] = None
+
 # options["snes_type"]  = "fas"
-# options["ksp_rtol"] =  1.0e-10
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
-options["snes_view"]=None
-options["ksp_rtol"] = 1.0e-10
-# options["ksp_monitor_short"] = None
-# options["snes_rtol"] = 1.0e-10
+# options["snes_view"]=None
+options["snes_rtol"] = 1.0e-7
 
 
 # %%
 mesh = uw.Mesh()
-
+bnds = mesh.boundary
 
 # %%
 # Create Poisson object
@@ -33,15 +32,14 @@ poisson = Poisson(mesh)
 # Set some things
 poisson.k = 1. 
 poisson.h = 0.
-poisson.add_dirichlet_bc( 1., 1 )  # index 1 is bottom boundary
-poisson.add_dirichlet_bc( 0., 3 )  # index 3 is top boundary
+poisson.add_dirichlet_bc( 1., bnds.BOTTOM )  
+poisson.add_dirichlet_bc( 0., bnds.TOP )  
 
 
 # %%
 # Solve time
 poisson.solve()
 soln = poisson.u_local
-
 
 # %%
 # Check. Construct simple linear which is solution for 
@@ -108,10 +106,7 @@ poisson.h
 
 
 # %%
-poisson.add_dirichlet_bc(abs_r2, [1,] )
-poisson.add_dirichlet_bc(abs_r2, [2,] )
-poisson.add_dirichlet_bc(abs_r2, [3,] )
-poisson.add_dirichlet_bc(abs_r2, [4,] )
+poisson.add_dirichlet_bc(abs_r2, [bnds.TOP,bnds.BOTTOM,bnds.LEFT,bnds.RIGHT] )
 
 
 # %%
@@ -131,3 +126,6 @@ print("L2 = {}".format(l2))
 if not np.allclose(soln.array,exact,rtol=7.e-2):
     raise RuntimeError("Unexpected values encountered.")
 
+
+
+# %%
