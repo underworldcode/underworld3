@@ -9,21 +9,21 @@ import numpy as np
 options = PETSc.Options()
 # options["help"] = None
 
-options["pc_type"]  = "svd"
+# options["pc_type"]  = "svd"
 
-options["ksp_rtol"] =  1.0e-8
-# options["ksp_monitor_short"] = None
+options["ksp_rtol"] =  1.0e-6
+options["ksp_monitor_short"] = None
 
 # options["snes_type"]  = "fas"
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 # options["snes_view"]=None
 # options["snes_test_jacobian"] = None
-options["snes_rtol"] = 1.0e-8
-
+options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it. 
+# options["snes_max_it"] = 1
 
 # %%
-n_els = 24
+n_els = 64
 mesh = uw.Mesh(elementRes=(n_els,n_els))
 # %%
 v_degree = 1
@@ -43,8 +43,8 @@ stokes.bodyforce = Piecewise((f_0, N.x>x_c,), \
 # free slip.  
 # note with petsc we always need to provide a vector of correct cardinality. 
 bnds = mesh.boundary
-stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP, bnds.BOTTOM], 1 )  # top/bottom: components, function, markers 
-stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT], 0 )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], 1 )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: components, function, markers
 
 # %%
 # Solve time
@@ -67,7 +67,8 @@ n_nodes = n_els*v_degree+1
 vel_soln = soln[(n_els*n_els)::].reshape((n_nodes*n_nodes,2)) 
 
 # %%
-(vel_soln - vel_soln_analytic).min()
+from numpy import linalg as LA
+print("Diff norm = {}".format(LA.norm(vel_soln - vel_soln_analytic)))
 
 # %%
 if not np.allclose(vel_soln, vel_soln_analytic,rtol=1.e-2):

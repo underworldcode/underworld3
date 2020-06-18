@@ -17,6 +17,7 @@ cdef extern from "petsc.h":
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
+    PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
 
@@ -231,6 +232,10 @@ class Stokes:
         self._pu_g1 = sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._pu_g1)
 
+        # pp term
+        self._pp_g0 = 1/self.viscosity
+        fns_jacobian.append(self._pp_g0)
+
         # generate JIT code
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs])
 
@@ -248,9 +253,14 @@ class Stokes:
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[self._p_f0]],                                NULL)
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
-        PetscDSSetJacobian(ds.ds, 0, 0, NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
-        PetscDSSetJacobian(ds.ds, 0, 1, NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
-        PetscDSSetJacobian(ds.ds, 1, 0, NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobian(              ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
+        PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_g0]],                                 NULL,                                 NULL,                                 NULL)
+
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         for index,bc in enumerate(self.bcs):
