@@ -44,11 +44,10 @@ def configure():
 
 extensions = [
     Extension('underworld3.mesh',
-              sources = ['underworld3/mesh.pyx'],
+              sources = ['underworld3/mesh.pyx',],
               **configure()),
     Extension('underworld3.stokes',
-              sources = ['underworld3/stokes.pyx',
-                         'underworld3/functions.c'],
+              sources = ['underworld3/stokes.pyx',],
               **configure()),
     Extension('underworld3.petsc_types',
               sources = ['underworld3/petsc_types.pyx',],

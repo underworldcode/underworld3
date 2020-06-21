@@ -30,7 +30,7 @@ class Poisson:
                                    name = "u",
                                    vtype = uw.mesh.VarType.SCALAR, 
                                    isSimplex = False)
-        mesh.plex.createDS()
+        mesh.dm.createDS()
         self._k = 1.
         self._h = 0.
 
@@ -100,7 +100,7 @@ class Poisson:
         cdef PtrContainer ext = getext(self.mesh, fns_residual, fns_jacobian, fns_bcs)
 
         # set functions 
-        cdef DS ds = self.mesh.plex.getDS()
+        cdef DS ds = self.mesh.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[0], ext.fns_residual[1])
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
@@ -112,25 +112,25 @@ class Poisson:
             for boundary in bc.boundaries:
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 PetscDSAddBoundary(ds.ds, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], 1, <const PetscInt *> &ind, NULL)
-        self.mesh.plex.setUp()
+        self.mesh.dm.setUp()
 
-        self.mesh.plex.createClosureIndex(None)
-        cdef DM dm = self.mesh.plex
+        self.mesh.dm.createClosureIndex(None)
+        cdef DM dm = self.mesh.dm
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
-        self.snes.setDM(self.mesh.plex)
+        self.snes.setDM(self.mesh.dm)
         self.snes.setFromOptions()
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
-        self.u_global = self.mesh.plex.createGlobalVector()
-        self.u_local  = self.mesh.plex.createLocalVector()
+        self.u_global = self.mesh.dm.createGlobalVector()
+        self.u_local  = self.mesh.dm.createLocalVector()
 
 
     def solve(self, setup=True):
         if setup:
             self._setup_terms()
-        self.mesh.plex.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
+        self.mesh.dm.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
         self.snes.solve(None,self.u_global)
-        self.mesh.plex.globalToLocal(self.u_global,self.u_local)
+        self.mesh.dm.globalToLocal(self.u_global,self.u_local)
         # add back boundaries.. 
         cdef Vec lvec= self.u_local
-        cdef DM dm = self.mesh.plex
+        cdef DM dm = self.mesh.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>lvec.vec, NULL)

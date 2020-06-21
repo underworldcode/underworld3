@@ -1,7 +1,14 @@
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, PetscDM
+from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
+from .petsc_types cimport PtrContainer
 from petsc4py import PETSc
 from .petsc_gen_xdmf import generateXdmf
 import numpy as np
 import sympy as sym
+
+cdef extern from "petsc.h" nogil:
+    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
+
 
 class Mesh():
 
@@ -19,15 +26,15 @@ class Mesh():
         if maxCoords==None : maxCoords=len(elementRes)*(1.,)
         self.maxCoords = maxCoords
         self.isSimplex = simplex
-        self.plex = PETSc.DMPlex().createBoxMesh(
+        self.dm = PETSc.DMPlex().createBoxMesh(
             elementRes, 
             lower=minCoords, 
             upper=maxCoords,
             simplex=simplex)
-        part = self.plex.getPartitioner()
+        part = self.dm.getPartitioner()
         part.setFromOptions()
-        self.plex.distribute()
-        self.plex.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
 
         # from sympy import MatrixSymbol
         # self._x = MatrixSymbol('x', m=1, n=self.dim)
@@ -58,13 +65,13 @@ class Mesh():
             self.boundary = Boundary3D
 
         for ind,val in enumerate(self.boundary):
-            boundary_set = self.plex.getStratumIS("marker",ind+1)        # get the set
-            self.plex.createLabel(str(val).encode('utf8'))               # create the label
-            boundary_label = self.plex.getLabel(str(val).encode('utf8')) # get label
+            boundary_set = self.dm.getStratumIS("marker",ind+1)        # get the set
+            self.dm.createLabel(str(val).encode('utf8'))               # create the label
+            boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
             if boundary_set:
                 boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
-        self.plex.view()
+        self.dm.view()
 
     @property
     def N(self):
@@ -72,17 +79,22 @@ class Mesh():
 
     @property
     def data(self):
-        nnodes = np.prod([val + 1 for val in self.elementRes])
-        return self.plex.getCoordinates().array.reshape((nnodes, self.dim))
+        # get flat array
+        arr = self.dm.getCoordinatesLocal().array
+        # get number of nodes
+        nnodes = len(arr)/self.dim
+        # round & cast to int to ensure correct value
+        nnodes = int(round(nnodes))
+        return arr.reshape((nnodes, self.dim))
 
     @property
     def dim(self):
         """ Number of dimensions of the mesh """
-        return self.plex.getDimension()
+        return self.dm.getDimension()
 
     def save(self, filename):
         viewer = PETSc.Viewer().createHDF5(filename, "w")
-        viewer(self.plex)
+        viewer(self.dm)
         generateXdmf(filename)
 
     def add_mesh_variable(self):
@@ -123,9 +135,9 @@ class MeshVariable:
         self.vtype = vtype
         self.mesh = mesh
         self.num_components = num_components
-        self.petsc_fe = PETSc.FE().createDefault(mesh.plex.getDimension(), num_components, isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
-        self.field_id = mesh.plex.getNumFields()
-        mesh.plex.setField(self.field_id,self.petsc_fe)
+        self.petsc_fe = PETSc.FE().createDefault(mesh.dm.getDimension(), num_components, isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
+        self.field_id = mesh.dm.getNumFields()
+        mesh.dm.setField(self.field_id,self.petsc_fe)
         # create associated sympy function
         if   vtype==VarType.SCALAR:
             self._fn = sym.Function(name)(*self.mesh.N.base_scalars()[0:mesh.dim])
@@ -141,6 +153,15 @@ class MeshVariable:
         super().__init__()
         # now add to mesh list
         self.mesh.vars[name] = self
+        # create a subdm for this variable. 
+        # this allows us to extract corresponding arrays.
+        cdef DM subdm = PETSc.DMPlex()
+        cdef PetscInt fields = self.field_id
+        cdef DM dm = self.mesh.dm
+        # DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm)
+        # self.dm = subdm
+        # self.data = self.dm.createLocalVector()
+        # self.dm = self.mesh.plex.createSubDM((self.field_id),NULL)
 
     @property
     def fn(self):
