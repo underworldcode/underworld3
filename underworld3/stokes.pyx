@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, PetscIS
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 import underworld3 as uw
@@ -10,6 +10,11 @@ from ._jitextension import getext, diff_fn1_wrt_fn2
 # TODO
 # gil v nogil 
 # ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
+cdef extern from "petsc.h" nogil:
+    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
+    PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
+    PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
+
 
 cdef extern from "petsc.h":
     PetscErrorCode PetscDSAddBoundary( PetscDS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), PetscInt, const PetscInt *, void *)
@@ -68,6 +73,9 @@ class Stokes:
         grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
+        
+        # this attrib records if we need to re-setup
+        self.is_setup = False
         super().__init__()
 
     @property
@@ -94,6 +102,7 @@ class Stokes:
         return self._viscosity
     @viscosity.setter
     def viscosity(self, value):
+        self.is_setup = False
         symval = sympify(value)
         if isinstance(symval, sympy.vector.Vector):
             raise RuntimeError("Viscosity appears to be a vector quantity. Scalars are required.")
@@ -106,6 +115,7 @@ class Stokes:
         return self._bodyforce
     @bodyforce.setter
     def bodyforce(self, value):
+        self.is_setup = False
         symval = sympify(value)
         # if not isinstance(symval, sympy.vector.Vector):
         #     raise RuntimeError("Body force term must be a vector quantity.")
@@ -115,12 +125,14 @@ class Stokes:
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
+        self.is_setup = False
         import numpy as np
         comps      = np.array(comps,      dtype=np.int32, ndmin=1)
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
         BC = namedtuple('BC', ['comps', 'fn', 'boundaries'])
         self.bcs.append(BC(comps,sympify(fn),boundaries))
+    
 
     def _setup_terms(self):
         N = self.mesh.N
@@ -271,22 +283,57 @@ class Stokes:
         self.mesh.dm.setUp()
 
         self.mesh.dm.createClosureIndex(None)
-        cdef DM dm = self.mesh.dm
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.mesh.dm)
         self.snes.setFromOptions()
+        cdef DM dm = self.mesh.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
-        self.u_global = self.mesh.dm.createGlobalVector()
-        self.u_local  = self.mesh.dm.createLocalVector()
 
+        # create vectors
+        self.up_global = self.mesh.dm.createGlobalVector()
+        self.up_local  = self.mesh.dm.createLocalVector()
 
-    def solve(self, setup=True):
-        if setup:
+        self.is_setup = True
+
+    def solve(self, force_setup=False):
+        if (not self.is_setup) or force_setup:
             self._setup_terms()
-        self.mesh.dm.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
-        self.snes.solve(None,self.u_global)
-        self.mesh.dm.globalToLocal(self.u_global,self.u_local)
+
+        self.mesh.dm.localToGlobal(self.up_local, self.up_global, addv=PETSc.InsertMode.ADD_VALUES)
+        self.snes.solve(None,self.up_global)
+        self.mesh.dm.globalToLocal(self.up_global,self.up_local)
         # add back boundaries.. 
-        cdef Vec lvec= self.u_local
+        cdef Vec lvec= self.up_local
         cdef DM dm = self.mesh.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>lvec.vec, NULL)
+
+        # create SubDMs now to isolate velocity/pressure variables.
+        # this is currently problematic as the calls to DMCreateSubDM
+        # need to be executed after the solve above, as otherwise the 
+        # results are altered/corrupted. it's unclear to me why this is
+        # the case.  the migrationsf doesn't change anything.
+        # also, the SubDMs and associated vectors are potentially leaking
+        # due to our petsc4py/cython hacks below. 
+        cdef DM subdm
+        cdef PetscInt field 
+
+        # cdef PetscSF sf
+        # DMPlexGetMigrationSF(dm.dm, &sf)
+
+        subdm = PETSc.DMPlex()
+        field = 0
+        DMCreateSubDM(dm.dm, 1, &field, NULL, &subdm.dm)
+        # DMPlexSetMigrationSF(subdm.dm, sf)
+        #self.u_global = subdm.createGlobalVector()
+        self.u_local  = subdm.createLocalVector()
+
+        subdm = PETSc.DMPlex()
+        field = 1
+        DMCreateSubDM(dm.dm, 1, &field, NULL, &subdm.dm)
+        # DMPlexSetMigrationSF(subdm.dm, sf)
+        #self.p_global = subdm.createGlobalVector()
+        self.p_local  = subdm.createLocalVector()
+
+        p_len = len(self.p_local.array)
+        self.u_local.array[:] = self.up_local[p_len:     ]
+        self.p_local.array[:] = self.up_local[     :p_len]

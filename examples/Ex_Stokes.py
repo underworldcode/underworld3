@@ -55,17 +55,11 @@ import underworld as uw2
 solC = uw2.function.analytic.SolC()
 
 # %%
-vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
+vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data).flatten()
 
 # %%
-soln = stokes.u_local.array
-
-
-
-# %%
-n_nodes = n_els*v_degree+1
-vel_soln = soln[(n_els*n_els)::].reshape((n_nodes*n_nodes,2)) 
-
+vel_soln  = stokes.u_local.array
+pres_soln = stokes.p_local.array
 # %%
 from numpy import linalg as LA
 print("Diff norm = {}".format(LA.norm(vel_soln - vel_soln_analytic)))

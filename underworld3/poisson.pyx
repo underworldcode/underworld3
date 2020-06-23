@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 import underworld3 as uw
@@ -7,6 +7,7 @@ from sympy import sympify
 # TODO
 # gil v nogil 
 # ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
+
 
 cdef extern from "petsc.h":
     PetscErrorCode PetscDSAddBoundary( PetscDS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), PetscInt, const PetscInt *, void *)
@@ -36,6 +37,8 @@ class Poisson:
 
         self.bcs = []
 
+        self.is_setup = False
+
         super().__init__()
 
     @property
@@ -47,6 +50,7 @@ class Poisson:
         return self._k
     @k.setter
     def k(self, value):
+        self.is_setup = False
         # should add test here to make sure k is conformal
         self._k = sympify(value)
 
@@ -55,6 +59,7 @@ class Poisson:
         return self._h
     @h.setter
     def h(self, value):
+        self.is_setup = False
         # should add test here to make sure h is conformal
         self._h = sympify(value)
 
@@ -62,6 +67,7 @@ class Poisson:
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
+        self.is_setup = False
         import numpy as np
         comps      = np.array(comps,      dtype=np.int32, ndmin=1)
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
@@ -115,17 +121,17 @@ class Poisson:
         self.mesh.dm.setUp()
 
         self.mesh.dm.createClosureIndex(None)
-        cdef DM dm = self.mesh.dm
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.mesh.dm)
         self.snes.setFromOptions()
+        cdef DM dm = self.mesh.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
         self.u_global = self.mesh.dm.createGlobalVector()
         self.u_local  = self.mesh.dm.createLocalVector()
 
 
-    def solve(self, setup=True):
-        if setup:
+    def solve(self, force_setup=False):
+        if (not self.is_setup) or force_setup:
             self._setup_terms()
         self.mesh.dm.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
         self.snes.solve(None,self.u_global)

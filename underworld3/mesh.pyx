@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, PetscDM
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, PetscDM, PetscSF
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 from petsc4py import PETSc
@@ -8,7 +8,8 @@ import sympy as sym
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
-
+    PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
+    PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
 
 class Mesh():
 
@@ -155,13 +156,15 @@ class MeshVariable:
         self.mesh.vars[name] = self
         # create a subdm for this variable. 
         # this allows us to extract corresponding arrays.
-        cdef DM subdm = PETSc.DMPlex()
-        cdef PetscInt fields = self.field_id
-        cdef DM dm = self.mesh.dm
+        # cdef DM subdm = PETSc.DMPlex()
+        # cdef PetscInt fields = self.field_id
+        # cdef DM dm = self.mesh.dm
         # DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm)
+        # cdef PetscSF sf
+        # DMPlexGetMigrationSF( subdm.dm, &sf)
+        # DMPlexSetMigrationSF(    dm.dm,  sf)
         # self.dm = subdm
         # self.data = self.dm.createLocalVector()
-        # self.dm = self.mesh.plex.createSubDM((self.field_id),NULL)
 
     @property
     def fn(self):
