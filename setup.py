@@ -36,7 +36,7 @@ def configure():
     INCLUDE_DIRS += [numpy.get_include()]
 
     return dict(
-        include_dirs=INCLUDE_DIRS + [os.curdir] + ['underworld3/petsc4py_additions'],
+        include_dirs=INCLUDE_DIRS + [os.curdir] + [os.path.join(os.curdir,'underworld3')],
         libraries=LIBRARIES,
         library_dirs=LIBRARY_DIRS,
         runtime_library_dirs=LIBRARY_DIRS,
@@ -55,14 +55,15 @@ extensions = [
     Extension('underworld3.poisson',
               sources = ['underworld3/poisson.pyx',],
               **configure()),
-    Extension('underworld3.stokes',
-              sources = ['underworld3/stokes.pyx',],
+    Extension('underworld3.function',
+              sources = ['underworld3/analytic_sol.pyx', 'underworld3/AnalyticSolNL.c',],
+            #   language="c++",
               **configure()),
 ]
 
 setup(name = "underworld3", 
     packages=['underworld3'],
-    package_data={'underworld3':['*.pxd',]},
+    package_data={'underworld3':['*.pxd','*.h']},
     ext_modules = cythonize(
         extensions, 
         gdb_debug=True, 

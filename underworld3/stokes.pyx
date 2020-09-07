@@ -154,7 +154,7 @@ class Stokes:
 
         ### uu terms
         ##  linear part
-        # note that g3 is a effectively a block
+        # note that g3 is effectively a block
         # but it seems that petsc expects a version
         # that is transposed (in the block sense) relative
         # to what i'd expect. need to ask matt about this. JM.
@@ -167,7 +167,7 @@ class Stokes:
                 if row != col:
                     g3[col,row] += 1
         self._uu_g3 = (g3*self.viscosity).as_immutable()
-        fns_jacobian.append(self._uu_g3)
+        # fns_jacobian.append(self._uu_g3) add this guy below
 
         ## velocity dependant part
         # build derivatives with respect to velocities (v_x,v_y,v_z)
@@ -209,7 +209,7 @@ class Stokes:
                 row.append(2*self.strainrate[:,i]*d_mu_d_u_i_dk[k].T)
             rows.append(row)
         self._uu_g3 += sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
-        # fns_jacobian.append(self._uu_g2) ALREADY ADDED ABOVE
+        fns_jacobian.append(self._uu_g3)
 
         ## pressure dependant part
         # get derivative with respect to pressure
@@ -295,11 +295,12 @@ class Stokes:
 
         self.is_setup = True
 
-    def solve(self, force_setup=False):
+    def solve(self, init_guess_up=None, force_setup=False):
         if (not self.is_setup) or force_setup:
             self._setup_terms()
 
-        self.mesh.dm.localToGlobal(self.up_local, self.up_global, addv=PETSc.InsertMode.ADD_VALUES)
+        if init_guess_up:
+            self.mesh.dm.localToGlobal(init_guess_up, self.up_global, addv=PETSc.InsertMode.ADD_VALUES)
         self.snes.solve(None,self.up_global)
         self.mesh.dm.globalToLocal(self.up_global,self.up_local)
         # add back boundaries.. 

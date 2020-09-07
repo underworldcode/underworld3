@@ -1,4 +1,5 @@
 import sympy
+import numpy as np
 
 def diff_fn1_wrt_fn2(fn1, fn2):
     """
@@ -20,12 +21,18 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs):
     and use if available.
     """
     fns = fns_residual + fns_jacobian + tuple(fns_bcs)
-    hashparams = abs(hash((mesh,fns)))
-    try:
-        module = _ext_dict[hashparams]
-    except KeyError:
-        _createext(hashparams, mesh, fns_residual, fns_jacobian, fns_bcs)
-        module = _ext_dict[hashparams]
+    import os
+    if 'UW_JITNAME' in os.environ:          # if var specified, probably testing.
+        jitname = os.environ['UW_JITNAME']
+        # note, extensions cannot be replaced, so need to append count to ensure
+        # unique modules.
+        jitname += "_" + str(len(_ext_dict.keys()))
+    else:                                   # else name from fns hash
+        jitname = abs(hash((mesh,fns)))
+    # create the module if not in dictionary
+    if jitname not in _ext_dict.keys():
+        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs)
+    module = _ext_dict[jitname]
     return module.getptrobj()
 
 def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
@@ -107,7 +114,8 @@ def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
         subbedfns.append(fn.subs(substitute))
 
     # Now go ahead and generate C code from subsituted Sympy expressions
-    from sympy.printing import ccode
+    from sympy.printing.ccode import C99CodePrinter
+    printer = C99CodePrinter()
     eqns = []
     for index, fn in enumerate(subbedfns):
         if isinstance(fn, sympy.vector.Vector):
@@ -117,8 +125,22 @@ def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
         else:
             fn = sympy.Matrix([fn])
         out = sympy.MatrixSymbol("out",*fn.shape)
-        eqns.append( ("eqn_"+str(index), ccode(fn, out)) )
+        eqns.append( ("eqn_"+str(index), printer.doprint(fn, out)) )
     MODNAME = "fn_ptr_ext_" + str(name)
+
+    # link against function.cpython which contains symbols our custom functions
+    import underworld3.function
+    lib = underworld3.function.__file__
+    import os
+    libdir = os.path.dirname(lib)
+    libfile = os.path.basename(lib)
+    # prepend colon to force linking against filename without 'lib' prefix.
+    libfile = ":" + libfile  
+
+    # make lists here in anticipation of future requirements
+    libdirs = [libdir,]
+    libfiles = [libfile,]
+    incdirs  = [np.get_include(),libdir]
 
     codeguys = []
     # Create a `setup.py`
@@ -130,31 +152,37 @@ except ImportError:
     from distutils.core import setup
     from distutils.extension import Extension
 from Cython.Build import cythonize
-import numpy as np
 
 ext_mods = [Extension(
-    'NAME', ['cy_ext.pyx',],
-    include_dirs=[np.get_include()],
-    library_dirs=[],
-    libraries=[],
+    '{NAME}', ['cy_ext.pyx',],
+    include_dirs={HEADERS},
+    library_dirs={LIBDIRS},
+    runtime_library_dirs={LIBDIRS},
+    libraries={LIBFILES},
     extra_compile_args=['-std=c99'],
     extra_link_args=[]
 )]
 setup(ext_modules=cythonize(ext_mods))
-""".replace("NAME",MODNAME)
+""".format(NAME=MODNAME,
+           HEADERS=incdirs,
+           LIBDIRS=libdirs,
+           LIBFILES=libfiles,
+           )
     codeguys.append( ["setup.py", setup_py_str] )
 
     residual_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t,                           const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
     jacobian_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t, PetscReal petsc_u_tShift, const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
 
+    # create header top content
     h_str="""
-#include <math.h> 
 typedef int PetscInt;
 typedef double PetscReal;
 typedef double PetscScalar;
 typedef int PetscBool;
-
+#include <math.h> 
 """
+
+    # create cython top content
     pyx_str="""
 from underworld3.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.petsc_types cimport PtrContainer
@@ -164,6 +192,12 @@ from libc.math cimport *
 cdef extern from "cy_ext.h" nogil:
 """
 
+    # print includes
+    for header in printer.headers:
+        h_str += "#include \"{}\"\n".format(header)
+
+    h_str += "\n"
+    # print equations
     for eqn in eqns[0:count_residual_sig]:
         h_str  +="void petsc_{}{}\n{{\n{}\n}}\n\n".format(eqn[0],residual_sig,eqn[1])
         pyx_str+="    void petsc_{}{}\n".format(eqn[0],residual_sig)

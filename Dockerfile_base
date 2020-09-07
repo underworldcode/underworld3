@@ -24,7 +24,8 @@ RUN pip3 install -U setuptools  \
         jupyter \
         jupytext \
         ipyparallel \
-        sympy
+        sympy \
+        xxhash
 
 FROM base_runtime AS build_base
 # install build requirements

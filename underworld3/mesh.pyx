@@ -4,7 +4,7 @@ from .petsc_types cimport PtrContainer
 from petsc4py import PETSc
 from .petsc_gen_xdmf import generateXdmf
 import numpy as np
-import sympy as sym
+import sympy
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
@@ -42,6 +42,8 @@ class Mesh():
 
         from sympy.vector import CoordSys3D
         self._N = CoordSys3D("N")
+        self._r = self._N.base_scalars()[0:self.dim]
+
         import weakref
         self._vars = weakref.WeakValueDictionary()
 
@@ -79,6 +81,10 @@ class Mesh():
         return self._N
 
     @property
+    def r(self):
+        return self._r
+
+    @property
     def data(self):
         # get flat array
         arr = self.dm.getCoordinatesLocal().array
@@ -105,7 +111,7 @@ class Mesh():
     def vars(self):
         return self._vars
 
-# class MeshVariable(sym.Function):
+# class MeshVariable(sympy.Function):
 #     def __new__(cls, mesh, *args, **kwargs):
 #         # call the sympy __new__ method without args/kwargs, as unexpected args 
 #         # trip up an exception.  
@@ -141,7 +147,7 @@ class MeshVariable:
         mesh.dm.setField(self.field_id,self.petsc_fe)
         # create associated sympy function
         if   vtype==VarType.SCALAR:
-            self._fn = sym.Function(name)(*self.mesh.N.base_scalars()[0:mesh.dim])
+            self._fn = sympy.Function(name)(*self.mesh.r)
         elif vtype==VarType.VECTOR:
             if num_components!=mesh.dim:
                 raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
@@ -149,7 +155,7 @@ class MeshVariable:
             self._fn = VectorZero()
             subnames = ["_x","_y","_z"]
             for comp in range(num_components):
-                subfn = sym.Function(name+subnames[comp])(*self.mesh.N.base_scalars()[0:mesh.dim])
+                subfn = sympy.Function(name+subnames[comp])(*self.mesh.r)
                 self._fn += subfn*self.mesh.N.base_vectors()[comp]
         super().__init__()
         # now add to mesh list
