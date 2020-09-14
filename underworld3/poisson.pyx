@@ -37,6 +37,14 @@ class Poisson:
 
         self.bcs = []
 
+        # initialise auxiliary mesh
+        self.aux_mesh = uw.Mesh( elementRes = mesh.elementRes,
+                                 minCoords  = mesh.minCoords,
+                                 maxCoords  = mesh.maxCoords,
+                                 simplex    = mesh.isSimplex)
+        # placeholder for auxiliary mesh variable 
+        self.aux_vars = []
+
         self.is_setup = False
 
         super().__init__()
@@ -62,6 +70,47 @@ class Poisson:
         self.is_setup = False
         # should add test here to make sure h is conformal
         self._h = sympify(value)
+
+    def createAux(self, num_components=1, isSimplex=False, degree=1):
+        '''
+        Setup an auxiliary variable that will be use in PetscDS callback functions
+
+        Available member after this function
+        self.a_local : petsc local vector
+
+        TODO: Thanks about multiple auxiliary variables
+        '''
+
+        options = PETSc.Options()
+        options.setValue("aux_petscspace_degree", degree)
+
+        aux = uw.MeshVariable( mesh = self.aux_mesh,
+                               num_components = num_components,
+                               name = 'aux',
+                               vtype = uw.mesh.VarType.SCALAR,
+                               isSimplex = isSimplex )
+        # set the quadrature to ensure the aux variable can be integrated
+        # correctly in the residual callbacks
+        quad = self.u.petsc_fe.getQuadrature()
+        aux.petsc_fe.setQuadrature(quad)
+
+        # must createDS() - builds data structe for PetscFE I think
+        aux.mesh.dm.createDS()
+
+        # associate local vector with original mesh (DMPlex)
+        # is MUST be associate as "A"
+        self.a_local = aux.mesh.dm.createLocalVector()
+        self.a_global = aux.mesh.dm.createGlobalVector()
+        self.mesh.dm.compose("A", self.a_local)
+        # optionally attached dmAux to original mesh too
+        self.mesh.dm.compose("dmAux", aux.mesh.dm)
+
+        # attach auxiliary variable to the python class
+        # self.aux_vars.append(aux) #TODO: make as list
+        self.aux_vars = aux
+
+        # return the MeshVariable
+        return self.aux_vars
 
     def add_dirichlet_bc(self, fn, boundaries, comps=[0]):
         # switch to numpy arrays
@@ -103,7 +152,7 @@ class Poisson:
         fns_bcs      = [x[1] for x in self.bcs]
 
         # generate JIT code
-        cdef PtrContainer ext = getext(self.mesh, fns_residual, fns_jacobian, fns_bcs)
+        cdef PtrContainer ext = getext(self.mesh,self.aux_mesh, fns_residual, fns_jacobian, fns_bcs)
 
         # set functions 
         cdef DS ds = self.mesh.dm.getDS()

@@ -249,7 +249,7 @@ class Stokes:
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs])
+        cdef PtrContainer ext = getext(self.mesh, None, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs])
 
         # create indexes so that we don't rely on indices that can change
         i_res = {}
