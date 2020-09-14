@@ -13,6 +13,9 @@ RUN apt-get update -qq \
         python3-minimal \
         python3-virtualenv \
         python3-pip \
+        python3-dbg \ 
+        python3-numpy \ 
+        python3-numpy-dbg \
         libopenblas-base \ 
         gdb \ 
         cgdb
@@ -20,12 +23,12 @@ RUN pip3 install -U setuptools  \
 &&  pip3 install --no-cache-dir \
         packaging \
         appdirs \
-        numpy \
         jupyter \
         jupytext \
         ipyparallel \
         sympy \
-        xxhash
+        xxhash \ 
+        cython
 
 FROM base_runtime AS build_base
 # install build requirements
@@ -62,7 +65,7 @@ RUN pip3 install --no-cache-dir mpi4py
 # build petsc
 WORKDIR /tmp/petsc-build
 
-ENV PETSC_BRANCH=v3.13.2
+ENV PETSC_BRANCH=master
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends git
 RUN git clone -b ${PETSC_BRANCH} https://gitlab.com/petsc/petsc/
 WORKDIR /tmp/petsc-build/petsc
@@ -84,14 +87,9 @@ RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug all
 RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug install
 ENV PETSC_DIR=/usr/local
 ENV PETSC_ARCH=arch-linux-c-debug
-RUN pip3 install cython
-RUN pip3 install --no-cache-dir git+https://bitbucket.org/petsc/petsc4py/src/master
+RUN pip3 install --no-cache-dir git+https://gitlab.com/petsc/petsc4py/
 RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py git+https://github.com/h5py/h5py
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # add uw2
 RUN pip3 install git+https://github.com/underworldcode/underworld2@development
-# add uw3
-COPY . /tmp/uw3
-WORKDIR /tmp/uw3
-RUN pip3 install .
