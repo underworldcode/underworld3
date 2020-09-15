@@ -272,7 +272,7 @@ cpdef PtrContainer getptrobj():
 
     # Build
     import subprocess
-    process = subprocess.Popen('python setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
+    process = subprocess.Popen('python3 setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
     process.communicate()
 
     # Load and add to dictionary
