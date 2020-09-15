@@ -1,6 +1,7 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, PetscDM, PetscSF
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, PetscDM, PetscSF, MPI_Comm
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
+from petsc4py.PETSc cimport GetCommDefault, GetComm
 from petsc4py import PETSc
 from .petsc_gen_xdmf import generateXdmf
 import numpy as np
@@ -10,6 +11,8 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
     PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
+    PetscErrorCode DMPlexCreateBallMesh(MPI_Comm, PetscInt, PetscReal, PetscDM*)
+
 
 class _MeshBase():
     def __init__(self,*args,**kwargs):
@@ -121,7 +124,35 @@ class Spherical(_MeshBase):
     def __init__(self, 
                 refinements=4, 
                 radius=1.):
-        pass
+
+        self.refinements = refinements
+        self.radius = radius
+
+        options = PETSc.Options()
+        options.setValue("bd_dm_refine", self.refinements)
+
+        cdef DM dm = PETSc.DMPlex()
+        cdef MPI_Comm ccomm = GetCommDefault()
+        cdef PetscInt cdim = 3
+        cdef PetscReal cradius = self.radius
+        DMPlexCreateBallMesh(ccomm, cdim, cradius, &dm.dm)
+        self.dm = dm
+
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        from enum import Enum        
+        class Boundary(Enum):
+            OUTER = 1
+        
+        self.boundary = Boundary
+        
+        self.dm.view()        
+        
+        super().__init__()
             
 
 
