@@ -68,9 +68,10 @@ def _createext(name, mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
     # get aux/aux_grad component totals
     aux_tot_fns = 0
     aux_tot_grad_fns = 0
-    for var in mesh.vars.values():
-        aux_tot_fns += var.num_components
-        aux_tot_grad_fns += var.num_components*mesh.dim
+    if amesh:
+        for var in amesh.vars.values():
+            aux_tot_fns += var.num_components
+            aux_tot_grad_fns += var.num_components*mesh.dim
 
     # Create some symbol which will force codegen to produce required interface.
     # We'll use MatrixSymbol objects, which sympy simply converts to double* within 

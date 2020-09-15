@@ -78,7 +78,7 @@ class Poisson:
         Available member after this function
         self.a_local : petsc local vector
 
-        TODO: Thanks about multiple auxiliary variables
+        TODO: Think about multiple auxiliary variables
         '''
 
         options = PETSc.Options()
