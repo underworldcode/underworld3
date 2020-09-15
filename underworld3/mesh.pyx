@@ -11,62 +11,9 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
     PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
 
-class Mesh():
-
-    def __init__(self, 
-                elementRes=(16, 16), 
-                minCoords=None,
-                maxCoords=None,
-                simplex=False,
-                interpolate=False):
-        options = PETSc.Options()
-        options["dm_plex_separate_marker"] = None
-        self.elementRes = elementRes
-        if minCoords==None : minCoords=len(elementRes)*(0.,)
-        self.minCoords = minCoords
-        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
-        self.maxCoords = maxCoords
-        self.isSimplex = simplex
-        self.dm = PETSc.DMPlex().createBoxMesh(
-            elementRes, 
-            lower=minCoords, 
-            upper=maxCoords,
-            simplex=simplex)
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        # from sympy import MatrixSymbol
-        # self._x = MatrixSymbol('x', m=1, n=self.dim)
-
-        from sympy.vector import CoordSys3D
-        self._N = CoordSys3D("N")
-        self._r = self._N.base_scalars()[0:self.dim]
-
-        import weakref
-        self._vars = weakref.WeakValueDictionary()
-
-        # sort bcs
-        from enum import Enum
-        class Boundary2D(Enum):
-            BOTTOM = 1
-            RIGHT  = 2
-            TOP    = 3
-            LEFT   = 4
-        class Boundary3D(Enum):
-            BOTTOM = 1
-            TOP    = 2
-            FRONT  = 3
-            BACK   = 4
-            RIGHT  = 5
-            LEFT   = 6
-        
-        if len(elementRes) == 2:
-            self.boundary = Boundary2D
-        else:
-            self.boundary = Boundary3D
-
+class _MeshBase():
+    def __init__(self,*args,**kwargs):
+        # create boundary sets
         for ind,val in enumerate(self.boundary):
             boundary_set = self.dm.getStratumIS("marker",ind+1)        # get the set
             self.dm.createLabel(str(val).encode('utf8'))               # create the label
@@ -74,7 +21,15 @@ class Mesh():
             if boundary_set:
                 boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
-        self.dm.view()
+
+        # set sympy constructs
+        from sympy.vector import CoordSys3D
+        self._N = CoordSys3D("N")
+        self._r = self._N.base_scalars()[0:self.dim]
+
+        # dictionary for variables
+        import weakref
+        self._vars = weakref.WeakValueDictionary()
 
     @property
     def N(self):
@@ -110,6 +65,65 @@ class Mesh():
     @property
     def vars(self):
         return self._vars
+
+
+class Mesh(_MeshBase):
+    def __init__(self, 
+                elementRes=(16, 16), 
+                minCoords=None,
+                maxCoords=None,
+                simplex=False,
+                interpolate=False):
+
+        options = PETSc.Options()
+        options["dm_plex_separate_marker"] = None
+        self.elementRes = elementRes
+        if minCoords==None : minCoords=len(elementRes)*(0.,)
+        self.minCoords = minCoords
+        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
+        self.maxCoords = maxCoords
+        self.isSimplex = simplex
+        self.dm = PETSc.DMPlex().createBoxMesh(
+            elementRes, 
+            lower=minCoords, 
+            upper=maxCoords,
+            simplex=simplex)
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        # bcs
+        from enum import Enum        
+        if len(elementRes) == 2:
+            class Boundary2D(Enum):
+                BOTTOM = 1
+                RIGHT  = 2
+                TOP    = 3
+                LEFT   = 4
+            self.boundary = Boundary2D
+        else:
+            class Boundary3D(Enum):
+                BOTTOM = 1
+                TOP    = 2
+                FRONT  = 3
+                BACK   = 4
+                RIGHT  = 5
+                LEFT   = 6
+            self.boundary = Boundary3D
+
+        self.dm.view()
+
+        super().__init__()
+
+
+class Spherical(_MeshBase):
+    def __init__(self, 
+                refinements=4, 
+                radius=1.):
+        pass
+            
+
 
 # class MeshVariable(sympy.Function):
 #     def __new__(cls, mesh, *args, **kwargs):
