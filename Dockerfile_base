@@ -121,6 +121,10 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 # uw2
 RUN pip3 install git+https://github.com/underworldcode/underworld2@development
 
+# for JG with love from JM!
+RUN pip3 install jupytext
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 2
 # uw3
 #COPY . /tmp/uw3
 #WORKDIR /tmp/uw3
