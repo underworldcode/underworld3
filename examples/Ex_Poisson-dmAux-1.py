@@ -20,7 +20,7 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.Mesh()
+mesh = uw.Mesh(elementRes=(10,10), minCoords=(-2.2,-.4))
 bnds = mesh.boundary
 
 # %%

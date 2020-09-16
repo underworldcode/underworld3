@@ -24,9 +24,6 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 # options["snes_max_it"] = 1
 
 # %%
-import os
-
-# %%
 n_els = 32
 minCoord = (-1,-1)
 maxCoord = (1,1)
@@ -133,8 +130,15 @@ fig.append(viz.objects.VectorArrows(mesh2, v2Field ))
 fig.show()
 
 # %%
-err = vField - v2Field
-l2 = fn.math.sqrt(fn.math.dot(err, err))
+# some analytics
+vmag = fn.math.sqrt(fn.math.dot(vField, vField))
+err  = vField - v2Field
+l2   = fn.math.sqrt(fn.math.dot(err, err))
+
+# %%
+fig = viz.Figure()
+fig.append(viz.objects.Surface(mesh2, vmag ))
+fig.show()
 
 # %%
 fig = viz.Figure()
