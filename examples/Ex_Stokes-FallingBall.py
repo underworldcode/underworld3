@@ -98,18 +98,58 @@ if not np.allclose(-1*lVec.array.reshape(-1,2) - fn_buoyancy.evaluate(mesh2.data
     raise RuntimeError("Unexpected error: the buoyancy rhs vectors are different!")
 
 # %%
+
+# %% [markdown]
+# ## Vis testing ...
+
+# %%
+u = stokes.u_local.array.reshape((-1,2))
+p = stokes.p_local.array
+res = mesh.elementRes
+
+# %matplotlib inline
+import matplotlib.pyplot as plt
+imgplot = plt.imshow(p.reshape(res), origin='lower')
+plt.colorbar(imgplot)
+plt.show()
+
+#Underworld3 plotting prototype using lavavu
+import plot
+
+#Create viewer
+resolution=(500,400)
+
+plot = Plot(rulers=True)
+plot.nodes(mesh, pointsize=5, pointtype="sphere")
+plot.display(resolution)
+
+plot = Plot(rulers=True)
+plot.edges(mesh)
+plot.display(resolution)
+
+plot = Plot(rulers=True)
+faces = plot.faces(mesh, values=p, colourmap="diverge")
+faces.colourbar(align="right", size=(0.865,10), position=26, outline=False)
+plot.display(resolution)
+
+plot = Plot(rulers=True)
+plot.vector_arrows(mesh, u);
+plot.display(resolution)
+
+
+# %%
 iWalls = mesh2.specialSets["MinI_VertexSet"] + mesh2.specialSets["MaxI_VertexSet"]
 jWalls = mesh2.specialSets["MinJ_VertexSet"] + mesh2.specialSets["MaxJ_VertexSet"]
 
 freeslipBC = uw2.conditions.DirichletCondition( variable       = v2Field, 
                                                indexSetsPerDof = (iWalls, jWalls) )
 
-stokes = uw2.systems.Stokes(   velocityField = v2Field, 
+stokes2 = uw2.systems.Stokes(   velocityField = v2Field, 
                                pressureField = pField, 
                                conditions    = freeslipBC,
                                fn_viscosity  = 1., 
                                fn_bodyforce  = fn_buoyancy )
-solver = uw2.systems.Solver( stokes )
+solver = uw2.systems.Solver( stokes2 )
 
 solver.solve()
 
@@ -160,3 +200,5 @@ l2diff = LA.norm(vField.data - v2Field.data)
 # was 1.25260e-2 @ nEls=64
 if l2diff > 1.76e-2:
     raise RuntimeError("Unexpected results")
+
+# %%
