@@ -1,2 +1,1 @@
-from .mesh import Mesh, MeshVariable
-# from .spherical import SphericalMesh, BallMesh
+from .mesh import Mesh, MeshVariable, Spherical
