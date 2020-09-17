@@ -119,22 +119,23 @@ import plot
 #Create viewer
 resolution=(500,400)
 
-plot = Plot(rulers=True)
-plot.nodes(mesh, pointsize=5, pointtype="sphere")
-plot.display(resolution)
+fig = plot.Plot(rulers=True)
+fig.nodes(mesh, pointsize=5, pointtype="sphere")
+fig.display(resolution)
 
-plot = Plot(rulers=True)
-plot.edges(mesh)
-plot.display(resolution)
+fig = plot.Plot(rulers=True)
+fig.edges(mesh)
+fig.display(resolution)
 
-plot = Plot(rulers=True)
-faces = plot.faces(mesh, values=p, colourmap="diverge")
+fig = plot.Plot(rulers=True)
+faces = fig.faces(mesh, values=p, colourmap="diverge")
 faces.colourbar(align="right", size=(0.865,10), position=26, outline=False)
-plot.display(resolution)
+fig.display(resolution)
 
-plot = Plot(rulers=True)
-plot.vector_arrows(mesh, u);
-plot.display(resolution)
+
+fig = plot.Plot(rulers=True)
+fig.vector_arrows(mesh, u);
+fig.display(resolution)
 
 
 # %%
