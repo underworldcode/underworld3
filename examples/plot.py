@@ -34,7 +34,7 @@ def mesh_edges(mesh):
     #for j in range(starti, endi):
     #    print(i, j, mesh.dm.getConeSize(j), mesh.dm.getCone(j), mesh.dm.getSupportSize(j), mesh.dm.getSupport(j))
     DIM = mesh.dm.getConeSize(starti)
-    edges = np.zeros((endi-starti,DIM), dtype=PETSc.IntType)
+    edges = np.zeros((endi-starti,DIM), dtype=np.uint32)
     #print("DIM:",DIM, "SHAPE:",edges.shape)
     for c in range(starti, endi):
         #point_closure = mesh.dm.getTransitiveClosure(c)[0]
@@ -57,7 +57,7 @@ def mesh_faces(mesh):
     starti,endi = mesh.dm.getDepthStratum(S)
     #print(starti,endi,S)
     DIM = mesh.dm.getConeSize(starti)
-    faces = np.zeros((endi-starti,DIM), dtype=PETSc.IntType)
+    faces = np.zeros((endi-starti,DIM), dtype=np.uint32)
     #print("DIM:",DIM, "SHAPE:",faces.shape)
     for c in range(starti, endi):
         point_closure = mesh.dm.getTransitiveClosure(c)[0]
@@ -125,4 +125,7 @@ class Plot(lavavu.Viewer):
     def cells(self, mesh, **kwargs):
         #3d cells - volume
         return #TODO self.volume()
+
+# -
+
 
