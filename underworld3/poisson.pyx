@@ -29,8 +29,7 @@ class Poisson:
         self._u = uw.MeshVariable( mesh = mesh, 
                                    num_components = 1,
                                    name = "u",
-                                   vtype = uw.mesh.VarType.SCALAR, 
-                                   isSimplex = False)
+                                   vtype = uw.mesh.VarType.SCALAR)
         mesh.dm.createDS()
         self._k = 1.
         self._h = 0.
@@ -38,10 +37,11 @@ class Poisson:
         self.bcs = []
 
         # initialise auxiliary mesh
-        self.aux_mesh = uw.Mesh( elementRes = mesh.elementRes,
-                                 minCoords  = mesh.minCoords,
-                                 maxCoords  = mesh.maxCoords,
-                                 simplex    = mesh.isSimplex)
+        # self.aux_mesh = uw.Mesh( elementRes = mesh.elementRes,
+        #                          minCoords  = mesh.minCoords,
+        #                          maxCoords  = mesh.maxCoords,
+        #                          simplex    = mesh.isSimplex)
+        self.aux_mesh = mesh
         # placeholder for auxiliary mesh variable 
         self.aux_vars = []
 

@@ -43,8 +43,7 @@ class Stokes:
                                     mesh = mesh, 
                                     num_components = mesh.dim,
                                     name = "u", 
-                                    vtype = uw.mesh.VarType.VECTOR,
-                                    isSimplex = False)
+                                    vtype = uw.mesh.VarType.VECTOR )
 
 #   ierr = PetscFEGetQuadrature(fe[0], &q);CHKERRQ(ierr);
 #   ierr = PetscFECreateDefault(comm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
@@ -54,8 +53,7 @@ class Stokes:
                                     mesh = mesh, 
                                     num_components = 1,
                                     name = "p", 
-                                    vtype = uw.mesh.VarType.SCALAR,
-                                    isSimplex = False)
+                                    vtype = uw.mesh.VarType.SCALAR )
         self._p.petsc_fe.setQuadrature(self._u.petsc_fe.getQuadrature())
 
         mesh.dm.createDS()
@@ -64,11 +62,12 @@ class Stokes:
 
         self.bcs = []
 
-        # initialise auxiliary mesh
-        self.aux_mesh = uw.Mesh( elementRes = mesh.elementRes,
-                                 minCoords  = mesh.minCoords,
-                                 maxCoords  = mesh.maxCoords,
-                                 simplex    = mesh.isSimplex)
+        # # initialise auxiliary mesh
+        # self.aux_mesh = uw.Mesh( elementRes = mesh.elementRes,
+        #                          minCoords  = mesh.minCoords,
+        #                          maxCoords  = mesh.maxCoords,
+        #                          simplex    = mesh.isSimplex)
+        self.aux_mesh = mesh
         # placeholder for auxiliary mesh variable 
         self.aux_vars = []
 

@@ -15,7 +15,8 @@ cdef extern from "petsc.h" nogil:
 
 
 class _MeshBase():
-    def __init__(self,*args,**kwargs):
+    def __init__(self, simplex, *args,**kwargs):
+        self.isSimplex = simplex
         # create boundary sets
         for ind,val in enumerate(self.boundary):
             boundary_set = self.dm.getStratumIS("marker",ind+1)        # get the set
@@ -85,7 +86,6 @@ class Mesh(_MeshBase):
         self.minCoords = minCoords
         if maxCoords==None : maxCoords=len(elementRes)*(1.,)
         self.maxCoords = maxCoords
-        self.isSimplex = simplex
         self.dm = PETSc.DMPlex().createBoxMesh(
             elementRes, 
             lower=minCoords, 
@@ -117,7 +117,7 @@ class Mesh(_MeshBase):
 
         self.dm.view()
 
-        super().__init__()
+        super().__init__(simplex=simplex)
 
 
 class Spherical(_MeshBase):
@@ -152,7 +152,7 @@ class Spherical(_MeshBase):
         
         self.dm.view()        
         
-        super().__init__()
+        super().__init__(simplex=True)
             
 
 
@@ -179,7 +179,7 @@ class VarType(Enum):
 
 class MeshVariable:
 
-    def __init__(self, mesh, num_components, name, vtype, isSimplex=False):
+    def __init__(self, mesh, num_components, name, vtype):
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
         if not isinstance(vtype, VarType):
@@ -187,7 +187,7 @@ class MeshVariable:
         self.vtype = vtype
         self.mesh = mesh
         self.num_components = num_components
-        self.petsc_fe = PETSc.FE().createDefault(mesh.dm.getDimension(), num_components, isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
+        self.petsc_fe = PETSc.FE().createDefault(mesh.dm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
         self.field_id = mesh.dm.getNumFields()
         mesh.dm.setField(self.field_id,self.petsc_fe)
         # create associated sympy function
@@ -216,6 +216,12 @@ class MeshVariable:
         # DMPlexSetMigrationSF(    dm.dm,  sf)
         # self.dm = subdm
         # self.data = self.dm.createLocalVector()
+
+    # def save(self, filename):
+    #     viewer = PETSc.Viewer().createHDF5(filename, "w")
+    #     viewer(self.petsc_fe)
+    #     generateXdmf(filename)
+
 
     @property
     def fn(self):

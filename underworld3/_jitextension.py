@@ -116,29 +116,29 @@ def _createext(name, mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
             substitute[fn.diff(base_scalar)] = petsc_u_x[u_x_i]
             u_x_i += 1
 
-    # Now do auxiliary terms
-    a_i = 0
-    component_fns = []
-    if amesh: # weak check of type
-        for var in amesh.vars.values():
-            if var.vtype==VarType.SCALAR:
-                substitute[var.fn] = petsc_a[a_i]
-                component_fns.append(var.fn)
-                a_i+=1
-            elif var.vtype==VarType.VECTOR:
-                for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                    guy = var.fn.dot(bvec)
-                    substitute[guy] = petsc_a[a_i]
-                    component_fns.append(guy)
-                    a_i+=1
-            else:
-                raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
-        # Now gradient terms of auxiliary vars
-        a_x_i = 0
-        for fn in component_fns:
-            for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
-                substitute[fn.diff(base_scalar)] = petsc_a_x[a_x_i]
-                a_x_i+=1
+    # # Now do auxiliary terms
+    # a_i = 0
+    # component_fns = []
+    # if amesh: # weak check of type
+    #     for var in amesh.vars.values():
+    #         if var.vtype==VarType.SCALAR:
+    #             substitute[var.fn] = petsc_a[a_i]
+    #             component_fns.append(var.fn)
+    #             a_i+=1
+    #         elif var.vtype==VarType.VECTOR:
+    #             for bvec in mesh.N.base_vectors()[0:mesh.dim]:
+    #                 guy = var.fn.dot(bvec)
+    #                 substitute[guy] = petsc_a[a_i]
+    #                 component_fns.append(guy)
+    #                 a_i+=1
+    #         else:
+    #             raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
+    #     # Now gradient terms of auxiliary vars
+    #     a_x_i = 0
+    #     for fn in component_fns:
+    #         for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
+    #             substitute[fn.diff(base_scalar)] = petsc_a_x[a_x_i]
+    #             a_x_i+=1
 
     # do subsitutions
     subbedfns = []
