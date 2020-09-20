@@ -1,3 +1,4 @@
+# %%
 # To add a new cell, type '# %%'
 # To add a new markdown cell, type '# %% [markdown]'
 # %%
@@ -19,7 +20,7 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.Spherical(refinements=1)
+mesh = uw.Spherical(refinements=3)
 bnds = mesh.boundary
 
 # %%
@@ -48,22 +49,23 @@ if not np.allclose(mesh.data[:,0],soln.array):
 #Underworld3 plotting prototype using lavavu
 import plot
 # %%
-
 #Create viewer
-resolution=(1000,800)
+resolution=(500,400)
 
 fig = plot.Plot(rulers=True)
 fig.nodes(mesh, pointsize=5, pointtype="sphere")
 fig.display(resolution)
 # %%
-
 fig = plot.Plot(rulers=True)
 fig.edges(mesh)
 fig.display(resolution)
 # %%
-
-fig = plot.Plot(rulers=True)
-fig.faces(mesh, values=soln.array, colourmap="diverge")
+fig = plot.Plot()
+fig.cells(mesh, colourmap="categorical")
+fig.display(resolution)
+# %%
+fig = plot.Plot()
+fig.cells(mesh, values=soln.array, colourmap="diverge")
 fig.colourbar(align="right", size=(0.865,10), position=26, outline=False)
 fig.display(resolution)
 # %%
