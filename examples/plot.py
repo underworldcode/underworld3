@@ -25,23 +25,16 @@ def mesh_coords(mesh):
     return coords
 
 def mesh_edges(mesh):
-    #1) EDGES
-    #print('-- EDGES ----------')
     coords = mesh_coords(mesh)
-    S = 1
-    starti,endi = mesh.dm.getDepthStratum(S)
-    #print(starti,endi,S)
-    #for j in range(starti, endi):
-    #    print(i, j, mesh.dm.getConeSize(j), mesh.dm.getCone(j), mesh.dm.getSupportSize(j), mesh.dm.getSupport(j))
-    DIM = mesh.dm.getConeSize(starti)
-    edges = np.zeros((endi-starti,DIM), dtype=np.uint32)
-    #print("DIM:",DIM, "SHAPE:",edges.shape)
+    starti,endi = mesh.dm.getDepthStratum(1)
+    #Offset of the node indices (level 0)
+    coffset = mesh.dm.getDepthStratum(0)[0]
+    edgesize = mesh.dm.getConeSize(starti)
+    edges = np.zeros((endi-starti,edgesize), dtype=np.uint32)
     for c in range(starti, endi):
-        #point_closure = mesh.dm.getTransitiveClosure(c)[0]
-        #edges[c-starti,:] = point_closure[-DIM:] #-endi
-        edges[c-starti,:] = mesh.dm.getCone(c)
+        edges[c-starti,:] = mesh.dm.getCone(c) - coffset
 
-    edges -= edges.min() #Why the offset?
+    #edges -= edges.min() #Why the offset?
     #print(edges)
     #print(edges.min(), edges.max(), coords.shape)
     return edges
@@ -49,33 +42,81 @@ def mesh_edges(mesh):
 def mesh_faces(mesh):
     #Faces / 2d cells
     coords = mesh_coords(mesh)
-    cdim = mesh.dm.getCoordinateDim()
+    #cdim = mesh.dm.getCoordinateDim()
 
-    #2) FACES (quads or tris)
-    #print('-- FACES ----------')
-    S = 2
-    starti,endi = mesh.dm.getDepthStratum(S)
-    #print(starti,endi,S)
-    DIM = mesh.dm.getConeSize(starti)
-    faces = np.zeros((endi-starti,DIM), dtype=np.uint32)
-    #print("DIM:",DIM, "SHAPE:",faces.shape)
+    #Index range in mesh.dm of level 2
+    starti,endi = mesh.dm.getDepthStratum(2)
+    #Offset of the node indices (level 0)
+    coffset = mesh.dm.getDepthStratum(0)[0]
+    FACES=(endi-starti)
+    facesize = mesh_facesize(mesh) # Face elements 3(tri) or 4(quad)
+    faces = np.zeros((FACES,facesize), dtype=np.uint32)
     for c in range(starti, endi):
         point_closure = mesh.dm.getTransitiveClosure(c)[0]
-        faces[c-starti,:] = point_closure[-DIM:] #-endi
-        #This works for edges, but screws up ordering of faces
-        #faces[c-starti,:] = mesh.dm.getCone(c)
+        faces[c-starti,:] = point_closure[-facesize:] - coffset
+    return faces
 
-    #print("RANGE",faces.min(), faces.max())
-    faces -= faces.min() #Why the offset?
+def face_count(mesh):
+    starti,endi = mesh.dm.getDepthStratum(2)
+    return endi-starti
 
-    if faces.shape[-1] == 3:
-        #print('Plotting tris')
-        tverts = de_index(faces, coords)
-    elif faces.shape[-1] == 4:
-        #print('Plotting quads')
-        tfaces = quad2tri_indices(faces)
-        tverts = de_index(tfaces, coords)
-    return tverts, faces.shape[-1]
+def cell_count(mesh):
+    depth = mesh.dm.getDepth()
+    S = 3
+    if depth < 3:
+        S = 2
+    starti,endi = mesh.dm.getDepthStratum(S)
+    return endi-starti
+
+def mesh_facesize(mesh):
+    return mesh.dm.getConeSize(mesh.dm.getDepthStratum(2)[0]) #Face elements 3(tri) or 4(quad)
+
+def mesh_cellsize(mesh):
+    depth = mesh.dm.getDepth()
+    if depth < 3:
+        return mesh_facesize(mesh) #Cells are faces
+    return mesh.dm.getConeSize(mesh.dm.getDepthStratum(3)[0])  #Cell elements 4(tet) or 6(cuboid)
+
+def mesh_info(mesh):
+    depth = mesh.dm.getDepth()
+    sz = mesh.dm.getChart()
+    print('getChart (index range)', sz, 'getDepth', depth)
+    for i in range(depth+1):
+        starti,endi = mesh.dm.getDepthStratum(i)
+        conesize = mesh.dm.getConeSize(starti)
+        print(i, "range: [", starti, endi, "] coneSize", conesize)
+
+def mesh_cells(mesh):
+    depth = mesh.dm.getDepth()
+    if depth < 3:
+        return mesh_faces(mesh)
+
+    #Index range in mesh.dm of level 3
+    starti,endi = mesh.dm.getDepthStratum(3)
+    #Offset of the node indices (level 0)
+    coffset = mesh.dm.getDepthStratum(0)[0]
+    CELLS=(endi-starti)
+    facesize = mesh_facesize(mesh) # Face elements 3(tri) or 4(quad)
+    cellsize = mesh_cellsize(mesh) # Cell elements 4(tet) or 6(cuboid)
+    FACES = CELLS * cellsize
+    VERTS = FACES * 3
+    INDICES = VERTS * 3
+
+    #List of faces (vertex indices)
+    faces = np.zeros((FACES,facesize), dtype=np.uint32)
+    #print("CELLSIZE:", cellsize, "FACESIZE:",facesize, "SHAPE:",faces.shape)
+    for c in range(CELLS):
+        #The "cone" is the list of face indices for this cell
+        cone = mesh.dm.getCone(c+starti)
+        #print("CONE",cone)
+        #Iterate through each face element of the cone
+        for co in range(cellsize):
+            #This contains the face vertex indices in correct order at the end
+            point_closure = mesh.dm.getTransitiveClosure(cone[co])[0]
+            #print("  CO", cellsize*c+co, co, cone[co], face, point_closure[-TRI_QUAD:] - coffset)
+            faces[cellsize*c + co,:] = point_closure[-facesize:] - coffset
+
+    return faces
 
 def quad2tri_indices(indices):
     #Convert quad indices to tri indices
@@ -86,16 +127,31 @@ def quad2tri_indices(indices):
         tris[i*2+1] = [indices[i][2], indices[i][3], indices[i][0]]
     return tris
 
-def de_index(indices, vertices):
+def de_index(indices, vertices, values=None):
     # Convert vertices+indices to vertices only
     # (can be points/lines/tris/quads/whatever)
     cdim = vertices.shape[-1]
     indices = indices.ravel()
     length = indices.size
-    out = np.zeros(dtype=np.float32, shape=(length,cdim))
+    out = np.zeros((length,cdim), dtype=np.float32)
+    outvalues = np.zeros((length), dtype=np.float32)
     for i in range(length):
         out[i] = vertices[indices[i]]
-    return out
+        if values is not None:
+            outvalues[i] = values[indices[i]]
+    return out, outvalues
+
+def cell_centres(mesh):
+    #Return mesh cell centre vertices instead of nodes
+    size = np.product(mesh.elementRes)
+    cells = np.zeros((size, mesh.dim), dtype=np.float32)
+    faces, n = mesh_faces(mesh)
+    faces = faces.reshape((size, -1, mesh.dim))
+    elsPerCell = faces.shape[1]
+    for i in range(size):
+        f = faces[i]
+        cells[i] = np.mean(faces[i], axis=0)
+    return cells
 
 class Plot(lavavu.Viewer):
     def __init__(self, *args, **kwargs):
@@ -107,22 +163,54 @@ class Plot(lavavu.Viewer):
 
     def edges(self, mesh, **kwargs):
         #Mesh lines
-        print(**kwargs)
         return self.lines('edges', vertices=mesh_coords(mesh), indices=mesh_edges(mesh), **kwargs)
 
-    def faces(self, mesh, colourbar=True, **kwargs):
-        faces, n = mesh_faces(mesh)
-        if n == 3:
-            return self.triangles('faces', vertices=faces, **kwargs)
-        elif n == 4:
-            return self.quads('faces', vertices=faces, **kwargs)
+    def _plot_elements(self, mesh, faces, values=None, **kwargs):
+        #Plots faces or cells as triangles
+        coords = mesh_coords(mesh)
+        facesize = mesh_facesize(mesh) # Face elements 3(tri) or 4(quad)
+
+        #Convert quads to triangles
+        if facesize == 4:
+            faces = quad2tri_indices(faces)
+
+        #If value per vertex provided, need to duplicate values alongside vertices
+        if values is not None and values.size == coords.shape[0]:
+            tverts,values = de_index(faces, coords, values)
+        else:
+            tverts,_ = de_index(faces, coords)
+
+        return self.mesh('faces', vertices=tverts, values=values, **kwargs)
+
+    def faces(self, mesh, values=None, **kwargs):
+        coords = mesh_coords(mesh)
+        faces = mesh_faces(mesh)
+        facesize = mesh_facesize(mesh) # Face elements 3(tri) or 4(quad)
+
+        #Label elements by colour (can be face or cell, pass size)
+        if values is None and "colourmap" in kwargs:
+            values = np.arange(face_count(mesh))
+
+        return self._plot_elements(mesh, faces, values=values, **kwargs)
+
+    def cells(self, mesh, values=None, **kwargs):
+        coords = mesh_coords(mesh)
+        faces = mesh_cells(mesh)
+        facesize = mesh_facesize(mesh) # Face elements 3(tri) or 4(quad)
+        cellsize = mesh_cellsize(mesh) # Cell elements 4(tet) or 6(cuboid)
+
+        #Label elements by colour (can be face or cell, pass size)
+        if values is None and "colourmap" in kwargs:
+            values = np.arange(cell_count(mesh))
+
+        return self._plot_elements(mesh, faces, values=values, **kwargs)
 
     def vector_arrows(self, mesh, vectors, **kwargs):
         #Create viewer
         coords = mesh_coords(mesh)
         return self.vectors('vectors', vertices=coords, vectors=vectors, **kwargs)
 
-    def cells(self, mesh, **kwargs):
+    def cellvolume(self, mesh, values=None, **kwargs):
         #3d cells - volume
         return #TODO self.volume()
 
