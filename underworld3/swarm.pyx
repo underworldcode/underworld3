@@ -30,9 +30,11 @@ class SwarmVariable:
         self.swarm = swarm
         self.num_components = num_components
         self.dtype = dtype
+        self.swarm.registerField(self.name, self.num_components, dtype=self.dtype)
 
-        # Register field
-        self.swarm.registerField(self.name, 1, dtype=self.dtype)
+    def data(self):
+        data = self.swarm.getField(self.name)
+        return data
         
     @property
     def fn(self):
@@ -44,8 +46,9 @@ class Swarm(PETSc.DMSwarm):
     def __init__(self, mesh):
         
         self.mesh = mesh
+        self.dim = mesh.dim
         self.dm = Swarm.create(self)
-        self.dm.setDimension(mesh.dim)
+        self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
         self.dm.setCellDM(mesh.dm)
 
@@ -74,6 +77,11 @@ class Swarm(PETSc.DMSwarm):
 
     def save(self, filename):
         self.dm.viewXDMF(filename)
+    
+    def particle_coordinates(self):
+        data = self.getField("DMSwarmPIC_coor")
+        self.restoreField("DMSwarmPIC_coor")
+        return data.reshape((-1, self.dim))
 
     @property
     def vars(self):
