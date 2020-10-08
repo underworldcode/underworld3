@@ -15,7 +15,7 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     return fn1.subs(fn2,dummy).diff(dummy).subs(dummy,fn2)
 
 _ext_dict = {}
-def getext(mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
+def getext(mesh, fns_residual, fns_jacobian, fns_bcs):
     """
     Check if we've already created an equivalent extension
     and use if available.
@@ -28,14 +28,14 @@ def getext(mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
         # unique modules.
         jitname += "_" + str(len(_ext_dict.keys()))
     else:                                   # else name from fns hash
-        jitname = abs(hash((mesh,amesh,fns)))
+        jitname = abs(hash((mesh,fns)))
     # create the module if not in dictionary
     if jitname not in _ext_dict.keys():
-        _createext(jitname, mesh, amesh, fns_residual, fns_jacobian, fns_bcs)
+        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs)
     module = _ext_dict[jitname]
     return module.getptrobj()
 
-def _createext(name, mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
+def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
     """
     This creates the required extension which houses the JIT
     fn pointer for PETSc. 
@@ -68,10 +68,9 @@ def _createext(name, mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
     # get aux/aux_grad component totals
     aux_tot_fns = 0
     aux_tot_grad_fns = 0
-    if amesh:
-        for var in amesh.vars.values():
-            aux_tot_fns += var.num_components
-            aux_tot_grad_fns += var.num_components*mesh.dim
+    for var in mesh.avars.values():
+        aux_tot_fns += var.num_components
+        aux_tot_grad_fns += var.num_components*mesh.dim
 
     # Create some symbol which will force codegen to produce required interface.
     # We'll use MatrixSymbol objects, which sympy simply converts to double* within 
@@ -116,29 +115,28 @@ def _createext(name, mesh, amesh, fns_residual, fns_jacobian, fns_bcs):
             substitute[fn.diff(base_scalar)] = petsc_u_x[u_x_i]
             u_x_i += 1
 
-    # # Now do auxiliary terms
-    # a_i = 0
-    # component_fns = []
-    # if amesh: # weak check of type
-    #     for var in amesh.vars.values():
-    #         if var.vtype==VarType.SCALAR:
-    #             substitute[var.fn] = petsc_a[a_i]
-    #             component_fns.append(var.fn)
-    #             a_i+=1
-    #         elif var.vtype==VarType.VECTOR:
-    #             for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-    #                 guy = var.fn.dot(bvec)
-    #                 substitute[guy] = petsc_a[a_i]
-    #                 component_fns.append(guy)
-    #                 a_i+=1
-    #         else:
-    #             raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
-    #     # Now gradient terms of auxiliary vars
-    #     a_x_i = 0
-    #     for fn in component_fns:
-    #         for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
-    #             substitute[fn.diff(base_scalar)] = petsc_a_x[a_x_i]
-    #             a_x_i+=1
+    # Now do auxiliary terms
+    a_i = 0
+    component_fns = []
+    for var in mesh.avars.values():
+        if var.vtype==VarType.SCALAR:
+            substitute[var.fn] = petsc_a[a_i]
+            component_fns.append(var.fn)
+            a_i+=1
+        elif var.vtype==VarType.VECTOR:
+            for bvec in mesh.N.base_vectors()[0:mesh.dim]:
+                guy = var.fn.dot(bvec)
+                substitute[guy] = petsc_a[a_i]
+                component_fns.append(guy)
+                a_i+=1
+        else:
+            raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
+        # Now gradient terms of auxiliary vars
+        a_x_i = 0
+        for fn in component_fns:
+            for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
+                substitute[fn.diff(base_scalar)] = petsc_a_x[a_x_i]
+                a_x_i+=1
 
     # do subsitutions
     subbedfns = []

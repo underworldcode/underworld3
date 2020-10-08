@@ -34,6 +34,12 @@ class _MeshBase():
         # dictionary for variables
         import weakref
         self._vars = weakref.WeakValueDictionary()
+        self._avars = weakref.WeakValueDictionary()
+
+        # add the auxiliary dm
+        self.aux_dm = self.dm.clone()
+        # required - attach the aux dm to the original dm
+        self.dm.compose("dmAux", self.aux_dm)
 
     @property
     def N(self):
@@ -69,6 +75,9 @@ class _MeshBase():
     @property
     def vars(self):
         return self._vars
+    @property
+    def avars(self):
+        return self._avars
 
 
 class Mesh(_MeshBase):
@@ -179,7 +188,7 @@ class VarType(Enum):
 
 class MeshVariable:
 
-    def __init__(self, mesh, num_components, name, vtype):
+    def __init__(self, mesh, num_components, name, vtype, unknown=False):
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
         if not isinstance(vtype, VarType):
@@ -187,9 +196,12 @@ class MeshVariable:
         self.vtype = vtype
         self.mesh = mesh
         self.num_components = num_components
-        self.petsc_fe = PETSc.FE().createDefault(mesh.dm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
-        self.field_id = mesh.dm.getNumFields()
-        mesh.dm.setField(self.field_id,self.petsc_fe)
+        # choose to put variable on the dm or auxiliary dm
+        odm = mesh.dm if unknown else mesh.aux_dm
+
+        self.petsc_fe = PETSc.FE().createDefault(odm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
+        self.field_id = odm.getNumFields()
+        odm.setField(self.field_id,self.petsc_fe)
         # create associated sympy function
         if   vtype==VarType.SCALAR:
             self._fn = sympy.Function(name)(*self.mesh.r)
@@ -204,7 +216,10 @@ class MeshVariable:
                 self._fn += subfn*self.mesh.N.base_vectors()[comp]
         super().__init__()
         # now add to mesh list
-        self.mesh.vars[name] = self
+        if unknown:
+            self.mesh.vars[name] = self
+        else:
+            self.mesh.avars[name] = self
         # create a subdm for this variable. 
         # this allows us to extract corresponding arrays.
         # cdef DM subdm = PETSc.DMPlex()
