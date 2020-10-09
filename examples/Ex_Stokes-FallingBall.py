@@ -35,7 +35,31 @@ v_degree = 1
 stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
-matField = stokes.createAux(num_components=2, isSimplex=0, degree=1)
+# variable description list - (name, number_components, degree)
+# avar_want = [ ("diff", 1, 1) ]
+
+avar_want = [ ("mat", 2, 1) ]
+
+avar = {}
+
+for aux in avar_want:
+    (name, nc, degree) = aux
+    options.setValue(name+"_petscspace_degree", degree)
+    
+    if nc == 1:
+        varType = uw.mesh.VarType.SCALAR
+    else:
+        varType = uw.mesh.VarType.VECTOR
+
+    avar[name] = uw.MeshVariable(mesh, nc, name, varType)
+    
+# create the local vector (memory chunk) and attach to original dm
+mesh.aux_dm.createDS()
+a_local = mesh.aux_dm.createLocalVector()
+mesh.dm.compose("A", a_local)
+
+# %%
+# matField = stokes.createAux(num_components=2, isSimplex=0, degree=1)
 # get the local auxiliary vector
 lVec = stokes.mesh.dm.query("A")
 inside = mesh.data[:,0]**2 + mesh.data[:,1]**2 < 0.5**2
@@ -54,7 +78,7 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: c
 
 # %%
 stokes.viscosity = 1.
-stokes.bodyforce = matField.fn
+stokes.bodyforce = avar["mat"].fn
 
 # %%
 # Solve time
@@ -201,5 +225,3 @@ l2diff = LA.norm(vField.data - v2Field.data)
 # was 1.25260e-2 @ nEls=64
 if l2diff > 1.76e-2:
     raise RuntimeError("Unexpected results")
-
-# %%
