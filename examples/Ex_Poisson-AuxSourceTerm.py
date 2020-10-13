@@ -61,6 +61,8 @@ for aux in avar_want:
 mesh.aux_dm.createDS()
 a_local = mesh.aux_dm.createLocalVector()
 mesh.dm.compose("A", a_local)
+# required - attach the aux dm to the original dm
+mesh.dm.compose("dmAux", mesh.aux_dm)
 
 # %%
 for var in mesh.avars.values():
@@ -92,6 +94,9 @@ poisson.add_dirichlet_bc( T1, bnds.TOP )
 # Solve time
 poisson.solve()
 soln = poisson.u_local
+
+# %%
+poisson.u_global.array.shape, poisson.u_local.array.shape
 
 
 # %%

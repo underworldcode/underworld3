@@ -133,7 +133,7 @@ class Poisson:
     def solve(self, force_setup=False):
         if (not self.is_setup) or force_setup:
             self._setup_terms()
-        self.mesh.dm.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
+        #self.mesh.dm.localToGlobal(self.u_local, self.u_global, addv=PETSc.InsertMode.ADD_VALUES)
         self.snes.solve(None,self.u_global)
         self.mesh.dm.globalToLocal(self.u_global,self.u_local)
         # add back boundaries.. 

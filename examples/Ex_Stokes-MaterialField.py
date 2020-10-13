@@ -36,9 +36,7 @@ stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
 # variable description list - (name, number_components, degree)
-# avar_want = [ ("diff", 1, 1) ]
-
-avar_want = [ ("mat", 2, 1) ]
+avar_want = [ ("mat", 1, 1)]
 
 avar = {}
 
@@ -57,17 +55,15 @@ for aux in avar_want:
 mesh.aux_dm.createDS()
 a_local = mesh.aux_dm.createLocalVector()
 mesh.dm.compose("A", a_local)
+# required - attach the aux dm to the original dm
+mesh.dm.compose("dmAux", mesh.aux_dm)
 
 # %%
-# matField = stokes.createAux(num_components=2, isSimplex=0, degree=1)
 # get the local auxiliary vector
 lVec = stokes.mesh.dm.query("A")
 inside = mesh.data[:,0]**2 + mesh.data[:,1]**2 < 0.5**2
 
-f = np.zeros((len(inside),2))
-f[:,1] = np.where(inside, 1., 0.)
-
-lVec.array = f.flatten()
+lVec.array = np.where(inside, 1., 0.)
 
 # %%
 # free slip.  
@@ -77,8 +73,9 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], 1 )  # top/bottom: c
 stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: components, function, markers
 
 # %%
+N = mesh.N
 stokes.viscosity = 1.
-stokes.bodyforce = avar["mat"].fn
+stokes.bodyforce =  avar["mat"].fn * (0.*N.i + N.j)
 
 # %%
 # Solve time
@@ -107,7 +104,7 @@ vField = mesh2.add_variable(nodeDofCount=2)
 
 # %%
 vField.data[:] = uw3_v
-fField.data[:] = f
+fField.data[:, 1] = np.where(inside, 1., 0.)
 
 # %%
 coord = fn.input()
@@ -115,13 +112,6 @@ fn_sphere = fn.math.dot( coord, coord ) < 0.5**2
 conditions = [ ( fn_sphere , (0.,-1.) ), 
                ( True      , (0.,0.) ) ]
 fn_buoyancy = fn.branching.conditional( conditions )
-
-# %%
-# check the inputs arrays are similar, NOTE the -1
-if not np.allclose(-1*lVec.array.reshape(-1,2) - fn_buoyancy.evaluate(mesh2.data), np.zeros(mesh2.data.shape)):
-    raise RuntimeError("Unexpected error: the buoyancy rhs vectors are different!")
-
-# %%
 
 # %% [markdown]
 # ## Vis testing ...
@@ -142,20 +132,6 @@ import plot
 
 #Create viewer
 resolution=(500,400)
-
-fig = plot.Plot(rulers=True)
-fig.nodes(mesh, pointsize=5, pointtype="sphere")
-fig.display(resolution)
-
-fig = plot.Plot(rulers=True)
-fig.edges(mesh)
-fig.display(resolution)
-
-fig = plot.Plot(rulers=True)
-faces = fig.faces(mesh, values=p, colourmap="diverge")
-faces.colourbar(align="right", size=(0.865,10), position=26, outline=False)
-fig.display(resolution)
-
 
 fig = plot.Plot(rulers=True)
 fig.vector_arrows(mesh, u);

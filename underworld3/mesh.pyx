@@ -38,8 +38,6 @@ class _MeshBase():
 
         # add the auxiliary dm
         self.aux_dm = self.dm.clone()
-        # required - attach the aux dm to the original dm
-        self.dm.compose("dmAux", self.aux_dm)
 
     @property
     def N(self):
@@ -194,14 +192,18 @@ class MeshVariable:
         if not isinstance(vtype, VarType):
             raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `uw.mesh.VarType.SCALAR`.")
         self.vtype = vtype
+        self.unknown = unknown
         self.mesh = mesh
         self.num_components = num_components
+
         # choose to put variable on the dm or auxiliary dm
         odm = mesh.dm if unknown else mesh.aux_dm
 
         self.petsc_fe = PETSc.FE().createDefault(odm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
+
         self.field_id = odm.getNumFields()
         odm.setField(self.field_id,self.petsc_fe)
+        
         # create associated sympy function
         if   vtype==VarType.SCALAR:
             self._fn = sympy.Function(name)(*self.mesh.r)
@@ -220,18 +222,6 @@ class MeshVariable:
             self.mesh.vars[name] = self
         else:
             self.mesh.avars[name] = self
-        # create a subdm for this variable. 
-        # this allows us to extract corresponding arrays.
-        # cdef DM subdm = PETSc.DMPlex()
-        # cdef PetscInt fields = self.field_id
-        # cdef DM dm = self.mesh.dm
-        # DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm)
-        # cdef PetscSF sf
-        # DMPlexGetMigrationSF( subdm.dm, &sf)
-        # DMPlexSetMigrationSF(    dm.dm,  sf)
-        # self.dm = subdm
-        # self.data = self.dm.createLocalVector()
-
     # def save(self, filename):
     #     viewer = PETSc.Viewer().createHDF5(filename, "w")
     #     viewer(self.petsc_fe)
@@ -242,4 +232,19 @@ class MeshVariable:
     def fn(self):
         return self._fn
 
-    
+#     def getLocalData(self):
+#         # create a subdm for this variable. 
+#         # this allows us to extract corresponding arrays.
+#         cdef DM subdm = PETSc.DMPlex()
+#         cdef PetscInt fields = self.field_id
+#         cdef PetscIS fis = NULL #PETSc.IS().create()
+#         cdef DM dm 
+#         # is this conditional assingment costly?
+#         if self.unknown:
+#             dm = self.mesh.dm
+#         else:
+#             dm = self.mesh.aux_dm
+# 
+#         DMCreateSubDM(dm.dm, 1, &fields, &fis, &subdm.dm)
+#         vec = subdm.createLocalVector()
+#         return vec
