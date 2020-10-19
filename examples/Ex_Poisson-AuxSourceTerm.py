@@ -20,7 +20,7 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.Mesh(elementRes=(10,10), minCoords=(-2.2,-.4))
+mesh = uw.Mesh(elementRes=(9,9), minCoords=(-2.2,-.4))
 bnds = mesh.boundary
 
 # %%
@@ -37,15 +37,55 @@ y1 = mesh.maxCoords[1]
 y0 = mesh.minCoords[1]
 
 # %%
-aux_var = poisson.createAux(num_components=1, isSimplex=mesh.isSimplex)
+# variable description list - (name, number_components, degree)
+# avar_want = [ ("diff", 1, 1) ]
+
+avar_want = [ ("diff", 1, 1),("vel", 2, 1)]
+
+avar = {}
+
+# %%
+for aux in avar_want:
+    (name, nc, degree) = aux
+    options.setValue(name+"_petscspace_degree", degree)
+    
+    if nc == 1:
+        varType = uw.mesh.VarType.SCALAR
+    else:
+        varType = uw.mesh.VarType.VECTOR
+
+    avar[name] = uw.MeshVariable(mesh, nc, name, varType)
+
+# %%
+# create the local vector (memory chunk) and attach to original dm
+mesh.aux_dm.createDS()
+a_local = mesh.aux_dm.createLocalVector()
+mesh.dm.compose("A", a_local)
+# required - attach the aux dm to the original dm
+mesh.dm.compose("dmAux", mesh.aux_dm)
+
+# %%
+for var in mesh.avars.values():
+    print(var.fn)
+
+# %%
+# a means to index into the a_local vector - not sure how to interpret it 
+auxds = mesh.aux_dm.getDS()
+field_components = auxds.getComponents()
+auxds.getDimensions(), field_components, auxds.getTotalComponents()
+
+# %%
+a_local.array.reshape(-1,auxds.getTotalComponents()).shape
+
+# %%
 # example of setting the auxiliary field by numpy array, a.k.a by hand
 # fancy petsc "compose" way to get the aux petsc vector directly
 lVec = poisson.mesh.dm.query("A")
-lVec.array[:] = k
+lVec.array[:] = k # just set every aux dof to k
 
 # %%
 # Set some things
-poisson.k = aux_var.fn 
+poisson.k = avar['diff'].fn 
 poisson.h = -h
 poisson.add_dirichlet_bc( T0, bnds.BOTTOM )  
 poisson.add_dirichlet_bc( T1, bnds.TOP )  
@@ -54,6 +94,9 @@ poisson.add_dirichlet_bc( T1, bnds.TOP )
 # Solve time
 poisson.solve()
 soln = poisson.u_local
+
+# %%
+poisson.u_global.array.shape, poisson.u_local.array.shape
 
 
 # %%

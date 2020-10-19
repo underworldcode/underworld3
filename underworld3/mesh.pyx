@@ -34,6 +34,10 @@ class _MeshBase():
         # dictionary for variables
         import weakref
         self._vars = weakref.WeakValueDictionary()
+        self._avars = weakref.WeakValueDictionary()
+
+        # add the auxiliary dm
+        self.aux_dm = self.dm.clone()
 
     @property
     def N(self):
@@ -69,6 +73,9 @@ class _MeshBase():
     @property
     def vars(self):
         return self._vars
+    @property
+    def avars(self):
+        return self._avars
 
 
 class Mesh(_MeshBase):
@@ -179,17 +186,24 @@ class VarType(Enum):
 
 class MeshVariable:
 
-    def __init__(self, mesh, num_components, name, vtype):
+    def __init__(self, mesh, num_components, name, vtype, unknown=False):
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
         if not isinstance(vtype, VarType):
             raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `uw.mesh.VarType.SCALAR`.")
         self.vtype = vtype
+        self.unknown = unknown
         self.mesh = mesh
         self.num_components = num_components
-        self.petsc_fe = PETSc.FE().createDefault(mesh.dm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
-        self.field_id = mesh.dm.getNumFields()
-        mesh.dm.setField(self.field_id,self.petsc_fe)
+
+        # choose to put variable on the dm or auxiliary dm
+        odm = mesh.dm if unknown else mesh.aux_dm
+
+        self.petsc_fe = PETSc.FE().createDefault(odm.getDimension(), num_components, self.mesh.isSimplex, PETSc.DEFAULT, name+"_", PETSc.COMM_WORLD)
+
+        self.field_id = odm.getNumFields()
+        odm.setField(self.field_id,self.petsc_fe)
+        
         # create associated sympy function
         if   vtype==VarType.SCALAR:
             self._fn = sympy.Function(name)(*self.mesh.r)
@@ -204,19 +218,10 @@ class MeshVariable:
                 self._fn += subfn*self.mesh.N.base_vectors()[comp]
         super().__init__()
         # now add to mesh list
-        self.mesh.vars[name] = self
-        # create a subdm for this variable. 
-        # this allows us to extract corresponding arrays.
-        # cdef DM subdm = PETSc.DMPlex()
-        # cdef PetscInt fields = self.field_id
-        # cdef DM dm = self.mesh.dm
-        # DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm)
-        # cdef PetscSF sf
-        # DMPlexGetMigrationSF( subdm.dm, &sf)
-        # DMPlexSetMigrationSF(    dm.dm,  sf)
-        # self.dm = subdm
-        # self.data = self.dm.createLocalVector()
-
+        if unknown:
+            self.mesh.vars[name] = self
+        else:
+            self.mesh.avars[name] = self
     # def save(self, filename):
     #     viewer = PETSc.Viewer().createHDF5(filename, "w")
     #     viewer(self.petsc_fe)
@@ -227,4 +232,19 @@ class MeshVariable:
     def fn(self):
         return self._fn
 
-    
+#     def getLocalData(self):
+#         # create a subdm for this variable. 
+#         # this allows us to extract corresponding arrays.
+#         cdef DM subdm = PETSc.DMPlex()
+#         cdef PetscInt fields = self.field_id
+#         cdef PetscIS fis = NULL #PETSc.IS().create()
+#         cdef DM dm 
+#         # is this conditional assingment costly?
+#         if self.unknown:
+#             dm = self.mesh.dm
+#         else:
+#             dm = self.mesh.aux_dm
+# 
+#         DMCreateSubDM(dm.dm, 1, &fields, &fis, &subdm.dm)
+#         vec = subdm.createLocalVector()
+#         return vec
