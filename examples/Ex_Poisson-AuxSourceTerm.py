@@ -1,7 +1,4 @@
 # %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.poisson import Poisson
@@ -25,67 +22,29 @@ bnds = mesh.boundary
 
 # %%
 # Create Poisson object
-poisson = Poisson(mesh)
+u_degree = 1
+poisson = Poisson(mesh, degree=u_degree)
 
 # %%
 # Model parameters
 T1 = -1.0   # top surface temperature
-T0 = 7.0   # bottom surface temperature
-k = 3.     # diffusivity
-h = 10.     # heat production, source term
+T0 =  7.0   # bottom surface temperature
+k =   3.0   # diffusivity
+h =  10.0   # heat production, source term
 y1 = mesh.maxCoords[1]
 y0 = mesh.minCoords[1]
 
 # %%
-# variable description list - (name, number_components, degree)
-# avar_want = [ ("diff", 1, 1) ]
-
-avar_want = [ ("diff", 1, 1),("vel", 2, 1)]
-
-avar = {}
-
-# %%
-for aux in avar_want:
-    (name, nc, degree) = aux
-    options.setValue(name+"_petscspace_degree", degree)
-    
-    if nc == 1:
-        varType = uw.mesh.VarType.SCALAR
-    else:
-        varType = uw.mesh.VarType.VECTOR
-
-    avar[name] = uw.MeshVariable(mesh, nc, name, varType)
-
-# %%
-# create the local vector (memory chunk) and attach to original dm
-mesh.aux_dm.createDS()
-a_local = mesh.aux_dm.createLocalVector()
-mesh.dm.compose("A", a_local)
-# required - attach the aux dm to the original dm
-mesh.dm.compose("dmAux", mesh.aux_dm)
-
-# %%
-for var in mesh.avars.values():
-    print(var.fn)
-
-# %%
-# a means to index into the a_local vector - not sure how to interpret it 
-auxds = mesh.aux_dm.getDS()
-field_components = auxds.getComponents()
-auxds.getDimensions(), field_components, auxds.getTotalComponents()
-
-# %%
-a_local.array.reshape(-1,auxds.getTotalComponents()).shape
+diff = uw.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.mesh.VarType.SCALAR, degree=u_degree )
 
 # %%
 # example of setting the auxiliary field by numpy array, a.k.a by hand
-# fancy petsc "compose" way to get the aux petsc vector directly
-lVec = poisson.mesh.dm.query("A")
-lVec.array[:] = k # just set every aux dof to k
+with mesh.access(diff):
+    diff.data[:] = k # just set every aux dof to k
 
 # %%
 # Set some things
-poisson.k = avar['diff'].fn 
+poisson.k = diff.fn 
 poisson.h = -h
 poisson.add_dirichlet_bc( T0, bnds.BOTTOM )  
 poisson.add_dirichlet_bc( T1, bnds.TOP )  
@@ -93,11 +52,6 @@ poisson.add_dirichlet_bc( T1, bnds.TOP )
 # %%
 # Solve time
 poisson.solve()
-soln = poisson.u_local
-
-# %%
-poisson.u_global.array.shape, poisson.u_local.array.shape
-
 
 # %%
 # analytic solution definitions
@@ -112,5 +66,6 @@ c1 = T1 + h/(2*k)*y1**2 - c0*y1
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
-if not np.allclose(analyticTemperature(mesh.data[:,1], h, k, c0, c1),soln.array):
-    raise RuntimeError("Unexpected values encountered.")
+with mesh.access():
+    if not np.allclose(analyticTemperature(mesh.data[:,1], h, k, c0, c1),poisson.u.data[:,0]):
+        raise RuntimeError("Unexpected values encountered.")

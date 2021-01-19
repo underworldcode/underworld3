@@ -36,17 +36,14 @@ poisson.add_dirichlet_bc( 0., bnds.TOP )
 # %%
 # Solve time
 poisson.solve()
-soln = poisson.u_local
 
 # %%
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
-if not np.allclose((1. - mesh.data[:,1]),soln.array):
-    raise RuntimeError("Unexpected values encountered.")
-
-# %%
-soln.array
+with mesh.access():
+    if not np.allclose((1. - mesh.data[:,1]),poisson.u.data[:,0]):
+        raise RuntimeError("Unexpected values encountered.")
 
 # %%
 # Now let's construct something a little more complex.
@@ -67,12 +64,15 @@ k
 poisson.k = k
 
 # %%
+with mesh.access():
+    orig_soln = poisson.u.data.copy()
 poisson.solve()
 
 # %%
 # Simply confirm different results
-if np.allclose(soln.array, poisson.u_local.array):
-    raise RuntimeError("Unexpected values encountered.")
+with mesh.access():
+    if np.allclose(poisson.u.data, orig_soln):
+        raise RuntimeError("Unexpected values encountered.")
 
 
 # %%
@@ -104,11 +104,11 @@ poisson.add_dirichlet_bc(abs_r2, [bnds.TOP,bnds.BOTTOM,bnds.LEFT,bnds.RIGHT] )
 
 # %%
 poisson.solve()
-soln = poisson.u_local
 
 # %%
-exact = mesh.data[:,0]**2 + mesh.data[:,1]**2
-l2 = np.linalg.norm(exact-soln.array[:])
-print("L2 = {}".format(l2))
-if not np.allclose(soln.array,exact,rtol=7.e-2):
-    raise RuntimeError("Unexpected values encountered.")
+with mesh.access():
+    exact = mesh.data[:,0]**2 + mesh.data[:,1]**2
+    l2 = np.linalg.norm(exact-poisson.u.data[:])
+    print("L2 = {}".format(l2))
+    if not np.allclose(poisson.u.data[:,0],exact[:],rtol=7.e-2):
+        raise RuntimeError("Unexpected values encountered.")

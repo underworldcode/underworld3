@@ -1,7 +1,4 @@
 # %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.poisson import Poisson
@@ -36,14 +33,14 @@ poisson.add_dirichlet_bc( mesh.N.x, bnds.OUTER )
 # %%
 # Solve time
 poisson.solve()
-soln = poisson.u_local
 
 # %%
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
-if not np.allclose(mesh.data[:,0],soln.array):
-    raise RuntimeError("Unexpected values encountered.")
+with mesh.access():
+    if not np.allclose(mesh.data[:,0],poisson.u.data[:,0]):
+        raise RuntimeError("Unexpected values encountered.")
 
 # %%
 #Underworld3 plotting prototype using lavavu
@@ -53,7 +50,7 @@ import plot
 resolution=(500,400)
 
 fig = plot.Plot(rulers=True)
-fig.nodes(mesh, pointsize=5, pointtype="sphere")
+fig.nodes(mesh, values=None, pointsize=5, pointtype="sphere")
 fig.display(resolution)
 # %%
 fig = plot.Plot(rulers=True)
@@ -64,9 +61,10 @@ fig = plot.Plot()
 fig.cells(mesh, colourmap="categorical")
 fig.display(resolution)
 # %%
-fig = plot.Plot()
-fig.cells(mesh, values=soln.array, colourmap="diverge")
-fig.colourbar(align="right", size=(0.865,10), position=26, outline=False)
-fig.display(resolution)
+with mesh.access():
+    fig = plot.Plot()
+    fig.cells(mesh, values=poisson.u.data, colourmap="diverge")
+    fig.colourbar(align="right", size=(0.865,10), position=26, outline=False)
+    fig.display(resolution)
 # %%
 mesh.save("mesh.h5")

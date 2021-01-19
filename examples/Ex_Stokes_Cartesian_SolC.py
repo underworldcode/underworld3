@@ -27,7 +27,7 @@ n_els = 64
 mesh = uw.Mesh(elementRes=(n_els,n_els))
 # %%
 v_degree = 1
-stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
+stokes = Stokes(mesh, u_degree=v_degree )
 
 # %%
 # Set some things
@@ -36,7 +36,7 @@ from sympy import Piecewise
 N = mesh.N
 eta_0 = 1.
 x_c   = 0.5
-f_0   = -1.
+f_0   = 1.
 stokes.viscosity = 1. 
 stokes.bodyforce = Piecewise((f_0, N.x>x_c,), \
                             (  0.,    True) )*N.j
@@ -55,15 +55,11 @@ import underworld as uw2
 solC = uw2.function.analytic.SolC()
 
 # %%
-vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data).flatten()
+vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
 
-# %%
-vel_soln  = stokes.u_local.array
-pres_soln = stokes.p_local.array
 # %%
 from numpy import linalg as LA
-print("Diff norm = {}".format(LA.norm(vel_soln - vel_soln_analytic)))
-
-# %%
-if not np.allclose(vel_soln, vel_soln_analytic,rtol=1.e-2):
-    raise RuntimeError("Solve did not produce expected result.")
+with mesh.access():
+    print("Diff norm = {}".format(LA.norm(stokes.u.data - vel_soln_analytic)))
+    if not np.allclose(stokes.u.data, vel_soln_analytic, rtol=1.e-2):
+        raise RuntimeError("Solve did not produce expected result.")

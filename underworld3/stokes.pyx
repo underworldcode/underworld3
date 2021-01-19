@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, PetscIS
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, IS, PetscIS, Quad, PetscQuadrature, FE, PetscFE, Mat, PetscMat
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 import underworld3 as uw
@@ -15,6 +15,10 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
     PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
 
+cdef CHKERRQ(PetscErrorCode ierr):
+    cdef int interr = <int>ierr
+    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
+
 
 cdef extern from "petsc.h":
     PetscErrorCode PetscDSAddBoundary( PetscDS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
@@ -25,40 +29,36 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
+    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
+    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
 
 from petsc4py import PETSc
     
 class Stokes:
 
-    def __init__(self, mesh, u_degree=2, p_degree=1):
+    def __init__(self, mesh, u_degree=2, p_degree=None):
 
         self.mesh = mesh
+        self.dm   = mesh.dm.clone()
+
+        if p_degree==None:
+            p_degree = u_degree - 1
+
+        # create public velocity/pressure variables
+        self._u = uw.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.mesh.VarType.VECTOR, degree=u_degree )
+        self._p = uw.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.mesh.VarType.SCALAR, degree=p_degree )
+
+        # create private variables
         options = PETSc.Options()
-        options.setValue("u_petscspace_degree", u_degree)
-        options.setValue("p_petscspace_degree", p_degree)
+        options.setValue("uprivate_petscspace_degree", u_degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(self.dm.getDimension(), mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
+        self.petsc_fe_u_id = self.dm.getNumFields()
+        self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+        options.setValue("pprivate_petscspace_degree", p_degree)
+        self.petsc_fe_p = PETSc.FE().createDefault(self.dm.getDimension(),        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
+        self.petsc_fe_p_id = self.dm.getNumFields()
+        self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 
-#   ierr = PetscFECreateDefault(comm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
-#   ierr = PetscObjectSetName((PetscObject) fe[0], "velocity");CHKERRQ(ierr);
-        self._u = uw.MeshVariable( 
-                                    mesh = mesh, 
-                                    num_components = mesh.dim,
-                                    name = "u", 
-                                    vtype = uw.mesh.VarType.VECTOR,
-                                    unknown = True )
-
-#   ierr = PetscFEGetQuadrature(fe[0], &q);CHKERRQ(ierr);
-#   ierr = PetscFECreateDefault(comm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
-#   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
-#   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
-        self._p = uw.MeshVariable( 
-                                    mesh = mesh, 
-                                    num_components = 1,
-                                    name = "p", 
-                                    vtype = uw.mesh.VarType.SCALAR,
-                                    unknown = True )
-        self._p.petsc_fe.setQuadrature(self._u.petsc_fe.getQuadrature())
-
-        mesh.dm.createDS()
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
 
@@ -122,25 +122,24 @@ class Stokes:
         self._bodyforce = symval
 
     
-    def add_dirichlet_bc(self, fn, boundaries, comps):
+    def add_dirichlet_bc(self, fn, boundaries, components):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
         self.is_setup = False
         import numpy as np
-        comps      = np.array(comps,      dtype=np.int32, ndmin=1)
+        components = np.array(components, dtype=np.int32, ndmin=1)
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
-        BC = namedtuple('BC', ['comps', 'fn', 'boundaries'])
-        self.bcs.append(BC(comps,sympify(fn),boundaries))
-    
+        BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
+        self.bcs.append(BC(components,sympify(fn),boundaries))
 
     def _setup_terms(self):
         N = self.mesh.N
 
         # residual terms
         fns_residual = []
-        self._u_f0 = self.bodyforce
+        self._u_f0 = -self.bodyforce
         fns_residual.append(self._u_f0)
         self._u_f1 = self.stress
         fns_residual.append(self._u_f1)
@@ -249,9 +248,18 @@ class Stokes:
         self._pp_g0 = 1/self.viscosity
         fns_jacobian.append(self._pp_g0)
 
-        # generate JIT code
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs])
-
+        # generate JIT code.
+        # first, we must specify the primary fields.
+        # these are fields for which the corresponding sympy functions 
+        # should be replaced with the primary (instead of auxiliary) petsc 
+        # field value arrays. in this instance, we want to switch out 
+        # `self.u` and `self.p` for their primary field 
+        # petsc equivalents. without specifying this list, 
+        # the aux field equivalents will be used instead, which 
+        # will give incorrect results for non-linear problems.
+        # note also that the order here is important.
+        prim_field_list = [self.u, self.p]
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
         # create indexes so that we don't rely on indices that can change
         i_res = {}
         for index,fn in enumerate(fns_residual):
@@ -261,7 +269,8 @@ class Stokes:
             i_jac[fn] = index
 
         # set functions 
-        cdef DS ds = self.mesh.dm.getDS()
+        self.dm.createDS()
+        cdef DS ds = self.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[self._u_f0]], ext.fns_residual[i_res[self._u_f1]])
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[self._p_f0]],                                NULL)
         # TODO: check if there's a significant performance overhead in passing in 
@@ -277,65 +286,128 @@ class Stokes:
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         for index,bc in enumerate(self.bcs):
-            comps_view = bc.comps
+            comps_view = bc.components
             for boundary in bc.boundaries:
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 PetscDSAddBoundary(ds.ds, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
-        self.mesh.dm.setUp()
+        self.dm.setUp()
 
-        self.mesh.dm.createClosureIndex(None)
+        self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
-        self.snes.setDM(self.mesh.dm)
+        self.snes.setDM(self.dm)
         self.snes.setFromOptions()
-        cdef DM dm = self.mesh.dm
+        cdef DM dm = self.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
-
-        # create vectors
-        self.up_global = self.mesh.dm.createGlobalVector()
-        self.up_local  = self.mesh.dm.createLocalVector()
 
         self.is_setup = True
 
-    def solve(self, init_guess_up=None, force_setup=False):
-        if (not self.is_setup) or force_setup:
+    def solve(self, 
+              zero_init_guess: bool =True, 
+              _force_setup:    bool =False ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the 
+            system solution. Otherwise, the current values of `self.u` 
+            and `self.p` will be used.
+        """
+        if (not self.is_setup) or _force_setup:
             self._setup_terms()
 
-        if init_guess_up:
-            self.mesh.dm.localToGlobal(init_guess_up, self.up_global, addv=PETSc.InsertMode.ADD_VALUES)
-        self.snes.solve(None,self.up_global)
-        self.mesh.dm.globalToLocal(self.up_global,self.up_local)
+        gvec = self.dm.getGlobalVec()
+        lvec = self.dm.getLocalVec()
+
+        if not zero_init_guess:
+            with self.mesh.access():
+                # TODO: Check if this approach is valid generally. 
+                #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
+                #       use that for full_vec->sub_vec mapping (global), followed
+                #       with global->local.
+                p_len = len(self.p.vec.array)
+                lvec.array[p_len:     ] = self.u.vec.array[:]
+                lvec.array[     :p_len] = self.p.vec.array[:]
+                self.dm.localToGlobal(lvec,gvec)
+        else:
+            gvec.array[:] = 0.
+
+        # Set all quadratures to velocity quadrature.
+        # Note that this needs to be done before the call to 
+        # `getLocalVariableVec()`, as `createDS` 
+        # TODO: Check if we need to unwind these quadratures. 
+        #       I believe the PETSc reference counting should 
+        #       do the job, but I'm not 100% sure.
+        cdef PetscQuadrature quad
+        cdef FE c_fe = self.petsc_fe_u
+        ierr = PetscFEGetQuadrature(c_fe.fe, &quad); CHKERRQ(ierr)
+        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+            c_fe = fe
+            ierr = PetscFESetQuadrature(c_fe.fe,quad); CHKERRQ(ierr)        # set to vel quad
+
+        # Call `createDS()` on aux dm. This is necessary after the 
+        # quadratures are set above, as it generates the tablatures 
+        # from the quadratures (among other things no doubt). 
+        # TODO: What does createDS do?
+        # TODO: What are the implications of calling this every solve.
+        self.mesh.dm.clearDS()
+        self.mesh.dm.createDS()
+
+        a_local = self.mesh.getLocalVariableVec()
+        self.dm.compose("A", a_local)
+        # TODO required? - attach the aux dm to the original dm
+        self.dm.compose("dmAux", self.mesh.dm)
+
+        # solve
+        self.snes.solve(None,gvec)
+        self.dm.globalToLocal(gvec,lvec)
         # add back boundaries.. 
-        cdef Vec lvec= self.up_local
-        cdef DM dm = self.mesh.dm
-        DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>lvec.vec, NULL)
+        cdef Vec clvec = lvec
+        cdef DM dm = self.dm
+        DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
+        self.mesh.restoreLocalVariableVec()
 
-        # create SubDMs now to isolate velocity/pressure variables.
-        # this is currently problematic as the calls to DMCreateSubDM
-        # need to be executed after the solve above, as otherwise the 
-        # results are altered/corrupted. it's unclear to me why this is
-        # the case.  the migrationsf doesn't change anything.
-        # also, the SubDMs and associated vectors are potentially leaking
-        # due to our petsc4py/cython hacks below. 
-        cdef DM subdm
-        cdef PetscInt field 
+        # This comment relates to previous implementation, but I'll leave it 
+        # here for now as something to be aware of / investigate further.
+        
+        # # create SubDMs now to isolate velocity/pressure variables.
+        # # this is currently problematic as the calls to DMCreateSubDM
+        # # need to be executed after the solve above, as otherwise the 
+        # # results are altered/corrupted. it's unclear to me why this is
+        # # the case.  the migrationsf doesn't change anything.
+        # # also, the SubDMs and associated vectors are potentially leaking
+        # # due to our petsc4py/cython hacks below. 
+        with self.mesh.access(self.u,self.p):
+            # TODO: Check if this approach is valid generally. 
+            #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
+            #       use that for full_vec->sub_vec mapping (global), followed
+            #       with global->local.
+            p_len = len(self.p.vec.array)
+            self.u.vec.array[:] = lvec.array[p_len:     ]
+            self.p.vec.array[:] = lvec.array[     :p_len]
 
-        # cdef PetscSF sf
-        # DMPlexGetMigrationSF(dm.dm, &sf)
+        self.dm.restoreLocalVec(lvec)
+        self.dm.restoreGlobalVec(gvec)
 
-        subdm = PETSc.DMPlex()
-        field = 0
-        DMCreateSubDM(dm.dm, 1, &field, NULL, &subdm.dm)
-        # DMPlexSetMigrationSF(subdm.dm, sf)
-        #self.u_global = subdm.createGlobalVector()
-        self.u_local  = subdm.createLocalVector()
+    def dt(self):
+        """
+        Calculates an appropriate advective timestep for the given 
+        mesh and velocity configuration.
+        """
+        # we'll want to do this on an element by element basis 
+        # for more general mesh
 
-        subdm = PETSc.DMPlex()
-        field = 1
-        DMCreateSubDM(dm.dm, 1, &field, NULL, &subdm.dm)
-        # DMPlexSetMigrationSF(subdm.dm, sf)
-        #self.p_global = subdm.createGlobalVector()
-        self.p_local  = subdm.createLocalVector()
+        # first let's extract a max global velocity magnitude
+        import math
+        with self.mesh.access():
+            vel = self.u.data
+            magvel_squared = vel[:,0]**2 + vel[:,1]**2
+            max_magvel = math.sqrt(magvel_squared.max())
+        
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        max_magvel_glob = comm.allreduce( max_magvel, op=MPI.MAX)
 
-        p_len = len(self.p_local.array)
-        self.u_local.array[:] = self.up_local[p_len:     ]
-        self.p_local.array[:] = self.up_local[     :p_len]
+        min_dx = self.mesh.min_radius
+        return min_dx/max_magvel_glob

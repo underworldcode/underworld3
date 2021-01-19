@@ -68,7 +68,7 @@ setup(name = "underworld3",
     packages=['underworld3'],
     package_data={'underworld3':['*.pxd','*.h']},
     ext_modules = cythonize(
-        extensions, 
+        extensions,
+        compiler_directives={'language_level' : "3"},   # or "2" or "3str"
         gdb_debug=True, 
-        compiler_directives={'language_level' : "3"},
         include_path=[petsc4py.get_include()]) )

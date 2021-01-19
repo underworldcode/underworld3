@@ -1,7 +1,4 @@
 # %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.stokes import Stokes
@@ -35,35 +32,12 @@ v_degree = 1
 stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
-# variable description list - (name, number_components, degree)
-avar_want = [ ("mat", 1, 1)]
+# add & init the mat var
+matvar = uw.MeshVariable( mesh=mesh, num_components=1, name="mat", vtype=uw.mesh.VarType.SCALAR, degree=v_degree )
 
-avar = {}
-
-for aux in avar_want:
-    (name, nc, degree) = aux
-    options.setValue(name+"_petscspace_degree", degree)
-    
-    if nc == 1:
-        varType = uw.mesh.VarType.SCALAR
-    else:
-        varType = uw.mesh.VarType.VECTOR
-
-    avar[name] = uw.MeshVariable(mesh, nc, name, varType)
-    
-# create the local vector (memory chunk) and attach to original dm
-mesh.aux_dm.createDS()
-a_local = mesh.aux_dm.createLocalVector()
-mesh.dm.compose("A", a_local)
-# required - attach the aux dm to the original dm
-mesh.dm.compose("dmAux", mesh.aux_dm)
-
-# %%
-# get the local auxiliary vector
-lVec = stokes.mesh.dm.query("A")
 inside = mesh.data[:,0]**2 + mesh.data[:,1]**2 < 0.5**2
-
-lVec.array = np.where(inside, 1., 0.)
+with mesh.access(matvar):
+    matvar.data[:,0] = np.where(inside, 1., 0.)
 
 # %%
 # free slip.  
@@ -75,21 +49,18 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: c
 # %%
 N = mesh.N
 stokes.viscosity = 1.
-stokes.bodyforce =  avar["mat"].fn * (0.*N.i + N.j)
+stokes.bodyforce =  matvar.fn * N.j
 
 # %%
 # Solve time
 stokes.solve()
 
 # %%
-uw3_v = stokes.u_local.array.reshape(-1,2)
-
-# %%
 import underworld as uw2
 from underworld import function as fn
 from underworld import visualisation as viz
 
-mesh2 = uw2.mesh.FeMesh_Cartesian(elementRes= (n_els, n_els),
+mesh2 = uw2.mesh.FeMesh_Cartesian(elementRes=(n_els, n_els),
                           minCoord=minCoord,
                           maxCoord=maxCoord)
 
@@ -103,39 +74,33 @@ fField = mesh2.add_variable(nodeDofCount=2)
 vField = mesh2.add_variable(nodeDofCount=2)
 
 # %%
-vField.data[:] = uw3_v
+with mesh.access():
+    vField.data[:] = stokes.u.data[:]
 fField.data[:, 1] = np.where(inside, 1., 0.)
 
 # %%
 coord = fn.input()
 fn_sphere = fn.math.dot( coord, coord ) < 0.5**2
-conditions = [ ( fn_sphere , (0.,-1.) ), 
+conditions = [ ( fn_sphere , (0.,1.) ), 
                ( True      , (0.,0.) ) ]
 fn_buoyancy = fn.branching.conditional( conditions )
 
-# %% [markdown]
-# ## Vis testing ...
+# %%
+# %matplotlib inline
+with mesh.access():
+    import matplotlib.pyplot as plt
+    imgplot = plt.imshow(stokes.p.data.reshape(mesh.elementRes), origin='lower')
+    plt.colorbar(imgplot)
+    plt.show()
 
 # %%
-u = stokes.u_local.array.reshape((-1,2))
-p = stokes.p_local.array
-res = mesh.elementRes
-
-# %matplotlib inline
-import matplotlib.pyplot as plt
-imgplot = plt.imshow(p.reshape(res), origin='lower')
-plt.colorbar(imgplot)
-plt.show()
-
 #Underworld3 plotting prototype using lavavu
-import plot
-
-#Create viewer
-resolution=(500,400)
-
-fig = plot.Plot(rulers=True)
-fig.vector_arrows(mesh, u);
-fig.display(resolution)
+with mesh.access():
+    import plot
+    resolution=(500,400)
+    fig = plot.Plot(rulers=True)
+    fig.vector_arrows(mesh, stokes.u.data)
+    fig.display(resolution)
 
 
 # %%

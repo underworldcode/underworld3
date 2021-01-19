@@ -53,9 +53,8 @@ bnds = mesh.boundary
 stokes.add_dirichlet_bc( sol_vel, [bnds.LEFT, bnds.RIGHT],  [0,1] )  # left/right: function, markers, components
 stokes.add_dirichlet_bc( sol_vel, [bnds.TOP,  bnds.BOTTOM], [1, ] )  # top/bottom: function, markers, components
 
-# I'm actually not sure why we need the -ve here... something's amiss.
-stokes.bodyforce = -sol_bf  
 # %%
+stokes.bodyforce = sol_bf
 # do linear first to get reasonable starting place
 print("Linear solve")
 stokes.viscosity = 1.
@@ -72,22 +71,20 @@ inv2 = 1/2*inv2
 inv2 = sympy.sqrt(inv2)
 alpha_by_two = 2/r0 - 2
 stokes.viscosity = 2*eta0*inv2**alpha_by_two
-stokes.solve(init_guess_up=stokes.up_local)
+stokes.solve(zero_init_guess=False)
 
 # %%
-vel_soln_fem = stokes.u_local.array
-vel_soln_ana = stokes.u_local.array.copy()
-# %%
-vel_soln_ana_shaped = vel_soln_ana.reshape(mesh.data.shape)
-# %%
-for index, coord in enumerate(mesh.data):
-    # interface to this is still yuck... 
-    vel_soln_ana_shaped[index] = sol_vel.evalf(subs={mesh.N.x:coord[0], mesh.N.y:coord[1]}).to_matrix(mesh.N)[0:2]
-from numpy import linalg as LA
-l2diff = LA.norm(vel_soln_fem - vel_soln_ana)
-print("Diff norm = {}".format(l2diff))
-if not np.allclose(l2diff, 0.0367,rtol=1.e-2):
-    raise RuntimeError("Solve did not produce expected result.")
-if not np.allclose(vel_soln_fem, vel_soln_ana, rtol=1.e-2):
-    raise RuntimeError("Solve did not produce expected result.")
+with mesh.access():
+    vel_soln_ana = stokes.u.data.copy()
+    # %%
+    for index, coord in enumerate(mesh.data):
+        # interface to this is still yuck... 
+        vel_soln_ana[index] = sol_vel.evalf(subs={mesh.N.x:coord[0], mesh.N.y:coord[1]}).to_matrix(mesh.N)[0:2]
+    from numpy import linalg as LA
+    l2diff = LA.norm(stokes.u.data - vel_soln_ana)
+    print("Diff norm = {}".format(l2diff))
+    if not np.allclose(l2diff, 0.0367,rtol=1.e-2):
+        raise RuntimeError("Solve did not produce expected result.")
+    if not np.allclose(stokes.u.data, vel_soln_ana, rtol=1.e-2):
+        raise RuntimeError("Solve did not produce expected result.")
 

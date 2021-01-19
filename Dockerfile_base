@@ -35,11 +35,12 @@ RUN pip3 install -U setuptools  \
         packaging \
         appdirs \
         jupyter \
-#        jupytext \
+        jupytext \
         ipyparallel \
         sympy \
         xxhash \ 
-        cython
+        cython \
+        typeguard
 
 # FROM base_runtime AS build_base
 # install build requirements

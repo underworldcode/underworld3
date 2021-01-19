@@ -1,5 +1,7 @@
 import sympy
 import numpy as np
+import underworld3 
+from typing import List
 
 def diff_fn1_wrt_fn2(fn1, fn2):
     """
@@ -15,27 +17,37 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     return fn1.subs(fn2,dummy).diff(dummy).subs(dummy,fn2)
 
 _ext_dict = {}
-def getext(mesh, fns_residual, fns_jacobian, fns_bcs):
+def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
     """
     Check if we've already created an equivalent extension
     and use if available.
     """
+    import time
+    time_s = time.time()
+
     fns = fns_residual + fns_jacobian + tuple(fns_bcs)
     import os
-    if 'UW_JITNAME' in os.environ:          # if var specified, probably testing.
+    if 'UW_JITNAME' in os.environ:          # If var specified, probably testing.
         jitname = os.environ['UW_JITNAME']
-        # note, extensions cannot be replaced, so need to append count to ensure
+        # Note, extensions cannot be replaced, so need to append count to ensure
         # unique modules.
         jitname += "_" + str(len(_ext_dict.keys()))
-    else:                                   # else name from fns hash
+    else:                                   # Else name from fns hash
         jitname = abs(hash((mesh,fns)))
-    # create the module if not in dictionary
+    # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
-        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs)
+        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list)
     module = _ext_dict[jitname]
-    return module.getptrobj()
+    ptrobj = module.getptrobj()
+    # print(f'jit time {time.time()-time_s}')
+    return ptrobj
 
-def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
+def _createext(name:               str, 
+               mesh:               underworld3.mesh.Mesh,
+               fns_residual:       List[sympy.Function], 
+               fns_jacobian:       List[sympy.Function],
+               fns_bcs:            List[sympy.Function],
+               primary_field_list: List[underworld3.mesh.MeshVariable]):
     """
     This creates the required extension which houses the JIT
     fn pointer for PETSc. 
@@ -48,102 +60,128 @@ def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
 
     Params
     ------
-    name: str
+    name:
         Name for the extension. It will be prepended with "fn_ptr_ext_"
+    mesh:
+        Supporting mesh. It is used to get coordinate system and variable
+        information.
+    fns_residual:
+        List of system's residual sympy functions for which JIT equivalents 
+        will be generated.
+    fns_jacobian:
+        List of system's Jacobian sympy functions for which JIT equivalents 
+        will be generated.
+    fns_bcs:
+        List of system's boundary condition sympy functions for which JIT equivalents 
+        will be generated.
+    primary_field_list
+        List of variables that will map from petsc primary variable arrays. All 
+        other variables will be obtained from the mesh object and will be mapped to 
+        petsc auxiliary variable arrays. Note that *all* the variables in the 
+        calling system's corresponding `PetscDM` must be included in this list.
+        They must also be ordered according to their `field_id`.
+
     """
     from sympy import symbols, Eq, MatrixSymbol
     from underworld3.mesh import VarType
 
-    # note that the order here is important.
+    # Note that the order here is important.
     fns = fns_residual + tuple(fns_bcs) + fns_jacobian
     count_residual_sig = len(fns_residual) + len(fns_bcs)
     count_jacobian_sig = len(fns_jacobian)
-    # get fn/fn_grad component totals
-    tot_fns = 0
-    tot_grad_fns = 0
-    for var in mesh.vars.values():
-        tot_fns += var.num_components
-        tot_grad_fns += var.num_components*mesh.dim
-
-    # get aux/aux_grad component totals
-    aux_tot_fns = 0
-    aux_tot_grad_fns = 0
-    for var in mesh.avars.values():
-        aux_tot_fns += var.num_components
-        aux_tot_grad_fns += var.num_components*mesh.dim
 
     # Create some symbol which will force codegen to produce required interface.
     # We'll use MatrixSymbol objects, which sympy simply converts to double* within 
     # the generated code. 
-    petsc_x   = MatrixSymbol(  'petsc_x', 1, 3)  # let's just set this to 3-dim, as it'll be 
-                                                    # the max and doesn't matter otherwise.
-    petsc_u   = MatrixSymbol(  'petsc_u', 1, tot_fns)
-    petsc_u_x = MatrixSymbol('petsc_u_x', 1, tot_grad_fns)
-    petsc_a   = MatrixSymbol(  'petsc_a', 1, aux_tot_fns)
-    petsc_a_x = MatrixSymbol('petsc_a_x', 1, aux_tot_grad_fns)
+    # Create `MatrixSymbol` vectors of unknown size 1xN. The size doesn't matter
+    # as MatrixSymbol entries will simply be replaced with corresponding c-array entry,
+    # and then discarded.
+    from sympy.abc import N
+    petsc_x   = MatrixSymbol(  'petsc_x', 1, N)
+    petsc_u   = MatrixSymbol(  'petsc_u', 1, N)
+    petsc_u_x = MatrixSymbol('petsc_u_x', 1, N)
+    petsc_a   = MatrixSymbol(  'petsc_a', 1, N)
+    petsc_a_x = MatrixSymbol('petsc_a_x', 1, N)
 
     # Now create substitute dictionary to specify how fns will be replaced
     # by corresponsing MatrixSymbol objects (created above).
-    # First do subs for N.x,N.y,N.z terms
     substitute = {}
+
+    # First do subs for N.x,N.y,N.z terms.
     for index, base_scalar in enumerate(mesh.N.base_scalars()):
-        substitute[base_scalar] = petsc_x[index]
-    # Now do T, P, V_x, V_y, V_z etc terms
-    u_i = 0
-    component_fns = []           # We'll use this list later to do gradient terms
-    for var in mesh.vars.values():
-        if var.vtype==VarType.SCALAR:
-            # Substitute all instances of the mesh var with the required c pointer 
-            substitute[var.fn] = petsc_u[u_i]
-            component_fns.append(var.fn)
-            u_i+=1
-        elif var.vtype==VarType.VECTOR:
-            # pull out individual sub components
-            for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                guy = var.fn.dot(bvec)
-                substitute[guy] = petsc_u[u_i]
-                component_fns.append(guy)                
-                u_i+=1
-        else:
-            raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
-    # Now gradient terms
-    u_x_i = 0
-    for fn in component_fns:
-        # Now process gradients. Simply generate the required derivative in place, 
-        # and set to be substituted by c pointer
-        for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
-            substitute[fn.diff(base_scalar)] = petsc_u_x[u_x_i]
-            u_x_i += 1
+        substitute[base_scalar] = petsc_x[0,index]
 
-    # Now do auxiliary terms
-    a_i = 0
-    component_fns = []
-    for var in mesh.avars.values():
-        if var.vtype==VarType.SCALAR:
-            substitute[var.fn] = petsc_a[a_i]
-            component_fns.append(var.fn)
-            a_i+=1
-        elif var.vtype==VarType.VECTOR:
-            for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                guy = var.fn.dot(bvec)
-                substitute[guy] = petsc_a[a_i]
-                component_fns.append(guy)
-                a_i+=1
-        else:
-            raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
-        # Now gradient terms of auxiliary vars
-        a_x_i = 0
-        for fn in component_fns:
+    # Now do variable and variable gradient terms.
+    # We'll define a function to do this as we need 
+    # to repeate it for the primary and aux variables.
+    def get_variable_mapping(varlist, petsc_matsymbol, petsc_grad_matsymbol):
+        """ 
+        This function gets the mapping of variables
+        into the arrays PETSc provides for element assembly.
+
+        For a `varlist` consisting of 2d velocity & pressure variables, 
+        it'll generate the following mapping:
+        {
+            V_x   : petsc_matsymbol[0,0],
+            V_y   : petsc_matsymbol[0,1],
+            P     : petsc_matsymbol[0,2],
+            V_x_x : petsc_grad_matsymbol[0,0],
+            V_x_y : petsc_grad_matsymbol[0,1],
+            V_y_x : petsc_grad_matsymbol[0,2],
+            V_y_y : petsc_grad_matsymbol[0,3],
+            P_x   : petsc_grad_matsymbol[0,4],
+            P_y   : petsc_grad_matsymbol[0,5]
+        }
+
+        Params
+        ------
+        varlist
+            List of variables that will map into petsc arrays. Note that
+            *all* the variables in the corresponding `PetscDM` must be 
+            included. They must also be ordered according to their `field_id`.
+        petsc_matsymbol
+            A `MatrixSymbol` vector of sufficient size for all variables
+        petsc_grad_matsymbol
+            A `MatrixSymbol` vector of sufficient size for all variable gradients.
+        """ 
+        from collections import OrderedDict
+        mapping = OrderedDict()
+        u_i = 0
+        for var in varlist:
+            if var.vtype==VarType.SCALAR:
+                mapping[var.fn] = petsc_matsymbol[0,u_i]
+                u_i +=1
+            elif var.vtype==VarType.VECTOR:
+                # Pull out individual sub components
+                for bvec in mesh.N.base_vectors()[0:mesh.dim]:
+                    comp = var.fn.dot(bvec)
+                    mapping[comp] = petsc_matsymbol[0,u_i]
+                    u_i +=1
+            else:
+                raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
+        # Now gradient terms
+        mapping_grads = OrderedDict()
+        u_x_i = 0
+        for fn in mapping.keys():
+            # Simply generate the required derivative in place, 
+            # and set to be substituted by c pointer
             for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
-                substitute[fn.diff(base_scalar)] = petsc_a_x[a_x_i]
-                a_x_i+=1
+                mapping_grads[fn.diff(base_scalar)] = petsc_grad_matsymbol[0,u_x_i]
+                u_x_i += 1
+        # Concatenate dicts
+        mapping.update(mapping_grads)
+        return mapping
 
-    # do subsitutions
+    # Add mapping across aux variables first.
+    substitute.update(get_variable_mapping(mesh.vars.values(),petsc_a,petsc_a_x))
+    # Now replace with those we want to use from primary dm variables.
+    substitute.update(get_variable_mapping(primary_field_list,petsc_u,petsc_u_x))
+    # Let's do subsitutions now.
     subbedfns = []
     for fn in fns:
         subbedfns.append(fn.subs(substitute))
 
-    # Now go ahead and generate C code from subsituted Sympy expressions
+    # Now go ahead and generate C code from subsituted Sympy expressions.
     from sympy.printing.ccode import C99CodePrinter
     printer = C99CodePrinter()
     eqns = []
@@ -158,16 +196,16 @@ def _createext(name, mesh, fns_residual, fns_jacobian, fns_bcs):
         eqns.append( ("eqn_"+str(index), printer.doprint(fn, out)) )
     MODNAME = "fn_ptr_ext_" + str(name)
 
-    # link against function.cpython which contains symbols our custom functions
+    # Link against function.cpython which contains symbols our custom functions.
     import underworld3.function
     lib = underworld3.function.__file__
     import os
     libdir = os.path.dirname(lib)
     libfile = os.path.basename(lib)
-    # prepend colon to force linking against filename without 'lib' prefix.
+    # Prepend colon to force linking against filename without 'lib' prefix.
     libfile = ":" + libfile  
 
-    # make lists here in anticipation of future requirements
+    # Make lists here in anticipation of future requirements.
     libdirs = [libdir,]
     libfiles = [libfile,]
     incdirs  = [np.get_include(),libdir]
@@ -203,7 +241,7 @@ setup(ext_modules=cythonize(ext_mods))
     residual_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t,                           const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
     jacobian_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t, PetscReal petsc_u_tShift, const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
 
-    # create header top content
+    # Create header top content.
     h_str="""
 typedef int PetscInt;
 typedef double PetscReal;
@@ -212,7 +250,7 @@ typedef int PetscBool;
 #include <math.h> 
 """
 
-    # create cython top content
+    # Create cython top content.
     pyx_str="""
 from underworld3.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.petsc_types cimport PtrContainer
@@ -222,12 +260,12 @@ from libc.math cimport *
 cdef extern from "cy_ext.h" nogil:
 """
 
-    # print includes
+    # Print includes
     for header in printer.headers:
         h_str += "#include \"{}\"\n".format(header)
 
     h_str += "\n"
-    # print equations
+    # Print equations
     for eqn in eqns[0:count_residual_sig]:
         h_str  +="void petsc_{}{}\n{{\n{}\n}}\n\n".format(eqn[0],residual_sig,eqn[1])
         pyx_str+="    void petsc_{}{}\n".format(eqn[0],residual_sig)

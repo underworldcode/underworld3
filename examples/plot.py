@@ -157,9 +157,17 @@ class Plot(lavavu.Viewer):
     def __init__(self, *args, **kwargs):
         super(Plot, self).__init__(*args, **kwargs)
 
-    def nodes(self, mesh, **kwargs):
+    def nodes(self, mesh, values, **kwargs):
         #Plot nodes only as points
-        return self.points('nodes', vertices=mesh_coords(mesh), **kwargs)
+        return self.points('nodes', vertices=mesh_coords(mesh), values=values, **kwargs)
+
+    def swarm_points(self, swarm, values=None, **kwargs):
+        #Plot particles as points
+        ptsobj = self.points('swarm_points', **kwargs)
+        with swarm.access():
+            ptsobj.vertices(swarm.particle_coordinates.data)
+            ptsobj.values(values)
+        return ptsobj
 
     def edges(self, mesh, **kwargs):
         #Mesh lines
