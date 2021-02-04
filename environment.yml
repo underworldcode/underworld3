@@ -1,0 +1,20 @@
+# For conda installation (with pip install -e . to install uw)
+
+name: underworld3                          
+channels:
+  - conda-forge                     
+  - defaults
+dependencies:
+  - petsc >= 3.14
+  - petsc4py
+  - openmpi = 4.0.5                 # probably temporary ... petsc compiled against this one
+  - cython
+  - sympy
+  - mpi4py
+  - h5py 
+
+  - jupyter
+  - jupyterlab
+  - jupytext 
+
+  
