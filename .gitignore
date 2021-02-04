@@ -12,7 +12,23 @@ examples/.ipynb_checkpoints/08-cythonizing-checkpoint.ipynb
 examples/PoissonEq/poisson
 *.h5
 *.xmf
+
+# Cython files (can these be put in a directory we can ignore ?)
 underworld3/petsc_types.c
+underworld3/analytic_sol.c
+underworld3/mesh.c 
+underworld3/swarm.c 
+underworld3/stokes.c 
+
 python/underworld3
 examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
+
+# These can be let loose quite easily
+.ipynb_checkpoints
+
+# pip install -e will do this
+/underworld3.egg-info
+/build
+
+
