@@ -33,10 +33,11 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
         # unique modules.
         jitname += "_" + str(len(_ext_dict.keys()))
     else:                                   # Else name from fns hash
-        jitname = abs(hash((mesh,fns)))
+        jitname = str(abs(hash((mesh,fns))))
     # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
         _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list)
+
     module = _ext_dict[jitname]
     ptrobj = module.getptrobj()
     # print(f'jit time {time.time()-time_s}')
