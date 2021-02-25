@@ -6,6 +6,10 @@ cython_debug
 mesh.c
 poisson.c
 stokes.c
+analytic_sol.c
+maths.c
+swarm.c
+.env
 __pycache__
 *.so
 examples/.ipynb_checkpoints/08-cythonizing-checkpoint.ipynb

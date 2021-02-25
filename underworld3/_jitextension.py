@@ -25,7 +25,7 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
     import time
     time_s = time.time()
 
-    fns = fns_residual + fns_jacobian + tuple(fns_bcs)
+    fns = tuple(fns_residual) + tuple(fns_jacobian) + tuple(fns_bcs)
     import os
     if 'UW_JITNAME' in os.environ:          # If var specified, probably testing.
         jitname = os.environ['UW_JITNAME']
@@ -44,9 +44,9 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
 
 def _createext(name:               str, 
                mesh:               underworld3.mesh.Mesh,
-               fns_residual:       List[sympy.Function], 
-               fns_jacobian:       List[sympy.Function],
-               fns_bcs:            List[sympy.Function],
+               fns_residual:       List[sympy.Basic], 
+               fns_jacobian:       List[sympy.Basic],
+               fns_bcs:            List[sympy.Basic],
                primary_field_list: List[underworld3.mesh.MeshVariable]):
     """
     This creates the required extension which houses the JIT
@@ -86,7 +86,7 @@ def _createext(name:               str,
     from underworld3.mesh import VarType
 
     # Note that the order here is important.
-    fns = fns_residual + tuple(fns_bcs) + fns_jacobian
+    fns = tuple(fns_residual) + tuple(fns_bcs) + tuple(fns_jacobian)
     count_residual_sig = len(fns_residual) + len(fns_bcs)
     count_jacobian_sig = len(fns_jacobian)
 

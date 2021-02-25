@@ -140,24 +140,14 @@ class MeshVariable:
         # TODO: Investigate whether it makes sense to default to global operations here.
         cdef void* ipInfo
         cdef PetscErrorCode ierr
-        import time
-        global now_time 
-        now_time = time.time()
-        def delta_time():
-            global now_time
-            old_now_time = now_time
-            now_time = time.time()
-            return now_time - old_now_time
         ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
         ierr = DMInterpolationSetDim(ipInfo, self.mesh.dim); CHKERRQ(ierr)
         ierr = DMInterpolationSetDof(ipInfo, self.num_components); CHKERRQ(ierr)
-        print(f"eval 1 {delta_time()}")
 
         # Add interpolation points
         # Get c-pointer to data buffer
         cdef double* coords_buff = <double*> coords.data
         ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
-        print(f"eval 2 {delta_time()}")
 
         # Setup interpolation
         cdef DM dm = self.mesh.dm
@@ -165,18 +155,15 @@ class MeshVariable:
         cdef PetscInt fields = self.field_id
         DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm)
         ierr = DMInterpolationSetUp(ipInfo, subdm, 0); CHKERRQ(ierr)
-        print(f"eval 3 {delta_time()}")
 
         cdef np.ndarray outarray = np.empty([len(coords), self.num_components], dtype=np.double)
         # Vector for output
         cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
         # Execute interpolation.
         cdef Vec pyfieldvec
-        print(f"eval 4 {delta_time()}")
         with self.mesh.access():
             pyfieldvec = self.vec
             ierr = DMInterpolationEvaluate(ipInfo, subdm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-        print(f"eval 5 {delta_time()}")
         ierr = DMDestroy(&subdm);CHKERRQ(ierr)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
@@ -264,16 +251,16 @@ class _MeshBase():
 
         self._accessed = False
 
-    def getLocalVariableVec(self) -> PETSc.Vec:
+    def getInterlacedLocalVariableVec(self) -> PETSc.Vec:
         """
-        Returns a local Petsc temporary vector containing a 
-        flattened representation of all the mesh variables.
+        Returns a local Petsc temporary vector containing an 
+        interlaced flattened representation of all the mesh variables.
 
         This is temporary vector which should be returned using
-        `restoreLocalVariableVec()`.
+        `restoreInterlacedLocalVariableVec()`.
 
         Alternatively, the user might use the context managed 
-        version `getLocalVariableVecManaged()`.
+        version `getInterlacedLocalVariableVecManaged()`.
         """
         # create the local vector (memory chunk) and attach to original dm
         a_local = self.dm.getLocalVec()
@@ -294,23 +281,23 @@ class _MeshBase():
         self._a_local = a_local
         return a_local
 
-    def restoreLocalVariableVec(self):
+    def restoreInterlacedLocalVariableVec(self):
         """
-        Restores vector obtained using `getLocalVariableVec()`
+        Restores vector obtained using `getInterlacedLocalVariableVec()`
         """
         self.dm.restoreLocalVec(self._a_local)
 
     @contextlib.contextmanager
-    def getLocalVariableVecManaged(self) -> PETSc.Vec:
+    def getInterlacedLocalVariableVecManaged(self) -> PETSc.Vec:
         """
-        Context managed version of `getLocalVariableVec()`.
+        Context managed version of `getInterlacedLocalVariableVec()`.
         """
         try:
-            yield self.getLocalVariableVec()
+            yield self.getInterlacedLocalVariableVec()
         except:
             raise
         finally:
-            self.restoreLocalVariableVec()
+            self.restoreInterlacedLocalVariableVec()
 
 
     @contextlib.contextmanager
@@ -428,6 +415,7 @@ class Mesh(_MeshBase):
 
         options = PETSc.Options()
         options["dm_plex_separate_marker"] = None
+        options["dm_plex_hash_location"] = None
         self.elementRes = elementRes
         if minCoords==None : minCoords=len(elementRes)*(0.,)
         self.minCoords = minCoords

@@ -3,7 +3,7 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.stokes import Stokes
+from underworld3.systems import Stokes
 import numpy as np
 import sympy
 
@@ -32,7 +32,7 @@ options["snes_rtol"] = 1.0e-7
 # %%
 n_els = 64
 v_degree = 1
-mesh = uw.Mesh(elementRes=(n_els,n_els))
+mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
 
 # %%
 # NL problem 

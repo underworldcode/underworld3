@@ -1,11 +1,11 @@
 from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, IS, PetscIS, Quad, PetscQuadrature, FE, PetscFE, Mat, PetscMat
-from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
-from .petsc_types cimport PtrContainer
+from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
+from ..petsc_types cimport PtrContainer
 import underworld3 as uw
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
-from ._jitextension import getext, diff_fn1_wrt_fn2
+from .._jitextension import getext, diff_fn1_wrt_fn2
 
 # TODO
 # gil v nogil 
@@ -45,8 +45,8 @@ class Stokes:
             p_degree = u_degree - 1
 
         # create public velocity/pressure variables
-        self._u = uw.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.mesh.VarType.VECTOR, degree=u_degree )
-        self._p = uw.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.mesh.VarType.SCALAR, degree=p_degree )
+        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.mesh.VarType.VECTOR, degree=u_degree )
+        self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.mesh.VarType.SCALAR, degree=p_degree )
 
         # create private variables
         options = PETSc.Options()
@@ -58,6 +58,16 @@ class Stokes:
         self.petsc_fe_p = PETSc.FE().createDefault(self.dm.getDimension(),        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
+
+        # Set pressure to use velocity's quadrature object.
+        # I'm not sure if this is necessary actually as we 
+        # set them to have the same degree quadrature above. 
+        cdef PetscQuadrature u_quad
+        cdef FE c_fe = self.petsc_fe_u
+        ierr = PetscFEGetQuadrature(c_fe.fe, &u_quad); CHKERRQ(ierr)
+        # set pressure quad here
+        c_fe = self.petsc_fe_p
+        ierr = PetscFESetQuadrature(c_fe.fe,u_quad); CHKERRQ(ierr)
 
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
@@ -335,16 +345,16 @@ class Stokes:
 
         # Set all quadratures to velocity quadrature.
         # Note that this needs to be done before the call to 
-        # `getLocalVariableVec()`, as `createDS` 
+        # `getInterlacedLocalVariableVec()`, as `createDS` 
         # TODO: Check if we need to unwind these quadratures. 
         #       I believe the PETSc reference counting should 
         #       do the job, but I'm not 100% sure.
-        cdef PetscQuadrature quad
+        cdef PetscQuadrature u_quad
         cdef FE c_fe = self.petsc_fe_u
-        ierr = PetscFEGetQuadrature(c_fe.fe, &quad); CHKERRQ(ierr)
+        ierr = PetscFEGetQuadrature(c_fe.fe, &u_quad); CHKERRQ(ierr)
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
             c_fe = fe
-            ierr = PetscFESetQuadrature(c_fe.fe,quad); CHKERRQ(ierr)        # set to vel quad
+            ierr = PetscFESetQuadrature(c_fe.fe,u_quad); CHKERRQ(ierr)        
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
@@ -354,7 +364,7 @@ class Stokes:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
-        a_local = self.mesh.getLocalVariableVec()
+        a_local = self.mesh.getInterlacedLocalVariableVec()
         self.dm.compose("A", a_local)
         # TODO required? - attach the aux dm to the original dm
         self.dm.compose("dmAux", self.mesh.dm)
@@ -366,7 +376,7 @@ class Stokes:
         cdef Vec clvec = lvec
         cdef DM dm = self.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
-        self.mesh.restoreLocalVariableVec()
+        self.mesh.restoreInterlacedLocalVariableVec()
 
         # This comment relates to previous implementation, but I'll leave it 
         # here for now as something to be aware of / investigate further.

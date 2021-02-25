@@ -3,7 +3,6 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.stokes import Stokes
 import numpy as np
 
 options = PETSc.Options()
@@ -22,12 +21,10 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it. 
 # options["snes_max_it"] = 1
 
-# %%
 n_els = 64
-mesh = uw.Mesh(elementRes=(n_els,n_els))
-# %%
+mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
 v_degree = 1
-stokes = Stokes(mesh, u_degree=v_degree )
+stokes = uw.systems.Stokes(mesh, u_degree=v_degree )
 
 # %%
 # Set some things
@@ -58,8 +55,11 @@ solC = uw2.function.analytic.SolC()
 vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
 
 # %%
+from mpi4py import MPI
+comm = MPI.COMM_WORLD
 from numpy import linalg as LA
 with mesh.access():
-    print("Diff norm = {}".format(LA.norm(stokes.u.data - vel_soln_analytic)))
+    if comm.rank == 0:
+        print("Diff norm = {}".format(LA.norm(stokes.u.data - vel_soln_analytic)))
     if not np.allclose(stokes.u.data, vel_soln_analytic, rtol=1.e-2):
         raise RuntimeError("Solve did not produce expected result.")

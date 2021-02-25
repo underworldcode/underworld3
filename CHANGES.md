@@ -1,6 +1,14 @@
 CHANGES: Underworld3
 ====================
 
+Release 0.0.2 []
+----------------
+* Addition of `underworld3.maths.Integral` class for calculating
+  integrals via PETSc & UW3 JIT method. 
+* Rearrangement of UW3 classes to closer align with UW2.
+* Addition of Rayleigh-Taylor model.
+
+
 Release 0.0.1 []
 ----------------
 * Big rework of PETSc API usage. Now all 

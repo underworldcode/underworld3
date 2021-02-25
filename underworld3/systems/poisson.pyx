@@ -1,8 +1,8 @@
 from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, FE, PetscFE, PetscQuadrature
-from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
-from .petsc_types cimport PtrContainer
+from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
+from ..petsc_types cimport PtrContainer
 import underworld3 as uw
-from ._jitextension import getext, diff_fn1_wrt_fn2
+from .._jitextension import getext, diff_fn1_wrt_fn2
 from sympy import sympify
 # TODO
 # gil v nogil 
@@ -32,11 +32,11 @@ class Poisson:
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        self._u = uw.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.mesh.VarType.SCALAR, degree=degree )
+        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.mesh.VarType.SCALAR, degree=degree )
         # create private variables
         options = PETSc.Options()
         options.setValue("uprivate_petscspace_degree", degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(self.dm.getDimension(), 1, mesh.isSimplex, degree,"uprivate_", PETSc.COMM_WORLD)
+        self.petsc_fe_u = PETSc.FE().createDefault(self.dm.getDimension(), 1, mesh.isSimplex, degree, "uprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -178,7 +178,7 @@ class Poisson:
 
         # Set all quadratures to u quadrature.
         # Note that this needs to be done before the call to 
-        # `getLocalVariableVec()`, as `createDS` 
+        # `getInterlacedLocalVariableVec()`, as `createDS` 
         # TODO: Check if we need to unwind these quadratures. 
         #       I believe the PETSc reference counting should 
         #       do the job, but I'm not 100% sure.
@@ -197,7 +197,7 @@ class Poisson:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
-        a_local = self.mesh.getLocalVariableVec()
+        a_local = self.mesh.getInterlacedLocalVariableVec()
         self.dm.compose("A", a_local)
         self.dm.compose("dmAux", self.mesh.dm)
 
@@ -208,7 +208,7 @@ class Poisson:
         cdef Vec clvec = lvec
         cdef DM dm = self.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
-        self.mesh.restoreLocalVariableVec()
+        self.mesh.restoreInterlacedLocalVariableVec()
 
         # This comment relates to previous implementation, but I'll leave it 
         # here for now as something to be aware of / investigate further.

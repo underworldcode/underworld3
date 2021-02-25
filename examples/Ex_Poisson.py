@@ -3,7 +3,7 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.poisson import Poisson
+from underworld3.systems import Poisson
 import numpy as np
 
 options = PETSc.Options()
@@ -19,7 +19,7 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.Mesh()
+mesh = uw.mesh.Mesh()
 bnds = mesh.boundary
 
 # %%
@@ -77,7 +77,7 @@ with mesh.access():
 
 # %%
 # nonlinear example
-mesh = uw.Mesh( elementRes=(8, 8), simplex=False )
+mesh = uw.mesh.Mesh( elementRes=(8, 8), simplex=False )
 poisson = Poisson(mesh, degree=1)
 
 

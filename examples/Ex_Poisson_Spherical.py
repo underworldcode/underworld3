@@ -1,7 +1,7 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.poisson import Poisson
+from underworld3.systems import Poisson
 import numpy as np
 
 options = PETSc.Options()
@@ -17,7 +17,7 @@ options["snes_monitor_short"] = None
 options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.Spherical(refinements=3)
+mesh = uw.mesh.Spherical(refinements=3)
 bnds = mesh.boundary
 
 # %%

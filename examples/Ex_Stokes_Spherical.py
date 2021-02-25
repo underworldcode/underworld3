@@ -3,7 +3,7 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.stokes import Stokes
+from underworld3.systems import Stokes
 import numpy as np
 
 options = PETSc.Options()
@@ -24,7 +24,7 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 
 # %%
 n_els = 64
-mesh = uw.Spherical(refinements=4)
+mesh = uw.mesh.Spherical(refinements=4)
 # %%
 v_degree = 1
 stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )

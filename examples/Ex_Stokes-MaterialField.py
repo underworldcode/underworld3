@@ -1,7 +1,7 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.stokes import Stokes
+from underworld3.systems import Stokes
 import numpy as np
 
 options = PETSc.Options()
@@ -24,7 +24,7 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 n_els = 32
 minCoord = (-1,-1)
 maxCoord = (1,1)
-mesh = uw.Mesh(elementRes=(n_els,n_els),
+mesh = uw.mesh.Mesh(elementRes=(n_els,n_els),
                minCoords=minCoord, 
                maxCoords=maxCoord )
 # %%
@@ -33,7 +33,7 @@ stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
 # add & init the mat var
-matvar = uw.MeshVariable( mesh=mesh, num_components=1, name="mat", vtype=uw.mesh.VarType.SCALAR, degree=v_degree )
+matvar = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="mat", vtype=uw.mesh.VarType.SCALAR, degree=v_degree )
 
 inside = mesh.data[:,0]**2 + mesh.data[:,1]**2 < 0.5**2
 with mesh.access(matvar):
