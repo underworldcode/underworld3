@@ -250,8 +250,8 @@ class Swarm(PETSc.DMSwarm):
                     var._data.flags.writeable = var._old_data_flag
                 var._data = None
                 self.restoreField(var.name)
-                # do particle migration if coords changes
-                if (var==self.particle_coordinates) and (var in writeable_vars):
-                    self.migrate(remove_sent_points=True)
                 var._is_accessed = False
+            # do particle migration if coords changes
+            if self.particle_coordinates in writeable_vars:
+                self.migrate(remove_sent_points=True)
 

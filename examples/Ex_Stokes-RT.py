@@ -1,5 +1,6 @@
 # %%
 import numpy as np
+import os
 import math
 
 import time
@@ -20,7 +21,7 @@ stokes_inner_tol = 1e-6
 stokes_outer_tol = 1e-5
 ppcell = 3
 nsteps = 10
-amplitude  = 0.06
+amplitude  = 0.02
 offset     = 0.2
 print_time = 10
 model_end_time = 270.
@@ -30,7 +31,6 @@ outputPath = 'output/'
 # Make output directory if necessary.
 from mpi4py import MPI
 if MPI.COMM_WORLD.rank==0:
-    import os
     if not os.path.exists(outputPath):
         os.makedirs(outputPath)
 
@@ -77,8 +77,6 @@ def do_uw3():
     swarm  = uw.swarm.Swarm(mesh)
     # Add variable for material
     matSwarmVar      = swarm.add_variable(name="matSwarmVar",      num_components=1, dtype=PETSc.IntType)
-    matSwarmVarFloat = swarm.add_variable(name="matSwarmVarFloat", num_components=1, dtype=PETSc.ScalarType)
-    velSwarmVar = swarm.add_variable(name="velSwarmVar", num_components=mesh.dim, dtype=PETSc.ScalarType)
     # Note that `ppcell` specifies particles per cell per dim.
     swarm.populate(ppcell=ppcell)
 
@@ -86,7 +84,7 @@ def do_uw3():
     # Add some randomness to the particle distribution
     import numpy as np
     with swarm.access(swarm.particle_coordinates):
-        factor = 0.25*boxLength/n_els/ppcell
+        factor = 0.5*boxLength/n_els/ppcell
         swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
 
     #%%
@@ -122,8 +120,8 @@ def do_uw3():
     stokes.bodyforce = -density*mesh.N.j
 
     stokes.viscosity = Piecewise( ( viscosityRatio, Abs(matMeshVar.fn - lightIndex)<0.5 ),
-                                (             1., Abs(matMeshVar.fn - denseIndex)<0.5 ),
-                                (             1.,                                True ) )
+                                  (             1., Abs(matMeshVar.fn - denseIndex)<0.5 ),
+                                  (             1.,                                True ) )
 
     # note with petsc we always need to provide a vector of correct cardinality. 
     bnds = mesh.boundary
@@ -159,8 +157,8 @@ def do_uw3():
             with swarm.access(),mesh.access():
                 figs.swarm_points(swarm, matSwarmVar.data, pointsize=4, colourmap="blue green", colourbar=False, title=time)
                 # fig.nodes(mesh,matMeshVar.data,colourmap="blue green", pointsize=6, pointtype=4)
-            outputFilename = outputPath+f"uw3_image_{str(step).zfill(4)}.png"
-            figs.save(outputFilename)
+            outputFilename = os.path.join(outputPath,f"uw3_image_{str(step).zfill(4)}.png")
+            figs.image(outputFilename)
         ptime = delta_time()
 
         dt = stokes.dt()
@@ -324,9 +322,8 @@ def do_uw2():
                 ptsobj.values(values)
 
             uw2points(figs, swarm, materialIndex.data, pointsize=4, colourmap="blue green", colourbar=False, title=time)
-            outputFilename = outputPath+f"uw2_image_{str(step).zfill(4)}.png"
-            figs.save(outputFilename)
-
+            outputFilename = os.path.join(outputPath,f"uw2_image_{str(step).zfill(4)}.png")
+            figs.image(outputFilename)
 
         if(uw.mpi.rank==0):
             print(f"Step {str(step).rjust(3)}, time {time:6.2f}, vrms {vrms:.3e}")
@@ -346,15 +343,15 @@ uw2_time, uw2_vrms = do_uw2()
 
 # %%
 if MPI.COMM_WORLD.rank==0:
-    if   viscosityRatio == 1.0 :
-        data = np.loadtxt(inputPath+'VrmsCaseA.txt', unpack=True )
-    elif viscosityRatio == 0.1 :
-        data = np.loadtxt(inputPath+'VrmsCaseB.txt', unpack=True )
-    elif viscosityRatio == 0.01 :
-        data = np.loadtxt(inputPath+'VrmsCaseC.txt', unpack=True )
+    if   np.isclose(viscosityRatio, 1.00) :
+        data = np.loadtxt(os.path.join(inputPath,'VrmsCaseA.txt'), unpack=True )
+    elif np.isclose(viscosityRatio, 0.10) :
+        data = np.loadtxt(os.path.join(inputPath,'VrmsCaseB.txt'), unpack=True )
+    elif np.isclose(viscosityRatio, 0.01) :
+        data = np.loadtxt(os.path.join(inputPath,'VrmsCaseC.txt'), unpack=True )
     else :
         print('No specific data found - default to Case A')
-        data = np.loadtxt(inputPath+'VrmsCaseA.txt', unpack=True )
+        data = np.loadtxt(os.path.join(inputPath,'VrmsCaseA.txt'), unpack=True )
 
     # Load into data arrays to compare with timevals and vrmsvals from above.
     timeCompare, vrmsCompare = data[0], data[1] 
@@ -369,7 +366,7 @@ if MPI.COMM_WORLD.rank==0:
     ax.set_xlabel('Time')
     ax.set_ylabel('RMS velocity')
     ax.set_xlim([0.0,1000.0])
-    fig.savefig("vrms.png")
+    fig.savefig(os.path.join(outputPath,"vrms.png"))
 
 # %% 
 # %%
