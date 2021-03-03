@@ -90,7 +90,7 @@ RUN pip3 install --no-cache-dir mpi4py
 
 # build petsc
 WORKDIR /tmp/petsc-build
-ENV PETSC_BRANCH=master
+ENV PETSC_BRANCH=main
 RUN git clone -b ${PETSC_BRANCH} https://gitlab.com/petsc/petsc/
 WORKDIR /tmp/petsc-build/petsc
 RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
