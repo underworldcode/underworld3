@@ -90,10 +90,11 @@ RUN pip3 install --no-cache-dir mpi4py
 
 # build petsc
 WORKDIR /tmp/petsc-build
-ENV PETSC_BRANCH=master
-RUN git clone -b ${PETSC_BRANCH} https://gitlab.com/petsc/petsc/
+ENV PETSC_BRANCH=main
+RUN git clone -b ${PETSC_BRANCH} https://gitlab.com/petsc/petsc.git
 WORKDIR /tmp/petsc-build/petsc
 RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
+                --with-petsc4py=1               \
                 --with-zlib=1                   \
                 --download-mumps=1              \
                 --download-parmetis=1           \
@@ -112,8 +113,9 @@ RUN make PETSC_DIR=/tmp/petsc-build/petsc PETSC_ARCH=arch-linux-c-debug install
 ENV PETSC_DIR=/usr/local
 ENV PETSC_ARCH=arch-linux-c-debug
 
-# petsc4py
-RUN pip3 install --no-cache-dir git+https://gitlab.com/petsc/petsc4py/
+# petsc4py - install is now done via petsc
+ENV PYTHONPATH=${PETSC_DIR}/lib
+#RUN pip3 install --no-cache-dir git+https://gitlab.com/petsc/petsc4py/
 
 # h5py
 RUN CC=h5pcc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} pip3 install --no-cache-dir --no-binary=h5py git+https://github.com/h5py/h5py
