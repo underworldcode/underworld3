@@ -182,7 +182,7 @@ def _createext(name:               str,
         subbedfns.append(fn.subs(substitute))
 
     # Now go ahead and generate C code from subsituted Sympy expressions.
-    from sympy.printing.ccode import C99CodePrinter
+    from sympy.printing.c import C99CodePrinter
     printer = C99CodePrinter()
     eqns = []
     for index, fn in enumerate(subbedfns):
