@@ -25,7 +25,8 @@ def mesh_coords(mesh):
     return coords
 
 def mesh_edges(mesh):
-    coords = mesh_coords(mesh)
+    # coords = mesh_coords(mesh)
+    # import pdb; pdb.set_trace()
     starti,endi = mesh.dm.getDepthStratum(1)
     #Offset of the node indices (level 0)
     coffset = mesh.dm.getDepthStratum(0)[0]

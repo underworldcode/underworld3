@@ -180,9 +180,9 @@ class Swarm(PETSc.DMSwarm):
         
         self.layout = layout
         
-        elements_counts = self.mesh.elementRes[0] * self.mesh.elementRes[1]
+        elstart,elend = self.mesh.dm.getHeightStratum(0)
         self.dm.finalizeFieldRegister()
-        self.dm.setLocalSizes(elements_counts * ppcell, 0)
+        self.dm.setLocalSizes((elend-elstart) * ppcell, 0)
         self.dm.insertPointUsingCellDM(self.layout.value, ppcell)
         return self
 

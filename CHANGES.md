@@ -1,6 +1,13 @@
 CHANGES: Underworld3
 ====================
 
+2021-03-11
+----------
+* Added `MeshVariable.coord` attribute. Mesh variables
+  now record their vertex coordinates array directly. 
+* Added `parse_cmd_line_options()` routine which 
+  ingests PETSc command line options.
+
 Release 0.0.2 []
 ----------------
 * Addition of `underworld3.maths.Integral` class for calculating

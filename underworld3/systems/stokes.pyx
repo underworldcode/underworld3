@@ -51,11 +51,11 @@ class Stokes:
         # create private variables
         options = PETSc.Options()
         options.setValue("uprivate_petscspace_degree", u_degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(self.dm.getDimension(), mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         options.setValue("pprivate_petscspace_degree", p_degree)
-        self.petsc_fe_p = PETSc.FE().createDefault(self.dm.getDimension(),        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
+        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 

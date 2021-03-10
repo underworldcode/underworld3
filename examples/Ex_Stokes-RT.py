@@ -20,7 +20,6 @@ viscosityRatio = 1.0
 stokes_inner_tol = 1e-6
 stokes_outer_tol = 1e-5
 ppcell = 3
-nsteps = 10
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
@@ -33,6 +32,9 @@ from mpi4py import MPI
 if MPI.COMM_WORLD.rank==0:
     if not os.path.exists(outputPath):
         os.makedirs(outputPath)
+    
+from underworld3 import parse_cmd_line_options
+parse_cmd_line_options()
 
 # %%
 def do_uw3():
@@ -45,6 +47,7 @@ def do_uw3():
     # options["pc_type"]  = "svd"
     options["ksp_rtol"] =  1.0e-6
     options["ksp_atol"] =  1.0e-6
+    # options["ksp_monitor"] = None
     # options["snes_type"]  = "fas"
     options["snes_converged_reason"] = None
     options["snes_monitor_short"] = None
@@ -65,12 +68,13 @@ def do_uw3():
 
     mesh = uw.mesh.Mesh(elementRes=(    n_els,)*dim, 
                         minCoords =(       0.,)*dim, 
-                        maxCoords =(boxLength,1.) )
+                        maxCoords =(boxLength,1.),
+                        simplex=False )
     u_degree = 1
     stokes = Stokes(mesh, u_degree=u_degree )
     
     # Create a variable to store material variable
-    matMeshVar = uw.mesh.MeshVariable(mesh, 1, "matmeshvar", uw.mesh.VarType.SCALAR, degree=u_degree)
+    matMeshVar = uw.mesh.MeshVariable(mesh, 1, "matmeshvar", uw.mesh.VarType.SCALAR, degree=u_degree+1)
 
     #%%
     # Create swarm
@@ -105,7 +109,7 @@ def do_uw3():
     from scipy import spatial
     with swarm.access():
         tree = spatial.KDTree(swarm.particle_coordinates.data)
-    nn_map = tree.query(mesh.data)[1]
+    nn_map = tree.query(matMeshVar.coords)[1]
 
     # set NN vals on mesh var
     with swarm.access(),mesh.access(matMeshVar):
@@ -173,7 +177,7 @@ def do_uw3():
         # update
         with swarm.access():
             tree = spatial.KDTree(swarm.particle_coordinates.data)
-        nn_map = tree.query(mesh.data)[1]
+        nn_map = tree.query(matMeshVar.coords)[1]
 
         with swarm.access(),mesh.access(matMeshVar):
             matMeshVar.data[:,0] = matSwarmVar.data[nn_map,0]

@@ -1,4 +1,4 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, FE, PetscFE, Vec, PetscVec, IS, PetscIS, PetscDM, PetscSF, MPI_Comm, PetscObject
+from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, FE, PetscFE, Vec, PetscVec, IS, PetscIS, PetscDM, PetscSF, MPI_Comm, PetscObject, Mat, PetscMat
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from .petsc_types cimport PtrContainer
 from petsc4py.PETSc cimport GetCommDefault, GetComm
@@ -14,8 +14,6 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode DMPlexGetMinRadius(PetscDM dm, PetscReal *minradius)
     PetscErrorCode VecDestroy(PetscVec *v)
-    PetscErrorCode DMFieldEvaluate(void *field, PetscVec points, int datatype, void *B, void *D, void *H)
-    PetscErrorCode DMGetField(PetscDM dm, PetscInt f, void *label, void *field)
     PetscErrorCode DMInterpolationCreate(MPI_Comm comm, void *ipInfo)
     PetscErrorCode DMInterpolationSetDim(void *ipInfo, PetscInt dim)
     PetscErrorCode DMInterpolationSetDof(void *ipInfo, PetscInt dof)
@@ -23,12 +21,10 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationSetUp(void *ipInfo, PetscDM dm, int petscbool)
     PetscErrorCode DMInterpolationEvaluate(void *ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
     PetscErrorCode DMInterpolationDestroy(void *ipInfo)
-    PetscErrorCode DMInterpolationGetVector(void* ipInfo, PetscVec *v)
-    PetscErrorCode DMInterpolationRestoreVector(void* ipInfo, PetscVec *v)
     PetscErrorCode DMDestroy(PetscDM *dm)
-    # PetscErrorCode CHKERRQ(PetscErrorCode ierr)
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
-    PetscErrorCode DMCreateLocalVector(PetscDM dm, PetscVec *vec)
+    PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
+    PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     MPI_Comm MPI_COMM_SELF
 
 cdef CHKERRQ(PetscErrorCode ierr):
@@ -217,6 +213,14 @@ class MeshVariable:
         """
         return self.__gvec.max()
 
+    @property
+    def coords(self):
+        """
+        Returns the array of variable vertex coordinates. 
+        """
+        return self.mesh._get_coords_for_var(self)
+
+
 class _MeshBase():
     def __init__(self, simplex, *args,**kwargs):
         self.isSimplex = simplex
@@ -248,8 +252,26 @@ class _MeshBase():
         self.min_radius = minradius
         VecDestroy(&cellgeom)
         VecDestroy(&facegeom)
-
+        
         self._accessed = False
+
+        # dictionary for variable coordinate arrays
+        self._coord_array = {}
+        # let's go ahead and do an initial projection from linear (the default) 
+        # to linear. this really is a nothing operation, but a 
+        # side effect of this operation is that coordinate DM DMField is 
+        # converted to the required `PetscFE` type. this may become necessary
+        # later where we call the interpolation routines to project from the linear
+        # mesh coordinates to other mesh coordinates. 
+        options = PETSc.Options()
+        options.setValue("meshproj_petscspace_degree", 1) 
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, 1,"meshproj_", PETSc.COMM_WORLD)
+        cdef FE c_fe = cdmfe
+        cdef DM c_dm = self.dm
+        ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
+        # now set copy of linear array into dictionary
+        arr = self.dm.getCoordinatesLocal().array
+        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
 
     def getInterlacedLocalVariableVec(self) -> PETSc.Vec:
         """
@@ -342,7 +364,7 @@ class _MeshBase():
             # create & set vec
             var._set_vec(available=True)
             # grab numpy object, setting read only if necessary
-            var._data = var.vec.array.reshape( (-1, var.num_components) )
+            var._data = var.vec.array.reshape( -1, var.num_components )
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -382,11 +404,7 @@ class _MeshBase():
     def data(self):
         # get flat array
         arr = self.dm.getCoordinatesLocal().array
-        # get number of nodes
-        nnodes = len(arr)/self.dim
-        # round & cast to int to ensure correct value
-        nnodes = int(round(nnodes))
-        return arr.reshape((nnodes, self.dim))
+        return arr.reshape(-1, self.dim)
 
     @property
     def dim(self):
@@ -404,6 +422,39 @@ class _MeshBase():
     @property
     def vars(self):
         return self._vars
+
+    def _get_coords_for_var(self, var):
+        """
+        This function returns the vertex array for the 
+        provided variable. If the array does not already exist, 
+        it is first created and then returned.
+        """
+        key = (self.isSimplex,var.degree) 
+        # if array already created, return. 
+        if key in self._coord_array:
+            return self._coord_array[key]
+        # otherwise create and return
+        cdmOld = self.dm.getCoordinateDM()
+        cdmNew = cdmOld.clone()
+        options = PETSc.Options()
+        options.setValue("coordinterp_petscspace_degree", var.degree) 
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
+        cdmNew.setField(0,cdmfe)
+        cdmNew.createDS()
+        matInterp = cdmOld.createInterpolation(cdmNew)[0]  # get Mat only
+        coordsOld = self.dm.getCoordinates()
+        coordsNew = cdmNew.getGlobalVec()
+        cdef Mat c_matInterp = matInterp
+        cdef Vec c_coordsOld = coordsOld
+        cdef Vec c_coordsNew = coordsNew
+        ierr = MatInterpolate(c_matInterp.mat, c_coordsOld.vec, c_coordsNew.vec); CHKERRQ(ierr)
+        arr = coordsNew.array
+        # reshape and grab copy
+        arrcopy = arr.reshape(-1,self.dim).copy()
+        # record into coord array
+        self._coord_array[key] = arrcopy
+        # return
+        return arrcopy
 
 class Mesh(_MeshBase):
     def __init__(self, 
