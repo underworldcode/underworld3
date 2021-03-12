@@ -1,5 +1,15 @@
 CHANGES: Underworld3
 ====================
+2021-03-12
+----------
+* Added a mesh-variable proxy for swarm variables.
+  This variable is automatically kept in sync with
+  the swarm variable. Currently we use the SciPy
+  kdtree methods to map from swarm variables to 
+  mesh variable nodes. 
+* Added the `Stateful` mixin which helps to keep 
+  track of the state of objects. 
+
 
 2021-03-11
 ----------
