@@ -21,3 +21,6 @@ python/underworld3
 examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
 build
+keep
+output
+old

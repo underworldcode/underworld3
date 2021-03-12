@@ -32,7 +32,7 @@ class Poisson:
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.mesh.VarType.SCALAR, degree=degree )
+        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.VarType.SCALAR, degree=degree )
         # create private variables
         options = PETSc.Options()
         options.setValue("uprivate_petscspace_degree", degree) # for private variables

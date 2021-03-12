@@ -45,8 +45,8 @@ class Stokes:
             p_degree = u_degree - 1
 
         # create public velocity/pressure variables
-        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.mesh.VarType.VECTOR, degree=u_degree )
-        self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.mesh.VarType.SCALAR, degree=p_degree )
+        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
+        self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
 
         # create private variables
         options = PETSc.Options()

@@ -33,7 +33,7 @@ if MPI.COMM_WORLD.rank==0:
     if not os.path.exists(outputPath):
         os.makedirs(outputPath)
     
-from underworld3 import parse_cmd_line_options
+from underworld3.tools import parse_cmd_line_options
 parse_cmd_line_options()
 
 # %%
@@ -74,7 +74,7 @@ def do_uw3():
     stokes = Stokes(mesh, u_degree=u_degree )
     
     # Create a variable to store material variable
-    matMeshVar = uw.mesh.MeshVariable(mesh, 1, "matmeshvar", uw.mesh.VarType.SCALAR, degree=u_degree+1)
+    # matMeshVar = uw.mesh.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
 
     #%%
     # Create swarm
@@ -87,6 +87,7 @@ def do_uw3():
     #%%
     # Add some randomness to the particle distribution
     import numpy as np
+    np.random.seed(0)
     with swarm.access(swarm.particle_coordinates):
         factor = 0.5*boxLength/n_els/ppcell
         swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
@@ -105,26 +106,16 @@ def do_uw3():
         perturbation = offset + amplitude*np.cos( k*swarm.particle_coordinates.data[:,0] )
         matSwarmVar.data[:,0] = np.where( perturbation>swarm.particle_coordinates.data[:,1], lightIndex, denseIndex )
 
-    # do kdtree
-    from scipy import spatial
-    with swarm.access():
-        tree = spatial.KDTree(swarm.particle_coordinates.data)
-    nn_map = tree.query(matMeshVar.coords)[1]
-
-    # set NN vals on mesh var
-    with swarm.access(),mesh.access(matMeshVar):
-        matMeshVar.data[:,0] = matSwarmVar.data[nn_map,0]
-
     from sympy import Piecewise, ceiling, Abs
 
-    density = Piecewise( ( 0., Abs(matMeshVar.fn - lightIndex)<0.5 ),
-                         ( 1., Abs(matMeshVar.fn - denseIndex)<0.5 ),
+    density = Piecewise( ( 0., Abs(matSwarmVar.fn - lightIndex)<0.5 ),
+                         ( 1., Abs(matSwarmVar.fn - denseIndex)<0.5 ),
                          ( 0.,                                True ) )
 
     stokes.bodyforce = -density*mesh.N.j
 
-    stokes.viscosity = Piecewise( ( viscosityRatio, Abs(matMeshVar.fn - lightIndex)<0.5 ),
-                                  (             1., Abs(matMeshVar.fn - denseIndex)<0.5 ),
+    stokes.viscosity = Piecewise( ( viscosityRatio, Abs(matSwarmVar.fn - lightIndex)<0.5 ),
+                                  (             1., Abs(matSwarmVar.fn - denseIndex)<0.5 ),
                                   (             1.,                                True ) )
 
     # note with petsc we always need to provide a vector of correct cardinality. 
@@ -174,17 +165,8 @@ def do_uw3():
             swarm.particle_coordinates.data[:]+=dt*vel_on_particles
         atime = delta_time()
 
-        # update
-        with swarm.access():
-            tree = spatial.KDTree(swarm.particle_coordinates.data)
-        nn_map = tree.query(matMeshVar.coords)[1]
-
-        with swarm.access(),mesh.access(matMeshVar):
-            matMeshVar.data[:,0] = matSwarmVar.data[nn_map,0]
-        nntime = delta_time()
-
         vrms_val = vrms()
-        print(f"Step {str(step).rjust(3)}, time {time:6.2f}, vrms {vrms_val:.3e}, Time(s): Solve {stime:5.2f}, Plot {ptime:5.2f}, Evaluate {etime:5.2f}, Advect {atime:5.2f}, NN {nntime:5.2f}")
+        print(f"Step {str(step).rjust(3)}, time {time:6.2f}, vrms {vrms_val:.3e}, Time(s): Solve {stime:5.2f}, Plot {ptime:5.2f}, Evaluate {etime:5.2f}, Advect {atime:5.2f}")
 
         timeVal.append(time)
         vrmsVal.append(vrms_val)

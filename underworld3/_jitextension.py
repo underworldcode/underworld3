@@ -83,7 +83,7 @@ def _createext(name:               str,
 
     """
     from sympy import symbols, Eq, MatrixSymbol
-    from underworld3.mesh import VarType
+    from underworld3 import VarType
 
     # Note that the order here is important.
     fns = tuple(fns_residual) + tuple(fns_bcs) + tuple(fns_jacobian)

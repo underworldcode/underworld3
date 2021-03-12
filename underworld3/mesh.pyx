@@ -8,6 +8,8 @@ import contextlib
 import numpy as np
 cimport numpy as np
 import sympy
+import underworld3 as uw 
+from underworld3 import _api_tools
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexCreateBallMesh(MPI_Comm, PetscInt, PetscReal, PetscDM*)
@@ -48,13 +50,7 @@ cdef CHKERRQ(PetscErrorCode ierr):
 #         # return f"{type(self).__name__}({', '.join(printer._print(arg) for arg in self.args)})_bobobo"
 #         return f"petsc_u[0]"
 
-from enum import Enum
-class VarType(Enum):
-    SCALAR=1
-    VECTOR=2
-    OTHER=3  # add as required 
-
-class MeshVariable:
+class MeshVariable(_api_tools.Stateful):
     class MeshVariableFn(sympy.Function):
         _printstr = None 
         _header = None
@@ -80,13 +76,20 @@ class MeshVariable:
                 raise RuntimeError("Trying to print unprintable function.")
             return self._printstr.format(param_str)
 
-    def __init__(self, mesh, num_components, name, vtype, degree=1):
+    def __init__(self, name, mesh, num_components, vtype=None, degree=1):
         if mesh._accessed:
             raise RuntimeError("It is not possible to add new variables to a mesh after existing variables have been accessed.")
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
-        if not isinstance(vtype, VarType):
-            raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `uw.mesh.VarType.SCALAR`.")
+        if vtype==None:
+            if   num_components==1:
+                vtype=uw.VarType.SCALAR
+            elif num_components==mesh.dim:
+                vtype=uw.VarType.VECTOR
+            else:
+                raise ValueError("Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter.")
+        if not isinstance(vtype, uw.VarType):
+            raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`.")
         self.vtype = vtype
         self.mesh = mesh
         self.num_components = num_components
@@ -101,9 +104,9 @@ class MeshVariable:
         self.mesh.dm.setField(self.field_id,self.petsc_fe)
         
         # create associated sympy function
-        if   vtype==VarType.SCALAR:
+        if   vtype==uw.VarType.SCALAR:
             self._fn = sympy.Function(name)(*self.mesh.r)
-        elif vtype==VarType.VECTOR:
+        elif vtype==uw.VarType.VECTOR:
             if num_components!=mesh.dim:
                 raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
             from sympy.vector import VectorZero
@@ -221,7 +224,7 @@ class MeshVariable:
         return self.mesh._get_coords_for_var(self)
 
 
-class _MeshBase():
+class _MeshBase(_api_tools.Stateful):
     def __init__(self, simplex, *args,**kwargs):
         self.isSimplex = simplex
         # create boundary sets
@@ -272,6 +275,8 @@ class _MeshBase():
         # now set copy of linear array into dictionary
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
+
+        super().__init__()
 
     def getInterlacedLocalVariableVec(self) -> PETSc.Vec:
         """
@@ -368,6 +373,9 @@ class _MeshBase():
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
+            else:
+                # increment variable state
+                var._increment()
 
         try:
             yield

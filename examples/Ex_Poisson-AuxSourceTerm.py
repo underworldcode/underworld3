@@ -35,7 +35,7 @@ y1 = mesh.maxCoords[1]
 y0 = mesh.minCoords[1]
 
 # %%
-diff = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.mesh.VarType.SCALAR, degree=u_degree )
+diff = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.VarType.SCALAR, degree=u_degree )
 
 # %%
 # example of setting the auxiliary field by numpy array, a.k.a by hand

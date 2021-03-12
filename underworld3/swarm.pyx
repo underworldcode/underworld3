@@ -6,7 +6,9 @@ from mpi4py import MPI
 import contextlib
 from typeguard import check_argument_types, check_return_type
 from typeguard import typechecked
-
+import underworld3 as uw
+import numpy as np
+from underworld3 import _api_tools
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateMassMatrix(PetscDM dac, PetscDM daf, PetscMat *mat)
@@ -35,14 +37,8 @@ class SwarmType(Enum):
 class SwarmPICLayout(Enum):
     DMSWARMPIC_LAYOUT_GAUSS = 1
 
-class VarType(Enum):
-    SCALAR=1
-    VECTOR=2
-    OTHER=3  # add as required 
-
-class SwarmVariable:
-
-    def __init__(self, swarm, name, num_components, dtype=PETSc.ScalarType, _register=True):
+class SwarmVariable(_api_tools.Stateful):
+    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -50,13 +46,35 @@ class SwarmVariable:
         self.name = name
         self.swarm = swarm
         self.num_components = num_components
-        self.dtype = dtype
+        if   (dtype==float) or (dtype=="float") or (dtype==dtype,np.float64):
+            self.dtype = float
+            petsc_type = PETSc.ScalarType
+        elif (dtype==int)   or (dtype=="int")   or (dtype==np.int32):
+            self.dtype = int
+            petsc_type = PETSc.IntType
+        else:
+            raise TypeError(f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'.")
         if _register:
-            self.swarm.registerField(self.name, self.num_components, dtype=self.dtype)
+            self.swarm.registerField(self.name, self.num_components, dtype=petsc_type)
         self._data = None
         # add to swarms dict
         swarm.vars[name] = self
         self._is_accessed = False
+
+        # create proxy variable
+        self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
+
+        super().__init__()
+
+    def _update(self):
+        """
+        This method updates the proxy mesh variable for the current 
+        swarm & particle variable state.
+        """
+        map = self.swarm._get_map(self)
+        # set NN vals on mesh var
+        with self.swarm.mesh.access(self._meshVar), self.swarm.access():
+            self._meshVar.data[:,:] = self.data[map,:]
 
     def project_from(self, meshvar):
         # use method found in 
@@ -143,15 +161,12 @@ class SwarmVariable:
 
     @property
     def fn(self):
-        raise RuntimeError("Not yet implemented.")
-        # return self._fn
+        return self._meshVar.fn
 
 
 @typechecked
-class Swarm(PETSc.DMSwarm):
-
+class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def __init__(self, mesh):
-        
         self.mesh = mesh
         self.dim = mesh.dim
         self.dm = Swarm.create(self)
@@ -165,7 +180,12 @@ class Swarm(PETSc.DMSwarm):
         self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords
-        self._coord_var = SwarmVariable(self,"DMSwarmPIC_coor", self.dim, dtype=PETSc.ScalarType, _register=False)
+        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False)
+
+        self._kdtree = None
+        self._nnmapdict = {}
+
+        super().__init__()
 
     @property
     def particle_coordinates(self):
@@ -186,8 +206,9 @@ class Swarm(PETSc.DMSwarm):
         self.dm.insertPointUsingCellDM(self.layout.value, ppcell)
         return self
 
-    def add_variable(self, name, num_components=1, dtype=PETSc.ScalarType):
-        var = SwarmVariable(self, name, num_components, dtype)
+    def add_variable(self, name, num_components=1, dtype=float):
+        var = SwarmVariable(name, self, num_components, dtype=dtype)
+
         return var
 
     def save(self, filename):
@@ -205,6 +226,11 @@ class Swarm(PETSc.DMSwarm):
 
         As default, all data is read-only. To enable writeable data, the user should
         specify which variable they wish to modify.
+
+        At the conclusion of the users context managed block, numerous further operations
+        will be automatically executed. This includes swarm parallel migration routines
+        where the swarm's `particle_coordinate` variable has been modified. The swarm
+        variable proxy mesh variables will also be updated for modifed swarm variables. 
 
         Parameters
         ----------
@@ -235,6 +261,13 @@ class Swarm(PETSc.DMSwarm):
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
+            else:
+                # increment variable state
+                var._increment()
+        # if particles moving, update swarm state
+        if self.particle_coordinates in writeable_vars:
+            self._increment()
+
 
         try:
             yield
@@ -254,4 +287,35 @@ class Swarm(PETSc.DMSwarm):
             # do particle migration if coords changes
             if self.particle_coordinates in writeable_vars:
                 self.migrate(remove_sent_points=True)
+                # void these things too
+                self._kdtree = None
+                self._nnmapdict = {}
+            # do var updates
+            for var in self.vars.values():
+                # if swarm migrated, update all. 
+                # if var updated, update var.
+                if (self.particle_coordinates in writeable_vars) or \
+                   (var                       in writeable_vars) :
+                    var._update()
+
+    def _get_map(self,var):
+        # generate tree if not avaiable
+        if not self._kdtree:
+            from scipy import spatial
+            with self.access():
+                self._kdtree = spatial.KDTree(self.particle_coordinates.data)
+
+        # get or generate map
+        meshvar_coords = var._meshVar.coords
+        # we can't use numpy arrays directly as keys in python dicts, so 
+        # we'll use `xxhash` to generate a hash of array. 
+        # this shouldn't be an issue performance wise but we should test to be 
+        # sufficiently confident of this. 
+        import xxhash
+        h = xxhash.xxh64()
+        h.update(meshvar_coords)
+        digest = h.intdigest()
+        if digest not in self._nnmapdict:
+            self._nnmapdict[digest] = self._kdtree.query(meshvar_coords)[1]
+        return self._nnmapdict[digest]
 
