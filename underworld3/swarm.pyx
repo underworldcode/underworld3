@@ -35,10 +35,13 @@ class SwarmType(Enum):
     DMSWARM_PIC = 1
 
 class SwarmPICLayout(Enum):
-    DMSWARMPIC_LAYOUT_GAUSS = 1
+    DMSWARMPIC_LAYOUT_REGULAR=0
+    DMSWARMPIC_LAYOUT_GAUSS=1
+    DMSWARMPIC_LAYOUT_SUBDIVISION=2
 
-class SwarmVariable(_api_tools.Stateful):
-    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True):
+from underworld3.function import Function
+class SwarmVariable(_api_tools.Stateful, Function):
+    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_degree=2, _register=True):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -62,9 +65,9 @@ class SwarmVariable(_api_tools.Stateful):
         self._is_accessed = False
 
         # create proxy variable
-        self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
+        self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_degree)
 
-        super().__init__()
+        super().__init__(fnobj=self._meshVar.sfn)
 
     def _update(self):
         """
@@ -159,11 +162,6 @@ class SwarmVariable(_api_tools.Stateful):
             raise RuntimeError("Data must be accessed via the swarm `access()` context manager.")
         return self._data
 
-    @property
-    def fn(self):
-        return self._meshVar.fn
-
-
 @typechecked
 class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def __init__(self, mesh):
@@ -191,7 +189,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def particle_coordinates(self):
         return self._coord_var
 
-    def populate(self, ppcell=25, layout=SwarmPICLayout.DMSWARMPIC_LAYOUT_GAUSS):
+    def populate(self, ppcell=5, layout=SwarmPICLayout.DMSWARMPIC_LAYOUT_GAUSS):
         
         self.ppcell = ppcell
         
@@ -206,8 +204,8 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         self.dm.insertPointUsingCellDM(self.layout.value, ppcell)
         return self
 
-    def add_variable(self, name, num_components=1, dtype=float):
-        var = SwarmVariable(name, self, num_components, dtype=dtype)
+    def add_variable(self, name, num_components=1, vtype=None, dtype=float, proxy_degree=2):
+        var = SwarmVariable(name, self, num_components, vtype=vtype, dtype=dtype, proxy_degree=proxy_degree)
 
         return var
 

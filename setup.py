@@ -61,7 +61,7 @@ extensions = [
     Extension('underworld3.systems.poisson',
               sources = ['underworld3/systems/poisson.pyx',],
               **configure()),
-    Extension('underworld3.function',
+    Extension('underworld3.analytic',
               sources = ['underworld3/analytic_sol.pyx', 'underworld3/AnalyticSolNL.c',],
             #   language="c++",
               **configure()),

@@ -1,8 +1,9 @@
 import sympy
 import numpy as np
-import underworld3 
+import underworld3
 from typing import List
 
+@underworld3.function.Function_in_Function_out
 def diff_fn1_wrt_fn2(fn1, fn2):
     """
     This function takes the derivative of a function (fn1) with respect
@@ -11,6 +12,8 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     temporarily subsitute fn2 for a dummy symbol, perform the derivative (with
     respect to the dummy symbol), and then replace the dummy for fn2 again. 
     """
+    fn1 = fn1.sfn
+    fn2 = fn2.sfn.doit()  # adding the doit here as sympy doesn't give correct result otherwise (on occassion)
     if fn2.is_zero:
         return 0
     dummy = sympy.Symbol("dummy")
@@ -149,12 +152,12 @@ def _createext(name:               str,
         u_i = 0
         for var in varlist:
             if var.vtype==VarType.SCALAR:
-                mapping[var.fn] = petsc_matsymbol[0,u_i]
+                mapping[var.sfn] = petsc_matsymbol[0,u_i]
                 u_i +=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
                 for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                    comp = var.fn.dot(bvec)
+                    comp = var.sfn.doit().dot(bvec)
                     mapping[comp] = petsc_matsymbol[0,u_i]
                     u_i +=1
             else:
@@ -179,7 +182,8 @@ def _createext(name:               str,
     # Let's do subsitutions now.
     subbedfns = []
     for fn in fns:
-        subbedfns.append(fn.subs(substitute))
+        import underworld3
+        subbedfns.append(underworld3.function.Function(fn).sfn.doit().subs(substitute))
 
     # Now go ahead and generate C code from subsituted Sympy expressions.
     from sympy.printing.c import C99CodePrinter
@@ -196,9 +200,9 @@ def _createext(name:               str,
         eqns.append( ("eqn_"+str(index), printer.doprint(fn, out)) )
     MODNAME = "fn_ptr_ext_" + str(name)
 
-    # Link against function.cpython which contains symbols our custom functions.
-    import underworld3.function
-    lib = underworld3.function.__file__
+    # Link against analytic.cpython which contains symbols our custom analytic solutions
+    import underworld3.analytic
+    lib = underworld3.analytic.__file__
     import os
     libdir = os.path.dirname(lib)
     libfile = os.path.basename(lib)

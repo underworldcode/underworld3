@@ -28,7 +28,7 @@ poisson = Poisson(mesh)
 
 # %%
 # Set some things
-poisson.k = 1. 
+poisson.k = 1.
 poisson.h = 0.
 poisson.add_dirichlet_bc( 1., bnds.BOTTOM )  
 poisson.add_dirichlet_bc( 0., bnds.TOP )  
@@ -74,30 +74,25 @@ with mesh.access():
     if np.allclose(poisson.u.data, orig_soln):
         raise RuntimeError("Unexpected values encountered.")
 
-
 # %%
 # nonlinear example
 mesh = uw.mesh.Mesh( elementRes=(8, 8), simplex=False )
 poisson = Poisson(mesh, degree=1)
 
+# %%
+u = poisson.u
 
 # %%
-u = poisson.u.fn
-
-
-# %%
-from sympy.vector import gradient
+from underworld3.function import gradient
 nabla_u = gradient(u)
 poisson.k = 0.5*(nabla_u.dot(nabla_u))
 poisson.k
-
 
 # %%
 N = mesh.N
 abs_r2 = (N.x**2 + N.y**2)
 poisson.h = 16*abs_r2
 poisson.h
-
 
 # %%
 poisson.add_dirichlet_bc(abs_r2, [bnds.TOP,bnds.BOTTOM,bnds.LEFT,bnds.RIGHT] )

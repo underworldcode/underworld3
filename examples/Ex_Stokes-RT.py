@@ -19,7 +19,7 @@ boxHeight      = 1.0
 viscosityRatio = 1.0
 stokes_inner_tol = 1e-6
 stokes_outer_tol = 1e-5
-ppcell = 3
+ppcell = 5
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
@@ -80,7 +80,7 @@ def do_uw3():
     # Create swarm
     swarm  = uw.swarm.Swarm(mesh)
     # Add variable for material
-    matSwarmVar      = swarm.add_variable(name="matSwarmVar",      num_components=1, dtype=PETSc.IntType)
+    matSwarmVar = swarm.add_variable(name="matSwarmVar", num_components=1, dtype="int", proxy_degree=3)
     # Note that `ppcell` specifies particles per cell per dim.
     swarm.populate(ppcell=ppcell)
 
@@ -89,7 +89,7 @@ def do_uw3():
     import numpy as np
     np.random.seed(0)
     with swarm.access(swarm.particle_coordinates):
-        factor = 0.5*boxLength/n_els/ppcell
+        factor = 1.0*boxLength/n_els/ppcell
         swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
 
     #%%
@@ -108,14 +108,14 @@ def do_uw3():
 
     from sympy import Piecewise, ceiling, Abs
 
-    density = Piecewise( ( 0., Abs(matSwarmVar.fn - lightIndex)<0.5 ),
-                         ( 1., Abs(matSwarmVar.fn - denseIndex)<0.5 ),
+    density = Piecewise( ( 0., Abs(matSwarmVar.sfn - lightIndex)<0.5 ),
+                         ( 1., Abs(matSwarmVar.sfn - denseIndex)<0.5 ),
                          ( 0.,                                True ) )
 
     stokes.bodyforce = -density*mesh.N.j
 
-    stokes.viscosity = Piecewise( ( viscosityRatio, Abs(matSwarmVar.fn - lightIndex)<0.5 ),
-                                  (             1., Abs(matSwarmVar.fn - denseIndex)<0.5 ),
+    stokes.viscosity = Piecewise( ( viscosityRatio, Abs(matSwarmVar.sfn - lightIndex)<0.5 ),
+                                  (             1., Abs(matSwarmVar.sfn - denseIndex)<0.5 ),
                                   (             1.,                                True ) )
 
     # note with petsc we always need to provide a vector of correct cardinality. 
@@ -130,7 +130,7 @@ def do_uw3():
     nprint = 0.
     volume_int = uw.maths.Integral( mesh, 1. )
     volume = volume_int.evaluate()
-    v_dot_v_int = uw.maths.Integral(mesh, stokes.u.fn.dot(stokes.u.fn))
+    v_dot_v_int = uw.maths.Integral(mesh, stokes.u.dot(stokes.u))
     def vrms():
         import math
         v_dot_v = v_dot_v_int.evaluate()
@@ -202,7 +202,7 @@ def do_uw2():
     materialIndex = swarm.add_variable( dataType="int", count=1 )
 
     # Create a layout object, populate the swarm with particles.
-    swarmLayout = uw.swarm.layouts.PerCellSpaceFillerLayout( swarm=swarm, particlesPerCell=30 )
+    swarmLayout = uw.swarm.layouts.PerCellSpaceFillerLayout( swarm=swarm, particlesPerCell=25 )
     swarm.populate_using_layout( layout=swarmLayout )
 
     # define these for convience. 

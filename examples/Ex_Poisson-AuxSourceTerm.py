@@ -35,16 +35,16 @@ y1 = mesh.maxCoords[1]
 y0 = mesh.minCoords[1]
 
 # %%
-diff = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.VarType.SCALAR, degree=u_degree )
+diffusivity = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="diffusivity", vtype=uw.VarType.SCALAR, degree=u_degree )
 
 # %%
 # example of setting the auxiliary field by numpy array, a.k.a by hand
-with mesh.access(diff):
-    diff.data[:] = k # just set every aux dof to k
+with mesh.access(diffusivity):
+    diffusivity.data[:] = k # just set every aux dof to k
 
 # %%
 # Set some things
-poisson.k = diff.fn 
+poisson.k = diffusivity
 poisson.h = -h
 poisson.add_dirichlet_bc( T0, bnds.BOTTOM )  
 poisson.add_dirichlet_bc( T1, bnds.TOP )  
