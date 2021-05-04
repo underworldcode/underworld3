@@ -37,7 +37,7 @@ mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
 # %%
 # NL problem 
 # Create solution functions
-from underworld3.analytic import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity 
+from underworld3.function import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity 
 r = mesh.r
 eta0 = 1.
 n = 1
@@ -68,8 +68,7 @@ sr -= (stokes.div_u/mesh.dim)*sympy.eye(mesh.dim)
 # second invariant of strain rate
 inv2 = sr[0,0]**2 + sr[0,1]**2 + sr[1,0]**2 + sr[1,1]**2
 inv2 = 1/2*inv2
-# note we need to switch to sympy here
-inv2 = sympy.sqrt(inv2.sfn)
+inv2 = sympy.sqrt(inv2)
 alpha_by_two = 2/r0 - 2
 stokes.viscosity = 2*eta0*inv2**alpha_by_two
 stokes.solve(zero_init_guess=False)

@@ -3,9 +3,9 @@ from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, Pet
 from ..petsc_types cimport PtrContainer
 import underworld3 as uw
 import sympy
-from sympy.vector import gradient, Divergence
+from sympy import sympify
+from sympy.vector import gradient, divergence
 from .._jitextension import getext, diff_fn1_wrt_fn2
-from underworld3.function import Function,Function_in_Function_out
 
 # TODO
 # gil v nogil 
@@ -78,12 +78,11 @@ class Stokes:
         # Grab gradients, and let's switch out to sympy.Matrix notation
         # immediately as it is probably cleaner for this.
         N = mesh.N
-        from sympy.vector import Dot
-        grad_u_x = gradient(Dot(self.u.sfn,N.i)).to_matrix(N)
-        grad_u_y = gradient(Dot(self.u.sfn,N.j)).to_matrix(N)
-        grad_u_z = gradient(Dot(self.u.sfn,N.k)).to_matrix(N)
+        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
+        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
+        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        self._strainrate = Function(1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable())  # needs to be made immuate so it can be hashed later
+        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
         
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -100,13 +99,13 @@ class Stokes:
         return self._strainrate
     @property
     def stress_deviator(self):
-        return Function(2*self.viscosity.sfn*self.strainrate.sfn)
+        return 2*self.viscosity*self.strainrate
     @property
     def stress(self):
-        return Function(self.stress_deviator.sfn - sympy.eye(self.mesh.dim)*self.p.sfn)
+        return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
     @property
     def div_u(self):
-        return Function(Divergence(self.u.sfn))
+        return divergence(self.u.fn)
 
     @property
     def viscosity(self):
@@ -114,12 +113,12 @@ class Stokes:
     @viscosity.setter
     def viscosity(self, value):
         self.is_setup = False
-        func = Function(value)
-        if isinstance(func.sfn, sympy.vector.Vector):
+        symval = sympify(value)
+        if isinstance(symval, sympy.vector.Vector):
             raise RuntimeError("Viscosity appears to be a vector quantity. Scalars are required.")
-        if isinstance(func.sfn, sympy.Matrix):
+        if isinstance(symval, sympy.Matrix):
             raise RuntimeError("Viscosity appears to be a matrix quantity. Scalars are required.")
-        self._viscosity = func
+        self._viscosity = symval
 
     @property
     def bodyforce(self):
@@ -127,10 +126,10 @@ class Stokes:
     @bodyforce.setter
     def bodyforce(self, value):
         self.is_setup = False
-        func = Function(value)
+        symval = sympify(value)
         # if not isinstance(symval, sympy.vector.Vector):
         #     raise RuntimeError("Body force term must be a vector quantity.")
-        self._bodyforce = func
+        self._bodyforce = symval
 
     
     def add_dirichlet_bc(self, fn, boundaries, components):
@@ -143,18 +142,18 @@ class Stokes:
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
         BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
-        self.bcs.append(BC(components,Function(fn),boundaries))
+        self.bcs.append(BC(components,sympify(fn),boundaries))
 
     def _setup_terms(self):
         N = self.mesh.N
 
         # residual terms
         fns_residual = []
-        self._u_f0 = -self.bodyforce.sfn
+        self._u_f0 = -self.bodyforce
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress.sfn
+        self._u_f1 = self.stress
         fns_residual.append(self._u_f1)
-        self._p_f0 = self.div_u.sfn
+        self._p_f0 = self.div_u
         fns_residual.append(self._p_f0)
 
         ## jacobian terms
@@ -177,15 +176,14 @@ class Stokes:
                 g3[row,col] += 1
                 if row != col:
                     g3[col,row] += 1
-        self._uu_g3 = (g3*self.viscosity.sfn).as_immutable()
+        self._uu_g3 = (g3*self.viscosity).as_immutable()
         # fns_jacobian.append(self._uu_g3) add this guy below
 
         ## velocity dependant part
         # build derivatives with respect to velocities (v_x,v_y,v_z)
-        from sympy.vector import Dot
         d_mu_d_u_x = dim*[None,]
         for i in range(dim):
-            d_mu_d_u_x[i] = diff_fn1_wrt_fn2(self.viscosity,Dot(self.u.sfn,N.base_vectors()[i])).sfn
+            d_mu_d_u_x[i] = diff_fn1_wrt_fn2(self.viscosity,self.u.fn.dot(N.base_vectors()[i]))
         # now construct required matrix. build submats first. 
         # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
         #       expected by PETSc
@@ -195,7 +193,7 @@ class Stokes:
             row = []
             for i in range(dim):
                 # 2 * d_mu_d_u_x_{k} * \dot\eps * e_{i}  
-                row.append(2*d_mu_d_u_x[k]*self.strainrate.sfn[:,i])
+                row.append(2*d_mu_d_u_x[k]*self.strainrate[:,i])
             rows.append(row)
         self._uu_g2 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g2)
@@ -205,11 +203,9 @@ class Stokes:
         d_mu_d_u_i_dk = dim*[None,]
         for i in range(dim):
             lst = dim*[None,]
-            grad_u_i = gradient(Dot(self.u.sfn,N.base_vectors()[i]))  # u_i_dx, u_i_dy, u_i_dz
+            grad_u_i = gradient(self.u.fn.dot(N.base_vectors()[i]))  # u_i_dx, u_i_dy, u_i_dz
             for j in range(dim):
-                bvec = N.base_vectors()[j]
-                fn2 = Dot(grad_u_i, bvec )
-                lst[j] = diff_fn1_wrt_fn2( self.viscosity, fn2 ).sfn
+                lst[j] = diff_fn1_wrt_fn2(self.viscosity,grad_u_i.dot(N.base_vectors()[j]))
             d_mu_d_u_i_dk[i] = sympy.Matrix(lst) # generate Mat for future machination
         # now construct required matrix. build submats first. 
         # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
@@ -220,25 +216,25 @@ class Stokes:
             row = []
             for i in range(dim):
                 # 2 * \dot\eps * e_{i} * d_mu_d_u_i_k   
-                row.append(2*self.strainrate.sfn[:,i]*d_mu_d_u_i_dk[k].T)
+                row.append(2*self.strainrate[:,i]*d_mu_d_u_i_dk[k].T)
             rows.append(row)
         self._uu_g3 += sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g3)
 
         ## pressure dependant part
         # get derivative with respect to pressure
-        d_mu_d_p = diff_fn1_wrt_fn2(self.viscosity,self.p).sfn
-        self._up_g2 = (2*d_mu_d_p*self.strainrate.sfn).as_immutable()
+        d_mu_d_p = diff_fn1_wrt_fn2(self.viscosity,self.p.fn)
+        self._up_g2 = (2*d_mu_d_p*self.strainrate).as_immutable()
         # add linear in pressure part
         self._up_g2 += -sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._up_g2)
 
         ## pressure gradient dependant part
         # build derivatives with respect to pressure gradients (p_dx, p_dy, p_dz)
-        grad_p = gradient(self.p.sfn)
+        grad_p = gradient(self.p.fn)
         lst = dim*[None,]
         for i in range(dim):
-            lst[i] = diff_fn1_wrt_fn2(self.viscosity,Dot(grad_p,N.base_vectors()[i])).sfn
+            lst[i] = diff_fn1_wrt_fn2(self.viscosity,grad_p.dot(N.base_vectors()[i]))
         d_mu_d_p_dx = sympy.Matrix(lst) # generate Mat for future machination
         # now construct required matrix. build submats first. 
         # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
@@ -249,17 +245,17 @@ class Stokes:
             row = []
             for i in range(dim):
                 # 2 * \dot\eps * e_{i} * d_mu_d_p_dx   
-                row.append(2*self.strainrate.sfn[:,i]*d_mu_d_p_dx.T)
+                row.append(2*self.strainrate[:,i]*d_mu_d_p_dx.T)
             rows.append(row)
         self._up_g3 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
-        fns_jacobian.append(self._up_g3)
+        fns_jacobian.append(self._up_g3) 
 
         # pu terms
         self._pu_g1 = sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._pu_g1)
 
         # pp term
-        self._pp_g0 = 1/self.viscosity.sfn
+        self._pp_g0 = 1/self.viscosity
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code.
@@ -273,7 +269,6 @@ class Stokes:
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
         prim_field_list = [self.u, self.p]
-
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
         # create indexes so that we don't rely on indices that can change
         i_res = {}

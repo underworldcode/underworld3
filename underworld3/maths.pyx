@@ -50,7 +50,7 @@ class Integral:
                   fn:    Union[float, int, sympy.Basic] ):
 
         self.mesh = mesh
-        self.fn = underworld3.function.Function(fn)
+        self.fn = sympify(fn)
         super().__init__()
 
     def evaluate(self) -> float:
@@ -64,9 +64,9 @@ class Integral:
         # Note that (at this time) PETSc does not support vector integrands, so 
         # if we wish to do vector integrals we'll need to split out the components
         # and calculate them individually. Let's support only scalars for now.
-        if isinstance(self.fn.sfn, sympy.vector.Vector):
+        if isinstance(self.fn, sympy.vector.Vector):
             raise RuntimeError("Integral evaluation for Vector integrands not supported.")
-        elif isinstance(self.fn.sfn, sympy.vector.Dyadic):
+        elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
         cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())

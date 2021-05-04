@@ -2,8 +2,8 @@ from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, FE
 from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
 from ..petsc_types cimport PtrContainer
 import underworld3 as uw
-from underworld3.function import Function
 from .._jitextension import getext, diff_fn1_wrt_fn2
+from sympy import sympify
 # TODO
 # gil v nogil 
 # ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
@@ -40,8 +40,8 @@ class Poisson:
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        self.k = 1.
-        self.h = 0.
+        self._k = 1.
+        self._h = 0.
 
         self.bcs = []
 
@@ -59,7 +59,7 @@ class Poisson:
     def k(self, value):
         self.is_setup = False
         # should add test here to make sure k is conformal
-        self._k = Function(value)
+        self._k = sympify(value)
 
     @property
     def h(self):
@@ -68,7 +68,7 @@ class Poisson:
     def h(self, value):
         self.is_setup = False
         # should add test here to make sure h is conformal
-        self._h = Function(value)
+        self._h = sympify(value)
 
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
         # switch to numpy arrays
@@ -80,34 +80,33 @@ class Poisson:
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
         BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
-        self.bcs.append(BC(components,Function(fn),boundaries))
+        self.bcs.append(BC(components,sympify(fn),boundaries))
 
     def _setup_terms(self):
-        from underworld3.function import gradient
-        from underworld3.function import Function
+        from sympy.vector import gradient
+        import sympy
 
         N = self.mesh.N
 
         # f0 residual term
         self._f0 = self.h
         # f1 residual term
-        self._f1 = gradient(self.u)*self.k
+        self._f1 = gradient(self.u.fn)*self.k
         # g0 jacobian term
-        self._g0 = -diff_fn1_wrt_fn2(self.h,self.u)
+        self._g0 = -diff_fn1_wrt_fn2(self.h,self.u.fn)
         # g1 jacobian term
-        dk_du = diff_fn1_wrt_fn2(self.k,self.u)
-        self._g1 = dk_du*gradient(self.u)
+        dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
+        self._g1 = dk_du*gradient(self.u.fn)
         # g3 jacobian term
-        dk_dux = diff_fn1_wrt_fn2(self.k, self.u.diff(N.x))
-        dk_duy = diff_fn1_wrt_fn2(self.k, self.u.diff(N.y))
-        dk_duz = diff_fn1_wrt_fn2(self.k, self.u.diff(N.z))
+        dk_dux = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.x))
+        dk_duy = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.y))
+        dk_duz = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.z))
         dk = dk_dux*N.i + dk_duy*N.j + dk_duz*N.k
-        self._g3 = dk.sfn|gradient(self.u).sfn                        # outer product for nonlinear part
-        self._g3 += self.k.sfn*( (N.i|N.i) + (N.j|N.j) + (N.k|N.k) )  # linear part using dyadic identity
+        self._g3 = dk|gradient(self.u.fn)                        # outer product for nonlinear part
+        self._g3 += self.k*( (N.i|N.i) + (N.j|N.j) + (N.k|N.k) )  # linear part using dyadic identity
 
-        # Most of these `Function()` wraps should be redundant
-        fns_residual = (Function(self._f0), Function(self._f1))
-        fns_jacobian = (Function(self._g0), Function(self._g1), Function(self._g3))
+        fns_residual = (self._f0, self._f1)
+        fns_jacobian = (self._g0, self._g1, self._g3)
 
         # generate JIT code.
         # first, we must specify the primary fields.
@@ -120,7 +119,7 @@ class Poisson:
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
         prim_field_list = [self.u,]
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [Function(x[1]) for x in self.bcs], primary_field_list=prim_field_list)
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
 
         # set functions 
         self.dm.createDS()

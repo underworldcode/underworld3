@@ -49,7 +49,7 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: c
 # %%
 N = mesh.N
 stokes.viscosity = 1.
-stokes.bodyforce =  matvar * N.j
+stokes.bodyforce =  matvar.fn * N.j
 
 # %%
 # Solve time

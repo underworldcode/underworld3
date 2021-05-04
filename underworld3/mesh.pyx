@@ -49,39 +49,38 @@ cdef CHKERRQ(PetscErrorCode ierr):
 #     def _ccode(self, printer):
 #         # return f"{type(self).__name__}({', '.join(printer._print(arg) for arg in self.args)})_bobobo"
 #         return f"petsc_u[0]"
-from underworld3.function import Function
-class MeshVariable(_api_tools.Stateful, Function):
-    # class MeshVariableFn(sympy.Function):
-    #     _printstr = None 
-    #     _header = None
-    #     def _ccode(self, printer):
-    #         # This is just a copy paste from the analytic solutions implementation. 
-    #         # For usage within element assembly we generally won't need to use this as
-    #         # PETSc passes in evaluated variables via the (Benny-And-The) Jets 
-    #         # function. 
-    #         # However, if we wish to use a variable in a completely independent
-    #         # system, we may still need to provide an implementation here. We may also
-    #         # need to provide a code printed implementation for evaluation from within 
-    #         # Python via `evaluate()` (or equivalent). Alternatively, it might be sufficent
-    #         # to simply used sympy `evalf` methods, so that overloading type behaviours (+/-/*/etc)
-    #         # are handled by sympy within its evaluation tree, with c-level implementations 
-    #         # (such as `DMFieldEvaluate`) accessed at the nodes of the tree. 
-    #         raise RuntimeError("Not implemented.")
-    #         printer.headers.add(self._header)
-    #         param_str = ""
-    #         for arg in self.args:
-    #             param_str += printer._print(arg) + ","
-    #         param_str = param_str[:-1]  # drop final comma
-    #         if not self._printstr:
-    #             raise RuntimeError("Trying to print unprintable function.")
-    #         return self._printstr.format(param_str)
+
+class MeshVariable(_api_tools.Stateful):
+    class MeshVariableFn(sympy.Function):
+        _printstr = None 
+        _header = None
+        def _ccode(self, printer):
+            # This is just a copy paste from the analytic solutions implementation. 
+            # For usage within element assembly we generally won't need to use this as
+            # PETSc passes in evaluated variables via the (Benny-And-The) Jets 
+            # function. 
+            # However, if we wish to use a variable in a completely independent
+            # system, we may still need to provide an implementation here. We may also
+            # need to provide a code printed implementation for evaluation from within 
+            # Python via `evaluate()` (or equivalent). Alternatively, it might be sufficent
+            # to simply used sympy `evalf` methods, so that overloading type behaviours (+/-/*/etc)
+            # are handled by sympy within its evaluation tree, with c-level implementations 
+            # (such as `DMFieldEvaluate`) accessed at the nodes of the tree. 
+            raise RuntimeError("Not implemented.")
+            printer.headers.add(self._header)
+            param_str = ""
+            for arg in self.args:
+                param_str += printer._print(arg) + ","
+            param_str = param_str[:-1]  # drop final comma
+            if not self._printstr:
+                raise RuntimeError("Trying to print unprintable function.")
+            return self._printstr.format(param_str)
 
     def __init__(self, name, mesh, num_components, vtype=None, degree=1):
         if mesh._accessed:
             raise RuntimeError("It is not possible to add new variables to a mesh after existing variables have been accessed.")
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
-        self.name = name
         if vtype==None:
             if   num_components==1:
                 vtype=uw.VarType.SCALAR
@@ -103,27 +102,20 @@ class MeshVariable(_api_tools.Stateful, Function):
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id,self.petsc_fe)
-
-        sfn = sympy.Function(name)(*self.mesh.r)
-        # create associated sympy function and expanded version
-        if  self.vtype==uw.VarType.SCALAR:
-            expandedsfn = sfn
-        elif self.vtype==uw.VarType.VECTOR:
-            if self.num_components != self.mesh.dim:
+        
+        # create associated sympy function
+        if   vtype==uw.VarType.SCALAR:
+            self._fn = sympy.Function(name)(*self.mesh.r)
+        elif vtype==uw.VarType.VECTOR:
+            if num_components!=mesh.dim:
                 raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
             from sympy.vector import VectorZero
-            expandedsfn = VectorZero()
+            self._fn = VectorZero()
             subnames = ["_x","_y","_z"]
-            for comp in range(self.num_components):
-                subfn = sympy.Function(self.name+subnames[comp])(*self.mesh.r)
-                expandedsfn += subfn*self.mesh.N.base_vectors()[comp]
-        # LETS SORT THE `doit()` implementation later
-        # def doit(*arg, **kwargs):
-        #     return expandedsfn
-        # # patch in `doit()` method
-        # sfn.doit = doit
-        # super().__init__(fnobj=sfn)
-        super().__init__(fnobj=expandedsfn)
+            for comp in range(num_components):
+                subfn = sympy.Function(name+subnames[comp])(*self.mesh.r)
+                self._fn += subfn*self.mesh.N.base_vectors()[comp]
+        super().__init__()
 
         self.mesh.vars[name] = self
 
@@ -175,6 +167,11 @@ class MeshVariable(_api_tools.Stateful, Function):
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
         return outarray
+
+
+    @property
+    def fn(self):
+        return self._fn
 
     def _set_vec(self, available):
         cdef DM subdm = PETSc.DM()

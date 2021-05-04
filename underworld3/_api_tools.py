@@ -6,9 +6,8 @@ class Stateful:
     it within its `access()` context manager, its state is incremented
     at the conclusion of their modifications.
     """
-    def __init__(self,*args,**kwargs):
+    def __init__(self):
         self._state = 0
-        super().__init__(*args,**kwargs)
     def _increment(self):
         self._state +=1
     def _get_state(self):
