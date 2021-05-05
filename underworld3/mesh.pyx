@@ -20,7 +20,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationSetDim(void *ipInfo, PetscInt dim)
     PetscErrorCode DMInterpolationSetDof(void *ipInfo, PetscInt dof)
     PetscErrorCode DMInterpolationAddPoints(void *ipInfo, PetscInt n, PetscReal points[])
-    PetscErrorCode DMInterpolationSetUp(void *ipInfo, PetscDM dm, int petscbool)
+    PetscErrorCode DMInterpolationSetUp(void *ipInfo, PetscDM dm, int petscbool, int petscbool)
     PetscErrorCode DMInterpolationEvaluate(void *ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
     PetscErrorCode DMInterpolationDestroy(void *ipInfo)
     PetscErrorCode DMDestroy(PetscDM *dm)
@@ -153,7 +153,7 @@ class MeshVariable(_api_tools.Stateful):
         cdef PetscDM subdm
         cdef PetscInt fields = self.field_id
         DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm)
-        ierr = DMInterpolationSetUp(ipInfo, subdm, 0); CHKERRQ(ierr)
+        ierr = DMInterpolationSetUp(ipInfo, subdm, 0, 0); CHKERRQ(ierr)
 
         cdef np.ndarray outarray = np.empty([len(coords), self.num_components], dtype=np.double)
         # Vector for output
