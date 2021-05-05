@@ -10,14 +10,21 @@ import numpy
 import petsc4py
 
 def configure():
+
     INCLUDE_DIRS = []
     LIBRARY_DIRS = []
     LIBRARIES    = []
 
     # PETSc
     import os
-    PETSC_DIR  = os.environ['PETSC_DIR']
-    PETSC_ARCH = os.environ.get('PETSC_ARCH', '')
+
+    if os.environ["CONDA_PREFIX"]:
+        PETSC_DIR  = os.environ['CONDA_PREFIX']
+        PETSC_ARCH = os.environ.get('PETSC_ARCH', '')
+    else:
+        PETSC_DIR  = os.environ['PETSC_DIR']
+        PETSC_ARCH = os.environ.get('PETSC_ARCH', '')
+    
     from os.path import join, isdir
     if PETSC_ARCH and isdir(join(PETSC_DIR, PETSC_ARCH)):
         INCLUDE_DIRS += [join(PETSC_DIR, PETSC_ARCH, 'include'),
