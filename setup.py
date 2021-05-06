@@ -2,8 +2,7 @@
 
 #$ python setup.py build_ext --inplace
 
-from distutils.core import setup
-from distutils.extension import Extension
+from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
 import numpy
@@ -75,7 +74,7 @@ extensions = [
 ]
 
 setup(name = "underworld3", 
-    packages=['underworld3'],
+    packages=find_packages(),
     package_data={'underworld3':['*.pxd','*.h']},
     ext_modules = cythonize(
         extensions,
