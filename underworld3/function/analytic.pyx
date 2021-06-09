@@ -1,4 +1,15 @@
+import os
 import sympy
+import underworld3
+
+# Add info for linking against the Cython compiled module which contains symbols defined below.
+libdir = os.path.dirname(__file__)
+libfile = os.path.basename(__file__)
+# Prepend colon to force linking against filename without 'lib' prefix.
+libfile = ":" + libfile  
+underworld3._libfiles.append(libfile)
+underworld3._libdirs.append(libdir)
+underworld3._incdirs.append(libdir)
 
 class sympy_function_printable(sympy.Function):
     _printstr = None 

@@ -6,6 +6,8 @@ ENV LANG=C.UTF-8
 # ENV PATH=${VIRTUAL_ENV}/bin:$PATH
 # # The following ensures that system packages are visible to venv Python, and vice versa
 # ENV PYTHONPATH=/usr/lib/python3.7/site-packages:${VIRTUAL_ENV}/lib/python3.7/site-packages
+#
+#COPY sources.list /etc/apt/.
 # # install runtime requirements
 RUN apt-get update -qq \
 &&  DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
@@ -90,7 +92,7 @@ RUN pip3 install --no-cache-dir mpi4py
 
 # build petsc
 WORKDIR /tmp/petsc-build
-ENV PETSC_BRANCH=main
+ENV PETSC_BRANCH=v3.15.0
 RUN git clone -b ${PETSC_BRANCH} https://gitlab.com/petsc/petsc.git
 WORKDIR /tmp/petsc-build/petsc
 RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
@@ -99,9 +101,9 @@ RUN python3 ./configure --with-debugging=1 --prefix=/usr/local \
                 --download-mumps=1              \
                 --download-parmetis=1           \
                 --download-metis=1              \
-                --download-scalapack=1          \
                 --useThreads=0                  \
                 --with-shared-libraries         \
+                --download-scalapack=1          \
                 --with-cxx-dialect=C++11        \
                 --download-hdf5=https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.10/hdf5-1.10.6/src/hdf5-1.10.6.tar.gz               \
                 --with-make-np=8                \

@@ -164,7 +164,7 @@ class SwarmVariable(_api_tools.Stateful):
         return self._meshVar.fn
 
 
-@typechecked
+#@typechecked
 class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def __init__(self, mesh):
         self.mesh = mesh

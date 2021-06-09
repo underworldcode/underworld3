@@ -196,20 +196,6 @@ def _createext(name:               str,
         eqns.append( ("eqn_"+str(index), printer.doprint(fn, out)) )
     MODNAME = "fn_ptr_ext_" + str(name)
 
-    # Link against function.cpython which contains symbols our custom functions.
-    import underworld3.function
-    lib = underworld3.function.__file__
-    import os
-    libdir = os.path.dirname(lib)
-    libfile = os.path.basename(lib)
-    # Prepend colon to force linking against filename without 'lib' prefix.
-    libfile = ":" + libfile  
-
-    # Make lists here in anticipation of future requirements.
-    libdirs = [libdir,]
-    libfiles = [libfile,]
-    incdirs  = [np.get_include(),libdir]
-
     codeguys = []
     # Create a `setup.py`
     setup_py_str = """
@@ -232,9 +218,9 @@ ext_mods = [Extension(
 )]
 setup(ext_modules=cythonize(ext_mods))
 """.format(NAME=MODNAME,
-           HEADERS=incdirs,
-           LIBDIRS=libdirs,
-           LIBFILES=libfiles,
+           HEADERS=underworld3._incdirs,
+           LIBDIRS=underworld3._libdirs,
+           LIBFILES=underworld3._libfiles,
            )
     codeguys.append( ["setup.py", setup_py_str] )
 

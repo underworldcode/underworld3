@@ -176,12 +176,6 @@ class Poisson:
         else:
             gvec.array[:] = 0.
 
-        # Set all quadratures to u quadrature.
-        # Note that this needs to be done before the call to 
-        # `getInterlacedLocalVariableVec()`, as `createDS` 
-        # TODO: Check if we need to unwind these quadratures. 
-        #       I believe the PETSc reference counting should 
-        #       do the job, but I'm not 100% sure.
         cdef PetscQuadrature quad
         cdef FE c_fe = self.petsc_fe_u
         ierr = PetscFEGetQuadrature(c_fe.fe, &quad); CHKERRQ(ierr)
@@ -197,8 +191,8 @@ class Poisson:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
-        a_local = self.mesh.getInterlacedLocalVariableVec()
-        self.dm.compose("A", a_local)
+        self.mesh.update_lvec()
+        self.dm.compose("A", self.mesh.lvec)
         self.dm.compose("dmAux", self.mesh.dm)
 
         # solve
@@ -208,7 +202,6 @@ class Poisson:
         cdef Vec clvec = lvec
         cdef DM dm = self.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
-        self.mesh.restoreInterlacedLocalVariableVec()
 
         # This comment relates to previous implementation, but I'll leave it 
         # here for now as something to be aware of / investigate further.

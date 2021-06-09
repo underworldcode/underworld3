@@ -37,7 +37,7 @@ mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
 # %%
 # NL problem 
 # Create solution functions
-from underworld3.function import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity 
+from underworld3.function.analytic import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity 
 r = mesh.r
 eta0 = 1.
 n = 1

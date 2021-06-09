@@ -23,7 +23,7 @@ ppcell = 3
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
-model_end_time = 270.
+model_end_time = 100.
 # output
 inputPath  = 'input/05_Rayleigh_Taylor/'
 outputPath = 'output/'
@@ -158,7 +158,7 @@ def do_uw3():
 
         dt = stokes.dt()
         with swarm.access():
-            vel_on_particles = stokes.u.evaluate(swarm.particle_coordinates.data)
+            vel_on_particles = uw.function.evaluate(stokes.u.fn,swarm.particle_coordinates.data)
         etime = delta_time()
 
         with swarm.access(swarm.particle_coordinates):

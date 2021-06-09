@@ -67,8 +67,12 @@ extensions = [
     Extension('underworld3.systems.poisson',
               sources = ['underworld3/systems/poisson.pyx',],
               **configure()),
-    Extension('underworld3.function',
-              sources = ['underworld3/analytic_sol.pyx', 'underworld3/AnalyticSolNL.c',],
+    Extension('underworld3.function._function',
+              sources = ['underworld3/function/_function.pyx', 'underworld3/function/petsc_tools.c',],
+            #   language="c++",
+              **configure()),
+    Extension('underworld3.function.analytic',
+              sources = ['underworld3/function/analytic.pyx', 'underworld3/function/AnalyticSolNL.c',],
             #   language="c++",
               **configure()),
 ]
@@ -80,5 +84,6 @@ setup(name = "underworld3",
         extensions,
         compiler_directives={'language_level' : "3"},   # or "2" or "3str"
         build_dir="build",
+        annotate=True,
         gdb_debug=True, 
         include_path=[petsc4py.get_include()]) )

@@ -344,11 +344,6 @@ class Stokes:
             gvec.array[:] = 0.
 
         # Set all quadratures to velocity quadrature.
-        # Note that this needs to be done before the call to 
-        # `getInterlacedLocalVariableVec()`, as `createDS` 
-        # TODO: Check if we need to unwind these quadratures. 
-        #       I believe the PETSc reference counting should 
-        #       do the job, but I'm not 100% sure.
         cdef PetscQuadrature u_quad
         cdef FE c_fe = self.petsc_fe_u
         ierr = PetscFEGetQuadrature(c_fe.fe, &u_quad); CHKERRQ(ierr)
@@ -364,8 +359,8 @@ class Stokes:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
-        a_local = self.mesh.getInterlacedLocalVariableVec()
-        self.dm.compose("A", a_local)
+        self.mesh.update_lvec()
+        self.dm.compose("A", self.mesh.lvec)
         # TODO required? - attach the aux dm to the original dm
         self.dm.compose("dmAux", self.mesh.dm)
 
@@ -376,18 +371,7 @@ class Stokes:
         cdef Vec clvec = lvec
         cdef DM dm = self.dm
         DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
-        self.mesh.restoreInterlacedLocalVariableVec()
 
-        # This comment relates to previous implementation, but I'll leave it 
-        # here for now as something to be aware of / investigate further.
-        
-        # # create SubDMs now to isolate velocity/pressure variables.
-        # # this is currently problematic as the calls to DMCreateSubDM
-        # # need to be executed after the solve above, as otherwise the 
-        # # results are altered/corrupted. it's unclear to me why this is
-        # # the case.  the migrationsf doesn't change anything.
-        # # also, the SubDMs and associated vectors are potentially leaking
-        # # due to our petsc4py/cython hacks below. 
         with self.mesh.access(self.u,self.p):
             # TODO: Check if this approach is valid generally. 
             #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 

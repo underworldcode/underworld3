@@ -71,6 +71,11 @@ class Integral:
 
         cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())
 
+        # Pull out vec for variables, and go ahead with the integral
+        self.mesh.update_lvec()
+        cdef Vec clvec
+        clvec = self.mesh.lvec
+
         # Now, find var with the highest degree. We will then configure the integration 
         # to use this variable's quadrature object for all variables. 
         # This needs to be double checked.  
@@ -86,21 +91,17 @@ class Integral:
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
             c_fe = fe
             ierr = PetscFESetQuadrature(c_fe.fe,quad_base); CHKERRQ(ierr)        
-
-        cdef DM dm = self.mesh.dm
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
+
+        cdef DM dm = self.mesh.dm
         cdef DS ds = self.mesh.dm.getDS()
         # Now set callback... note that we set the highest degree var_id (as determined
         # above) for the second parameter. 
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
         
         cdef PetscScalar val
-        cdef Vec clvec
-        # Pull out vec for variables, and go ahead with the integral
-        with self.mesh.getInterlacedLocalVariableVecManaged() as a_local:
-            clvec = a_local
-            ierr = DMPlexComputeIntegralFEM(dm.dm, clvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
+        ierr = DMPlexComputeIntegralFEM(dm.dm, clvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
 
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.
