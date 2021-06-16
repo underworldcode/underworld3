@@ -96,60 +96,75 @@ result = uw.function.evaluate(multexpr,coords)
 test(name, factorial, result)
 
 # %%
-name = "polynomial mesh var test"
+name = "polynomial mesh var degree test"
 mesh = uw.mesh.Mesh()
-var0 = uw.mesh.MeshVariable(name="var0", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=0 )
-var1 = uw.mesh.MeshVariable(name="var1", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=1 )
-var2 = uw.mesh.MeshVariable(name="var2", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=2 )
-var3 = uw.mesh.MeshVariable(name="var3", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=3 )
-var4 = uw.mesh.MeshVariable(name="var4", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=4 )
-var5 = uw.mesh.MeshVariable(name="var5", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=5 )
-def tensor_product(order, v1, v2):
+maxdegree = 10
+vars = []
+# Create required vars of different degree.
+for degree in range(maxdegree+1):
+    vars.append( uw.mesh.MeshVariable(name="var"+str(degree), mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=degree ) )
+# Python function which generates a polynomial space spanning function of the required degree.
+# For example for degree 2:
+# tensor_product(2,x,y) = 1 + x + y + x**2*y + x*y**2 + x**2*y**2
+def tensor_product(order, val1, val2):
     sum = 0.
     order+=1
     for i in range(order):
         for j in range(order):
-            sum+= v1**i*v2**j
+            sum+= val1**i*val2**j
     return sum
-with mesh.access(var0,var1,var2,var3,var4,var5):
-    vcoords = var0.coords
-    var0.data[:,0] = tensor_product(0, vcoords[:,0], vcoords[:,1])
-    vcoords = var1.coords
-    var1.data[:,0] = tensor_product(1, vcoords[:,0], vcoords[:,1])
-    vcoords = var2.coords
-    var2.data[:,0] = tensor_product(2, vcoords[:,0], vcoords[:,1])
-    vcoords = var3.coords
-    var3.data[:,0] = tensor_product(3, vcoords[:,0], vcoords[:,1])
-    vcoords = var4.coords
-    var4.data[:,0] = tensor_product(4, vcoords[:,0], vcoords[:,1])
-    vcoords = var5.coords
-    var5.data[:,0] = tensor_product(5, vcoords[:,0], vcoords[:,1])
+# Set variable data to represent polynomial function.
+with mesh.access(*vars):
+    for var in vars:
+        vcoords = var.coords
+        var.data[:,0] = tensor_product(var.degree, vcoords[:,0], vcoords[:,1])
+# Test that interpolated variables reproduce exactly polymial function of associated degree.
+for var in vars:
+    result = uw.function.evaluate(var.fn,coords)
+    test(name+" degree "+str(var.degree), tensor_product(var.degree, coords[:,0], coords[:,1]), result)
 
-result = uw.function.evaluate(var0.fn,coords)
-test(name+" degree 0", tensor_product(0, coords[:,0], coords[:,1]), result)
-result = uw.function.evaluate(var1.fn,coords)
-test(name+" degree 1", tensor_product(1, coords[:,0], coords[:,1]), result)
-result = uw.function.evaluate(var2.fn,coords)
-test(name+" degree 2", tensor_product(2, coords[:,0], coords[:,1]), result)
-result = uw.function.evaluate(var3.fn,coords)
-test(name+" degree 3", tensor_product(3, coords[:,0], coords[:,1]), result)
-result = uw.function.evaluate(var4.fn,coords)
-test(name+" degree 4", tensor_product(4, coords[:,0], coords[:,1]), result)
-result = uw.function.evaluate(var5.fn,coords)
-test(name+" degree 5", tensor_product(5, coords[:,0], coords[:,1]), result)
+# Let's now do the same, but instead do it Sympy wise.
+# We don't really need any UW infrastructure for this test, but it's useful
+# to stress our `evaluate()` function. It should however simply reduce
+# to Sympy's `lambdify` routine. 
+name = "polynomial sympy test"
+degree = 20
+test(name, tensor_product(degree, coords[:,0], coords[:,1]), uw.function.evaluate( tensor_product(degree, mesh.r[0], mesh.r[1]) , coords ) )
 
+# Now we'll do something similar but involve UW variables.
+# Instead of using the Sympy symbols for (x,y), we'll set the 
+# coordinate locations on the var data itself.
+# For a cartesian mesh, linear elements will suffice. 
+# We'll also do it twice, once using (xvar,yvar), and
+# another time using (xyvar[0], xyvar[1]).
+name = "polynomial mesh var sympy test"
+mesh = uw.mesh.Mesh()
+xvar = uw.mesh.MeshVariable(name="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
+yvar = uw.mesh.MeshVariable(name="yvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
+xyvar = uw.mesh.MeshVariable(name="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
+with mesh.access(xvar,yvar,xyvar):
+    # Note that all the `coords` arrays should actually reduce to an identical array,
+    # as all vars have identical degree and layout.
+    xvar.data[:,0] = xvar.coords[:,0]
+    yvar.data[:,0] = yvar.coords[:,1]
+    xyvar.data[:] = xyvar.coords[:]
+degree = 10 
+test(name+" scalar wise", tensor_product(degree, coords[:,0], coords[:,1]), uw.function.evaluate( tensor_product(degree, xvar.fn, yvar.fn) , coords ) )
+test(name+" vector wise", tensor_product(degree, coords[:,0], coords[:,1]), uw.function.evaluate( tensor_product(degree, xyvar.fn.dot(mesh.N.i), 
+                                                                                                                         xyvar.fn.dot(mesh.N.j)) , coords ) )
 
+# %%
+# NOTE THAT WE NEEDED TO DISABLE MESH HASHING FOR 3D MESH FOR SOME REASON.
+# CHECK `DMInterpolationSetUp_UW()` FOR DETAILS.
+name = "3d cross product test"
+# Create a set of evaluation coords in 3d
 n=10
 x = np.linspace(0.1,0.9,n)
 y = np.linspace(0.2,0.8,n)
 z = np.linspace(0.3,0.7,n)
 xv, yv, zv = np.meshgrid(x, y, z, sparse=True)
 coords = np.vstack((xv[0,:,0],yv[:,0,0],zv[0,0,:])).T
-
-# %%
-# NOTE THAT WE NEEDED TO DISABLE MESH HASHING FOR 3D MESH FOR SOME REASON.
-# CHECK `DMInterpolationSetUp_UW()` FOR DETAILS.
-name = "3d cross product test"
+# Now mesh and vars etc. 
 mesh = uw.mesh.Mesh(elementRes=(4,)*3)
 name = "vector cross product test"
 var_vector1  = uw.mesh.MeshVariable(name="var_vector1", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR )

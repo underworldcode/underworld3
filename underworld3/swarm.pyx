@@ -38,7 +38,7 @@ class SwarmPICLayout(Enum):
     DMSWARMPIC_LAYOUT_GAUSS = 1
 
 class SwarmVariable(_api_tools.Stateful):
-    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True):
+    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True, _proxy=True):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -62,7 +62,9 @@ class SwarmVariable(_api_tools.Stateful):
         self._is_accessed = False
 
         # create proxy variable
-        self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
+        self._meshVar = None
+        if _proxy:
+            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
 
         super().__init__()
 
@@ -71,10 +73,13 @@ class SwarmVariable(_api_tools.Stateful):
         This method updates the proxy mesh variable for the current 
         swarm & particle variable state.
         """
-        map = self.swarm._get_map(self)
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            return
+        nnmap = self.swarm._get_map(self)
         # set NN vals on mesh var
         with self.swarm.mesh.access(self._meshVar), self.swarm.access():
-            self._meshVar.data[:,:] = self.data[map,:]
+            self._meshVar.data[:,:] = self.data[nnmap,:]
 
     def project_from(self, meshvar):
         # use method found in 
@@ -180,7 +185,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords
-        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False)
+        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False, _proxy=False)
 
         self._kdtree = None
         self._nnmapdict = {}

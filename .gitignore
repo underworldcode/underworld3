@@ -22,5 +22,5 @@ examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
 build
 keep
-output
+output*
 old

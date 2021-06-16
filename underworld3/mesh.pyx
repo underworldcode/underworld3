@@ -376,18 +376,26 @@ class _MeshBase(_api_tools.Stateful):
         cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
         cdmNew.setField(0,cdmfe)
         cdmNew.createDS()
-        matInterp = cdmOld.createInterpolation(cdmNew)[0]  # get Mat only
+        (matInterp, vecScale) = cdmOld.createInterpolation(cdmNew)
+        vecScale.destroy() # not needed
         coordsOld = self.dm.getCoordinates()
-        coordsNew = cdmNew.getGlobalVec()
+        coordsNewG = cdmNew.getGlobalVec()
+        coordsNewL = cdmNew.getLocalVec()
         cdef Mat c_matInterp = matInterp
         cdef Vec c_coordsOld = coordsOld
-        cdef Vec c_coordsNew = coordsNew
-        ierr = MatInterpolate(c_matInterp.mat, c_coordsOld.vec, c_coordsNew.vec); CHKERRQ(ierr)
-        arr = coordsNew.array
+        cdef Vec c_coordsNewG = coordsNewG
+        ierr = MatInterpolate(c_matInterp.mat, c_coordsOld.vec, c_coordsNewG.vec); CHKERRQ(ierr)
+        cdmNew.globalToLocal(coordsNewG,coordsNewL)
+        arr = coordsNewL.array
         # reshape and grab copy
         arrcopy = arr.reshape(-1,self.dim).copy()
         # record into coord array
         self._coord_array[key] = arrcopy
+        # clean up
+        cdmNew.restoreLocalVec(coordsNewL)
+        cdmNew.restoreGlobalVec(coordsNewG)
+        cdmNew.destroy()
+        cdmfe.destroy()
         # return
         return arrcopy
 

@@ -2,6 +2,14 @@
 import numpy as np
 import os
 import math
+import underworld3
+run_uw2 = False
+try:
+    import underworld
+    run_uw2 = True
+except:
+    pass
+
 
 import time
 global now_time 
@@ -13,7 +21,10 @@ def delta_time():
     return now_time - old_now_time
 
 dim = 2
-n_els = 32
+if "UW_LONGTEST" in os.environ:
+    n_els = 64
+else:
+    n_els = 32
 boxLength      = 0.9142
 boxHeight      = 1.0
 viscosityRatio = 1.0
@@ -23,7 +34,7 @@ ppcell = 3
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
-model_end_time = 100.
+model_end_time = 300.
 # output
 inputPath  = 'input/05_Rayleigh_Taylor/'
 outputPath = 'output/'
@@ -123,8 +134,6 @@ def do_uw3():
     stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], (0,1) )  # top/bottom: function, boundaries, components 
     stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT ], 0  )  # left/right: function, boundaries, components
 
-    print(f"Setup time = {delta_time()}")
-
     step = 0
     time = 0.
     nprint = 0.
@@ -151,6 +160,7 @@ def do_uw3():
             # fig.edges(mesh)
             with swarm.access(),mesh.access():
                 figs.swarm_points(swarm, matSwarmVar.data, pointsize=4, colourmap="blue green", colourbar=False, title=time)
+                figs.vector_arrows(mesh, stokes.u.data)
                 # fig.nodes(mesh,matMeshVar.data,colourmap="blue green", pointsize=6, pointtype=4)
             outputFilename = os.path.join(outputPath,f"uw3_image_{str(step).zfill(4)}.png")
             figs.image(outputFilename)
@@ -166,7 +176,8 @@ def do_uw3():
         atime = delta_time()
 
         vrms_val = vrms()
-        print(f"Step {str(step).rjust(3)}, time {time:6.2f}, vrms {vrms_val:.3e}, Time(s): Solve {stime:5.2f}, Plot {ptime:5.2f}, Evaluate {etime:5.2f}, Advect {atime:5.2f}")
+        if MPI.COMM_WORLD.rank==0:
+            print(f"Step {str(step).rjust(3)}, time {time:6.2f}, vrms {vrms_val:.3e}, Time(s): Solve {stime:5.2f}, Plot {ptime:5.2f}, Evaluate {etime:5.2f}, Advect {atime:5.2f}")
 
         timeVal.append(time)
         vrmsVal.append(vrms_val)
@@ -324,7 +335,9 @@ def do_uw2():
 uw3_time, uw3_vrms = do_uw3()
 
 # %%
-uw2_time, uw2_vrms = do_uw2()
+if run_uw2:
+    uw2_time, uw2_vrms = do_uw2()
+
 
 
 # %%
@@ -346,13 +359,32 @@ if MPI.COMM_WORLD.rank==0:
     fig = pyplot.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(timeCompare, vrmsCompare, color = 'black') 
-    ax.plot(uw2_time, uw2_vrms, color = 'red', marker=".", markersize=10) 
-    ax.plot(uw3_time, uw3_vrms, color = 'blue', marker=".", markersize=10) 
+    ax.plot(timeCompare, vrmsCompare, color = 'black')
+    ax.plot(uw3_time, uw3_vrms, color = 'blue', marker=".", markersize=10, label="uw3") 
+    if run_uw2:
+        ax.plot(uw2_time, uw2_vrms, color = 'red', marker=".", markersize=10, label="uw2") 
     ax.set_xlabel('Time')
     ax.set_ylabel('RMS velocity')
     ax.set_xlim([0.0,1000.0])
+    ax.legend()
     fig.savefig(os.path.join(outputPath,"vrms.png"))
 
-# %% 
-# %%
+    # test for max vrms time/value
+    # switch for numpy arrays
+    uw3_vrms = np.array(uw3_vrms)
+    uw3_time = np.array(uw3_time)
+    uw3_maxvrms = uw3_vrms.max()
+    uw3_maxvrms_time = uw3_time[uw3_vrms.argmax()]
+
+    expected_maxvrms = vrmsCompare.max()
+    expected_maxvrms_time = timeCompare[vrmsCompare.argmax()]
+
+    if "UW_LONGTEST" in os.environ:
+        rtol = 0.02
+    else:
+        rtol = 0.1
+
+    if not np.allclose(uw3_maxvrms,expected_maxvrms,rtol=rtol):
+        raise RuntimeError(f"Encountered max VRMS ({uw3_maxvrms}) not sufficiently close to expected value ({expected_maxvrms})")
+    if not np.allclose(uw3_maxvrms_time,expected_maxvrms_time,rtol=rtol):
+        raise RuntimeError(f"Encountered max VRMS time ({uw3_maxvrms_time}) not sufficiently close to expected value ({expected_maxvrms_time})")
