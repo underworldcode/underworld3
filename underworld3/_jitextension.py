@@ -246,6 +246,17 @@ from libc.math cimport *
 cdef extern from "cy_ext.h" nogil:
 """
 
+    # Generate a random string to prepend to symbol names. 
+    # This is generally not required, but on some systems (depending
+    # on how Python is configured to dynamically load libraries)
+    # it avoids difficulties with symbol namespace clashing which 
+    # results in only the first JIT module working (with all 
+    # subsequent modules pointing towards the first's symbols).
+    # Tags: RTLD_LOCAL, RTLD_Global, Gadi.
+    import string
+    import random
+    randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
+
     # Print includes
     for header in printer.headers:
         h_str += "#include \"{}\"\n".format(header)
@@ -253,12 +264,12 @@ cdef extern from "cy_ext.h" nogil:
     h_str += "\n"
     # Print equations
     for eqn in eqns[0:count_residual_sig]:
-        h_str  +="void petsc_{}{}\n{{\n{}\n}}\n\n".format(eqn[0],residual_sig,eqn[1])
-        pyx_str+="    void petsc_{}{}\n".format(eqn[0],residual_sig)
+        h_str  +="void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(randstr,eqn[0],residual_sig,eqn[1])
+        pyx_str+="    void {}_petsc_{}{}\n".format(randstr,eqn[0],residual_sig)
 
     for eqn in eqns[count_residual_sig:]:
-        h_str  +="void petsc_{}{}\n{{\n{}\n}}\n\n".format(eqn[0],jacobian_sig,eqn[1])
-        pyx_str+="    void petsc_{}{}\n".format(eqn[0],jacobian_sig)
+        h_str  +="void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(randstr,eqn[0],jacobian_sig,eqn[1])
+        pyx_str+="    void {}_petsc_{}{}\n".format(randstr,eqn[0],jacobian_sig)
 
     codeguys.append( ["cy_ext.h", h_str] )
     # Note that the malloc below will cause a leak, but it's just a bunch of function
@@ -272,11 +283,11 @@ cpdef PtrContainer getptrobj():
 """.format(len(fns_residual),count_jacobian_sig,len(fns_bcs)) 
 
     for index,eqn in enumerate(eqns[0:len(fns_residual)]):
-        pyx_str+="    clsguy.fns_residual[{}] = petsc_{}\n".format(index,eqn[0])
+        pyx_str+="    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(index,randstr,eqn[0])
     for index,eqn in enumerate(eqns[count_residual_sig:]):
-        pyx_str+="    clsguy.fns_jacobian[{}] = petsc_{}\n".format(index,eqn[0])
+        pyx_str+="    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(index,randstr,eqn[0])
     for index,eqn in enumerate(eqns[len(fns_residual):count_residual_sig]):
-        pyx_str+="    clsguy.fns_bcs[{}] = petsc_{}\n".format(index,eqn[0])
+        pyx_str+="    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(index,randstr,eqn[0])
     pyx_str +="    return clsguy"
     codeguys.append( ["cy_ext.pyx", pyx_str] )
 
