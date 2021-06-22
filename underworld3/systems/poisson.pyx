@@ -4,6 +4,8 @@ from ..petsc_types cimport PtrContainer
 import underworld3 as uw
 from .._jitextension import getext, diff_fn1_wrt_fn2
 from sympy import sympify
+import underworld3.timing as timing
+
 # TODO
 # gil v nogil 
 # ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
@@ -27,7 +29,7 @@ cdef extern from "petsc.h" nogil:
 from petsc4py import PETSc
     
 class Poisson:
-
+    @timing.routine_timer_decorator
     def __init__(self, mesh, degree=1):
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
@@ -70,6 +72,7 @@ class Poisson:
         # should add test here to make sure h is conformal
         self._h = sympify(value)
 
+    @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
@@ -82,6 +85,7 @@ class Poisson:
         BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
         self.bcs.append(BC(components,sympify(fn),boundaries))
 
+    @timing.routine_timer_decorator
     def _setup_terms(self):
         from sympy.vector import gradient
         import sympy
@@ -146,6 +150,7 @@ class Poisson:
 
         self.is_setup = True
 
+    @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
               _force_setup:    bool =False ):

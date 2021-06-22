@@ -6,6 +6,7 @@ import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
 from .._jitextension import getext, diff_fn1_wrt_fn2
+import underworld3.timing as timing
 
 # TODO
 # gil v nogil 
@@ -35,9 +36,8 @@ cdef extern from "petsc.h" nogil:
 from petsc4py import PETSc
     
 class Stokes:
-
+    @timing.routine_timer_decorator
     def __init__(self, mesh, u_degree=2, p_degree=None):
-
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
@@ -131,7 +131,7 @@ class Stokes:
         #     raise RuntimeError("Body force term must be a vector quantity.")
         self._bodyforce = symval
 
-    
+    @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
@@ -144,6 +144,7 @@ class Stokes:
         BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
         self.bcs.append(BC(components,sympify(fn),boundaries))
 
+    @timing.routine_timer_decorator
     def _setup_terms(self):
         N = self.mesh.N
 
@@ -311,6 +312,7 @@ class Stokes:
 
         self.is_setup = True
 
+    @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
               _force_setup:    bool =False ):
@@ -384,6 +386,7 @@ class Stokes:
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
+    @timing.routine_timer_decorator
     def dt(self):
         """
         Calculates an appropriate advective timestep for the given 

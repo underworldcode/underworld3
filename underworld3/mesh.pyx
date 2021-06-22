@@ -1,4 +1,5 @@
 # cython: profile=False
+
 from libc.stdlib cimport malloc, free
 from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, FE, PetscFE, Vec, PetscVec, IS, PetscIS, PetscSF, MPI_Comm, PetscObject, Mat, PetscMat, GetCommDefault
 from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
@@ -11,6 +12,7 @@ import sympy
 import underworld3 as uw 
 from underworld3 import _api_tools
 from mpi4py import MPI
+import underworld3.timing as timing
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexCreateBallMesh(MPI_Comm, PetscInt, PetscReal, PetscDM*)
@@ -30,6 +32,7 @@ cdef CHKERRQ(PetscErrorCode ierr):
 
 
 class MeshVariable(_api_tools.Stateful):
+    @timing.routine_timer_decorator
     def __init__(self, name, mesh, num_components, vtype=None, degree=1):
 
         if mesh._accessed:
@@ -86,6 +89,7 @@ class MeshVariable(_api_tools.Stateful):
     #     viewer = PETSc.Viewer().createHDF5(filename, "w")
     #     viewer(self.petsc_fe)
     #     generateXdmf(filename)
+
 
     @property
     def fn(self):
@@ -155,6 +159,7 @@ class MeshVariable(_api_tools.Stateful):
 
 
 class _MeshBase(_api_tools.Stateful):
+    @timing.routine_timer_decorator
     def __init__(self, simplex, *args,**kwargs):
         self.isSimplex = simplex
         # create boundary sets
@@ -210,6 +215,7 @@ class _MeshBase(_api_tools.Stateful):
 
         super().__init__()
 
+    @timing.routine_timer_decorator
     def update_lvec(self):
         """
         This method creates and/or updates the mesh variable local vector. 
@@ -346,6 +352,7 @@ class _MeshBase(_api_tools.Stateful):
         """ Number of dimensions of the mesh """
         return self.dm.getDimension()
 
+    @timing.routine_timer_decorator
     def save(self, filename):
         viewer = PETSc.Viewer().createHDF5(filename, "w")
         viewer(self.dm)
@@ -400,6 +407,7 @@ class _MeshBase(_api_tools.Stateful):
         return arrcopy
 
 class Mesh(_MeshBase):
+    @timing.routine_timer_decorator
     def __init__(self, 
                 elementRes=(16, 16), 
                 minCoords=None,
@@ -450,6 +458,7 @@ class Mesh(_MeshBase):
 
 
 class Spherical(_MeshBase):
+    @timing.routine_timer_decorator
     def __init__(self, 
                 refinements=4, 
                 radius=1.):

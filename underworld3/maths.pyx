@@ -6,6 +6,7 @@ from sympy import sympify
 import sympy
 from typing import Union
 import underworld3
+import underworld3.timing as timing
 
 cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
@@ -45,6 +46,7 @@ class Integral:
     True
 
     """
+    @timing.routine_timer_decorator
     def __init__( self,
                   mesh:  underworld3.mesh.Mesh,
                   fn:    Union[float, int, sympy.Basic] ):
@@ -53,6 +55,7 @@ class Integral:
         self.fn = sympify(fn)
         super().__init__()
 
+    @timing.routine_timer_decorator
     def evaluate(self) -> float:
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"

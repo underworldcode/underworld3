@@ -9,6 +9,7 @@ from typeguard import typechecked
 import underworld3 as uw
 import numpy as np
 from underworld3 import _api_tools
+import underworld3.timing as timing
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateMassMatrix(PetscDM dac, PetscDM daf, PetscMat *mat)
@@ -38,6 +39,7 @@ class SwarmPICLayout(Enum):
     DMSWARMPIC_LAYOUT_GAUSS = 1
 
 class SwarmVariable(_api_tools.Stateful):
+    @timing.routine_timer_decorator
     def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True, _proxy=True):
 
         if name in swarm.vars.keys():
@@ -81,6 +83,7 @@ class SwarmVariable(_api_tools.Stateful):
         with self.swarm.mesh.access(self._meshVar), self.swarm.access():
             self._meshVar.data[:,:] = self.data[nnmap,:]
 
+    @timing.routine_timer_decorator
     def project_from(self, meshvar):
         # use method found in 
         # /tmp/petsc-build/petsc/src/dm/impls/swarm/tests/ex2.c
@@ -171,6 +174,7 @@ class SwarmVariable(_api_tools.Stateful):
 
 #@typechecked
 class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
+    @timing.routine_timer_decorator
     def __init__(self, mesh):
         self.mesh = mesh
         self.dim = mesh.dim
@@ -196,6 +200,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def particle_coordinates(self):
         return self._coord_var
 
+    @timing.routine_timer_decorator
     def populate(self, ppcell=25, layout=SwarmPICLayout.DMSWARMPIC_LAYOUT_GAUSS):
         
         self.ppcell = ppcell
@@ -211,11 +216,13 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         self.dm.insertPointUsingCellDM(self.layout.value, ppcell)
         return self
 
+    @timing.routine_timer_decorator
     def add_variable(self, name, num_components=1, dtype=float):
         var = SwarmVariable(name, self, num_components, dtype=dtype)
 
         return var
 
+    @timing.routine_timer_decorator
     def save(self, filename):
         self.dm.viewXDMF(filename)
     

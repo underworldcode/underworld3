@@ -2,6 +2,8 @@ import sympy
 import numpy as np
 import underworld3 
 from typing import List
+import underworld3.timing as timing
+
 
 def diff_fn1_wrt_fn2(fn1, fn2):
     """
@@ -17,6 +19,7 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     return fn1.subs(fn2,dummy).diff(dummy).subs(dummy,fn2)
 
 _ext_dict = {}
+@timing.routine_timer_decorator
 def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
     """
     Check if we've already created an equivalent extension
@@ -42,6 +45,7 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
     # print(f'jit time {time.time()-time_s}')
     return ptrobj
 
+@timing.routine_timer_decorator
 def _createext(name:               str, 
                mesh:               underworld3.mesh.Mesh,
                fns_residual:       List[sympy.Basic], 

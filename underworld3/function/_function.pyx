@@ -6,6 +6,7 @@ import sympy
 import underworld3 as uw
 from libc.stdlib cimport malloc, free
 cimport numpy as np
+import underworld3.timing as timing
 
 
 cdef extern from "petsc_tools.h" nogil:
@@ -288,6 +289,11 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
 
     # 6. Return results
     return results
+
+# Go ahead and substituate for the timed version.
+# Note that we don't use the @decorator sugar here so that
+# we can pass in the `class_name` parameter. 
+evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
 
 
 
