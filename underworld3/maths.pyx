@@ -73,8 +73,10 @@ class Integral:
 
         # Pull out vec for variables, and go ahead with the integral
         self.mesh.update_lvec()
-        cdef Vec clvec
-        clvec = self.mesh.lvec
+        a_global = self.mesh.dm.getGlobalVec()
+        self.mesh.dm.localToGlobal(self.mesh.lvec, a_global)
+        cdef Vec cgvec
+        cgvec = a_global
 
         # Now, find var with the highest degree. We will then configure the integration 
         # to use this variable's quadrature object for all variables. 
@@ -101,7 +103,8 @@ class Integral:
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
         
         cdef PetscScalar val
-        ierr = DMPlexComputeIntegralFEM(dm.dm, clvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
+        ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
+        self.mesh.dm.restoreGlobalVec(a_global)
 
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.
