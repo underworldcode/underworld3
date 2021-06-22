@@ -230,7 +230,6 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
     def vars(self):
         return self._vars
 
-    @contextlib.contextmanager
     def access(self, *writeable_vars:SwarmVariable):
         """
         This context manager makes the underlying swarm variables data available to
@@ -258,6 +257,9 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         >>> someMesh.data[0]
         array([ 0.1,  0.1])
         """
+        import time
+        uw.timing._incrementDepth()
+        stime = time.time()
 
         deaccess_list = []
         for var in self.vars.values():
@@ -280,35 +282,36 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         if self.particle_coordinates in writeable_vars:
             self._increment()
 
-
-        try:
-            yield
-        except:
-            raise
-        finally:
-            for var in self.vars.values():
-                # only de-access variables we have set access for.
-                if var not in deaccess_list:
-                    continue
-                # set this back, although possibly not required.
-                if var not in writeable_vars:
-                    var._data.flags.writeable = var._old_data_flag
-                var._data = None
-                self.restoreField(var.name)
-                var._is_accessed = False
-            # do particle migration if coords changes
-            if self.particle_coordinates in writeable_vars:
-                self.migrate(remove_sent_points=True)
-                # void these things too
-                self._kdtree = None
-                self._nnmapdict = {}
-            # do var updates
-            for var in self.vars.values():
-                # if swarm migrated, update all. 
-                # if var updated, update var.
-                if (self.particle_coordinates in writeable_vars) or \
-                   (var                       in writeable_vars) :
-                    var._update()
+        class exit_manager:
+            def __init__(self,swarm): self.swarm = swarm
+            def __enter__(self): pass
+            def __exit__(self, *args):
+                for var in self.swarm.vars.values():
+                    # only de-access variables we have set access for.
+                    if var not in deaccess_list:
+                        continue
+                    # set this back, although possibly not required.
+                    if var not in writeable_vars:
+                        var._data.flags.writeable = var._old_data_flag
+                    var._data = None
+                    self.swarm.restoreField(var.name)
+                    var._is_accessed = False
+                # do particle migration if coords changes
+                if self.swarm.particle_coordinates in writeable_vars:
+                    self.swarm.migrate(remove_sent_points=True)
+                    # void these things too
+                    self.swarm._kdtree = None
+                    self.swarm._nnmapdict = {}
+                # do var updates
+                for var in self.swarm.vars.values():
+                    # if swarm migrated, update all. 
+                    # if var updated, update var.
+                    if (self.swarm.particle_coordinates in writeable_vars) or \
+                       (var                             in writeable_vars) :
+                        var._update()
+                uw.timing._decrementDepth()
+                uw.timing.log_result(time.time()-stime, "Swarm.access",1)
+        return exit_manager(self)
 
     def _get_map(self,var):
         # generate tree if not avaiable

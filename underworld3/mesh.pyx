@@ -258,7 +258,6 @@ class _MeshBase(_api_tools.Stateful):
         if self._lvec:
             self._lvec.destroy()
 
-    @contextlib.contextmanager
     def access(self, *writeable_vars:MeshVariable):
         """
         This context manager makes the underlying mesh variables data available to
@@ -282,10 +281,9 @@ class _MeshBase(_api_tools.Stateful):
         array([ 0.1,  0.1])
         """
 
-        cdef DM subdm = PETSc.DM()
-        cdef DM dm = self.dm
-        cdef PetscInt fields
-        cdef Vec vec = PETSc.Vec()
+        import time
+        uw.timing._incrementDepth()
+        stime = time.time()
 
         self._accessed = True
         deaccess_list = []
@@ -308,29 +306,35 @@ class _MeshBase(_api_tools.Stateful):
                 # increment variable state
                 var._increment()
 
-        try:
-            yield
-        except:
-            raise
-        finally:
-            for var in self.vars.values():
-                # only de-access variables we have set access for.
-                if var not in deaccess_list:
-                    continue
-                # set this back, although possibly not required.
-                if var not in writeable_vars:
-                    var._data.flags.writeable = var._old_data_flag
-                # perform sync for any modified vars.
-                if var in writeable_vars:
-                    fields = var.field_id
-                    ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
-                    subdm.localToGlobal(var.vec,var.vec_global, addv=False)
-                    subdm.globalToLocal(var.vec_global,var.vec, addv=False)
-                    ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
-                    self._stale_lvec = True
-                var._data = None
-                var._set_vec(available=False)
-                var._is_accessed = False
+        class exit_manager:
+            def __init__(self,mesh): self.mesh = mesh
+            def __enter__(self): pass
+            def __exit__(self,*args):
+                cdef DM subdm = PETSc.DM()
+                cdef DM dm = self.mesh.dm
+                cdef PetscInt fields
+                cdef Vec vec = PETSc.Vec()
+                for var in self.mesh.vars.values():
+                    # only de-access variables we have set access for.
+                    if var not in deaccess_list:
+                        continue
+                    # set this back, although possibly not required.
+                    if var not in writeable_vars:
+                        var._data.flags.writeable = var._old_data_flag
+                    # perform sync for any modified vars.
+                    if var in writeable_vars:
+                        fields = var.field_id
+                        ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+                        subdm.localToGlobal(var.vec,var.vec_global, addv=False)
+                        subdm.globalToLocal(var.vec_global,var.vec, addv=False)
+                        ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
+                        self.mesh._stale_lvec = True
+                    var._data = None
+                    var._set_vec(available=False)
+                    var._is_accessed = False
+                uw.timing._decrementDepth()
+                uw.timing.log_result(time.time()-stime, "Mesh.access",1)
+        return exit_manager(self)
 
 
     @property
