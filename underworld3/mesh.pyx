@@ -217,6 +217,7 @@ class _MeshBase(_api_tools.Stateful):
         # now set copy of linear array into dictionary
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
+        self._index = None
 
         super().__init__()
 
@@ -414,6 +415,47 @@ class _MeshBase(_api_tools.Stateful):
         cdmfe.destroy()
         # return
         return arrcopy
+    
+    def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        """
+        This method uses a kd-tree algorithm to find the closest
+        cells to the provided coords. For a regular mesh, this should 
+        be exactly the owning cell, but if the mesh is deformed, this 
+        is not guaranteed. 
+
+        Parameters:
+        -----------
+        coords:
+            An array of the coordinates for which we wish to determine the
+            closest cells. This should be a 2-dimensional array of 
+            shape (n_coords,dim).
+
+        Returns:
+        --------
+        closest_cells:
+            An array of indices representing the cells closest to the provided
+            coordinates. This will be a 1-dimensional array of 
+            shape (n_coords).
+        """
+        # Create index if required
+        if not self._index:
+            # Get cell centroids. 
+            # Note that if necessary, we might like to do something
+            # like index on Gauss points instead of centroids. This should
+            # give better results for deformed mesh. 
+            elstart,elend = self.dm.getHeightStratum(0)
+            centroids = np.empty((elend,self.dim))
+            for index in range(elend):
+                centroids[index] = self.dm.computeCellGeometryFVM(index)[1]
+            self._index = uw.algorithms.KDTree(centroids)
+            self._index.build_index()
+
+        closest_cells, dist, found = self._index.find_closest_point(coords)
+
+        if not np.allclose(found,True):
+            raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.")
+        
+        return closest_cells
 
 class Mesh(_MeshBase):
     @timing.routine_timer_decorator

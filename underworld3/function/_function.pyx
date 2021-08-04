@@ -10,7 +10,7 @@ import underworld3.timing as timing
 
 
 cdef extern from "petsc_tools.h" nogil:
-    PetscErrorCode DMInterpolationSetUp_UW(void *ipInfo, PetscDM dm, int petscbool, int petscbool)
+    PetscErrorCode DMInterpolationSetUp_UW(void *ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
     PetscErrorCode DMInterpolationEvaluate_UW(void *ipInfo, PetscDM dm, PetscVec x, PetscVec v)
 
 cdef extern from "petsc.h" nogil:
@@ -190,7 +190,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         # Get c-pointer to data buffer
         # First grab copy, as we're unsure about the underlying array's 
         # memory layout
-        coords = coords.copy()
+        coords = np.ascontiguousarray(coords)
         cdef double* coords_buff = <double*> coords.data
         ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
 
@@ -227,7 +227,12 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         # free(fieldarray)
 
         # INTERPOLATE ALL VARIABLES ON THE DM
-        ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0)
+
+
+        # grab closest cells to use as hint for DMInterpolationSetUp
+        cdef np.ndarray cells = mesh.get_closest_cells(coords)
+        cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
+        ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
         if ierr != 0:
             raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
                                "Interpolation location is possibly outside the domain.")

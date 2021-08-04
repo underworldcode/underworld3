@@ -16,10 +16,7 @@
 .seealso: DMInterpolationEvaluate(), DMInterpolationAddPoints(), DMInterpolationCreate()
 @*/
 
-/* cheeky hack to reuse cell star forest */
-static PetscSF cellSF = NULL;
-
-PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain)
+PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain, size_t* owning_cell)
 {
   MPI_Comm          comm = ctx->comm;
   PetscScalar       *a;
@@ -82,13 +79,22 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   ierr = VecCreateSeqWithArray(PETSC_COMM_SELF, ctx->dim, N*ctx->dim, globalPointsScalar, &pointVec);CHKERRQ(ierr);
   ierr = PetscMalloc2(N,&foundProcs,N,&globalProcs);CHKERRQ(ierr);
   for (p = 0; p < N; ++p) {foundProcs[p] = size;}
-  cellSF = NULL;
-  ierr = DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF);
-  if (ierr>0){
-    // not great, but hack for now.
-    cellSF = NULL;
-    ierr = DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF);CHKERRQ(ierr);
-  }
+  PetscSF cellSF = NULL;
+  if (owning_cell){
+    PetscSFNode    *sf_cells;
+    ierr = PetscMalloc1(N, &sf_cells);CHKERRQ(ierr);
+    PetscInt range = 0;
+    for (size_t p=0; p<N; p++) {
+      sf_cells[p].rank  = 0;
+      sf_cells[p].index = owning_cell[p];
+      if (owning_cell[p] > range) {
+        range = owning_cell[p];
+      }
+    }
+    ierr = PetscSFCreate(PETSC_COMM_SELF,&cellSF);CHKERRQ(ierr);
+    ierr = PetscSFSetGraph(cellSF, range, N, NULL, PETSC_OWN_POINTER, sf_cells, PETSC_OWN_POINTER);CHKERRQ(ierr);
+  }  
+  ierr = DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF);CHKERRQ(ierr);
   ierr = PetscSFGetGraph(cellSF,NULL,&numFound,&foundPoints,&foundCells);CHKERRQ(ierr);
 #endif
   for (p = 0; p < numFound; ++p) {
@@ -131,7 +137,7 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   ierr = PetscFree3(foundCells,foundProcs,globalProcs);CHKERRQ(ierr);
 #else
   ierr = PetscFree2(foundProcs,globalProcs);CHKERRQ(ierr);
-  // ierr = PetscSFDestroy(&cellSF);CHKERRQ(ierr);
+  ierr = PetscSFDestroy(&cellSF);CHKERRQ(ierr);
   ierr = VecDestroy(&pointVec);CHKERRQ(ierr);
 #endif
   if ((void*)globalPointsScalar != (void*)globalPoints) {ierr = PetscFree(globalPointsScalar);CHKERRQ(ierr);}

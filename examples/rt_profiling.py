@@ -21,7 +21,7 @@ def delta_time():
     return now_time - old_now_time
 
 dim = 2
-if "UW_LONGTEST" in os.environ:
+if "UW_LONGTEST" not in os.environ:
     n_els = 64
 else:
     n_els = 256
@@ -30,7 +30,7 @@ boxHeight      = 1.0
 viscosityRatio = 1.0
 stokes_inner_tol = 1e-6
 stokes_outer_tol = 1e-5
-ppcell = 15
+ppcell = 4
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
@@ -144,6 +144,7 @@ def do_uw3():
     volume_int = uw.maths.Integral( mesh, 1. )
     volume = volume_int.evaluate()
     v_dot_v_int = uw.maths.Integral(mesh, stokes.u.fn.dot(stokes.u.fn))
+    v_dot_v = v_dot_v_int.evaluate()
     def vrms():
         import math
         v_dot_v = v_dot_v_int.evaluate()

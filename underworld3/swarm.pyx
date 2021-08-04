@@ -194,7 +194,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         # add variable to handle particle cell id
         self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)
 
-        self._kdtree = None
+        self._index = None
         self._nnmapdict = {}
 
         super().__init__()
@@ -251,7 +251,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
 
         At the conclusion of the users context managed block, numerous further operations
         will be automatically executed. This includes swarm parallel migration routines
-        where the swarm's `particle_coordinate` variable has been modified. The swarm
+        where the swarm's `particle_coordinates` variable has been modified. The swarm
         variable proxy mesh variables will also be updated for modifed swarm variables. 
 
         Parameters
@@ -309,9 +309,20 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
                     var._is_accessed = False
                 # do particle migration if coords changes
                 if self.swarm.particle_coordinates in writeable_vars:
+                    # let's use the mesh index to update the particles owning cells.
+                    # note that the `petsc4py` interface is more convenient here as the 
+                    # `SwarmVariable.data` interface is controlled by the context manager
+                    # that we are currently within, and it is therefore too easy to  
+                    # get things wrong that way.
+                    cellid = self.swarm.getField("DMSwarm_cellid")
+                    coords = self.swarm.getField("DMSwarmPIC_coor").reshape( (-1, self.swarm.dim) )
+                    cellid[:] = self.swarm.mesh.get_closest_cells(coords)
+                    self.swarm.restoreField("DMSwarmPIC_coor")
+                    self.swarm.restoreField("DMSwarm_cellid")
+                    # now migrate.
                     self.swarm.migrate(remove_sent_points=True)
                     # void these things too
-                    self.swarm._kdtree = None
+                    self.swarm._index = None
                     self.swarm._nnmapdict = {}
                 # do var updates
                 for var in self.swarm.vars.values():
@@ -326,10 +337,9 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
 
     def _get_map(self,var):
         # generate tree if not avaiable
-        if not self._kdtree:
-            from scipy import spatial
+        if not self._index:
             with self.access():
-                self._kdtree = spatial.KDTree(self.particle_coordinates.data)
+                self._index = uw.algorithms.KDTree(self.particle_coordinates.data)
 
         # get or generate map
         meshvar_coords = var._meshVar.coords
@@ -342,6 +352,6 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = self._kdtree.query(meshvar_coords)[1]
+            self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
         return self._nnmapdict[digest]
 
