@@ -12,7 +12,7 @@ swarm.c
 .env
 __pycache__
 *.so
-examples/.ipynb_checkpoints/08-cythonizing-checkpoint.ipynb
+examples/.ipynb_checkpoints/*
 examples/PoissonEq/poisson
 *.h5
 *.xmf
@@ -24,3 +24,4 @@ build
 keep
 output*
 old
+underworld3.egg-info/*
