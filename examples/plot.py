@@ -246,7 +246,7 @@ class _xvfb_runner(object):
             pass
 
 import os as _os
-if "UW_USE_XVFB" in _os.environ:
+if "UW_XVFB_ENABLE" in _os.environ:
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     if comm.rank == 0:

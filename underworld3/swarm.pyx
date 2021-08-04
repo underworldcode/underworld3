@@ -191,14 +191,25 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         # add variable to handle particle coords
         self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False, _proxy=False)
 
+        # add variable to handle particle cell id
+        self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)
+
         self._kdtree = None
         self._nnmapdict = {}
 
         super().__init__()
 
     @property
+    def data(self):
+        return self.particle_coordinates.data
+
+    @property
     def particle_coordinates(self):
         return self._coord_var
+
+    @property
+    def particle_cellid(self):
+        return self._cellid_var
 
     @timing.routine_timer_decorator
     def populate(self, ppcell=25, layout=SwarmPICLayout.DMSWARMPIC_LAYOUT_GAUSS):

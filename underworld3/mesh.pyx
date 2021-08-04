@@ -14,6 +14,10 @@ from underworld3 import _api_tools
 from mpi4py import MPI
 import underworld3.timing as timing
 
+ctypedef enum PetscBool:
+    PETSC_FALSE
+    PETSC_TRUE
+
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexCreateBallMesh(MPI_Comm, PetscInt, PetscReal, PetscDM*)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
@@ -24,6 +28,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMCompositeGetLocalISs(PetscDM dm,PetscIS **isets)
+    PetscErrorCode DMPlexExtrude(PetscDM idm, PetscInt layers, PetscReal height, PetscBool orderHeight, const PetscReal extNormal[], PetscBool interpolate, PetscDM* dm)
     MPI_Comm MPI_COMM_SELF
 
 cdef CHKERRQ(PetscErrorCode ierr):
@@ -163,8 +168,8 @@ class _MeshBase(_api_tools.Stateful):
     def __init__(self, simplex, *args,**kwargs):
         self.isSimplex = simplex
         # create boundary sets
-        for ind,val in enumerate(self.boundary):
-            boundary_set = self.dm.getStratumIS("marker",ind+1)        # get the set
+        for val in self.boundary:
+            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
             self.dm.createLabel(str(val).encode('utf8'))               # create the label
             boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
             if boundary_set:
@@ -421,7 +426,11 @@ class Mesh(_MeshBase):
 
         options = PETSc.Options()
         options["dm_plex_separate_marker"] = None
-        options["dm_plex_hash_location"] = None
+        if "dm_plex_hash_location" in options: del options["dm_plex_hash_location"]
+        if "dm_plex_hash_box_nijk" in options: del options["dm_plex_hash_box_nijk"]
+        if len(elementRes)==2:
+            options["dm_plex_hash_location"] = None
+            options["dm_plex_hash_box_nijk"] = max(elementRes)
         self.elementRes = elementRes
         if minCoords==None : minCoords=len(elementRes)*(0.,)
         self.minCoords = minCoords
@@ -491,8 +500,160 @@ class Spherical(_MeshBase):
             OUTER = 1
         
         self.boundary = Boundary
-        
+
         self.dm.view()        
         
         super().__init__(simplex=True)
             
+
+class CubedSphere(_MeshBase):
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                refinements=1, 
+                inner_radius=0.5, 
+                outer_radius=1.,
+                nlayers=4):
+
+        self.refinements = refinements
+        self.inner_radius = inner_radius
+        self.outer_radius = outer_radius
+
+        options = PETSc.Options()
+        options.setValue("bd_dm_refine", self.refinements)
+
+        from . import mesh_utils
+        cells, coords = mesh_utils._cubedsphere_cells_and_coords(inner_radius, refinements)
+        from mpi4py import MPI
+        cdef DM cubedsphere_dm = mesh_utils._from_cell_list(2, cells, coords, MPI.COMM_WORLD)
+
+        cdef DM dm = PETSc.DMPlex()
+        ierr = DMPlexExtrude(cubedsphere_dm.dm, nlayers, -(inner_radius-outer_radius), PETSC_FALSE, NULL, PETSC_TRUE, &dm.dm); CHKERRQ(ierr)
+        self.dm = dm
+        self.dm.markBoundaryFaces("1",1)
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        from enum import Enum        
+        class Boundary(Enum):
+            OUTER = 1
+            INNER = 2
+        
+        self.boundary = Boundary
+        
+        self.dm.view()        
+        
+        super().__init__(simplex=False)
+
+class ExtrudeBox(_MeshBase):
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                elementRes=(4, 4, 4), 
+                minCoords=None,
+                maxCoords=None):
+
+        # options = PETSc.Options()
+        # options["dm_plex_separate_marker"] = None
+        # options["dm_plex_hash_location"] = None
+        self.elementRes = elementRes
+        if minCoords==None : minCoords=len(elementRes)*(0.,)
+        self.minCoords = minCoords
+        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
+        self.maxCoords = maxCoords
+        self.dm_2d = PETSc.DMPlex().createBoxMesh(
+            elementRes[0:2], 
+            lower=minCoords[0:2], 
+            upper=maxCoords[0:2],
+            simplex=False)
+
+        cdef DM dm_2d_c = self.dm_2d
+        cdef DM dm = PETSc.DMPlex()
+        ierr = DMPlexExtrude(dm_2d_c.dm, elementRes[2], maxCoords[2]-minCoords[2], PETSC_FALSE, NULL, PETSC_TRUE, &dm.dm); CHKERRQ(ierr)
+        self.dm = dm
+
+        # for ind,val in enumerate(self.boundary):
+        #     boundary_set = self.dm.getStratumIS("marker",ind+1)        # get the set
+        #     self.dm.createLabel(str(val).encode('utf8'))               # create the label
+        #     boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
+        #     if boundary_set:
+        #         boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+
+        self.dm.markBoundaryFaces("marker",1)
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        from enum import Enum        
+        class Boundary(Enum):
+            OUTER = 1
+        
+        self.boundary = Boundary
+        
+        self.dm.view()        
+        
+        super().__init__(simplex=False)
+
+
+class CylinderMesh(_MeshBase):
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                refinements=4, 
+                inner_radius=0.5, outer_radius=1., ncells=16, nlayers=4):
+
+        self.refinements = refinements
+        self.inner_radius = inner_radius
+        self.outer_radius = outer_radius
+
+        options = PETSc.Options()
+        # options.setValue("bd_dm_refine", self.refinements)
+
+        """Generated a 1D mesh of the circle, immersed in 2D.
+
+        :arg ncells: number of cells the circle should be
+            divided into (min 3)
+        :kwarg radius: (optional) radius of the circle to approximate
+            (defaults to 1).
+        :kwarg comm: Optional communicator to build the mesh on (defaults to
+            COMM_WORLD).
+        """
+        if ncells < 3:
+            raise ValueError("CircleManifoldMesh must have at least three cells")
+
+        vertices = inner_radius*np.column_stack((np.cos(np.arange(ncells, dtype=np.double)*(2*np.pi/ncells)),
+                                        np.sin(np.arange(ncells, dtype=np.double)*(2*np.pi/ncells))))
+
+        cells = np.column_stack((np.arange(0, ncells, dtype=np.int32),
+                                np.roll(np.arange(0, ncells, dtype=np.int32), -1)))
+
+        from mpi4py import MPI
+        from . import mesh_utils
+        # cdef DM circle_dm = mesh_utils._from_cell_list(1, cells, vertices, MPI.COMM_WORLD)
+
+        cdef DM circle_dm = PETSc.DMPlex().createBoxMesh(
+            (2,)*2, 
+            lower=(0.,)*2, 
+            upper=(1.,)*2,
+            simplex=True, interpolate=True)
+
+        cdef DM dm = PETSc.DMPlex()
+        ierr = DMPlexExtrude(circle_dm.dm, nlayers, -(inner_radius-outer_radius), PETSC_TRUE, NULL, PETSC_TRUE, &dm.dm); CHKERRQ(ierr)
+        self.dm = dm
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        from enum import Enum        
+        class Boundary(Enum):
+            OUTER = 1
+        
+        self.boundary = Boundary
+        
+        self.dm.view()        
+        
+        super().__init__(simplex=False)

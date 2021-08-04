@@ -431,11 +431,12 @@ def _add_timing_to_mod(mod):
 
 
 if "UW_TIMING_AUTO" in _os.environ:
+    _os.environ["UW_TIMING_ENABLE"]="1"
     # Add handler for exit
     import atexit
     def exit_handler():
         stop()
-        print_table( display_fraction=0.98 )
+        print_table( display_fraction=1.0 )
     atexit.register(exit_handler)
 
     # Start timing
