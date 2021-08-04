@@ -1,9 +1,12 @@
+from petsc4py import PETSc
+PETSc.Log().begin()
 import underworld3.mesh
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
 import underworld3.tools
 import underworld3.mpi
+import underworld3.algorithms
 
 from enum import Enum as _Enum
 class VarType(_Enum):

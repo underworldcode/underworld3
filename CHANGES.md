@@ -1,5 +1,10 @@
 CHANGES: Underworld3
 ====================
+
+2021-08-12
+----------
+* Added kdtree functionality.
+
 2021-03-12
 ----------
 * Added a mesh-variable proxy for swarm variables.
