@@ -21,7 +21,7 @@
     /* In the original .css, the font sizes are hardwired despite there being a base setting */
 
     --pst-font-scale-factor: 1.0;
-    --pst-font-size-base: calc(14px * var(--pst-font-scale-factor)); /* base font size - applied at body / html level */
+    --pst-font-size-base: calc(12pt * var(--pst-font-scale-factor)); /* base font size - applied at body / html level */
 
     /* heading font sizes */
     --pst-font-size-h1: calc( var(--pst-font-size-base) * 2.1);
