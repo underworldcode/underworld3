@@ -26,14 +26,14 @@ Underworld is an open-source, particle-in-cell finite element code tuned for lar
 #### Links
 
   - [Underworld Blog](https://www.underworldcode.org/articles)
-  - [Underworld Github](https://github.com/underworldcode)
+  - [Underworld on Github](https://github.com/underworldcode)
 
 
 ### Governance
 
 Underworld is funded by AuScope which is part of the Australian Government's NCRIS initiative to provide community research infrastructure (please see www.auscope.org.au for more information).
 
-The Underworld2 development team is based in Australia at the Australian National University, the University of Melbourne and at Monash University and is led by Louis Moresi.
+The Underworld development team is based in Australia at the Australian National University, the University of Melbourne and at Monash University and is led by Louis Moresi.
 
 All development is overseen by a steering committee drawn from the supporting organisations and representatives from the Underworld community.
 
