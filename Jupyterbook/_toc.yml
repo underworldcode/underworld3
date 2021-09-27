@@ -4,23 +4,34 @@ parts:
  
   - caption: Instruction Manual
     chapters:
-    - file: Manual/Index.md
+    - file: Manual/Index
       sections:
-      - file: Manual/Section1.md
+      - file: Manual/Section1
+      - file: Manual/Section2
+
+  - caption: Theory
+    chapters: 
+    - file: Theory/Index
+      sections: 
+      - file: Theory/MathematicalBackground
+      - file: Theory/FiniteElements
+      - file: Theory/LinearAlgebra
+      - file: Theory/NonLinear
+
 
   - caption: Notebooks
     chapters:
-    - file: Notebooks/Index.md
+    - file: Notebooks/Index
       sections:
-      - file: Notebooks/Example1.ipynb
-      - file: Notebooks/Example2.md
+      - file: Notebooks/Example1
+      - file: Notebooks/Example2
 
   - caption: Tutorials
     chapters:
-    - file: Lectures/Index.md
+    - file: Lectures/Index
       sections: 
-      - file: Lectures/Lecture_example_1.md
-      - file: Lectures/Lecture_example_2.md
+      - file: Lectures/Lecture_example_1
+      - file: Lectures/Lecture_example_2
 
   - caption: Glossary
     chapters:
