@@ -11,7 +11,7 @@ latex:
 html:
 #  home_page_in_navbar option: true
   extra_navbar: <button type="button" onclick="legibleFontSwitcher()">Switch Font</button>&nbsp;&nbsp;<button type="button" onclick="fontScaler(1.1)">&#10133;</button><button type="button" onclick="fontScaler(0.0)">&#9679;</button><button type="button" onclick="fontScaler(0.909)">&#10134;</button>  
-  # use_repository_button: true
+  use_repository_button: true
   comments:
     hypothesis: true
 
@@ -36,8 +36,8 @@ sphinx:
     - substitution
 
 repository:
-  url         : https://github.com/underworldcode/underworld3  # Online location of this book
-  branch      : master  # Which branch of the repository should be used when creating links (optional)
+  url    : https://github.com/underworldcode/underworld3  # Online location of this book
+  branch : master  # Which branch of the repository should be used when creating links (optional)
 
 launch_buttons:
    # jupyterhub_url: "https://demon.underworldcloud.org"  # The URL for your JupyterHub. 
