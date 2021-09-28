@@ -416,7 +416,7 @@ class _MeshBase(_api_tools.Stateful):
         # return
         return arrcopy
     
-    def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def get_closest_cells(self, coords: np.ndarray) -> np.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should 
