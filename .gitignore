@@ -25,3 +25,11 @@ keep
 output*
 old
 underworld3.egg-info/*
+
+# Jupyter Book build relics
+
+Jupyterbook/_build
+Jupyterbook/static_slides
+/Lectures/static_slides/slideshows
+*slideshows*
+
