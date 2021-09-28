@@ -7,6 +7,8 @@ on:
     branches:
     - main 
     - master 
+    - Documentation-with-Jupyterbook
+    
 
   workflow_dispatch:
 
