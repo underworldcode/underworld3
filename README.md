@@ -1,6 +1,15 @@
 # underworld3
 
-**Building**
+## Documentation
+
+The underworld documentation is in two parts: the user manual / theory manual is a jupyterbook that is built from this repository automatically from the sources in the `Jupyterbook` directory
+
+- https://underworldcode.github.io/underworld3/FrontPage.html
+
+The API documentation is built ... 
+
+
+## Building
 
 Refer to the Dockerfile for uw3 build instructions.  
 
@@ -13,7 +22,8 @@ python setup.py build_ext --inplace
 
 For in place usage, you will need to set an appropriate PYTHONPATH.
 
-**Milestones**
+
+## Development milestones
 
 - [ ] Spherical stokes
 - [x] Buoyancy drive stokes
@@ -21,7 +31,8 @@ For in place usage, you will need to set an appropriate PYTHONPATH.
 - [ ] High Ra, constant viscosity
 - [ ] Highly temp-dep viscosity
 
-**Objectives**
+
+### Checklist
 
 Ingredients in achieving the above
 
@@ -67,7 +78,8 @@ PIC for composition
   -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
 
-**Tasks**
+
+### Tasks
 
   - [ ] Investigate cython for functions
   - [ ] Petsc4py compatibility 
@@ -77,5 +89,6 @@ PIC for composition
   - [ ] Can we get early into TS (TS-lite)
   - [ ] (Build a gLucifer equivalent for the DM - as generic as possible)
   - [ ] Evaluate Julian's C-based prototype
+  - [ ] Documentation strategy
   
   
