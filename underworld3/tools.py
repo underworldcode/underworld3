@@ -8,7 +8,7 @@ def parse_cmd_line_options():
     options = PETSc.Options()
     def is_petsc_key(item):
         # petsc options have single hyphen prefix
-        return item[0]=="-" and item[1]!="-"
+        return len(item)>=2 and item[0]=="-" and item[1]!="-"
 
     for index, opt in enumerate(sys.argv):
         if is_petsc_key(opt):

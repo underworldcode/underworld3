@@ -15,8 +15,14 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     """
     if fn2.is_zero:
         return 0
-    dummy = sympy.Symbol("dummy")
-    return fn1.subs(fn2,dummy).diff(dummy).subs(dummy,fn2)
+    # If fn1 doesn't contain fn2, immediately return zero.
+    # The full diff method will also return zero, but will be slower.
+    if len(fn1.atoms(fn2))==0:
+        return 0
+    uwderivdummy = sympy.Symbol("uwderivdummy")
+    subfn   = fn1.xreplace({fn2:uwderivdummy})
+    subfn_d = subfn.diff(uwderivdummy)
+    return subfn_d.xreplace({uwderivdummy:fn2})
 
 _ext_dict = {}
 @timing.routine_timer_decorator
@@ -109,11 +115,20 @@ def _createext(name:               str,
 
     # Now create substitute dictionary to specify how fns will be replaced
     # by corresponsing MatrixSymbol objects (created above).
-    substitute = {}
 
-    # First do subs for N.x,N.y,N.z terms.
+    # First generate map for base scalar terms (N.x,N.y,N.z)
+    # We need to apply these subsitutions last because they appear as the 
+    # arguments to our variable objects. For example, we might have
+    #   fn = materialVar( N.x, N.y, N.z )
+    # which we DON'T want replaced with 
+    #   fn = materialVar( petsc_x[0], petsc_x[1] )
+    # as it should instead be replaced with something like
+    #   fn = petsc_a[3]
+    # If the earlier (incorrect) substitution occurs, it'll
+    # prevent the later (correct) substitution from being applied.  
+    substitutions_base_scalars = {}
     for index, base_scalar in enumerate(mesh.N.base_scalars()):
-        substitute[base_scalar] = petsc_x[0,index]
+        substitutions_base_scalars[base_scalar] = petsc_x[0,index]
 
     # Now do variable and variable gradient terms.
     # We'll define a function to do this as we need 
@@ -176,18 +191,42 @@ def _createext(name:               str,
         mapping.update(mapping_grads)
         return mapping
 
+    substitutions_vars = {}
     # Add mapping across aux variables first.
-    substitute.update(get_variable_mapping(mesh.vars.values(),petsc_a,petsc_a_x))
+    substitutions_vars.update(get_variable_mapping(mesh.vars.values(),petsc_a,petsc_a_x))
     # Now replace with those we want to use from primary dm variables.
-    substitute.update(get_variable_mapping(primary_field_list,petsc_u,petsc_u_x))
+    substitutions_vars.update(get_variable_mapping(primary_field_list,petsc_u,petsc_u_x))
+
     # Let's do subsitutions now.
     subbedfns = []
     for fn in fns:
-        subbedfns.append(fn.subs(substitute))
+        # first do vars
+        fn = fn.xreplace(substitutions_vars)
+        # now do base scalars
+        fn = fn.xreplace(substitutions_base_scalars)
+        subbedfns.append(fn)
 
+    # Create a custom functions replacement dictionary.
+    # Note that this dictionary is really just to appease Sympy,
+    # and the actual implementation is printed directly into the 
+    # generated JIT files (see `h_str` below). Without specifying
+    # this dictionary, Sympy doesn't code print the Heaviside correctly.
+    # For example, it will print 
+    #    Heaviside(petsc_x[0,1])
+    # instead of 
+    #    Heaviside(petsc_x[1]).
+    # Note that the Heaviside implementation will be printed into all JIT 
+    # files now. This is fine for now, but if more complex functions are 
+    # required a cleaner solution might be desirable. 
+    custom_functions = {
+      "Heaviside": "Heaviside",
+    }
     # Now go ahead and generate C code from subsituted Sympy expressions.
-    from sympy.printing.c import C99CodePrinter
-    printer = C99CodePrinter()
+    # from sympy.printing.c import C99CodePrinter
+    # printer = C99CodePrinter(user_functions=custom_functions)
+    from sympy.printing.c import c_code_printers
+    printer = c_code_printers['c99']({"user_functions":custom_functions})
+
     eqns = []
     for index, fn in enumerate(subbedfns):
         if isinstance(fn, sympy.vector.Vector):
@@ -197,7 +236,15 @@ def _createext(name:               str,
         else:
             fn = sympy.Matrix([fn])
         out = sympy.MatrixSymbol("out",*fn.shape)
-        eqns.append( ("eqn_"+str(index), printer.doprint(fn, out)) )
+        eqn = ("eqn_"+str(index), printer.doprint(fn, out))
+        if eqn[1].startswith("// Not supported in C:"):
+            spliteqn = eqn[1].split("\n")
+            raise RuntimeError(f"Error encountered generating JIT extension:\n"
+                               f"{spliteqn[0]}\n"
+                               f"{spliteqn[1]}\n"
+                               f"This is usually because code generation for a Sympy function (or its derivative) is not supported.\n"
+                               f"Please contact the developers.")
+        eqns.append(eqn)
     MODNAME = "fn_ptr_ext_" + str(name)
 
     codeguys = []
@@ -238,6 +285,10 @@ typedef double PetscReal;
 typedef double PetscScalar;
 typedef int PetscBool;
 #include <math.h> 
+
+// Adding missing function implementation 
+static inline double Heaviside (double x, double mid_val) { return x < 0 ? 0 : x > 0 ? 1 : mid_val; }
+
 """
 
     # Create cython top content.
@@ -335,4 +386,12 @@ cpdef PtrContainer getptrobj():
             _ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir,_file))
 
     if name not in _ext_dict.keys():
-        raise RuntimeError("Extension module does not appear to have been created.")
+        raise RuntimeError(f"The Underworld extension module does not appear to have been built successfully. "
+                           f"The generated module may be found at:\n    {str(tmpdir)}\n"
+                           f"To investigate, you may attempt to build it manually by running\n"
+                           f"    python3 setup.py build_ext --inplace\n"
+                           f"from the above directory. Note that a new module will always be written by "
+                           f"Underworld and therefore any modifications to the above files will not persist into "
+                           f"your Underworld runtime.\n"
+                           f"Please contact the developers if you are unable to resolve the issue.")
+

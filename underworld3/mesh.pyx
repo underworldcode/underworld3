@@ -90,10 +90,9 @@ class MeshVariable(_api_tools.Stateful):
         self._data = None
         self._is_accessed = False
 
-    # def save(self, filename):
-    #     viewer = PETSc.Viewer().createHDF5(filename, "w")
-    #     viewer(self.petsc_fe)
-    #     generateXdmf(filename)
+    def save(self, filename):
+        viewer = PETSc.Viewer().createHDF5(filename, "a")
+        viewer(self._gvec)
 
 
     @property
@@ -261,7 +260,7 @@ class _MeshBase(_api_tools.Stateful):
         return self._lvec
 
     def __del__(self):
-        if self._lvec:
+        if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
     def access(self, *writeable_vars:MeshVariable):
@@ -366,6 +365,8 @@ class _MeshBase(_api_tools.Stateful):
     def save(self, filename):
         viewer = PETSc.Viewer().createHDF5(filename, "w")
         viewer(self.dm)
+    
+    def generate_xdmf(self, filename):
         generateXdmf(filename)
 
     # def add_mesh_variable(self):
