@@ -1,0 +1,15 @@
+name: jupyter
+channels: 
+    - conda-forge
+    - geo-down-under    
+dependencies:
+    - numpy
+    - nodejs
+    - pip 
+    - libiconv
+
+
+      
+      
+
+
