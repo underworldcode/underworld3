@@ -30,21 +30,39 @@ cdef CHKERRQ(PetscErrorCode ierr):
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
 
-class UnderworldAppliedUndef(sympy.core.function.AppliedUndef):
+class UnderworldAppliedFunctionDeriv(sympy.core.function.AppliedUndef):
     """
-    Just a dummy class so that we can differentiate between UW
+    This is largely just to help us differentiate between UW
+    and native Sympy functions.  
+    """
+    def fdiff(self,argindex):
+        raise RuntimeError("Second derivatives of Underworld functions are not supported at this time.")
+
+class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
+    """
+    This is largely just a shell class to help us differentiate between UW
     and native Sympy functions. 
     """
-    pass
+    def fdiff(self, argindex):
+        """
+        We provide an explicit derivative function.
+        This allows us to control the way derivative objects are printed,
+        but in the user interface, but more critically it allows us to 
+        patch in code printing implementation for derivatives objects, 
+        as utilised in `_jitextension.py`.  
+        """
+        # Construct and return the required deriv fn.
+        return self._diff[argindex-1](*self.args)
+
 
 class UnderworldFunction(sympy.Function):
     """
     This is a metaclass, so it returns programmatic class objects rather
     than instances. This basically follows the pattern of the `sympy.Function`
     metaclass, with two key differences:
-    1. We set `UnderworldAppliedUndef` as the base class. This is really just a 
+    1. We set `UnderworldAppliedFunction` as the base class. This is really just a 
        dummy class (see its definition) which allows us to do calls such 
-       as `isinstance(someobj, UnderworldAppliedUndef)` to test if a `sympy` 
+       as `isinstance(someobj, UnderworldAppliedFunction)` to test if a `sympy` 
        object is one we've defined. 
     2. We grab a weakref of the owning meshvariable onto the *class* itself. Note
        that it's important that it's recorded onto the class (instead of the instance), 
@@ -63,12 +81,21 @@ class UnderworldFunction(sympy.Function):
 
     """
     def __new__(cls, meshvar, component, *args, **options):
-        ourcls = sympy.core.function.UndefinedFunction(*args, bases=(UnderworldAppliedUndef,), **options)
+        ourcls = sympy.core.function.UndefinedFunction(*args, bases=(UnderworldAppliedFunction,), **options)
         # grab weakref to meshvar
         import weakref
         ourcls.meshvar = weakref.ref(meshvar)
         ourcls.component = component
+
+        # go ahead and create the derivative function *classes*
+        ourclsname = args[0]
+        ourcls._diff = []
+        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",x", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
+        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",y", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
+        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",z", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
+
         return ourcls
+
 
 def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     """
@@ -134,15 +161,16 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     # Recurse the expression tree.
     varfns = set()
     def get_var_fns(exp):
-        if isinstance(exp,sympy.core.function.Derivative):
+        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
             raise RuntimeError("Derivatives functions are not handled yet unfortunately.")
-        isUW = isinstance(exp, uw.function._function.UnderworldAppliedUndef)
+        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         if isUW: 
             varfns.add(exp)
             if exp.args != exp.meshvar().mesh.r:
                 raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
                                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-        else: 
+        else:
+            # Recurse.
             for arg in exp.args: get_var_fns(arg)
     get_var_fns(expr)
 

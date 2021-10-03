@@ -20,9 +20,10 @@ def diff_fn1_wrt_fn2(fn1, fn2):
     if len(fn1.atoms(fn2))==0:
         return 0
     uwderivdummy = sympy.Symbol("uwderivdummy")
-    subfn   = fn1.xreplace({fn2:uwderivdummy})
-    subfn_d = subfn.diff(uwderivdummy)
-    return subfn_d.xreplace({uwderivdummy:fn2})
+    subfn   = fn1.xreplace({fn2:uwderivdummy})      # sub in dummy
+    subfn_d = subfn.diff(uwderivdummy)              # actual deriv
+    deriv   = subfn_d.xreplace({uwderivdummy:fn2})  # sub out dummy
+    return deriv
 
 _ext_dict = {}
 @timing.routine_timer_decorator
@@ -100,111 +101,74 @@ def _createext(name:               str,
     count_residual_sig = len(fns_residual) + len(fns_bcs)
     count_jacobian_sig = len(fns_jacobian)
 
-    # Create some symbol which will force codegen to produce required interface.
-    # We'll use MatrixSymbol objects, which sympy simply converts to double* within 
-    # the generated code. 
-    # Create `MatrixSymbol` vectors of unknown size 1xN. The size doesn't matter
-    # as MatrixSymbol entries will simply be replaced with corresponding c-array entry,
-    # and then discarded.
-    from sympy.abc import N
-    petsc_x   = MatrixSymbol(  'petsc_x', 1, N)
-    petsc_u   = MatrixSymbol(  'petsc_u', 1, N)
-    petsc_u_x = MatrixSymbol('petsc_u_x', 1, N)
-    petsc_a   = MatrixSymbol(  'petsc_a', 1, N)
-    petsc_a_x = MatrixSymbol('petsc_a_x', 1, N)
-
-    # Now create substitute dictionary to specify how fns will be replaced
-    # by corresponsing MatrixSymbol objects (created above).
-
-    # First generate map for base scalar terms (N.x,N.y,N.z)
-    # We need to apply these subsitutions last because they appear as the 
-    # arguments to our variable objects. For example, we might have
-    #   fn = materialVar( N.x, N.y, N.z )
-    # which we DON'T want replaced with 
-    #   fn = materialVar( petsc_x[0], petsc_x[1] )
-    # as it should instead be replaced with something like
-    #   fn = petsc_a[3]
-    # If the earlier (incorrect) substitution occurs, it'll
-    # prevent the later (correct) substitution from being applied.  
-    substitutions_base_scalars = {}
-    for index, base_scalar in enumerate(mesh.N.base_scalars()):
-        substitutions_base_scalars[base_scalar] = petsc_x[0,index]
-
-    # Now do variable and variable gradient terms.
-    # We'll define a function to do this as we need 
-    # to repeate it for the primary and aux variables.
-    def get_variable_mapping(varlist, petsc_matsymbol, petsc_grad_matsymbol):
+    # `_ccode` patching
+    def ccode_patch_fns(varlist, prefix_str):
         """ 
-        This function gets the mapping of variables
-        into the arrays PETSc provides for element assembly.
+        This function patches uw functions with the necessary ccode
+        routines for the code printing.
 
         For a `varlist` consisting of 2d velocity & pressure variables, 
-        it'll generate the following mapping:
-        {
-            V_x   : petsc_matsymbol[0,0],
-            V_y   : petsc_matsymbol[0,1],
-            P     : petsc_matsymbol[0,2],
-            V_x_x : petsc_grad_matsymbol[0,0],
-            V_x_y : petsc_grad_matsymbol[0,1],
-            V_y_x : petsc_grad_matsymbol[0,2],
-            V_y_y : petsc_grad_matsymbol[0,3],
-            P_x   : petsc_grad_matsymbol[0,4],
-            P_y   : petsc_grad_matsymbol[0,5]
-        }
+        for example, it'll generate routines which write the follow,
+        where `prefix_str="petsc_u"`:
+            V_x   : "petsc_u[0]"
+            V_y   : "petsc_u[1]"
+            P     : "petsc_u[2]"
+            V_x_x : "petsc_u_x[0]"
+            V_x_y : "petsc_u_x[1]"
+            V_y_x : "petsc_u_x[2]"
+            V_y_y : "petsc_u_x[3]"
+            P_x   : "petsc_u_x[4]"
+            P_y   : "petsc_u_x[5]"
 
         Params
         ------
-        varlist
-            List of variables that will map into petsc arrays. Note that
-            *all* the variables in the corresponding `PetscDM` must be 
-            included. They must also be ordered according to their `field_id`.
-        petsc_matsymbol
-            A `MatrixSymbol` vector of sufficient size for all variables
-        petsc_grad_matsymbol
-            A `MatrixSymbol` vector of sufficient size for all variable gradients.
+        varlist: list
+            The variables to patch. Note that *all* the variables in the 
+            corresponding `PetscDM` must be included. They must also be 
+            ordered according to their `field_id`.
+        prefix_str: str
+            The string prefix to write. 
         """ 
-        from collections import OrderedDict
-        mapping = OrderedDict()
-        u_i = 0
+        u_i = 0    # variable increment
+        u_x_i = 0  # variable gradient increment
+        lambdafunc = lambda self,printer : self._ccodestr
         for var in varlist:
             if var.vtype==VarType.SCALAR:
-                mapping[var.fn] = petsc_matsymbol[0,u_i]
+                # monkey patch this guy into the function
+                type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
+                type(var.fn)._ccode    = lambdafunc
                 u_i +=1
+                # now patch gradient guy into varfn guy
+                for ind in range(mesh.dim):
+                    # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
+                    var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
+                    var.fn._diff[ind]._ccode    = lambdafunc
+                    u_x_i+=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
                 for bvec in mesh.N.base_vectors()[0:mesh.dim]:
                     comp = var.fn.dot(bvec)
-                    mapping[comp] = petsc_matsymbol[0,u_i]
+                    # monkey patch
+                    type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
+                    type(comp)._ccode    = lambdafunc
                     u_i +=1
+                    # and also patch gradient guy into varfn guy's comp guy
+                    for ind in range(mesh.dim):
+                    # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
+                        comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
+                        comp._diff[ind]._ccode    = lambdafunc
+                        u_x_i+=1
             else:
-                raise RuntimeError("TODO: Implement VarType.OTHER field codegen.")
-        # Now gradient terms
-        mapping_grads = OrderedDict()
-        u_x_i = 0
-        for fn in mapping.keys():
-            # Simply generate the required derivative in place, 
-            # and set to be substituted by c pointer
-            for base_scalar in mesh.N.base_scalars()[0:mesh.dim]:
-                mapping_grads[fn.diff(base_scalar)] = petsc_grad_matsymbol[0,u_x_i]
-                u_x_i += 1
-        # Concatenate dicts
-        mapping.update(mapping_grads)
-        return mapping
+                raise RuntimeError("Unsupported type for code generation. Please contact developers.")
 
-    substitutions_vars = {}
-    # Add mapping across aux variables first.
-    substitutions_vars.update(get_variable_mapping(mesh.vars.values(),petsc_a,petsc_a_x))
-    # Now replace with those we want to use from primary dm variables.
-    substitutions_vars.update(get_variable_mapping(primary_field_list,petsc_u,petsc_u_x))
+    # Patch in `_code` methods. Note that the order here
+    # is important, as the secondary call will overwrite 
+    # those patched in the first call.
+    ccode_patch_fns(mesh.vars.values(),"petsc_a")
+    ccode_patch_fns(primary_field_list,"petsc_u")
+    # Also patch `BaseScalar` types
+    type(mesh.N.x)._ccode = lambda self,printer : f"petsc_x[{self._id[0]}]"
 
-    # Let's do subsitutions now.
-    subbedfns = []
-    for fn in fns:
-        # first do vars
-        fn = fn.xreplace(substitutions_vars)
-        # now do base scalars
-        fn = fn.xreplace(substitutions_base_scalars)
-        subbedfns.append(fn)
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,
@@ -219,8 +183,10 @@ def _createext(name:               str,
     # files now. This is fine for now, but if more complex functions are 
     # required a cleaner solution might be desirable. 
     custom_functions = {
-      "Heaviside": "Heaviside",
+      "Heaviside": [ (lambda *args : len(args)==1, "Heaviside_1"),    # for single arg Heaviside  (defaults to 0.5 at jump).
+                     (lambda *args : len(args)==2, "Heaviside_2")]    # for two arg Heavisides    (second arg is jump value).
     }
+
     # Now go ahead and generate C code from subsituted Sympy expressions.
     # from sympy.printing.c import C99CodePrinter
     # printer = C99CodePrinter(user_functions=custom_functions)
@@ -228,7 +194,7 @@ def _createext(name:               str,
     printer = c_code_printers['c99']({"user_functions":custom_functions})
 
     eqns = []
-    for index, fn in enumerate(subbedfns):
+    for index, fn in enumerate(fns):
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0:mesh.dim,0]
         elif isinstance(fn, sympy.vector.Dyadic):
@@ -287,7 +253,8 @@ typedef int PetscBool;
 #include <math.h> 
 
 // Adding missing function implementation 
-static inline double Heaviside (double x, double mid_val) { return x < 0 ? 0 : x > 0 ? 1 : mid_val; }
+static inline double Heaviside_1 (double x)                 { return x < 0 ? 0 : x > 0 ? 1 : 0.5;     };
+static inline double Heaviside_2 (double x, double mid_val) { return x < 0 ? 0 : x > 0 ? 1 : mid_val; };
 
 """
 
