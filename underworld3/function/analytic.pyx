@@ -11,7 +11,20 @@ underworld3._libfiles.append(libfile)
 underworld3._libdirs.append(libdir)
 underworld3._incdirs.append(libdir)
 
+cdef extern from "AnalyticSolNL.h" nogil:
+    ctypedef struct vec2:
+        double x
+        double z
+    vec2   SolNL_velocity(  double eta0, unsigned n, double r, double x, double y )
+    vec2   SolNL_bodyforce( double eta0, unsigned n, double r, double x, double y )
+    double SolNL_viscosity( double eta0, unsigned n, double r, double x, double y )
+
 class sympy_function_printable(sympy.Function):
+    """
+    This help function simply does most of the work for c-code printing.
+    Inherit from this and set `self._printstr` and `self._header` as necessary.
+    See `AnalyticSolNL` for example.
+    """
     _printstr = None 
     _header = None
     def _ccode(self, printer):
@@ -24,14 +37,6 @@ class sympy_function_printable(sympy.Function):
             raise RuntimeError("Trying to print unprintable function.")
         return self._printstr.format(param_str)
 
-cdef extern from "AnalyticSolNL.h" nogil:
-    ctypedef struct vec2:
-        double x
-        double z
-    vec2   SolNL_velocity(  double eta0, unsigned n, double r, double x, double y )
-    vec2   SolNL_bodyforce( double eta0, unsigned n, double r, double x, double y )
-    double SolNL_viscosity( double eta0, unsigned n, double r, double x, double y )
-    
 class AnalyticSolNL_base(sympy_function_printable):
     nargs = 5
     _header = "AnalyticSolNL.h"

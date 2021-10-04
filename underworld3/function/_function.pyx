@@ -162,7 +162,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     varfns = set()
     def get_var_fns(exp):
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError("Derivatives functions are not handled yet unfortunately.")
+            raise RuntimeError("Derivative functions are not handled yet unfortunately.")
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         if isUW: 
             varfns.add(exp)
@@ -327,48 +327,3 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
 # Note that we don't use the @decorator sugar here so that
 # we can pass in the `class_name` parameter. 
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
-
-
-
-
-    
-
-#     def __new__(cls, mesh, *args, **kwargs):
-#         # call the sympy __new__ method without args/kwargs, as unexpected args 
-#         # trip up an exception.  
-#         obj = super(MeshVariable, cls).__new__(cls, mesh.N.base_vectors()[0:mesh.dim])
-#         return obj
-    
-#     @classmethod
-#     def eval(cls, x):
-#         return None
-
-#     def _ccode(self, printer):
-#         # return f"{type(self).__name__}({', '.join(printer._print(arg) for arg in self.args)})_bobobo"
-#         return f"petsc_u[0]"
-
-
-# class MeshVariableFn(sympy.Function):
-#     _printstr = None 
-#     _header = None
-#     def _ccode(self, printer):
-#         # This is just a copy paste from the analytic solutions implementation. 
-#         # For usage within element assembly we generally won't need to use this as
-#         # PETSc passes in evaluated variables via the (Benny-And-The) Jets 
-#         # function. 
-#         # However, if we wish to use a variable in a completely independent
-#         # system, we may still need to provide an implementation here. We may also
-#         # need to provide a code printed implementation for evaluation from within 
-#         # Python via `evaluate()` (or equivalent). Alternatively, it might be sufficent
-#         # to simply used sympy `evalf` methods, so that overloading type behaviours (+/-/*/etc)
-#         # are handled by sympy within its evaluation tree, with c-level implementations 
-#         # (such as `DMFieldEvaluate`) accessed at the nodes of the tree. 
-#         raise RuntimeError("Not implemented.")
-#         printer.headers.add(self._header)
-#         param_str = ""
-#         for arg in self.args:
-#             param_str += printer._print(arg) + ","
-#         param_str = param_str[:-1]  # drop final comma
-#         if not self._printstr:
-#             raise RuntimeError("Trying to print unprintable function.")
-#         return self._printstr.format(param_str)

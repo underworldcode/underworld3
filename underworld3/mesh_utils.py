@@ -22,14 +22,14 @@ def _from_cell_list(dim, cells, coords, comm):
         # Provide the actual data on rank 0.
         plex = PETSc.DMPlex().createFromCellList(dim, cells, coords, comm=comm)
     else:
-        cell_shape = list(comm.bcast(None, root=0))
+        cell_shape  = list(comm.bcast(None, root=0))
         coord_shape = list(comm.bcast(None, root=0))
         cell_shape[0] = 0
         coord_shape[0] = 0
         # Provide empty plex on other ranks
         # A subsequent call to plex.distribute() takes care of parallel partitioning
         plex = PETSc.DMPlex().createFromCellList(dim,
-                                                 np.zeros(cell_shape, dtype=np.int32),
+                                                 np.zeros( cell_shape, dtype=np.int32),
                                                  np.zeros(coord_shape, dtype=np.double),
                                                  comm=comm)
     return plex
