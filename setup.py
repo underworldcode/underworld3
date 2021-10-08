@@ -90,6 +90,11 @@ extensions = [
 ]
 
 setup(name = "underworld3", 
+    install_requires=[
+        'typeguard',
+        'sympy>=1.8',
+        'xxhash',
+        ],
     packages=find_packages(),
     package_data={'underworld3':['*.pxd','*.h']},
     ext_modules = cythonize(
