@@ -7,22 +7,19 @@ import numpy as np
 
 options = PETSc.Options()
 # options["help"] = None
-
 # options["pc_type"]  = "svd"
-
-options["ksp_rtol"] =  1.0e-6
-options["ksp_monitor_short"] = None
-
+options["ksp_rtol"] =  1.0e-8
+# options["ksp_monitor_short"] = None
 # options["snes_type"]  = "fas"
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 # options["snes_view"]=None
 # options["snes_test_jacobian"] = None
-options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it. 
-# options["snes_max_it"] = 1
+options["snes_max_it"] = 1
 
-n_els = 64
-mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
+# %%
+n_els = 32
+mesh = uw.mesh.Box(elementRes=(n_els,n_els))
 v_degree = 1
 stokes = uw.systems.Stokes(mesh, u_degree=v_degree )
 
@@ -48,18 +45,19 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: c
 stokes.solve()
 
 # %%
-import underworld as uw2
-solC = uw2.function.analytic.SolC()
-
-# %%
-vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
-
-# %%
-from mpi4py import MPI
-comm = MPI.COMM_WORLD
-from numpy import linalg as LA
-with mesh.access():
-    if comm.rank == 0:
-        print("Diff norm = {}".format(LA.norm(stokes.u.data - vel_soln_analytic)))
-    if not np.allclose(stokes.u.data, vel_soln_analytic, rtol=1.e-2):
-        raise RuntimeError("Solve did not produce expected result.")
+try:
+    import underworld as uw2
+    solC = uw2.function.analytic.SolC()
+    vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    from numpy import linalg as LA
+    with mesh.access():
+        if comm.rank == 0:
+            print("Diff norm = {}".format(LA.norm(stokes.u.data - vel_soln_analytic)))
+        if not np.allclose(stokes.u.data, vel_soln_analytic, rtol=1.e-2):
+            raise RuntimeError("Solve did not produce expected result.")
+    comm.barrier()
+except ImportError:
+    import warnings
+    warnings.warn("Unable to test SolC results as UW2 not available.")

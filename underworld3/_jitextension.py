@@ -54,7 +54,7 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
 
 @timing.routine_timer_decorator
 def _createext(name:               str, 
-               mesh:               underworld3.mesh.Mesh,
+               mesh:               underworld3.mesh.MeshClass,
                fns_residual:       List[sympy.Basic], 
                fns_jacobian:       List[sympy.Basic],
                fns_bcs:            List[sympy.Basic],

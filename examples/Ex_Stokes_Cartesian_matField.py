@@ -24,7 +24,7 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 n_els = 32
 minCoord = (-1,-1)
 maxCoord = (1,1)
-mesh = uw.mesh.Mesh(elementRes=(n_els,n_els),
+mesh = uw.mesh.Box(elementRes=(n_els,n_els),
                minCoords=minCoord, 
                maxCoords=maxCoord )
 # %%
@@ -56,10 +56,14 @@ stokes.bodyforce =  matvar.fn * N.j
 stokes.solve()
 
 # %%
-import underworld as uw2
-from underworld import function as fn
-from underworld import visualisation as viz
-
+try:
+    import underworld as uw2
+    from underworld import function as fn
+    from underworld import visualisation as viz
+except ImportError:
+    import warnings
+    warnings.warn("Unable to run comparison as UW2 is not available")
+    exit(1)
 mesh2 = uw2.mesh.FeMesh_Cartesian(elementRes=(n_els, n_els),
                           minCoord=minCoord,
                           maxCoord=maxCoord)

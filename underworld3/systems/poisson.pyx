@@ -14,8 +14,9 @@ cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
-cdef extern from "petsc.h":
-    PetscErrorCode PetscDSAddBoundary( PetscDS, DMBoundaryConditionType, const char[], const char[], PetscInt, PetscInt, const PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
+cdef extern from "petsc_compat.h":
+    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
+
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
@@ -134,11 +135,13 @@ class Poisson:
         PetscDSSetJacobian(ds.ds, 0, 0, ext.fns_jacobian[0], ext.fns_jacobian[1], NULL, ext.fns_jacobian[2])
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
+        cdef DM cdm = self.dm
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
             for boundary in bc.boundaries:
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-                PetscDSAddBoundary(ds.ds, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                PetscDSAddBoundary_UW( cdm.dm, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+
         self.dm.setUp()
 
         self.dm.createClosureIndex(None)

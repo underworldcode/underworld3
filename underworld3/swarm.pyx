@@ -4,8 +4,7 @@ import petsc4py.PETSc as PETSc
 from .petsc_gen_xdmf import generateXdmf
 from mpi4py import MPI
 import contextlib
-from typeguard import check_argument_types, check_return_type
-from typeguard import typechecked
+#from typeguard import check_argument_types, check_return_type, typechecked
 import underworld3 as uw
 import numpy as np
 from underworld3 import _api_tools

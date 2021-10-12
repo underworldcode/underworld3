@@ -78,7 +78,7 @@ def do_uw3():
     sys.pushErrorHandler("debugger")
 
 
-    mesh = uw.mesh.Mesh(elementRes=(    n_els,)*dim, 
+    mesh = uw.mesh.Box(elementRes=(    n_els,)*dim, 
                         minCoords =(       0.,)*dim, 
                         maxCoords =(boxLength,1.),
                         simplex=False )

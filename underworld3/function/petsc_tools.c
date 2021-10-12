@@ -83,8 +83,8 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   if (owning_cell){
     PetscSFNode    *sf_cells;
     ierr = PetscMalloc1(N, &sf_cells);CHKERRQ(ierr);
-    PetscInt range = 0;
-    for (size_t p=0; p<N; p++) {
+    size_t range = 0;
+    for (size_t p=0; p<(size_t)N; p++) {
       sf_cells[p].rank  = 0;
       sf_cells[p].index = owning_cell[p];
       if (owning_cell[p] > range) {
@@ -177,8 +177,7 @@ PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ctx, DM dm, Vec x,
   if (n != ctx->n*ctx->dof) SETERRQ2(ctx->comm, PETSC_ERR_ARG_SIZ, "Invalid input vector size %D should be %D", n, ctx->n*ctx->dof);
   if (n) {
     PetscDS        ds;
-    DMPolytopeType ct;
-    PetscBool      done = PETSC_FALSE;
+    // PetscBool      done = PETSC_FALSE;
 
     ierr = DMGetDS(dm, &ds);CHKERRQ(ierr);
     if (ds) {
@@ -234,7 +233,7 @@ PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ctx, DM dm, Vec x,
           c += Nc;
         }
       if (field == Nf) {
-        done = PETSC_TRUE;
+        // done = PETSC_TRUE;
         if (c != ctx->dof) SETERRQ2(PETSC_COMM_SELF, PETSC_ERR_PLIB, "Total components %D != %D dof specified for interpolation", c, ctx->dof);
       }
       ierr = DMPlexVecRestoreClosure(dm, NULL, x, ctx->cells[p], NULL, &xa);CHKERRQ(ierr);
@@ -244,6 +243,7 @@ PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ctx, DM dm, Vec x,
       ierr = VecRestoreArrayRead(ctx->coords, &coords);CHKERRQ(ierr);
     }
     // if (!done) {
+    //   DMPolytopeType ct;
     //   /* TODO Check each cell individually */
     //   ierr = DMPlexGetCellType(dm, ctx->cells[0], &ct);CHKERRQ(ierr);
     //   switch (ct) {

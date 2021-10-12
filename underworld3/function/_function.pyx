@@ -7,20 +7,25 @@ import underworld3 as uw
 from libc.stdlib cimport malloc, free
 cimport numpy as np
 import underworld3.timing as timing
+import underworld3
 
+# Make Cython aware of this type.
+cdef extern from "petsc.h" nogil:
+    ctypedef struct DMInterpolationInfo:
+        pass
 
 cdef extern from "petsc_tools.h" nogil:
-    PetscErrorCode DMInterpolationSetUp_UW(void *ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
-    PetscErrorCode DMInterpolationEvaluate_UW(void *ipInfo, PetscDM dm, PetscVec x, PetscVec v)
+    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
+    PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
 
 cdef extern from "petsc.h" nogil:
-    PetscErrorCode DMInterpolationCreate(MPI_Comm comm, void *ipInfo)
-    PetscErrorCode DMInterpolationSetDim(void *ipInfo, PetscInt dim)
-    PetscErrorCode DMInterpolationSetDof(void *ipInfo, PetscInt dof)
-    PetscErrorCode DMInterpolationAddPoints(void *ipInfo, PetscInt n, PetscReal points[])
-    PetscErrorCode DMInterpolationSetUp(void *ipInfo, PetscDM dm, int petscbool, int petscbool)
-    PetscErrorCode DMInterpolationEvaluate(void *ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
-    PetscErrorCode DMInterpolationDestroy(void *ipInfo)
+    PetscErrorCode DMInterpolationCreate(MPI_Comm comm, DMInterpolationInfo *ipInfo)
+    PetscErrorCode DMInterpolationSetDim(DMInterpolationInfo ipInfo, PetscInt dim)
+    PetscErrorCode DMInterpolationSetDof(DMInterpolationInfo ipInfo, PetscInt dof)
+    PetscErrorCode DMInterpolationAddPoints(DMInterpolationInfo ipInfo, PetscInt n, PetscReal points[])
+    PetscErrorCode DMInterpolationSetUp(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool)
+    PetscErrorCode DMInterpolationEvaluate(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
+    PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
     PetscErrorCode DMDestroy(PetscDM *dm)
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     MPI_Comm MPI_COMM_SELF
@@ -28,15 +33,6 @@ cdef extern from "petsc.h" nogil:
 cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
-
-
-class UnderworldAppliedFunctionDeriv(sympy.core.function.AppliedUndef):
-    """
-    This is largely just to help us differentiate between UW
-    and native Sympy functions.  
-    """
-    def fdiff(self,argindex):
-        raise RuntimeError("Second derivatives of Underworld functions are not supported at this time.")
 
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """
@@ -54,6 +50,20 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
         # Construct and return the required deriv fn.
         return self._diff[argindex-1](*self.args)
 
+    def _latex(self, printer, exp=None):
+        if exp==None:
+            latexstr = r"%s(\mathbf{x})" % (type(self).__name__)
+        else:
+            latexstr = r"%s^{%s}(\mathbf{x})" % (type(self).__name__,exp)
+        return latexstr
+
+class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
+    """
+    This is largely just to help us differentiate between UW
+    and native Sympy functions.  
+    """
+    def fdiff(self,argindex):
+        raise RuntimeError("Second derivatives of Underworld functions are not supported at this time.")
 
 class UnderworldFunction(sympy.Function):
     """
@@ -79,20 +89,49 @@ class UnderworldFunction(sympy.Function):
     >>> newfnclass = UnderworldFunction(meshvar,name)   # Here we create a new *class*. 
     >>> newfn = newfnclass(*meshvar.mesh.r)             # Here we create an instance of the class.
 
+    Parameters
+    ----------
+    name:
+        The name of the function.
+    meshvar:
+        The mesh variable corresponding to this function.
+    vtype:
+        The variable type (scalar,vector,etc).
+    component:
+        For vector functions, this is the component of the vector.
+        For example, component `1` might correspond to `v_x`.
+        For scalars, this value is ignored.
     """
-    def __new__(cls, meshvar, component, *args, **options):
-        ourcls = sympy.core.function.UndefinedFunction(*args, bases=(UnderworldAppliedFunction,), **options)
-        # grab weakref to meshvar
+    def __new__(cls, 
+                name     : str,
+                meshvar  : underworld3.mesh.MeshVariable, 
+                vtype    : underworld3.VarType,
+                component: int = 0, 
+                *args, **options):
+        
+        if   vtype==uw.VarType.SCALAR:
+            fname = name
+        elif vtype==uw.VarType.VECTOR:
+            fname = name + ("_x","_y","_z")[component]
+        ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), **options)
+        # Grab weakref to meshvar.
         import weakref
-        ourcls.meshvar = weakref.ref(meshvar)
+        ourcls.meshvar   = weakref.ref(meshvar)
         ourcls.component = component
 
-        # go ahead and create the derivative function *classes*
-        ourclsname = args[0]
         ourcls._diff = []
-        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",x", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
-        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",y", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
-        ourcls._diff.append(sympy.core.function.UndefinedFunction(ourclsname+",z", *args[1:], bases=(UnderworldAppliedFunctionDeriv,), **options))
+        # go ahead and create the derivative function *classes*
+        if   vtype==uw.VarType.SCALAR:
+            fname = name + "_{,"
+        elif vtype==uw.VarType.VECTOR:
+            fname = name + ("_{x,","_{y,","_{z,")[component]
+        for index, difffname in enumerate((fname+"x}",fname+"y}",fname+"z}")):
+            diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
+            # Grab weakref to var for derivative fn too.
+            diffcls.meshvar   = weakref.ref(meshvar)
+            diffcls.component = component
+            diffcls.diffindex = index
+            ourcls._diff.append(diffcls)
 
         return ourcls
 
@@ -201,7 +240,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         # Now construct and perform the PETSc evaluate of these variables
         # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
         # TODO: Investigate whether it makes sense to default to global operations here.
-        cdef void* ipInfo
+        cdef DMInterpolationInfo ipInfo
         cdef PetscErrorCode ierr
         ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
         ierr = DMInterpolationSetDim(ipInfo, mesh.dim); CHKERRQ(ierr)

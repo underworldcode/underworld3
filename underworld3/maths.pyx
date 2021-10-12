@@ -40,7 +40,7 @@ class Integral:
 
     >>> import underworld3 as uw
     >>> import numpy as np
-    >>> mesh = uw.mesh.Mesh()
+    >>> mesh = uw.mesh.Box()
     >>> volumeIntegral = uw.maths.Integral(mesh=mesh, fn=1.)
     >>> np.allclose( 1., volumeIntegral.evaluate(), rtol=1e-8)
     True
@@ -48,7 +48,7 @@ class Integral:
     """
     @timing.routine_timer_decorator
     def __init__( self,
-                  mesh:  underworld3.mesh.Mesh,
+                  mesh:  underworld3.mesh.MeshClass,
                   fn:    Union[float, int, sympy.Basic] ):
 
         self.mesh = mesh

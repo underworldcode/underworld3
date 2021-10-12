@@ -18,7 +18,6 @@ options["ksp_rtol"] =  1.0e-8
 # options["ksp_monitor_short"] = None
 # options["ksp_monitor_true_residual"] = None
 # options["ksp_converged_reason"] = None
-
 # options["snes_type"]  = "qn"
 # options["snes_type"]  = "nrichardson"
 options["snes_converged_reason"] = None
@@ -34,7 +33,7 @@ options["snes_rtol"] = 1.0e-7
 # %%
 n_els = 32
 v_degree = 1
-mesh = uw.mesh.Mesh(elementRes=(n_els,n_els))
+mesh = uw.mesh.Box(elementRes=(n_els,n_els))
 
 # %%
 # NL problem 

@@ -25,19 +25,19 @@ test(name, 1.5, result)
 
 # %%
 name = "non uw variable linear test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 result = uw.function.evaluate(mesh.r[0],coords)
 test(name, x, result)
 
 # %%
 name = "non uw variable sine test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 result = uw.function.evaluate(sympy.sin(mesh.r[1]),coords)
 test(name, np.sin(y), result)
 
 # %%
 name = "single scalar variable test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 var  = uw.mesh.MeshVariable(name="var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
 with mesh.access(var):
     var.data[:]=1.1
@@ -46,7 +46,7 @@ test(name, 1.1, result)
 
 # %%
 name = "single vector variable test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 var  = uw.mesh.MeshVariable(name="var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
 with mesh.access(var):
     var.data[:]=(1.1,1.2)
@@ -55,7 +55,7 @@ test(name, np.array(((1.1,1.2),)), result)
 
 # %%
 name = "scalar*vector mult test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 var_scalar  = uw.mesh.MeshVariable(name="var_scalar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
 var_vector  = uw.mesh.MeshVariable(name="var_vector", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
 with mesh.access(var_scalar, var_vector):
@@ -66,7 +66,7 @@ test(name, np.array(((12.,15),)), result)
 
 # %%
 name = "vector dot product test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 var_vector1  = uw.mesh.MeshVariable(name="var_vector1", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
 var_vector2  = uw.mesh.MeshVariable(name="var_vector2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
 with mesh.access(var_vector1, var_vector2):
@@ -77,7 +77,7 @@ test(name, 11., result)
 
 # %%
 name = "many many scalar mult var test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 # Note that this test fails for n>~15. Something something subdm segfault. 
 # Must investigate.
 nn=15
@@ -97,7 +97,7 @@ test(name, factorial, result)
 
 # %%
 name = "polynomial mesh var degree test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 maxdegree = 10
 vars = []
 # Create required vars of different degree.
@@ -138,7 +138,7 @@ test(name, tensor_product(degree, coords[:,0], coords[:,1]), uw.function.evaluat
 # We'll also do it twice, once using (xvar,yvar), and
 # another time using (xyvar[0], xyvar[1]).
 name = "polynomial mesh var sympy test"
-mesh = uw.mesh.Mesh()
+mesh = uw.mesh.Box()
 xvar = uw.mesh.MeshVariable(name="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
 yvar = uw.mesh.MeshVariable(name="yvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
 xyvar = uw.mesh.MeshVariable(name="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
@@ -165,7 +165,7 @@ z = np.linspace(0.3,0.7,n)
 xv, yv, zv = np.meshgrid(x, y, z, sparse=True)
 coords = np.vstack((xv[0,:,0],yv[:,0,0],zv[0,0,:])).T
 # Now mesh and vars etc. 
-mesh = uw.mesh.Mesh(elementRes=(4,)*3)
+mesh = uw.mesh.Box(elementRes=(4,)*3)
 name = "vector cross product test"
 var_vector1  = uw.mesh.MeshVariable(name="var_vector1", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR )
 var_vector2  = uw.mesh.MeshVariable(name="var_vector2", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR )

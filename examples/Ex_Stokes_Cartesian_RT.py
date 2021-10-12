@@ -77,7 +77,7 @@ def do_uw3():
     sys.pushErrorHandler("traceback")
 
 
-    mesh = uw.mesh.Mesh(elementRes=(    n_els,)*dim, 
+    mesh = uw.mesh.Box(elementRes=(    n_els,)*dim, 
                         minCoords =(       0.,)*dim, 
                         maxCoords =(boxLength,1.),
                         simplex=False )
@@ -87,7 +87,6 @@ def do_uw3():
     # Create a variable to store material variable
     # matMeshVar = uw.mesh.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
 
-    #%%
     # Create swarm
     swarm  = uw.swarm.Swarm(mesh)
     # Add variable for material
@@ -95,7 +94,6 @@ def do_uw3():
     # Note that `ppcell` specifies particles per cell per dim.
     swarm.populate(ppcell=ppcell)
 
-    #%%
     # Add some randomness to the particle distribution
     import numpy as np
     np.random.seed(0)
@@ -103,7 +101,6 @@ def do_uw3():
         factor = 0.5*boxLength/n_els/ppcell
         swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
 
-    #%%
     # define these for convenience. 
     denseIndex = 0
     lightIndex = 1
