@@ -1,12 +1,26 @@
 #!/usr/bin/env python
 
+## pip install -e .
+
 #$ python setup.py build_ext --inplace
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
+import os
+import subprocess
 import numpy
 import petsc4py
+
+# Get env vars from petsc4py/petsc this relies on PETSC's Makefile.user
+petsc_conf = petsc4py.get_config()
+PETSC_DIR = petsc_conf["PETSC_DIR"]
+
+# read in env vars and set on this process
+res = subprocess.check_output(["make", "-f", PETSC_DIR+"/share/petsc/Makefile.user", "print"]) 
+for line in res.splitlines():
+    k,v = line.decode("UTF-8").split("=", 1)
+    os.environ[k] = v
 
 def configure():
 
