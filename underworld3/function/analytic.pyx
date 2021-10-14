@@ -7,9 +7,6 @@ libdir = os.path.dirname(__file__)
 libfile = os.path.basename(__file__)
 # Prepend colon to force linking against filename without 'lib' prefix.
 libfile = ":" + libfile  
-underworld3._libfiles.append(libfile)
-underworld3._libdirs.append(libdir)
-underworld3._incdirs.append(libdir)
 
 cdef extern from "AnalyticSolNL.h" nogil:
     ctypedef struct vec2:
@@ -28,6 +25,10 @@ class sympy_function_printable(sympy.Function):
     _printstr = None 
     _header = None
     def _ccode(self, printer):
+        # Populate linking dictionaries.
+        underworld3._libfiles[libfile] = None
+        underworld3._libdirs[libdir]   = None
+        underworld3._incdirs[libdir]   = None
         printer.headers.add(self._header)
         param_str = ""
         for arg in self.args:

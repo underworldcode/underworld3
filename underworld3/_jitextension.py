@@ -193,6 +193,21 @@ def _createext(name:               str,
     from sympy.printing.c import c_code_printers
     printer = c_code_printers['c99']({"user_functions":custom_functions})
 
+    # Purge libary/header dictionaries. These will be repopulated 
+    # when `doprint` is called below. This ensures that we only link 
+    # in libraries where needed. 
+    # Note that this generally shouldn't be necessary, as the 
+    # extension module should build successfully even where
+    # libraries are linked in redundantly. However it does 
+    # help to ensure that any potential linking issues are isolated
+    # to only those sympy functions (just analytic solutions currently)
+    # that require linking. There may also be a performance advantage
+    # (faster extension build time) but this is unlikely to be 
+    # significant.
+    underworld3._incdirs.clear()
+    underworld3._libdirs.clear()
+    underworld3._libfiles.clear()
+
     eqns = []
     for index, fn in enumerate(fns):
         if isinstance(fn, sympy.vector.Vector):
@@ -235,9 +250,9 @@ ext_mods = [Extension(
 )]
 setup(ext_modules=cythonize(ext_mods))
 """.format(NAME=MODNAME,
-           HEADERS=underworld3._incdirs,
-           LIBDIRS=underworld3._libdirs,
-           LIBFILES=underworld3._libfiles,
+           HEADERS=list(underworld3._incdirs.keys()),
+           LIBDIRS=list(underworld3._libdirs.keys()),
+           LIBFILES=list(underworld3._libfiles.keys()),
            )
     codeguys.append( ["setup.py", setup_py_str] )
 
