@@ -7,6 +7,8 @@ from sympy import sympify
 from sympy.vector import gradient, divergence
 from .._jitextension import getext, diff_fn1_wrt_fn2
 import underworld3.timing as timing
+from typing import Optional, Tuple
+import underworld3 
 
 # TODO
 # gil v nogil 
@@ -37,16 +39,97 @@ from petsc4py import PETSc
     
 class Stokes:
     @timing.routine_timer_decorator
-    def __init__(self, mesh, u_degree=2, p_degree=None):
+    def __init__(self, 
+                 mesh          : underworld3.mesh.MeshClass, 
+                 velocityField : Optional[underworld3.mesh.MeshVariable] =None,
+                 pressureField : Optional[underworld3.mesh.MeshVariable] =None,
+                 u_degree      : Optional[int]                           =2, 
+                 p_degree      : Optional[int]                           =None ):
+        """
+        This class provides functionality for a discrete representation
+        of the Stokes flow equations.
+
+        Specifically, the class uses a mixed finite element implementation to
+        construct a system of linear equations which may then be solved.
+
+        The strong form of the given boundary value problem, for :math:`f`,
+        :math:`g` and :math:`h` given, is
+
+        .. math::
+            \\begin{align}
+            \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
+            u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
+            u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
+            \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
+            \\end{align}
+
+        where,
+
+        * :math:`\\sigma_{i,j}` is the stress tensor
+        * :math:`u_i` is the velocity,
+        * :math:`p`   is the pressure,
+        * :math:`f_i` is a body force,
+        * :math:`g_i` are the velocity boundary conditions (DirichletCondition)
+        * :math:`h_i` are the traction boundary conditions (NeumannCondition).
+
+        The problem boundary, :math:`\\Gamma`,
+        admits the decompositions :math:`\\Gamma=\\Gamma_{g_i}\\cup\\Gamma_{h_i}` where
+        :math:`\\emptyset=\\Gamma_{g_i}\\cap\\Gamma_{h_i}`. The equivalent weak form is:
+
+        .. math::
+            \\int_{\Omega} w_{(i,j)} \\sigma_{ij} \\, d \\Omega = \\int_{\\Omega} w_i \\, f_i \\, d\\Omega + \sum_{j=1}^{n_{sd}} \\int_{\\Gamma_{h_j}} w_i \\, h_i \\,  d \\Gamma
+
+        where we must find :math:`u` which satisfies the above for all :math:`w`
+        in some variational space.
+
+        Parameters
+        ----------
+        mesh : 
+            The mesh object which forms the basis for problem discretisation,
+            domain specification, and parallel decomposition.
+        velocityField :
+            Optional. Variable used to record system velocity. If not provided,
+            it will be generated and will be available via the `u` stokes object property.
+        pressureField :
+            Optional. Variable used to record system pressure. If not provided,
+            it will be generated and will be available via the `p` stokes object property.
+            If provided, it is up to the user to ensure that it is of appropriate order
+            relative to the provided velocity variable (usually one order lower degree).
+        u_degree :
+            Optional. The polynomial degree for the velocity field elements.
+        p_degree :
+            Optional. The polynomial degree for the pressure field elements. 
+            If provided, it is up to the user to ensure that it is of appropriate order
+            relative to the provided velocitxy variable (usually one order lower degree).
+            If not provided, it will be set to one order lower degree than the velocity field.
+
+        Notes
+        -----
+        Constructor must be called by collectively all processes.
+
+        """
+
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        if p_degree==None:
-            p_degree = u_degree - 1
+        if not((velocityField==None) and (pressureField==None)):
+            raise ValueError("You must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
+        
+        if not velocityField:
+            if p_degree==None:
+                p_degree = u_degree - 1
 
-        # create public velocity/pressure variables
-        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
-        self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
+            # create public velocity/pressure variables
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
+            self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
+        else:
+            self._u = velocityField
+            self._p = pressureField
+
+        # Create this dict
+        self.fields = {}
+        self.fields["pressure"] = self.p
+        self.fields["velocity"] = self.u
 
         # create private variables
         options = PETSc.Options()
@@ -313,6 +396,14 @@ class Stokes:
         cdef DM dm = self.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
+        # Setup subdms here too.
+        # These will be used to copy back/forth SNES solutions
+        # into user facing variables.
+        names, isets, dms = self.dm.createFieldDecomposition()
+        self._subdict = {}
+        for index,name in enumerate(names):
+            self._subdict[name] = (isets[index],dms[index])
+
         self.is_setup = True
 
     @timing.routine_timer_decorator
@@ -333,18 +424,13 @@ class Stokes:
             self._setup_terms()
 
         gvec = self.dm.getGlobalVec()
-        lvec = self.dm.getLocalVec()
 
         if not zero_init_guess:
             with self.mesh.access():
-                # TODO: Check if this approach is valid generally. 
-                #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
-                #       use that for full_vec->sub_vec mapping (global), followed
-                #       with global->local.
-                p_len = len(self.p.vec.array)
-                lvec.array[p_len:     ] = self.u.vec.array[:]
-                lvec.array[     :p_len] = self.p.vec.array[:]
-                self.dm.localToGlobal(lvec,gvec)
+                for name,var in self.fields.items():
+                    sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
+                    sdm   = self._subdict[name][1]                     # Get subdm corresponding to field
+                    sdm.localToGlobal(var.vec,sgvec)                   # Copy variable data into gvec
         else:
             gvec.array[:] = 0.
 
@@ -371,22 +457,27 @@ class Stokes:
 
         # solve
         self.snes.solve(None,gvec)
-        self.dm.globalToLocal(gvec,lvec)
-        # add back boundaries.. 
-        cdef Vec clvec = lvec
-        cdef DM dm = self.dm
-        DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
 
-        with self.mesh.access(self.u,self.p):
-            # TODO: Check if this approach is valid generally. 
-            #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
-            #       use that for full_vec->sub_vec mapping (global), followed
-            #       with global->local.
-            p_len = len(self.p.vec.array)
-            self.u.vec.array[:] = lvec.array[p_len:     ]
-            self.p.vec.array[:] = lvec.array[     :p_len]
+        cdef Vec clvec
+        cdef DM csdm
+        # Copy solution back into user facing variables
+        with self.mesh.access(self.p,self.u):
+            for name,var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
+                sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
+                lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
+                sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
+                # Put in boundaries values.
+                # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
+                # derived from the sub-dm (as opposed to the var.vec local vector), else 
+                # failures can occur. 
+                clvec = lvec
+                csdm = sdm
+                ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+                # Now copy into the user vec.
+                var.vec.array[:] = lvec.array[:]
+                sdm.restoreLocalVec(lvec)
 
-        self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
     @timing.routine_timer_decorator
