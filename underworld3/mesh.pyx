@@ -478,7 +478,10 @@ class Box(MeshClass):
             boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
             self.dm.createLabel(str(val).encode('utf8'))               # create the label
             boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
-            boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+            # Without this check, we have failures at this point in parallel. 
+            # Further investigation required. JM.
+            if boundary_set:
+                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
         super().__init__(simplex=simplex)
 
