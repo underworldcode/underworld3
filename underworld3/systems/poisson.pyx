@@ -171,16 +171,10 @@ class Poisson:
             self._setup_terms()
 
         gvec = self.dm.getGlobalVec()
-        lvec = self.dm.getLocalVec()
 
         if not zero_init_guess:
             with self.mesh.access():
-                # TODO: Check if this approach is valid generally. 
-                #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
-                #       use that for full_vec->sub_vec mapping (global), followed
-                #       with global->local.
-                lvec.array[:] = self.u.vec.array[:]
-                self.dm.localToGlobal(lvec,gvec)
+                self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.
 
@@ -205,27 +199,18 @@ class Poisson:
 
         # solve
         self.snes.solve(None,gvec)
-        self.dm.globalToLocal(gvec,lvec)
-        # add back boundaries.. 
+
+        lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         cdef DM dm = self.dm
-        DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL)
-
-        # This comment relates to previous implementation, but I'll leave it 
-        # here for now as something to be aware of / investigate further.
-        
-        # # create SubDMs now to isolate velocity/pressure variables.
-        # # this is currently problematic as the calls to DMCreateSubDM
-        # # need to be executed after the solve above, as otherwise the 
-        # # results are altered/corrupted. it's unclear to me why this is
-        # # the case.  the migrationsf doesn't change anything.
-        # # also, the SubDMs and associated vectors are potentially leaking
-        # # due to our petsc4py/cython hacks below. 
+        # Copy solution back into user facing variable
         with self.mesh.access(self.u,):
-            # TODO: Check if this approach is valid generally. 
-            #       Alternative is to grab dm->subdm IS (from `DMCreateSubDM`), 
-            #       use that for full_vec->sub_vec mapping (global), followed
-            #       with global->local.
+            self.dm.globalToLocal(gvec, lvec)
+            # add back boundaries.
+            # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
+            # derived from the system-dm (as opposed to the var.vec local vector), else 
+            # failures can occur. 
+            ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
             self.u.vec.array[:] = lvec.array[:]
 
         self.dm.restoreLocalVec(lvec)

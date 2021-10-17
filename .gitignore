@@ -25,6 +25,7 @@ keep
 output*
 old
 underworld3.egg-info/*
+keep/*
 
 # Jupyter Book build relics
 
