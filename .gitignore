@@ -33,3 +33,7 @@ Jupyterbook/static_slides
 /Lectures/static_slides/slideshows
 *slideshows*
 
+# Any checkpoints from notebooks (since .md files can be run in setups with 
+# jupytext and will produce spurious/unexpected checkpoints.
+
+.ipynb_checkpoints

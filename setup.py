@@ -17,7 +17,7 @@ def configure():
     # PETSc
     import os
 
-    if os.environ.get("CONDA_PREFIX"):
+    if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
         PETSC_DIR  = os.environ['CONDA_PREFIX']
         PETSC_ARCH = os.environ.get('PETSC_ARCH', '')
     else:
