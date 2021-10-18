@@ -46,6 +46,21 @@ class MeshClass(_api_tools.Stateful):
     def __init__(self, simplex, *args,**kwargs):
         self.isSimplex = simplex
 
+        # Enable hashing
+        options = PETSc.Options()
+        options["dm_plex_hash_location"] = 0
+        # Need some tweaks for <3.16.
+        petsc_version_minor = PETSc.Sys().getVersion()[1]
+        if petsc_version_minor < 16:
+            # Let's use 3.16 default heuristics to set hashing grid size.
+            cStart,cEnd = self.dm.getHeightStratum(0)
+            options["dm_plex_hash_box_nijk"] = max(2, math.floor( (cEnd - cStart)**(1.0/self.dim) * 0.8) )
+            # However, if we're in 3d and petsc <3.16, no bueno :-(
+            if self.dim==3:
+                options["dm_plex_hash_location"] = 0
+                options.delValue("dm_plex_hash_box_nijk")
+        self.dm.setFromOptions()
+
         # Set sympy constructs
         from sympy.vector import CoordSys3D
         self._N = CoordSys3D("N")
@@ -59,6 +74,9 @@ class MeshClass(_api_tools.Stateful):
         self._N.x._latex_form=r"\mathrm{x}"
         self._N.y._latex_form=r"\mathrm{y}"
         self._N.z._latex_form=r"\mathrm{z}"
+        self._N.i._latex_form=r"\mathbf{\hat{i}}"
+        self._N.j._latex_form=r"\mathbf{\hat{j}}"
+        self._N.k._latex_form=r"\mathbf{\hat{k}}"
 
         # dictionary for variables
         import weakref
@@ -346,7 +364,8 @@ class MeshClass(_api_tools.Stateful):
         cdmfe.destroy()
         # return
         return arrcopy
-    
+
+    @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
@@ -370,23 +389,33 @@ class MeshClass(_api_tools.Stateful):
         """
         # Create index if required
         if not self._index:
-            # Get cell centroids. 
-            # Note that if necessary, we might like to do something
-            # like index on Gauss points instead of centroids. This should
-            # give better results for deformed mesh. 
-            elstart,elend = self.dm.getHeightStratum(0)
-            centroids = np.empty((elend,self.dim))
-            for index in range(elend):
-                centroids[index] = self.dm.computeCellGeometryFVM(index)[1]
-            self._index = uw.algorithms.KDTree(centroids)
-            self._index.build_index()
+            from underworld3.swarm import Swarm
+            # Create a temp swarm which we'll use to populate particles
+            # at gauss points. These will then be used as basis for 
+            # kd-tree indexing back to owning cells.
+            tempSwarm = Swarm(self)
+            # 4^dim pop is used. This number may need to be considered
+            # more carefully, or possibly should be coded to be set dynamically. 
+            tempSwarm.populate(fill_param=4)
+            with tempSwarm.access():
+                # Build index on particle coords
+                self._indexCoords = tempSwarm.particle_coordinates.data.copy()
+                self._index = uw.algorithms.KDTree(self._indexCoords)
+                self._index.build_index()
+                # Grab mapping back to cell_ids. 
+                # Note that this is the numpy array that we eventually return from this 
+                # method. As such, we take measures to ensure that we use `np.int64` here 
+                # because we cast from this type in  `_function.evaluate` to construct 
+                # the PETSc cell-sf datasets, and if instead a `np.int32` is used it 
+                # will cause bugs that are difficult to find.
+                self._indexMap = np.array(tempSwarm.particle_cellid.data[:,0], dtype=np.int64)
 
-        closest_cells, dist, found = self._index.find_closest_point(coords)
+        closest_points, dist, found = self._index.find_closest_point(coords)
 
         if not np.allclose(found,True):
             raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.")
-        
-        return closest_cells
+
+        return self._indexMap[closest_points]
 
     def get_min_radius(self) -> double:
         """
@@ -410,7 +439,7 @@ class MeshClass(_api_tools.Stateful):
 class Box(MeshClass):
     @timing.routine_timer_decorator
     def __init__(self, 
-                elementRes   :         Tuple[int,  int,  int]    =(16, 16), 
+                elementRes   :Optional[Tuple[  int,  int,  int]] =(16, 16), 
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
                 simplex      :Optional[bool]                     =False
@@ -433,11 +462,6 @@ class Box(MeshClass):
         interpolate=False
         options = PETSc.Options()
         options["dm_plex_separate_marker"] = None
-        if "dm_plex_hash_location" in options: del options["dm_plex_hash_location"]
-        if "dm_plex_hash_box_nijk" in options: del options["dm_plex_hash_box_nijk"]
-        if len(elementRes)==2:
-            options["dm_plex_hash_location"] = None
-            options["dm_plex_hash_box_nijk"] = max(elementRes)
         self.elementRes = elementRes
         if minCoords==None : minCoords=len(elementRes)*(0.,)
         self.minCoords = minCoords

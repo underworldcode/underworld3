@@ -48,8 +48,8 @@ def configure():
         runtime_library_dirs=LIBRARY_DIRS,
     )
 
-extra_compile_args = ['-O3', '-g']
-#extra_compile_args = ['-O0', '-g']
+# extra_compile_args = ['-O3', '-g']
+extra_compile_args = ['-O0', '-g']
 extensions = [
     Extension('underworld3.mesh',
               sources = ['underworld3/mesh.pyx',],

@@ -9,6 +9,7 @@ import underworld3 as uw
 import numpy as np
 from underworld3 import _api_tools
 import underworld3.timing as timing
+from typing import Optional, Tuple
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateMassMatrix(PetscDM dac, PetscDM daf, PetscMat *mat)
@@ -35,7 +36,17 @@ class SwarmType(Enum):
     DMSWARM_PIC = 1
 
 class SwarmPICLayout(Enum):
-    DMSWARMPIC_LAYOUT_GAUSS = 1
+    """
+    Particle population fill type:
+
+    SwarmPICLayout.REGULAR     defines points on a regular ijk mesh. Supported by simplex cell types only.
+    SwarmPICLayout.GAUSS       defines points using an npoint Gauss-Legendre tensor product quadrature rule.
+    SwarmPICLayout.SUBDIVISION defines points on the centroid of a sub-divided reference cell.
+    """
+    REGULAR     = 0
+    GAUSS       = 1
+    SUBDIVISION = 2
+
 
 class SwarmVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
@@ -56,7 +67,7 @@ class SwarmVariable(_api_tools.Stateful):
         else:
             raise TypeError(f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'.")
         if _register:
-            self.swarm.registerField(self.name, self.num_components, dtype=petsc_type)
+            self.swarm.dm.registerField(self.name, self.num_components, dtype=petsc_type)
         self._data = None
         # add to swarms dict
         swarm.vars[name] = self
@@ -172,12 +183,12 @@ class SwarmVariable(_api_tools.Stateful):
 
 
 #@typechecked
-class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
+class Swarm(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, mesh):
         self.mesh = mesh
         self.dim = mesh.dim
-        self.dm = Swarm.create(self)
+        self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
         self.dm.setCellDM(mesh.dm)
@@ -211,31 +222,56 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         return self._cellid_var
 
     @timing.routine_timer_decorator
-    def populate(self, ppcell=25, layout=SwarmPICLayout.DMSWARMPIC_LAYOUT_GAUSS):
+    def populate(self, 
+                 fill_param :Optional[int]            =3, 
+                 layout     :Optional[SwarmPICLayout] =None):
+        """
+        Populate the swarm with particles throughout the domain.
+
+        """ + SwarmPICLayout.__doc__ + """
+
+        When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
+        When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
+        When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
+
+        Parameters
+        ----------
+        fill_param:
+            Parameter determining the particle count per cell for the given layout.
+        layout:
+            Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
+            type cells, and `SwarmPICLayout.GAUSS` otherwise.
+        """
+
+        self.fill_param = fill_param
         
-        self.ppcell = ppcell
-        
+        if layout==None:
+            if self.mesh.isSimplex==True:
+                layout=SwarmPICLayout.REGULAR
+            else:
+                layout=SwarmPICLayout.GAUSS
+
         if not isinstance(layout, SwarmPICLayout):
             raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
         
         self.layout = layout
-        
-        elstart,elend = self.mesh.dm.getHeightStratum(0)
         self.dm.finalizeFieldRegister()
-        self.dm.setLocalSizes((elend-elstart) * ppcell, 0)
-        self.dm.insertPointUsingCellDM(self.layout.value, ppcell)
+
+        ## Commenting this out for now. 
+        ## Code seems to operate fine without it, and the 
+        ## existing values are wrong. It should be something like
+        ## `(elend-elstart)*fill_param^dim` for quads, and around
+        ## half that for simplices, depending on layout.
+        # elstart,elend = self.mesh.dm.getHeightStratum(0)
+        # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
+
+        self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
         return self
 
     @timing.routine_timer_decorator
     def add_variable(self, name, num_components=1, dtype=float):
-        var = SwarmVariable(name, self, num_components, dtype=dtype)
+        return SwarmVariable(name, self, num_components, dtype=dtype)
 
-        return var
-
-    @timing.routine_timer_decorator
-    def save(self, filename):
-        self.dm.viewXDMF(filename)
-    
     @property
     def vars(self):
         return self._vars
@@ -281,7 +317,7 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
             # add to de-access list to rewind this later
             deaccess_list.append(var)
             # grab numpy object, setting read only if necessary
-            var._data = self.getField(var.name).reshape( (-1, var.num_components) )
+            var._data = self.dm.getField(var.name).reshape( (-1, var.num_components) )
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -292,11 +328,13 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
         if self.particle_coordinates in writeable_vars:
             self._increment()
 
+        # Create a class which specifies the required context
+        # manager hooks (`__enter__`, `__exit__`).
         class exit_manager:
-            def __init__(self,swarm): self.swarm = swarm
+            def __init__(self,swarm): self.em_swarm = swarm 
             def __enter__(self): pass
             def __exit__(self, *args):
-                for var in self.swarm.vars.values():
+                for var in self.em_swarm.vars.values():
                     # only de-access variables we have set access for.
                     if var not in deaccess_list:
                         continue
@@ -304,31 +342,31 @@ class Swarm(PETSc.DMSwarm,_api_tools.Stateful):
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
                     var._data = None
-                    self.swarm.restoreField(var.name)
+                    self.em_swarm.dm.restoreField(var.name)
                     var._is_accessed = False
                 # do particle migration if coords changes
-                if self.swarm.particle_coordinates in writeable_vars:
+                if self.em_swarm.particle_coordinates in writeable_vars:
                     # let's use the mesh index to update the particles owning cells.
                     # note that the `petsc4py` interface is more convenient here as the 
                     # `SwarmVariable.data` interface is controlled by the context manager
                     # that we are currently within, and it is therefore too easy to  
                     # get things wrong that way.
-                    cellid = self.swarm.getField("DMSwarm_cellid")
-                    coords = self.swarm.getField("DMSwarmPIC_coor").reshape( (-1, self.swarm.dim) )
-                    cellid[:] = self.swarm.mesh.get_closest_cells(coords)
-                    self.swarm.restoreField("DMSwarmPIC_coor")
-                    self.swarm.restoreField("DMSwarm_cellid")
+                    cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
+                    coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, self.em_swarm.dim) )
+                    cellid[:] = self.em_swarm.mesh.get_closest_cells(coords)
+                    self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
+                    self.em_swarm.dm.restoreField("DMSwarm_cellid")
                     # now migrate.
-                    self.swarm.migrate(remove_sent_points=True)
+                    self.em_swarm.dm.migrate(remove_sent_points=True)
                     # void these things too
-                    self.swarm._index = None
-                    self.swarm._nnmapdict = {}
+                    self.em_swarm._index = None
+                    self.em_swarm._nnmapdict = {}
                 # do var updates
-                for var in self.swarm.vars.values():
+                for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all. 
                     # if var updated, update var.
-                    if (self.swarm.particle_coordinates in writeable_vars) or \
-                       (var                             in writeable_vars) :
+                    if (self.em_swarm.particle_coordinates in writeable_vars) or \
+                       (var                                in writeable_vars) :
                         var._update()
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time()-stime, "Swarm.access",1)

@@ -209,7 +209,7 @@ def print_table(group_by="line_routine", sort_by="total", display_fraction=0.95,
         maxl[ii] += 1
 
     footerrow = [[ None,                     None, None, None],
-                 [ "Total Time (UW2 API) :", None,            all_time, None],
+                 [ "Total Time (UW3 API) :", None,            all_time, None],
                  [ "Total Time (Runtime) :", None, _endtime-_starttime, None]]
 
     try:
