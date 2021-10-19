@@ -17,8 +17,14 @@ class VarType(_Enum):
 
 import numpy as _np
 # Info for JIT modules.
-# These lists should be populated by submodules
+# These dicts should be populated by submodules
 # which define cython/c based classes.
-_libfiles = []
-_libdirs  = []
-_incdirs  = [_np.get_include(),]
+# We use ordered dictionaries because the
+# ordering can be important when linking in libraries.
+# Note that actually what we want is an ordered set (which Python
+# doesn't natively provide). Hence for the key/value pair,
+# the value is always set to `None`.
+from collections import OrderedDict as _OD
+_libfiles = _OD()
+_libdirs  = _OD()
+_incdirs  = _OD({_np.get_include():None})

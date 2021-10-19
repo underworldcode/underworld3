@@ -184,10 +184,9 @@ class MeshClass(_api_tools.Stateful):
             def __init__(self,mesh): self.mesh = mesh
             def __enter__(self): pass
             def __exit__(self,*args):
-                cdef DM subdm = PETSc.DM()
-                cdef DM dm = self.mesh.dm
+                cdef DM subdm
+                cdef DM dm
                 cdef PetscInt fields
-                cdef Vec vec = PETSc.Vec()
                 for var in self.mesh.vars.values():
                     # only de-access variables we have set access for.
                     if var not in deaccess_list:
@@ -197,10 +196,13 @@ class MeshClass(_api_tools.Stateful):
                         var._data.flags.writeable = var._old_data_flag
                     # perform sync for any modified vars.
                     if var in writeable_vars:
+                        subdm = PETSc.DM()
+                        dm = self.mesh.dm
                         fields = var.field_id
                         ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
-                        subdm.localToGlobal(var.vec,var.vec_global, addv=False)
-                        subdm.globalToLocal(var.vec_global,var.vec, addv=False)
+                        # sync ghost values
+                        subdm.localToGlobal(var.vec,var._gvec, addv=False)
+                        subdm.globalToLocal(var._gvec,var.vec, addv=False)
                         ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
                         self.mesh._stale_lvec = True
                     var._data = None
@@ -476,7 +478,10 @@ class Box(MeshClass):
             boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
             self.dm.createLabel(str(val).encode('utf8'))               # create the label
             boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
-            boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+            # Without this check, we have failures at this point in parallel. 
+            # Further investigation required. JM.
+            if boundary_set:
+                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
         super().__init__(simplex=simplex)
 
@@ -823,6 +828,7 @@ class MeshVariable(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
+                   name     : Optional[str] = None,
                    index    : Optional[int] = None):
         """
         Append variable data to the specified mesh 
@@ -833,6 +839,10 @@ class MeshVariable(_api_tools.Stateful):
         filename :
             The filename of the mesh checkpoint file. It
             must already exist.
+        name :
+            Textual name for dataset. In particular, this
+            will be used for XDMF generation. If not 
+            provided, the variable name will be used. 
         index :
             Not currently supported. An optional index which 
             might correspond to the timestep (for example).
@@ -846,7 +856,11 @@ class MeshVariable(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
+        if name:
+            oldname = self._gvec.getName()
+            self._gvec.setName(name)
         viewer(self._gvec)
+        if name: self._gvec.setName(oldname)
 
     @property
     def fn(self) -> sympy.Basic:
@@ -864,9 +878,10 @@ class MeshVariable(_api_tools.Stateful):
             # This allows us to generate a local vectors.
             ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
             self._lvec  = subdm.createLocalVector()
-            self._lvec.zeroEntries()  # not sure if required, but to be sure. 
+            self._lvec.zeroEntries()       # not sure if required, but to be sure. 
             self._gvec  = subdm.createGlobalVector()
-            self._lvec.zeroEntries()
+            self._gvec.setName(self.name)  # This is set for checkpointing. 
+            self._gvec.zeroEntries()
             ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
         self._available = available
 
@@ -884,15 +899,6 @@ class MeshVariable(_api_tools.Stateful):
         if not self._available:
             raise RuntimeError("Vector must be accessed via the mesh `access()` context manager.")
         return self._lvec
-
-    @property
-    def vec_global(self) -> PETSc.Vec:
-        """
-        The corresponding PETSc global vector for this variable.
-        """
-        if not self._available:
-            raise RuntimeError("Vector must be accessed via the mesh `access()` context manager.")
-        return self._gvec
 
     @property
     def data(self) -> numpy.ndarray:
