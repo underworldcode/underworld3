@@ -23,8 +23,18 @@ parts:
     chapters:
     - file: Notebooks/Index
       sections:
-      - file: Notebooks/Example1
-      - file: Notebooks/Example2
+      - file: Notebooks/Ex_Evaluate.py
+      - file: Notebooks/Ex_Poisson_Cartesian.py
+      - file: Notebooks/Ex_Poisson_Spherical.py
+      - file: Notebooks/Ex_Stokes_Cartesian_RT.py
+      - file: Notebooks/Ex_Stokes_Cartesian_SolC.py
+      - file: Notebooks/Ex_Stokes_Cartesian_SolNL.py
+      - file: Notebooks/Ex_Stokes_Cartesian_matField.py
+      - file: Notebooks/Ex_Stokes_Spherical.py
+      - file: Notebooks/Ex_Stokes_Spherical_WIP.py
+      - file: Notebooks/NEx_Stokes_pyvista_WIP.ipynb
+
+
 
   - caption: Tutorials
     chapters:

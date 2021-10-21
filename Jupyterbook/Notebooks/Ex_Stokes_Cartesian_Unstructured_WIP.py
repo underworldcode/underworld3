@@ -155,4 +155,47 @@ kplot.grid_visible=False
 kplot.display()
 kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc settings
 
+# %% [markdown]
+# ## Pyvista visualisation
+#
+# `Pyvista` is a python vtk toolkit with a working model that closely matches scripted `paraview` in jupyter. 
+
+# %%
+import numpy as np
+import pyvista as pv
+import vtk
+
+pv.global_theme.background = 'white'
+pv.global_theme.window_size = [1000, 500]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = 'panel'
+pv.global_theme.smooth_shading = True
+
+
+# %%
+import meshio, io
+
+# Should probably be a tmp file ... 
+with open("spheremesh.vtk", mode="wb") as f:
+    mesh.pygmesh.write(f, file_format="vtk")
+    
+pv_vtkmesh = pv.UnstructuredGrid("spheremesh.vtk")
+pv_vtkmesh.point_data['density'] = uw.function.evaluate(density,mesh.data)
+pv_vtkmesh.point_data['umag'] = uw.function.evaluate(umag,mesh.data)
+pv_vtkmesh.point_data['urange'] = 0.5 + 0.5 * np.minimum(1.0,pv_vtkmesh.point_data['umag'] / pv_vtkmesh.point_data['umag'].mean())
+
+
+# %%
+clipped = pv_vtkmesh.clip(normal=(1, 0, 0), invert=False)
+contours = pv_vtkmesh.contour([1.0,5.0, 10.0], scalars="density")
+
+
+# %%
+pl = pv.Plotter()
+pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=False, 
+            scalars="density", opacity="urange", use_transparency=False)
+pl.add_mesh(contours, opacity=0.5)
+
+pl.show()
+
 # %%
