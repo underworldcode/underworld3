@@ -87,6 +87,8 @@ class MeshClass(_api_tools.Stateful):
         self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
         self._index = None
 
+        self._elementType = None
+
         super().__init__()
 
     @timing.routine_timer_decorator
@@ -254,6 +256,16 @@ class MeshClass(_api_tools.Stateful):
         """
         return self.dm.getDimension()
 
+
+    @property
+    def elementType(self) -> int:
+        """
+        The (vtk) element type classification for the mesh.
+        Will be set to None if it is not meaningful to set one
+        value fo the whole mesh
+        """
+        return self._elementType
+
     @timing.routine_timer_decorator
     def save(self, filename : str,
                    index    : Optional[int] = None):
@@ -406,6 +418,166 @@ class MeshClass(_api_tools.Stateful):
             VecDestroy(&facegeom)
         return self._min_radius
 
+    def mesh2pyvista(self, 
+                     elementType: Optional[int]=None
+                     ):
+        """
+        Returns a (vtk) pyvista.UnstructuredGrid object for visualisation of the mesh
+        skeleton. Note that this will normally use the elementType that is on the mesh
+        (HEX, QUAD) but, for data visualisation on higher-order elements, the actual 
+        order of the element is needed.
+        
+        ToDo: check for pyvista installation
+
+        ToDo: parallel safety
+
+        ToDo: use vtk instead of pyvista 
+        """
+
+        import vtk
+        import pyvista as pv 
+
+        if elementType is None:
+            elementType = self.elementType
+
+        # vtk defines all meshes using 3D coordinate arrays
+        if self.dim == 2: 
+            coords = self.data
+            vtk_coords = np.zeros((coords.shape[0], 3))
+            vtk_coords[:,0:2] = coords[:,:]
+        else:
+            vtk_coords = self.data
+
+        cells = self.mesh_dm_cells()
+        cell_type = np.empty(cells.shape[0], dtype=np.int64)
+        cell_type[:] = elementType
+
+        vtk_cells = np.empty((cells.shape[0], cells.shape[1]+1), dtype=np.int64)
+        vtk_cells[:,0] = cells.shape[1]
+        vtk_cells[:,1:] = cells[:,:]
+
+        pyvtk_unstructured_grid = pv.UnstructuredGrid(vtk_cells, cell_type, vtk_coords)
+
+        return pyvtk_unstructured_grid
+
+    def mesh_dm_coords(self):
+        cdim = self.dm.getCoordinateDim()
+        #lcoords = self.dm.getCoordinatesLocal().array.reshape(-1,cdim)
+        coords = self.dm.getCoordinates().array.reshape(-1,cdim)
+        return coords
+
+    def mesh_dm_edges(self):
+        # coords = mesh_coords(mesh)
+        # import pdb; pdb.set_trace()
+        starti,endi = self.dm.getDepthStratum(1)
+        #Offset of the node indices (level 0)
+        coffset = self.dm.getDepthStratum(0)[0]
+        edgesize = self.dm.getConeSize(starti)
+        edges = np.zeros((endi-starti,edgesize), dtype=np.uint32)
+        for c in range(starti, endi):
+            edges[c-starti,:] = self.dm.getCone(c) - coffset
+
+        #edges -= edges.min() #Why the offset?
+        #print(edges)
+        #print(edges.min(), edges.max(), coords.shape)
+        return edges
+
+    def mesh_dm_faces(self):
+        #Faces / 2d cells
+        coords = self.mesh_dm_coords()
+        #cdim = mesh.dm.getCoordinateDim()
+
+        #Index range in mesh.dm of level 2
+        starti,endi = self.dm.getDepthStratum(2)
+        #Offset of the node indices (level 0)
+        coffset = self.dm.getDepthStratum(0)[0]
+        FACES=(endi-starti)
+        facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
+        faces = np.zeros((FACES,facesize), dtype=np.uint32)
+        for c in range(starti, endi):
+            point_closure = self.dm.getTransitiveClosure(c)[0]
+            faces[c-starti,:] = point_closure[-facesize:] - coffset
+        return faces
+
+    def mesh_dm_facesize(self):
+        return self.dm.getConeSize(self.dm.getDepthStratum(2)[0]) #Face elements 3(tri) or 4(quad)
+
+    def mesh_dm_cellsize(self):
+        depth = self.dm.getDepth()
+        if depth < 3:
+            return self.mesh_dm_facesize() #Cells are faces
+        return self.dm.getConeSize(self.dm.getDepthStratum(3)[0])  #Cell elements 4(tet) or 6(cuboid)
+
+    def mesh_dm_info(mesh):
+        depth = mesh.dm.getDepth()
+        sz = mesh.dm.getChart()
+        print('getChart (index range)', sz, 'getDepth', depth)
+        for i in range(depth+1):
+            starti,endi = mesh.dm.getDepthStratum(i)
+            conesize = mesh.dm.getConeSize(starti)
+            print(i, "range: [", starti, endi, "] coneSize", conesize)
+        return
+
+    def mesh_dm_cells(self):
+
+        depth = self.dm.getDepth()
+
+        if depth < 3:
+            return self.mesh_dm_faces()
+    
+            coords = self.mesh_dm_coords()
+
+            #Index range in mesh.dm of level 2
+            starti,endi = self.dm.getDepthStratum(2)
+            #Offset of the node indices (level 0)
+
+            coffset = self.dm.getDepthStratum(0)[0]
+            FACES=(endi-starti)
+            facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
+            faces = np.zeros((FACES,facesize), dtype=np.uint32)
+            for c in range(starti, endi):
+                point_closure = self.dm.getTransitiveClosure(c)[0]
+                faces[c-starti,:] = point_closure[-facesize:] - coffset
+
+            return faces
+
+        #Index range in mesh.dm of level 3
+        starti,endi = self.dm.getDepthStratum(3)
+        #Offset of the node indices (level 0)
+        coffset = self.dm.getDepthStratum(0)[0]
+        CELLS=(endi-starti)
+        facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
+        cellsize = self.mesh_dm_cellsize() # Cell elements 4(tet) or 6(cuboid)
+        FACES = CELLS * cellsize
+
+        if cellsize == 4:
+            cell_corners = 4
+        else:
+            cell_corners = 8
+        
+        # List of faces (vertex indices)
+        faces = np.zeros((FACES,facesize), dtype=np.uint32)
+        #print("CELLSIZE:", cellsize, "FACESIZE:",facesize, "SHAPE:",faces.shape)
+        
+        cell_vertices = np.empty((CELLS, cell_corners), dtype=np.int64)
+        
+        for c in range(CELLS):
+            # The "cone" is the list of face indices for this cell
+            cone = self.dm.getCone(c+starti)
+            #print("CONE",cone)
+            #Iterate through each face element of the cone
+            facepoints = np.empty((cellsize, facesize), dtype=np.int64)
+            for co in range(cellsize):
+                #This contains the face vertex indices in correct order at the end
+                point_closure = self.dm.getTransitiveClosure(cone[co])[0]
+                faces[cellsize*c + co,:] = point_closure[-facesize:] - coffset
+                facepoints[co, :] = point_closure[-facesize:] - coffset
+            
+            # Unique vertex values only, but preserve ordering
+            unique,indices = np.unique(facepoints.flatten(), return_index=True)
+            cell_vertices[c,:] = facepoints.flatten()[np.sort(indices)]
+                      
+        return cell_vertices
 
 class Box(MeshClass):
     @timing.routine_timer_decorator
@@ -476,7 +648,7 @@ class Box(MeshClass):
         # create boundary sets
         for val in self.boundary:
             boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
-            self.dm.createLabel(str(val).encode('utf8'))               # create the label
+            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
             boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
             # Without this check, we have failures at this point in parallel. 
             # Further investigation required. JM.
@@ -484,6 +656,10 @@ class Box(MeshClass):
                 boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
         super().__init__(simplex=simplex)
+
+
+
+
 
 # JM: I don't think this class is required any longer
 # and the pygmsh version should instead be used. I'll
@@ -532,8 +708,10 @@ class MeshFromCellList(MeshClass):
                  dim         :int,
                  cells       :numpy.ndarray,
                  coords      :numpy.ndarray,
-                 cell_size   :Optional[float] =None,
-                 refinements :Optional[int]   =0):
+                 cell_size   :Optional[float] = None,
+                 refinements :Optional[int]   = 0,
+                 simplex      :Optional[bool] = True
+                ):
         """
         This is a generic mesh class for which users will provide 
         the specifying mesh cells and coordinates.
@@ -542,6 +720,8 @@ class MeshFromCellList(MeshClass):
 
         Only the root process needs to provide the `cells` and `coords` arrays. It
         will then be distributed to other processes in the communication group.
+
+        ?? Should we try to add mesh labels in here - LM ??
 
         Parameters
         ----------
@@ -557,6 +737,8 @@ class MeshFromCellList(MeshClass):
         refinements :
             The number of mesh refinements that should be performed. If this is specified, `cell_size` 
             should not be specified. 
+        simplex:
+            If `True`, simplex elements are assumed (default is True)
         """
 
         if cell_size and (refinements>0):
@@ -606,7 +788,7 @@ class MeshFromCellList(MeshClass):
             print(f"Generated mesh minimum cell size: {2.*self.get_min_radius():.3E}. Requested size: {cell_size:.3E}.")
 
         self.dm.view()
-        super().__init__(simplex=True)
+        super().__init__(simplex=simplex)
 
 class MeshFromMeshIO(MeshFromCellList):
     @timing.routine_timer_decorator
@@ -614,7 +796,9 @@ class MeshFromMeshIO(MeshFromCellList):
                  dim         :int,
                  meshio      :"MeshIO",
                  cell_size   :Optional[float] =None,
-                 refinements :Optional[int]   =0):
+                 refinements :Optional[int]   = 0,
+                 simplex      :Optional[bool] = True
+                 ):
         """
         This is a generic mesh class for which users will provide 
         the specifying mesh data as a `MeshIO` object.
@@ -634,6 +818,8 @@ class MeshFromMeshIO(MeshFromCellList):
         refinements :
             The number of mesh refinements that should be performed. If this is specified, `cell_size` 
             should not be specified. 
+        simplex:
+            If `True`, simplex elements are assumed (default is True)
         """
 
         if dim not in (2,3):
@@ -642,7 +828,8 @@ class MeshFromMeshIO(MeshFromCellList):
         if MPI.COMM_WORLD.rank==0:
             cells  = meshio.cells[dim-1][1]
             coords = meshio.points[:,0:dim]
-        super().__init__(dim, cells, coords, cell_size, refinements)
+  
+        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex)
 
     def _get_local_cell_size(self,
                              dim        : int,
@@ -684,7 +871,246 @@ class MeshFromMeshIO(MeshFromCellList):
             csize_local *= 1.1
         return csize_local 
 
+
+
+# pygmesh generator for Hex (/ Quad)-based structured, box mesh
+
+# Note boundary labels are needed (cf PETSc box mesh above)
+
+class Hex_Box(MeshFromMeshIO):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                dim          :Optional[  int] = 2,
+                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
+                minCoords    :Optional[Tuple[float,float,float]] =None,
+                maxCoords    :Optional[Tuple[float,float,float]] =None,
+                cell_size    :Optional[float] =0.05):
+        """
+        This class generates a Cartesian box of regular hexahedral (3D) or quadrilateral (2D) 
+        elements. 
+
+        Parameters
+        ----------
+        dim :
+            The mesh dimensionality.
+        elementRes:
+            Tuple specifying number of elements in each axis direction.
+        minCoord:
+            Optional. Tuple specifying minimum mesh location.
+        maxCoord:
+            Optional. Tuple specifying maximum mesh location.
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution. If this is specified, `refinements` should not be specified. 
+        """
+
+        if minCoords==None: 
+            minCoords=len(elementRes)*(0.,)
+
+        if maxCoords==None: 
+            maxCoords=len(elementRes)*(1.,)
+
+        self.pygmesh = None
+        # Only root proc generates pygmesh, then it's distributed.
+
+        if MPI.COMM_WORLD.rank==0:
+            x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
+
+            import pygmsh
+            with pygmsh.geo.Geometry() as geom:
+                points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
+                line = geom.add_line(*points)
+
+                _, rectangle, _ = geom.extrude(
+                    line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], num_layers=elementRes[1], recombine=True
+                )
+
+                # It would make sense to validate that elementRes[2] > 0 if dim==3
+
+                if dim == 3:
+                    geom.extrude(
+                        rectangle,
+                        translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
+                        num_layers=elementRes[2],
+                        recombine=True,
+                    )
+                    
+                quad_hex_box = geom.generate_mesh()
+                self.pygmesh = quad_hex_box
+
+        super().__init__(dim,self.pygmesh, cell_size, simplex=False)
+
+        self.elementRes = elementRes
+        self.minCoords = minCoords
+        self.maxCoords = maxCoords
+
+        import vtk
+
+        if dim == 2:
+            self._elementType = vtk.VTK_QUAD
+        else:
+            self._elementType = vtk.VTK_HEXAHEDRON
+
+        return
+
+
+# pygmesh generator for Tet/Tri-based structured, box mesh
+# Note boundary labels are needed (cf PETSc box mesh above)
+
+class Simplex_Box(MeshFromMeshIO):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                dim          :Optional[  int] = 2,
+                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
+                minCoords    :Optional[Tuple[float,float,float]] =None,
+                maxCoords    :Optional[Tuple[float,float,float]] =None,
+                cell_size    :Optional[float] =0.05):
+        """
+        This class generates a spherical shell, or a full sphere
+        where the inner radius is zero.
+
+        Parameters
+        ----------
+        dim :
+            The mesh dimensionality.
+        elementRes:
+            Tuple specifying number of elements in each axis direction.
+        minCoord:
+            Optional. Tuple specifying minimum mesh location.
+        maxCoord:
+            Optional. Tuple specifying maximum mesh location.
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution.   
+        """
+
+        if minCoords==None: 
+            minCoords=len(elementRes)*(0.,)
+
+        if maxCoords==None: 
+            maxCoords=len(elementRes)*(1.,)
+
+        self.pygmesh = None
+        # Only root proc generates pygmesh, then it's distributed.
+
+        if MPI.COMM_WORLD.rank==0:
+
+            xx = maxCoords[0]-minCoords[0]
+            yy = maxCoords[1]-minCoords[1]
+            zz = maxCoords[2]-minCoords[2]
+
+            import pygmsh
+            with pygmsh.occ.Geometry() as geom:
+                p = geom.add_point(minCoords, 1)
+                _, l, _ = geom.extrude(p, [xx, 0, 0], num_layers=elementRes[0])
+                _, s, _ = geom.extrude(l, [0, yy, 0], num_layers=elementRes[1])
+                if elementRes[2] > 0:
+                    geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
+                    
+                structured_tri_rect = geom.generate_mesh()   
+                self.pygmesh = structured_tri_rect
+
+        super().__init__(dim, self.pygmesh, cell_size)
+
+        self.elementRes = elementRes
+        self.minCoords = minCoords
+        self.maxCoords = maxCoords
+
+        import vtk
+
+        if dim == 2:
+            self._elementType = vtk.VTK_TRIANGLE
+        else:
+            self._elementType = vtk.VTK_TETRA
+
+        return
+
+# pygmesh generator for Tet/Tri-based structured, box mesh
+# Note boundary labels are needed (cf PETSc box mesh above)
+
+class Unstructured_Simplex_Box(MeshFromMeshIO):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                dim          :Optional[  int] = 2,
+                minCoords    :Optional[Tuple[float,float,float]] =None,
+                maxCoords    :Optional[Tuple[float,float,float]] =None,
+                coarse_cell_size: Optional[float]=0.1, 
+                global_cell_size:Optional[float]=0.05
+                ):
+        """
+        This class generates a spherical shell, or a full sphere
+        where the inner radius is zero.
+
+        Parameters
+        ----------
+        dim :
+            The mesh dimensionality.
+        minCoord:
+            Optional. Tuple specifying minimum mesh location. 
+        maxCoord:
+            Optional. Tuple specifying maximum mesh location.
+        coarse_cell_size :
+            The target cell size for the unstructured template mesh that will later be refined for 
+            solving the unknowns. 
+        global_cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution. 
+        """
+
+        if minCoords==None: 
+            minCoords=(0.0,0.0,0.0)
+
+        if len(minCoords) == 2:
+            minCoords = (minCoords[0], minCoords[1], 0.0)
+
+        if maxCoords==None: 
+            maxCoords=(1.0,1.0,1.0) 
+
+        if len(maxCoords) == 2:
+            maxCoords = (maxCoords[0], maxCoords[1], 0.0)
+
+
+        self.pygmesh = None
+        # Only root proc generates pygmesh, then it's distributed.
+
+
+        if MPI.COMM_WORLD.rank==0:
+
+            xx = maxCoords[0]-minCoords[0]
+            yy = maxCoords[1]-minCoords[1]
+            zz = maxCoords[2]-minCoords[2]
+
+            import pygmsh
+            with pygmsh.occ.Geometry() as geom:
+                if dim == 2:
+                    # args: corner point (3-tuple), width, height, corner-roundness ... 
+                    box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
+                else:
+                    # args: corner point (3-tuple), size (3-tuple) ... 
+                    box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
+
+                unstructured_simplex_box = geom.generate_mesh()   
+
+        super().__init__(dim, unstructured_simplex_box, global_cell_size)
+
+        self.pygmesh = unstructured_simplex_box
+        self.elementRes = None
+        self.minCoords = minCoords
+        self.maxCoords = maxCoords
+
+        import vtk
+
+        if dim == 2:
+            self._elementType = vtk.VTK_TRIANGLE
+        else:
+            self._elementType = vtk.VTK_TETRA
+
+        return
+
+
+
 class SphericalShell(MeshFromMeshIO):
+
     @timing.routine_timer_decorator
     def __init__(self,
                  dim            :Optional[  int] =2,
@@ -727,6 +1153,7 @@ class SphericalShell(MeshFromMeshIO):
                 csize_local = self._get_local_cell_size(3,domain_vol,4.*cell_size)
             else:
                 raise ValueError("`dim` must be in [2,3].")
+
             import pygmsh
             # Generate local mesh.
             with pygmsh.occ.Geometry() as geom:
@@ -744,7 +1171,185 @@ class SphericalShell(MeshFromMeshIO):
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
                 self.pygmesh = geom.generate_mesh()
-        super().__init__(dim,self.pygmesh,cell_size)
+
+        super().__init__(dim, self.pygmesh, cell_size)
+
+        import vtk
+
+        if dim == 2:
+            self._elementType = vtk.VTK_TRIANGLE
+        else:
+            self._elementType = vtk.VTK_TETRA
+
+        return
+
+
+# The following does not work correctly as the transfinite volume is not correctly 
+# meshed ... / cannot be generated consistently with these surface descriptions. 
+
+
+'''
+class StructuredCubeSphericalCap(MeshFromMeshIO):
+
+    @timing.routine_timer_decorator
+    def __init__(self,
+                elementRes   :Tuple[int,  int,  int]  = (16, 16, 8), 
+                angles       :Tuple[float, float] = (0.7853981633974483, 0.7853981633974483), # pi/4
+                radius_outer   :Optional[float] =1.0,
+                radius_inner   :Optional[float] =0.5,
+                simplex        :Optional[bool] =False, 
+                cell_size      :Optional[float] =0.1
+                ):
+
+        """
+        This class generates a structured spherical cap based on a deformed cube
+
+        Parameters
+        ----------
+        elementRes: 
+            Elements in the (NS, EW, R) direction 
+        angles:
+            Angle subtended at the equator, central meridian for this cube-spherical-cap. 
+            Should be less than pi/2 for respectable element distortion.
+        radius_outer :
+            The outer radius for the spherical shell.
+        radius_inner :
+            The inner radius for the spherical shell. If this is set to 
+            zero, a full sphere is generated.
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution.
+        """
+
+        if radius_inner>=radius_outer:
+            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
+
+        import pygmsh
+
+        self.pygmesh = None
+
+        # Only root proc generates pygmesh, then it's distributed.
+        if MPI.COMM_WORLD.rank==0:  
+
+            def spherical_cap_mesh(elementsNS, elementsEW, elementsR, 
+                                   radius_i, radius_o, 
+                                   theta, phi, simplex=False):
+                """
+                Spherical cap pygmsh routines
+                """            
+
+                with pygmsh.geo.Geometry() as geom:
+                    
+                    cpoint = geom.add_point([0.0,0.0,0.0], 1)
+
+                    def cube_corners(R, theta, phi):
+
+                        X = R * np.cos(theta/2.0)*np.cos(phi/2.0)
+                        Y = R * np.sin(theta/2.0)*np.cos(phi/2.0)
+                        Z = R * np.sin(phi/2.0)
+                        
+                        genpoint = [0,0,0,0]
+
+                        genpoint[0] = geom.add_point([  X,  Y,  Z], 1)  
+                        genpoint[1] = geom.add_point([  X,  Y, -Z], 1)
+                        genpoint[2] = geom.add_point([  X, -Y,  Z], 1)
+                        genpoint[3] = geom.add_point([  X, -Y, -Z], 1)
+
+                        return genpoint
+
+                    def build_sph_cap_surface(genpoint, a,b,c,d):
+
+                        b_circ = [None, None, None, None]
+
+                        b_circ[0] = geom.add_circle_arc(genpoint[a], cpoint, genpoint[b])
+                        b_circ[1] = geom.add_circle_arc(genpoint[b], cpoint, genpoint[c])
+                        b_circ[2] = geom.add_circle_arc(genpoint[c], cpoint, genpoint[d])
+                        b_circ[3] = geom.add_circle_arc(genpoint[d], cpoint, genpoint[a])
+
+                        geom.set_transfinite_curve(b_circ[0], num_nodes=elementsEW, mesh_type="Progression", coeff=1.0)
+                        geom.set_transfinite_curve(b_circ[1], num_nodes=elementsNS, mesh_type="Progression", coeff=1.0)
+                        
+                        geom.set_transfinite_curve(b_circ[2], num_nodes=elementsEW, mesh_type="Progression", coeff=1.0)
+                        geom.set_transfinite_curve(b_circ[3], num_nodes=elementsNS, mesh_type="Progression", coeff=1.0)
+
+                        wedge_edge = geom.add_curve_loop(b_circ)
+                        this_wedge = geom.add_surface(wedge_edge) 
+
+                        geom.set_transfinite_surface(this_wedge, arrangement="1", corner_pts=[genpoint[a], genpoint[b], genpoint[c], genpoint[d]])
+
+                        return b_circ, this_wedge
+
+                    genpoint_i = cube_corners(radius_i, theta, phi)
+                    genpoint_o = cube_corners(radius_o, theta, phi)
+
+                    cap_outlines_o, cap1o = build_sph_cap_surface(genpoint_o,0,1,3,2)
+                    cap_outlines_i, cap1i = build_sph_cap_surface(genpoint_i,0,1,3,2)
+
+                    # 4 lines defining the radial edges
+
+                    lineNE = geom.add_line(genpoint_i[0], genpoint_o[0])
+                    lineSE = geom.add_line(genpoint_i[1], genpoint_o[1])
+                    lineNW = geom.add_line(genpoint_i[2], genpoint_o[2])
+                    lineSW = geom.add_line(genpoint_i[3], genpoint_o[3])
+
+                    geom.set_transfinite_curve(lineNE, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
+                    geom.set_transfinite_curve(lineSE, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
+                    geom.set_transfinite_curve(lineSW, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
+                    geom.set_transfinite_curve(lineNW, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
+
+                    faceE_outline = geom.add_curve_loop([lineNE, cap_outlines_o[0], -lineSE, -cap_outlines_i[0]  ])
+                    faceE = geom.add_surface(faceE_outline)
+                    geom.set_transfinite_surface(faceE, arrangement="1", corner_pts=[genpoint_i[0], genpoint_i[1], genpoint_o[0], genpoint_o[1]])
+
+                    faceW_outline = geom.add_curve_loop([lineNW, -cap_outlines_o[2], -lineSW, cap_outlines_i[2]  ])
+                    faceW = geom.add_surface(faceW_outline)
+                    geom.set_transfinite_surface(faceW, arrangement="1", corner_pts=[genpoint_i[2], genpoint_i[3], genpoint_o[2], genpoint_o[3]])
+
+                    faceN_outline = geom.add_curve_loop([lineNE, -cap_outlines_o[3], -lineNW, cap_outlines_i[3]  ])
+                    faceN = geom.add_surface(faceN_outline)
+                    geom.set_transfinite_surface(faceN, arrangement="1", corner_pts=[genpoint_i[0], genpoint_i[2], genpoint_o[0], genpoint_o[2]])
+
+                    faceS_outline = geom.add_curve_loop([lineSE, cap_outlines_o[1], -lineSW,  -cap_outlines_i[1] ])
+                    faceS = geom.add_surface(faceS_outline)
+                    geom.set_transfinite_surface(faceS, arrangement="1", corner_pts=[genpoint_i[1], genpoint_i[3], genpoint_o[1], genpoint_o[3]])
+
+                    shell = geom.add_surface_loop([cap1o, cap1i, faceE, faceS, faceW, faceN])  
+                    geom.add_volume(shell)
+
+                    if not simplex:
+                        geom.set_recombined_surfaces([cap1i, cap1o])
+                        geom.set_recombined_surfaces([faceE, faceW, faceN, faceS])
+
+                    spherical_cap = geom.generate_mesh(dim=3, verbose=False)
+                    
+                    return spherical_cap
+
+        self.pygmesh = spherical_cap_mesh(elementsNS=elementRes[0], 
+                                          elementsEW=elementRes[1],
+                                          elementsR=elementRes[2], 
+                                          radius_i=radius_inner, 
+                                          radius_o=radius_outer, 
+                                          theta=angles[0], 
+                                          phi=angles[1], 
+                                          simplex=simplex)
+
+        super().__init__(3, self.pygmesh, cell_size)
+
+        import vtk
+
+        if simplex:
+            self._elementType = vtk.VTK_TETRA
+        else:
+            self._elementType = vtk.VTK_HEXAHEDRON
+
+        self.elementRes = elementRes
+        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0)
+        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0)
+
+  
+
+        return
+'''
 
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
@@ -776,6 +1381,11 @@ class MeshVariable(_api_tools.Stateful):
             The polynomial degree for this variable.
 
         """
+
+        self._lvec = None
+        self._gvec = None
+        self._data = None
+        self._is_accessed = False
 
         if mesh._accessed:
             raise RuntimeError("It is not possible to add new variables to a mesh after existing variables have been accessed.")
@@ -821,10 +1431,7 @@ class MeshVariable(_api_tools.Stateful):
 
         self.mesh.vars[name] = self
 
-        self._lvec = None
-        self._gvec = None
-        self._data = None
-        self._is_accessed = False
+
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
