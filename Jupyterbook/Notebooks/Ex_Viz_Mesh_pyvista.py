@@ -164,7 +164,7 @@ pl1.show()
 
 ## The elements in a refined Hex mesh are not correctly ordered using the procedure that
 ## works for unrefined hexes, quads, tris and tets. It is an element ordering issue but 
-## I am not sure how to 
+## I am not sure how to fix it. 
 
 minCoords=(-3.0,-1.0,-1.0)
 maxCoords=( 1.0, 1.1, 1.2)

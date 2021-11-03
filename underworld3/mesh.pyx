@@ -246,6 +246,7 @@ class MeshClass(_api_tools.Stateful):
         The array of mesh element vertex coordinates.
         """
         # get flat array
+
         arr = self.dm.getCoordinatesLocal().array
         return arr.reshape(-1, self.dim)
 
@@ -524,22 +525,7 @@ class MeshClass(_api_tools.Stateful):
 
         if depth < 3:
             return self.mesh_dm_faces()
-    
-            coords = self.mesh_dm_coords()
 
-            #Index range in mesh.dm of level 2
-            starti,endi = self.dm.getDepthStratum(2)
-            #Offset of the node indices (level 0)
-
-            coffset = self.dm.getDepthStratum(0)[0]
-            FACES=(endi-starti)
-            facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
-            faces = np.zeros((FACES,facesize), dtype=np.uint32)
-            for c in range(starti, endi):
-                point_closure = self.dm.getTransitiveClosure(c)[0]
-                faces[c-starti,:] = point_closure[-facesize:] - coffset
-
-            return faces
 
         #Index range in mesh.dm of level 3
         starti,endi = self.dm.getDepthStratum(3)
@@ -824,9 +810,13 @@ class MeshFromMeshIO(MeshFromCellList):
 
         if dim not in (2,3):
             raise ValueError(f"`dim` must be 2 or 3. You have passed in dim={dim}.")
+
+        # if remove_lower_dimensional_cells is called on the mesh, then the cell list 
+        # for our regular meshes should be of length 1 (all hexes, all tets, all quads and so on)
+
         cells = coords = None
         if MPI.COMM_WORLD.rank==0:
-            cells  = meshio.cells[dim-1][1]
+            cells  = meshio.cells[0][1]
             coords = meshio.points[:,0:dim]
   
         super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex)
@@ -936,6 +926,7 @@ class Hex_Box(MeshFromMeshIO):
                     )
                     
                 quad_hex_box = geom.generate_mesh()
+                quad_hex_box.remove_lower_dimensional_cells()
                 self.pygmesh = quad_hex_box
 
         super().__init__(dim,self.pygmesh, cell_size, simplex=False)
@@ -1008,6 +999,7 @@ class Simplex_Box(MeshFromMeshIO):
                     geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
                     
                 structured_tri_rect = geom.generate_mesh()   
+                structured_tri_rect.remove_lower_dimensional_cells()
                 self.pygmesh = structured_tri_rect
 
         super().__init__(dim, self.pygmesh, cell_size)
@@ -1089,7 +1081,8 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
                     # args: corner point (3-tuple), size (3-tuple) ... 
                     box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
 
-                unstructured_simplex_box = geom.generate_mesh()   
+                unstructured_simplex_box = geom.generate_mesh()  
+                unstructured_simplex_box.remove_lower_dimensional_cells()
 
         super().__init__(dim, unstructured_simplex_box, global_cell_size)
 
@@ -1170,9 +1163,13 @@ class SphericalShell(MeshFromMeshIO):
                 # geom.set_mesh_size_callback(
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
-                self.pygmesh = geom.generate_mesh()
 
-        super().__init__(dim, self.pygmesh, cell_size)
+
+                self.pygmesh = geom.generate_mesh()
+                self.pygmesh.remove_lower_dimensional_cells()
+
+
+        super().__init__(dim, self.pygmesh, cell_size, simplex=True)
 
         import vtk
 
@@ -1188,7 +1185,6 @@ class SphericalShell(MeshFromMeshIO):
 # meshed ... / cannot be generated consistently with these surface descriptions. 
 
 
-'''
 class StructuredCubeSphericalCap(MeshFromMeshIO):
 
     @timing.routine_timer_decorator
@@ -1197,7 +1193,7 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
                 angles       :Tuple[float, float] = (0.7853981633974483, 0.7853981633974483), # pi/4
                 radius_outer   :Optional[float] =1.0,
                 radius_inner   :Optional[float] =0.5,
-                simplex        :Optional[bool] =False, 
+                simplex        :Optional[bool] = False, 
                 cell_size      :Optional[float] =0.1
                 ):
 
@@ -1223,117 +1219,69 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
-
+            
         import pygmsh
 
         self.pygmesh = None
 
+
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
 
-            def spherical_cap_mesh(elementsNS, elementsEW, elementsR, 
-                                   radius_i, radius_o, 
-                                   theta, phi, simplex=False):
-                """
-                Spherical cap pygmsh routines
-                """            
+            # First build a unit hex mesh with z_min corresponding to the inner radius
+            # and z_max corresponding to the outer radius
 
-                with pygmsh.geo.Geometry() as geom:
+            minCoords = (-1.0,-1.0,radius_inner)
+            maxCoords = ( 1.0, 1.0,radius_outer)
+
+            xx = maxCoords[0]-minCoords[0]
+            yy = maxCoords[1]-minCoords[1]
+            zz = maxCoords[2]-minCoords[2]
+
+            x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
+
+            theta = angles[0]
+            phi = angles[1]
+
+            with pygmsh.geo.Geometry() as geom:
+                points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
+                line = geom.add_line(*points)
+
+                _, rectangle, _ = geom.extrude(line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], 
+                                               num_layers=elementRes[1], recombine=(not simplex))
+
+                geom.extrude(
+                        rectangle,
+                        translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
+                        num_layers=elementRes[2],
+                        recombine=(not simplex),
+                    )
                     
-                    cpoint = geom.add_point([0.0,0.0,0.0], 1)
+                hex_box = geom.generate_mesh()
+                hex_box.remove_lower_dimensional_cells()
 
-                    def cube_corners(R, theta, phi):
+    
+            # Now adjust the point locations
+            # first make a pyramid that subtends the correct angle at each level
+            
+            hex_box.points[:,0] *= hex_box.points[:,2] * np.tan(theta/2) 
+            hex_box.points[:,1] *= hex_box.points[:,2] * np.tan(phi/2) 
+    
+            # second, adjust the distance so each layer forms a spherical cap 
+            
+            targetR = hex_box.points[:,2]
+            actualR = np.sqrt(hex_box.points[:,0]**2 + hex_box.points[:,1]**2 + hex_box.points[:,2]**2)
 
-                        X = R * np.cos(theta/2.0)*np.cos(phi/2.0)
-                        Y = R * np.sin(theta/2.0)*np.cos(phi/2.0)
-                        Z = R * np.sin(phi/2.0)
+            hex_box.points[:,0] *= (targetR / actualR)
+            hex_box.points[:,1] *= (targetR / actualR)
+            hex_box.points[:,2] *= (targetR / actualR)
                         
-                        genpoint = [0,0,0,0]
+            # finalise geom context
 
-                        genpoint[0] = geom.add_point([  X,  Y,  Z], 1)  
-                        genpoint[1] = geom.add_point([  X,  Y, -Z], 1)
-                        genpoint[2] = geom.add_point([  X, -Y,  Z], 1)
-                        genpoint[3] = geom.add_point([  X, -Y, -Z], 1)
 
-                        return genpoint
+        super().__init__(3, hex_box, cell_size, simplex=simplex)
 
-                    def build_sph_cap_surface(genpoint, a,b,c,d):
-
-                        b_circ = [None, None, None, None]
-
-                        b_circ[0] = geom.add_circle_arc(genpoint[a], cpoint, genpoint[b])
-                        b_circ[1] = geom.add_circle_arc(genpoint[b], cpoint, genpoint[c])
-                        b_circ[2] = geom.add_circle_arc(genpoint[c], cpoint, genpoint[d])
-                        b_circ[3] = geom.add_circle_arc(genpoint[d], cpoint, genpoint[a])
-
-                        geom.set_transfinite_curve(b_circ[0], num_nodes=elementsEW, mesh_type="Progression", coeff=1.0)
-                        geom.set_transfinite_curve(b_circ[1], num_nodes=elementsNS, mesh_type="Progression", coeff=1.0)
-                        
-                        geom.set_transfinite_curve(b_circ[2], num_nodes=elementsEW, mesh_type="Progression", coeff=1.0)
-                        geom.set_transfinite_curve(b_circ[3], num_nodes=elementsNS, mesh_type="Progression", coeff=1.0)
-
-                        wedge_edge = geom.add_curve_loop(b_circ)
-                        this_wedge = geom.add_surface(wedge_edge) 
-
-                        geom.set_transfinite_surface(this_wedge, arrangement="1", corner_pts=[genpoint[a], genpoint[b], genpoint[c], genpoint[d]])
-
-                        return b_circ, this_wedge
-
-                    genpoint_i = cube_corners(radius_i, theta, phi)
-                    genpoint_o = cube_corners(radius_o, theta, phi)
-
-                    cap_outlines_o, cap1o = build_sph_cap_surface(genpoint_o,0,1,3,2)
-                    cap_outlines_i, cap1i = build_sph_cap_surface(genpoint_i,0,1,3,2)
-
-                    # 4 lines defining the radial edges
-
-                    lineNE = geom.add_line(genpoint_i[0], genpoint_o[0])
-                    lineSE = geom.add_line(genpoint_i[1], genpoint_o[1])
-                    lineNW = geom.add_line(genpoint_i[2], genpoint_o[2])
-                    lineSW = geom.add_line(genpoint_i[3], genpoint_o[3])
-
-                    geom.set_transfinite_curve(lineNE, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
-                    geom.set_transfinite_curve(lineSE, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
-                    geom.set_transfinite_curve(lineSW, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
-                    geom.set_transfinite_curve(lineNW, num_nodes=elementsR, mesh_type="Progression", coeff=1.0)
-
-                    faceE_outline = geom.add_curve_loop([lineNE, cap_outlines_o[0], -lineSE, -cap_outlines_i[0]  ])
-                    faceE = geom.add_surface(faceE_outline)
-                    geom.set_transfinite_surface(faceE, arrangement="1", corner_pts=[genpoint_i[0], genpoint_i[1], genpoint_o[0], genpoint_o[1]])
-
-                    faceW_outline = geom.add_curve_loop([lineNW, -cap_outlines_o[2], -lineSW, cap_outlines_i[2]  ])
-                    faceW = geom.add_surface(faceW_outline)
-                    geom.set_transfinite_surface(faceW, arrangement="1", corner_pts=[genpoint_i[2], genpoint_i[3], genpoint_o[2], genpoint_o[3]])
-
-                    faceN_outline = geom.add_curve_loop([lineNE, -cap_outlines_o[3], -lineNW, cap_outlines_i[3]  ])
-                    faceN = geom.add_surface(faceN_outline)
-                    geom.set_transfinite_surface(faceN, arrangement="1", corner_pts=[genpoint_i[0], genpoint_i[2], genpoint_o[0], genpoint_o[2]])
-
-                    faceS_outline = geom.add_curve_loop([lineSE, cap_outlines_o[1], -lineSW,  -cap_outlines_i[1] ])
-                    faceS = geom.add_surface(faceS_outline)
-                    geom.set_transfinite_surface(faceS, arrangement="1", corner_pts=[genpoint_i[1], genpoint_i[3], genpoint_o[1], genpoint_o[3]])
-
-                    shell = geom.add_surface_loop([cap1o, cap1i, faceE, faceS, faceW, faceN])  
-                    geom.add_volume(shell)
-
-                    if not simplex:
-                        geom.set_recombined_surfaces([cap1i, cap1o])
-                        geom.set_recombined_surfaces([faceE, faceW, faceN, faceS])
-
-                    spherical_cap = geom.generate_mesh(dim=3, verbose=False)
-                    
-                    return spherical_cap
-
-        self.pygmesh = spherical_cap_mesh(elementsNS=elementRes[0], 
-                                          elementsEW=elementRes[1],
-                                          elementsR=elementRes[2], 
-                                          radius_i=radius_inner, 
-                                          radius_o=radius_outer, 
-                                          theta=angles[0], 
-                                          phi=angles[1], 
-                                          simplex=simplex)
-
-        super().__init__(3, self.pygmesh, cell_size)
+        self.pygmesh = hex_box
 
         import vtk
 
@@ -1343,13 +1291,13 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
             self._elementType = vtk.VTK_HEXAHEDRON
 
         self.elementRes = elementRes
-        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0)
-        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0)
 
-  
+        # Is the most useful definition
+        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0, radius_inner)
+        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0, radius_outer)
 
         return
-'''
+
 
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
