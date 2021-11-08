@@ -399,6 +399,7 @@ class Stokes:
         # Setup subdms here too.
         # These will be used to copy back/forth SNES solutions
         # into user facing variables.
+        
         names, isets, dms = self.dm.createFieldDecomposition()
         self._subdict = {}
         for index,name in enumerate(names):

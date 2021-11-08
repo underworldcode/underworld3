@@ -1,12 +1,21 @@
 #!/usr/bin/env python
-
-#$ python setup.py build_ext --inplace
+# $ pip install -e . or just python setup.py build_ext
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
+import os
+import subprocess
 import numpy
 import petsc4py
+
+if os.environ.get('CC') is None:
+    import warnings
+    warnings.warn("CC environment variable not set. Using mpi4py's compiler configuration")
+    # Get CC from mpi4py
+    import mpi4py
+    conf = mpi4py.get_config()
+    os.environ['CC']  = conf["mpicc"]
 
 def configure():
 
@@ -17,7 +26,7 @@ def configure():
     # PETSc
     import os
 
-    if os.environ.get("CONDA_PREFIX"):
+    if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
         PETSC_DIR  = os.environ['CONDA_PREFIX']
         PETSC_ARCH = os.environ.get('PETSC_ARCH', '')
     else:
@@ -48,55 +57,51 @@ def configure():
         runtime_library_dirs=LIBRARY_DIRS,
     )
 
-# extra_compile_args = ['-O3', '-g']
-extra_compile_args = ['-O0', '-g']
+conf = configure()
+
+extra_compile_args = ['-O3', '-g']
+#extra_compile_args = ['-O0', '-g']
 extensions = [
     Extension('underworld3.mesh',
               sources = ['underworld3/mesh.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.maths',
               sources = ['underworld3/maths.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.algorithms',
               sources = ['underworld3/algorithms.pyx',],
               extra_compile_args=extra_compile_args+["-std=c++11"],
               language="c++",
-              **configure()),
+              **conf),
     Extension('underworld3.systems.stokes',
               sources = ['underworld3/systems/stokes.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.swarm',
               sources = ['underworld3/swarm.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.petsc_types',
               sources = ['underworld3/petsc_types.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.systems.poisson',
               sources = ['underworld3/systems/poisson.pyx',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.function._function',
               sources = ['underworld3/function/_function.pyx', 'underworld3/function/petsc_tools.c',],
               extra_compile_args=extra_compile_args,
-              **configure()),
+              **conf),
     Extension('underworld3.function.analytic',
               sources = ['underworld3/function/analytic.pyx', 'underworld3/function/AnalyticSolNL.c',],
               extra_compile_args=extra_compile_args,
-            #   language="c++",
-              **configure()),
+              **conf),
 ]
 
 setup(name = "underworld3", 
-    install_requires=[
-        'typeguard',
-        'sympy>=1.8',
-        'xxhash',
-        ],
     packages=find_packages(),
     package_data={'underworld3':['*.pxd','*.h','function/*.h']},
     ext_modules = cythonize(

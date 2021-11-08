@@ -17,7 +17,7 @@ For development, building inplace will prob be preferable.  Remove
 any existing installations, then run.
 
 ```shell
-python setup.py build_ext --inplace
+pip install -e .
 ```
 
 For in place usage, you will need to set an appropriate PYTHONPATH.
