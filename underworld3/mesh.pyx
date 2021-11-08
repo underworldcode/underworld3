@@ -509,13 +509,13 @@ class MeshClass(_api_tools.Stateful):
             return self.mesh_dm_facesize() #Cells are faces
         return self.dm.getConeSize(self.dm.getDepthStratum(3)[0])  #Cell elements 4(tet) or 6(cuboid)
 
-    def mesh_dm_info(mesh):
-        depth = mesh.dm.getDepth()
-        sz = mesh.dm.getChart()
+    def mesh_dm_info(self):
+        depth = self.dm.getDepth()
+        sz = self.dm.getChart()
         print('getChart (index range)', sz, 'getDepth', depth)
         for i in range(depth+1):
-            starti,endi = mesh.dm.getDepthStratum(i)
-            conesize = mesh.dm.getConeSize(starti)
+            starti,endi = self.dm.getDepthStratum(i)
+            conesize = self.dm.getConeSize(starti)
             print(i, "range: [", starti, endi, "] coneSize", conesize)
         return
 
@@ -862,7 +862,6 @@ class MeshFromMeshIO(MeshFromCellList):
         return csize_local 
 
 
-
 # pygmesh generator for Hex (/ Quad)-based structured, box mesh
 
 # Note boundary labels are needed (cf PETSc box mesh above)
@@ -904,33 +903,11 @@ class Hex_Box(MeshFromMeshIO):
         # Only root proc generates pygmesh, then it's distributed.
 
         if MPI.COMM_WORLD.rank==0:
-            x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
+            mesh = Hex_Box.build_pygmsh( dim, elementRes, minCoords, maxCoords )
 
-            import pygmsh
-            with pygmsh.geo.Geometry() as geom:
-                points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
-                line = geom.add_line(*points)
+        super().__init__(dim, mesh, cell_size, simplex=False)
 
-                _, rectangle, _ = geom.extrude(
-                    line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], num_layers=elementRes[1], recombine=True
-                )
-
-                # It would make sense to validate that elementRes[2] > 0 if dim==3
-
-                if dim == 3:
-                    geom.extrude(
-                        rectangle,
-                        translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
-                        num_layers=elementRes[2],
-                        recombine=True,
-                    )
-                    
-                quad_hex_box = geom.generate_mesh()
-                quad_hex_box.remove_lower_dimensional_cells()
-                self.pygmesh = quad_hex_box
-
-        super().__init__(dim,self.pygmesh, cell_size, simplex=False)
-
+        self.pygmesh = mesh
         self.elementRes = elementRes
         self.minCoords = minCoords
         self.maxCoords = maxCoords
@@ -943,6 +920,40 @@ class Hex_Box(MeshFromMeshIO):
             self._elementType = vtk.VTK_HEXAHEDRON
 
         return
+
+    def build_pygmsh(
+                dim          :Optional[  int] = 2,
+                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
+                minCoords    :Optional[Tuple[float,float,float]] =None,
+                maxCoords    :Optional[Tuple[float,float,float]] =None 
+            ):
+
+        x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
+
+        import pygmsh
+        with pygmsh.geo.Geometry() as geom:
+            points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
+            line = geom.add_line(*points)
+
+            _, rectangle, _ = geom.extrude(
+                line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], num_layers=elementRes[1], recombine=True
+            )
+
+            # It would make sense to validate that elementRes[2] > 0 if dim==3
+
+            if dim == 3:
+                geom.extrude(
+                    rectangle,
+                    translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
+                    num_layers=elementRes[2],
+                    recombine=True,
+                )
+                
+            quad_hex_box = geom.generate_mesh()
+            quad_hex_box.remove_lower_dimensional_cells()
+
+        return quad_hex_box
+
 
 
 # pygmesh generator for Tet/Tri-based structured, box mesh
@@ -982,31 +993,17 @@ class Simplex_Box(MeshFromMeshIO):
             maxCoords=len(elementRes)*(1.,)
 
         self.pygmesh = None
+
         # Only root proc generates pygmesh, then it's distributed.
-
         if MPI.COMM_WORLD.rank==0:
-
-            xx = maxCoords[0]-minCoords[0]
-            yy = maxCoords[1]-minCoords[1]
-            zz = maxCoords[2]-minCoords[2]
-
-            import pygmsh
-            with pygmsh.occ.Geometry() as geom:
-                p = geom.add_point(minCoords, 1)
-                _, l, _ = geom.extrude(p, [xx, 0, 0], num_layers=elementRes[0])
-                _, s, _ = geom.extrude(l, [0, yy, 0], num_layers=elementRes[1])
-                if elementRes[2] > 0:
-                    geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
-                    
-                structured_tri_rect = geom.generate_mesh()   
-                structured_tri_rect.remove_lower_dimensional_cells()
-                self.pygmesh = structured_tri_rect
-
-        super().__init__(dim, self.pygmesh, cell_size)
+            mesh = Simplex_Box.build_pygmsh(dim, elementRes, minCoords, maxCoords)
+    
+        super().__init__(dim, mesh, cell_size)
 
         self.elementRes = elementRes
         self.minCoords = minCoords
         self.maxCoords = maxCoords
+        self.pygmesh = mesh
 
         import vtk
 
@@ -1016,6 +1013,32 @@ class Simplex_Box(MeshFromMeshIO):
             self._elementType = vtk.VTK_TETRA
 
         return
+
+
+    def build_pygmsh(
+                dim          :Optional[  int] = 2,
+                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
+                minCoords    :Optional[Tuple[float,float,float]] =None,
+                maxCoords    :Optional[Tuple[float,float,float]] =None,
+                cell_size    :Optional[float] =1.0):
+ 
+        xx = maxCoords[0]-minCoords[0]
+        yy = maxCoords[1]-minCoords[1]
+        zz = maxCoords[2]-minCoords[2]
+
+        import pygmsh
+        with pygmsh.occ.Geometry() as geom:
+            p = geom.add_point(minCoords, 1)
+            _, l, _ = geom.extrude(p, [xx, 0, 0], num_layers=elementRes[0])
+            _, s, _ = geom.extrude(l, [0, yy, 0], num_layers=elementRes[1])
+            if elementRes[2] > 0:
+                geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
+                
+            structured_tri_rect = geom.generate_mesh()   
+            structured_tri_rect.remove_lower_dimensional_cells()
+
+        return structured_tri_rect
+
 
 # pygmesh generator for Tet/Tri-based structured, box mesh
 # Note boundary labels are needed (cf PETSc box mesh above)
@@ -1067,26 +1090,15 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
 
         if MPI.COMM_WORLD.rank==0:
-
-            xx = maxCoords[0]-minCoords[0]
-            yy = maxCoords[1]-minCoords[1]
-            zz = maxCoords[2]-minCoords[2]
-
-            import pygmsh
-            with pygmsh.occ.Geometry() as geom:
-                if dim == 2:
-                    # args: corner point (3-tuple), width, height, corner-roundness ... 
-                    box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
-                else:
-                    # args: corner point (3-tuple), size (3-tuple) ... 
-                    box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
-
-                unstructured_simplex_box = geom.generate_mesh()  
-                unstructured_simplex_box.remove_lower_dimensional_cells()
+            unstructured_simplex_box = Unstructured_Simplex_Box.build_pygmsh(dim, 
+                            minCoords, maxCoords, 
+                            coarse_cell_size,
+                            global_cell_size)
 
         super().__init__(dim, unstructured_simplex_box, global_cell_size)
 
         self.pygmesh = unstructured_simplex_box
+        self.meshio = unstructured_simplex_box
         self.elementRes = None
         self.minCoords = minCoords
         self.maxCoords = maxCoords
@@ -1100,6 +1112,30 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
         return
 
+    def build_pygmsh(
+                     dim, 
+                     minCoords, maxCoords, 
+                     coarse_cell_size,  
+                     global_cell_size ):
+
+
+        xx = maxCoords[0]-minCoords[0]
+        yy = maxCoords[1]-minCoords[1]
+        zz = maxCoords[2]-minCoords[2]
+
+        import pygmsh
+        with pygmsh.occ.Geometry() as geom:
+            if dim == 2:
+                # args: corner point (3-tuple), width, height, corner-roundness ... 
+                box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
+            else:
+                # args: corner point (3-tuple), size (3-tuple) ... 
+                box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
+
+            unstructured_simplex_box = geom.generate_mesh()  
+            unstructured_simplex_box.remove_lower_dimensional_cells()
+
+        return unstructured_simplex_box
 
 
 class SphericalShell(MeshFromMeshIO):
@@ -1189,12 +1225,12 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 
     @timing.routine_timer_decorator
     def __init__(self,
-                elementRes   :Tuple[int,  int,  int]  = (16, 16, 8), 
-                angles       :Tuple[float, float] = (0.7853981633974483, 0.7853981633974483), # pi/4
+                elementRes     :Optional[Tuple[int,  int,  int]]  = (16, 16, 8), 
+                angles         :Optional[Tuple[float, float]] = (0.7853981633974483, 0.7853981633974483), # pi/4
                 radius_outer   :Optional[float] =1.0,
                 radius_inner   :Optional[float] =0.5,
                 simplex        :Optional[bool] = False, 
-                cell_size      :Optional[float] =0.1
+                cell_size      :Optional[float] =1.0
                 ):
 
         """
@@ -1224,12 +1260,40 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 
         self.pygmesh = None
 
-
         # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:  
 
-            # First build a unit hex mesh with z_min corresponding to the inner radius
-            # and z_max corresponding to the outer radius
+        if MPI.COMM_WORLD.rank==0:  
+            hex_box = StructuredCubeSphericalCap.build_pygmsh(elementRes, angles, radius_outer, radius_inner, simplex)
+
+        super().__init__(3, hex_box, cell_size, simplex=simplex)
+
+        self.pygmesh = hex_box
+        self.meshio = hex_box
+
+        import vtk
+
+        if simplex:
+            self._elementType = vtk.VTK_TETRA
+        else:
+            self._elementType = vtk.VTK_HEXAHEDRON
+
+        self.elementRes = elementRes
+
+        # Is the most useful definition ?
+        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0, radius_inner)
+        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0, radius_outer)
+
+        return
+
+    def build_pygmsh(
+                elementRes, 
+                angles,
+                radius_outer,
+                radius_inner,
+                simplex, 
+                ):
+
+            import pygmsh 
 
             minCoords = (-1.0,-1.0,radius_inner)
             maxCoords = ( 1.0, 1.0,radius_outer)
@@ -1260,43 +1324,405 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
                 hex_box = geom.generate_mesh()
                 hex_box.remove_lower_dimensional_cells()
 
-    
-            # Now adjust the point locations
-            # first make a pyramid that subtends the correct angle at each level
-            
-            hex_box.points[:,0] *= hex_box.points[:,2] * np.tan(theta/2) 
-            hex_box.points[:,1] *= hex_box.points[:,2] * np.tan(phi/2) 
-    
-            # second, adjust the distance so each layer forms a spherical cap 
-            
-            targetR = hex_box.points[:,2]
-            actualR = np.sqrt(hex_box.points[:,0]**2 + hex_box.points[:,1]**2 + hex_box.points[:,2]**2)
+                # Now adjust the point locations
+                # first make a pyramid that subtends the correct angle at each level
+                
+                hex_box.points[:,0] *= hex_box.points[:,2] * np.tan(theta/2) 
+                hex_box.points[:,1] *= hex_box.points[:,2] * np.tan(phi/2) 
+        
+                # second, adjust the distance so each layer forms a spherical cap 
+                
+                targetR = hex_box.points[:,2]
+                actualR = np.sqrt(hex_box.points[:,0]**2 + hex_box.points[:,1]**2 + hex_box.points[:,2]**2)
 
-            hex_box.points[:,0] *= (targetR / actualR)
-            hex_box.points[:,1] *= (targetR / actualR)
-            hex_box.points[:,2] *= (targetR / actualR)
-                        
-            # finalise geom context
+                hex_box.points[:,0] *= (targetR / actualR)
+                hex_box.points[:,1] *= (targetR / actualR)
+                hex_box.points[:,2] *= (targetR / actualR)
+                            
+                # finalise geom context
+
+            return hex_box
+## 
 
 
-        super().__init__(3, hex_box, cell_size, simplex=simplex)
+class StructuredCubeSphereBallMesh(MeshFromMeshIO):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                elementRes     :Tuple[int,  int]  = (16, 8), 
+                radius_outer   :Optional[float] = 1.0,
+                cell_size      :Optional[float] = 1e30,
+                simplex        :Optional[bool] = False, 
+                ):
 
-        self.pygmesh = hex_box
+        """
+        This class generates a structured solid spherical ball based on the cubed sphere
+
+        Parameters
+        ----------
+        elementRes: 
+            Elements in the (NS & EW , R) direction 
+        radius_outer :
+            The outer radius for the spherical shell.
+        simplex: 
+            Tets (True) or Hexes (False)
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution.
+        """
+        
+        import pygmsh
+        self.pygmesh = None
+
+        # Only root proc generates pygmesh, then it's distributed.
+        if MPI.COMM_WORLD.rank==0:  
+
+            cs_hex_box = StructuredCubeSphereBallMesh.build_pygmsh(elementRes, radius_outer, simplex=simplex)
+
+        super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
+
+        self.pygmesh = cs_hex_box
+        self.meshio  = cs_hex_box
 
         import vtk
 
         if simplex:
             self._elementType = vtk.VTK_TETRA
         else:
-            self._elementType = vtk.VTK_HEXAHEDRON
+            self._elementType = vtk.VTK_HEXAHEDRON        
 
         self.elementRes = elementRes
 
         # Is the most useful definition
-        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0, radius_inner)
-        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0, radius_outer)
+        self.minCoords = (0.0,)
+        self.maxCoords = (radius_outer,)
 
         return
+
+    def build_pygmsh(
+                elementRes     :Optional[int]  = 16, 
+                radius_outer   :Optional[float] =1.0,
+                simplex        :Optional[bool]  =False
+                ):
+
+            import meshio
+            import gmsh
+
+            gmsh.initialize()
+            gmsh.model.add("cubed")
+
+            lc = 0.0
+
+            r2 = radius_outer / np.sqrt(3)
+
+            res = elementRes+1
+
+            gmsh.model.geo.addPoint(0,0,0,lc, 1)
+
+            # The 8 corners of the cubes
+
+            gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 101)
+            gmsh.model.geo.addPoint( r2,  r2, -r2, lc, 102)
+            gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 103)
+            gmsh.model.geo.addPoint(-r2,  r2, -r2, lc, 104)
+            gmsh.model.geo.addPoint( r2, -r2,  r2, lc, 105)
+            gmsh.model.geo.addPoint( r2, -r2, -r2, lc, 106)
+            gmsh.model.geo.addPoint(-r2, -r2,  r2, lc, 107)
+            gmsh.model.geo.addPoint(-r2, -r2, -r2, lc, 108)
+
+            # The 12 edges of the cube2
+
+            gmsh.model.geo.addCircleArc(101,1,102, 1001)
+            gmsh.model.geo.addCircleArc(102,1,104, 1002)
+            gmsh.model.geo.addCircleArc(101,1,103, 1003)
+            gmsh.model.geo.addCircleArc(103,1,104, 1004)
+
+            gmsh.model.geo.addCircleArc(101,1,105, 1005)
+            gmsh.model.geo.addCircleArc(102,1,106, 1006)
+            gmsh.model.geo.addCircleArc(103,1,107, 1007)
+            gmsh.model.geo.addCircleArc(104,1,108, 1008)
+
+            gmsh.model.geo.addCircleArc(105,1,106, 1009)
+            gmsh.model.geo.addCircleArc(106,1,108, 1010)
+            gmsh.model.geo.addCircleArc(107,1,108, 1011)
+            gmsh.model.geo.addCircleArc(105,1,107, 1012)
+
+            ## These should all be transfinite lines
+
+            for i in range(1001, 1013):
+                gmsh.model.geo.mesh.set_transfinite_curve(i, res)
+
+            # The 6 faces of the cube2
+
+            gmsh.model.geo.addCurveLoop([1001, 1006, 1009, 1005], 10001, reorient=True)
+            gmsh.model.geo.addCurveLoop([1001, 1002, 1004, 1003], 10002, reorient=True)
+            gmsh.model.geo.addCurveLoop([1004, 1008, 1011, 1007], 10003, reorient=True)
+            gmsh.model.geo.addCurveLoop([1011, 1010, 1009, 1012], 10004, reorient=True)
+            gmsh.model.geo.addCurveLoop([1003, 1007, 1012, 1005], 10005, reorient=True)
+            gmsh.model.geo.addCurveLoop([1002, 1008, 1010, 1006], 10006, reorient=True)
+
+            gmsh.model.geo.add_surface_filling([10001], 10101, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10002], 10102, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10003], 10103, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10004], 10104, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10005], 10105, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10006], 10106, sphereCenterTag=1)
+
+            for i in range(10101, 10107):
+                gmsh.model.geo.mesh.setTransfiniteSurface(i, "Left")
+                if not simplex:
+                    gmsh.model.geo.mesh.setRecombine(2, i)
+
+            gmsh.model.geo.synchronize()
+
+            # outer surface / inner_surface
+            gmsh.model.geo.add_surface_loop([10101, 10102, 10103, 10104, 10105, 10106], 10111)
+            gmsh.model.geo.add_volume([10111], 100001)
+
+            gmsh.model.geo.synchronize()
+
+            gmsh.model.mesh.set_transfinite_volume(100001)
+            if not simplex:
+                gmsh.model.geo.mesh.setRecombine(3, 100001)
+
+            # gmsh.model.mesh.set_size([(3,100001)],10.0)
+
+            gmsh.model.geo.remove_all_duplicates()
+            gmsh.model.remove_entities([[2,10111]], recursive=True)
+            gmsh.model.mesh.generate(dim=3)
+            gmsh.model.mesh.removeDuplicateNodes()
+
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
+                gmsh.write(tfile.name)
+                cubed_sphere_ball_mesh = meshio.read(tfile.name)
+                cubed_sphere_ball_mesh.remove_lower_dimensional_cells()
+
+            gmsh.finalize()
+
+            return cubed_sphere_ball_mesh
+
+
+
+
+class StructuredCubeSphereShellMesh(MeshFromMeshIO):
+
+    @timing.routine_timer_decorator
+    def __init__(self,
+                elementRes     :Tuple[int,  int]  = (16, 8), 
+                radius_outer   :Optional[float] = 1.0,
+                radius_inner   :Optional[float] = 0.5,
+                cell_size      :Optional[float] = 1e30,
+                simplex        :Optional[bool] = False, 
+                ):
+
+        """
+        This class generates a structured spherical shell based on the cubed sphere 
+
+        Parameters
+        ----------
+        elementRes: 
+            Elements in the (NS & EW , R) direction 
+        radius_outer :
+            The outer radius for the spherical shell.
+        radius_inner :
+            The inner radius for the spherical shell. If this is set to 
+            zero, a full sphere is generated.
+        simplex: 
+            Tets (True) or Hexes (False)
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution.
+        """
+
+        if radius_inner>=radius_outer:
+            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
+            
+        import pygmsh
+
+        self.pygmesh = None
+
+        # Only root proc generates pygmesh, then it's distributed.
+        if MPI.COMM_WORLD.rank==0:  
+
+            cs_hex_box = StructuredCubeSphereShellMesh.build_pygmsh(elementRes, radius_outer, radius_inner, simplex=simplex)
+
+        super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
+
+        self.pygmesh = cs_hex_box
+        self.meshio  = cs_hex_box
+
+        import vtk
+
+        if simplex:
+            self._elementType = vtk.VTK_TETRA
+        else:
+            self._elementType = vtk.VTK_HEXAHEDRON        
+
+        self.elementRes = elementRes
+
+        # Is the most useful definition
+        self.minCoords = (radius_inner,)
+        self.maxCoords = (radius_outer,)
+
+        return
+
+    def build_pygmsh(
+                elementRes     :Tuple[int,  int]  = (16, 8), 
+                radius_outer   :Optional[float] =1.0,
+                radius_inner   :Optional[float] =0.5,
+                simplex        :Optional[bool]  =False
+                ):
+
+
+            import pygmsh 
+            import meshio
+
+            l = 0.0
+
+            inner_radius = radius_inner
+            outer_radius = radius_outer
+            nodes = elementRes[0]+1  # resolution of the cube laterally
+            layers= elementRes[1]
+
+            with pygmsh.geo.Geometry() as geom:
+                cpoint = geom.add_point([0.0,0.0,0.0], l)
+                
+                genpt = [0,0,0,0,0,0,0,0]
+
+                # 8 corners of the cube 
+                
+                r2 = 1.0 / np.sqrt(3.0) # Generate a unit sphere
+                
+                genpt[0] = geom.add_point([  r2,  r2,  r2],  l)
+                genpt[1] = geom.add_point([  r2,  r2, -r2],  l)
+                genpt[2] = geom.add_point([ -r2,  r2,  r2],  l)
+                genpt[3] = geom.add_point([ -r2,  r2, -r2],  l)
+                genpt[4] = geom.add_point([ -r2, -r2,  r2],  l)
+                genpt[5] = geom.add_point([ -r2, -r2, -r2],  l)
+                genpt[6] = geom.add_point([  r2, -r2,  r2],  l)
+                genpt[7] = geom.add_point([  r2, -r2, -r2],  l)
+                
+                # 12 edges of the cube
+                
+                b_circ00 = geom.add_circle_arc(genpt[0], cpoint, genpt[2])
+                b_circ01 = geom.add_circle_arc(genpt[2], cpoint, genpt[3])
+                b_circ02 = geom.add_circle_arc(genpt[1], cpoint, genpt[3])
+                b_circ03 = geom.add_circle_arc(genpt[0], cpoint, genpt[1])
+
+                b_circ04 = geom.add_circle_arc(genpt[4], cpoint, genpt[6])
+                b_circ05 = geom.add_circle_arc(genpt[4], cpoint, genpt[5])
+                b_circ06 = geom.add_circle_arc(genpt[5], cpoint, genpt[7])
+                b_circ07 = geom.add_circle_arc(genpt[6], cpoint, genpt[7])
+
+                b_circ08 = geom.add_circle_arc(genpt[0], cpoint, genpt[6])
+                b_circ09 = geom.add_circle_arc(genpt[2], cpoint, genpt[4])
+                b_circ10 = geom.add_circle_arc(genpt[3], cpoint, genpt[5])
+                b_circ11 = geom.add_circle_arc(genpt[1], cpoint, genpt[7])
+
+                for arc in [b_circ00, b_circ01, b_circ02, b_circ03,
+                            b_circ04, b_circ05, b_circ06, b_circ07,
+                            b_circ08, b_circ09, b_circ10, b_circ11 ]:
+                    
+                        geom.set_transfinite_curve(arc, num_nodes=nodes, 
+                                                mesh_type="Progression", coeff=1.0)
+
+                # 6 Cube faces
+                
+                face00_loop = geom.add_curve_loop([b_circ00, b_circ01, -b_circ02, -b_circ03])
+                face00 = geom.add_surface(face00_loop) 
+                geom.set_transfinite_surface(face00, arrangement="Left",
+                                            corner_pts = [genpt[0], genpt[2], genpt[3], genpt[1]])   
+
+
+                face01_loop = geom.add_curve_loop([-b_circ08, b_circ03, b_circ11, -b_circ07])
+                face01 = geom.add_surface(face01_loop) 
+                geom.set_transfinite_surface(face01, arrangement="Left",
+                                            corner_pts = [genpt[0], genpt[1], genpt[7], genpt[6]])   
+
+
+                face02_loop = geom.add_curve_loop([b_circ07, -b_circ06, -b_circ05, b_circ04])
+                face02 = geom.add_surface(face02_loop) 
+                geom.set_transfinite_surface(face02, arrangement="Left",
+                                            corner_pts = [genpt[4], genpt[5], genpt[6], genpt[7]])   
+
+
+                face03_loop = geom.add_curve_loop([b_circ01, b_circ10, -b_circ05, -b_circ09])
+                face03 = geom.add_surface(face03_loop) 
+                geom.set_transfinite_surface(face03, arrangement="Left",
+                                            corner_pts = [genpt[2], genpt[3], genpt[4], genpt[5]])   
+
+
+                face04_loop = geom.add_curve_loop([b_circ00, b_circ09,  b_circ04, -b_circ08])
+                face04 = geom.add_surface(face04_loop) 
+                geom.set_transfinite_surface(face04, arrangement="Left",
+                                            corner_pts = [genpt[0], genpt[2], genpt[4], genpt[6]])   
+
+
+                face05_loop = geom.add_curve_loop([b_circ02, b_circ10,  b_circ06, -b_circ11])
+                face05 = geom.add_surface(face05_loop) 
+                geom.set_transfinite_surface(face05, arrangement="Left",
+                                            corner_pts = [genpt[1], genpt[3], genpt[5], genpt[7]])   
+
+
+                geom.set_recombined_surfaces([face00, face01, face02, face03, face04, face05])
+                shell = geom.add_surface_loop([face00, face01, face02, face03, face04, face05])
+                    
+                two_D_cubed_sphere = geom.generate_mesh(dim=2, verbose=False)
+                two_D_cubed_sphere.remove_orphaned_nodes()
+                two_D_cubed_sphere.remove_lower_dimensional_cells()
+
+            ## Now stack the 2D objects to make a 3d shell 
+                
+            cells = two_D_cubed_sphere.cells[0].data - 1
+            cells_per_layer = cells.shape[0]
+            mesh_points = two_D_cubed_sphere.points[1:,:]
+            points_per_layer = mesh_points.shape[0]
+
+            cells_layer = np.empty((cells_per_layer, 8), dtype=int)
+            cells_layer[:, 0:4] = cells[:,:]
+            cells_layer[:, 4:8] = cells[:,:] + points_per_layer
+
+            # stack this layer multiple times
+
+            cells_3D = np.empty((layers, cells_per_layer, 8), dtype=int) 
+
+            for i in range(0,layers):
+                cells_3D[i,:,:] = cells_layer[:,:] + i * points_per_layer
+
+            mesh_cells_3D = cells_3D.reshape(-1,8)
+
+            ## Point locations
+
+            radii = np.linspace(inner_radius, outer_radius, layers+1)
+
+            mesh_points_3D = np.empty(((layers+1)*points_per_layer, 3))
+
+            for i in range(0, layers+1):
+                mesh_points_3D[i*points_per_layer:(i+1)*points_per_layer] = mesh_points * radii[i]
+                
+            cubed_sphere_pygmsh = meshio.Mesh(mesh_points_3D, [("hexahedron", mesh_cells_3D)])
+
+            # tetrahedral version (subdivide all hexes into 6 tets)
+
+            if simplex:
+                cells = cubed_sphere_pygmsh.cells[0][1]
+
+                t1 = cells[:,[3,0,1,5]]
+                t2 = cells[:,[3,2,1,5]]
+                t3 = cells[:,[3,2,6,5]]
+                t4 = cells[:,[3,7,6,5]]
+                t5 = cells[:,[3,7,4,5]]
+                t6 = cells[:,[3,0,4,5]]
+
+                tcells = np.vstack([t1,t2,t3,t4,t5,t6])
+
+                tet_cubed_sphere_pygmsh = meshio.Mesh(mesh_points_3D, [("tetra", tcells)])
+                tet_cubed_sphere_pygmsh.remove_lower_dimensional_cells()
+
+                return tet_cubed_sphere_pygmsh
+
+            else:
+                return cubed_sphere_pygmsh     
 
 
 class MeshVariable(_api_tools.Stateful):

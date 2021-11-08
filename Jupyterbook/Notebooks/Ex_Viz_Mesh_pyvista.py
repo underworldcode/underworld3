@@ -94,6 +94,9 @@ s_q_2d_mesh = uw.mesh.Hex_Box(dim=2,
 
 
 # %%
+s_s_mesh.pygmesh.cells
+
+# %%
 u_s_2d_mesh.mesh2pyvista().plot(show_edges=True)
 
 
@@ -138,17 +141,12 @@ pl1.add_mesh(viz_mesh, scalars="density", cmap="coolwarm", edge_color="Black", s
 pl1.show()
 
 # %%
-# body force
-unit_rvec = mesh_to_test.rvec / sympy.sqrt(mesh_to_test.rvec.dot(mesh_to_test.rvec))
-
-
-# %%
 ## empty arrays
 u_mesh_points = np.zeros((mesh_to_test.data.shape[0], 3))
 u_mesh_vec = np.zeros_like(u_mesh_points)
 
 u_mesh_points[:,0:2] = mesh_to_test.data 
-u_mesh_vec[:,0:2] = uw.function.evaluate(unit_rvec, u_mesh_points[:,0:2] * 0.9999)
+u_mesh_vec[:,0:2] = uw.function.evaluate(mesh_to_test.rvec, u_mesh_points[:,0:2] * 0.9999)
 
 
 # %%
@@ -158,6 +156,59 @@ pl1.add_points(u_mesh_points, point_size=3.0, color="White", render_points_as_sp
 pl1.add_arrows(u_mesh_points, -u_mesh_vec, mag=0.025)
 
 pl1.show()
+
+# %%
+# This is how to view the mesh without building the DM
+
+regional_cap_meshio = uw.mesh.StructuredCubeSphericalCap.build_pygmsh(
+                                elementRes=(64,64,64), 
+                                angles=(np.pi/2,np.pi/2),
+                                radius_inner=0.5, 
+                                radius_outer=1.0, 
+                                simplex=False, 
+                            )
+
+regional_cap_meshio.write("ignore_rcm.vtk")
+rcm_pyvista = pv.read("ignore_rcm.vtk")
+rcm_pyvista.plot(show_edges=True)
+
+# %%
+cubed_sphere_meshio = uw.mesh.StructuredCubeSphereBallMesh.build_pygmsh(elementRes=33,
+                                        radius_outer=1.0, simplex=True)
+
+cubed_sphere_meshio.write("ignore_csb.vtk")
+rcm_pyvista = pv.read("ignore_csb.vtk")
+
+
+clipped_stack = rcm_pyvista.clip(origin=(0.0001,0.0,0.0), normal=(1, 0, 0), invert=False)
+
+pl = pv.Plotter()
+
+# pl.add_mesh(pvstack,'Blue', 'wireframe' )
+pl.add_mesh(clipped_stack, cmap="coolwarm", edge_color="Black", show_edges=True, 
+              use_transparency=False)
+pl.show()
+
+
+# %%
+cubed_sphere_shell_meshio = uw.mesh.StructuredCubeSphereShellMesh.build_pygmsh(elementRes=(33,16), radius_inner=0.5,
+                                        radius_outer=1.0)
+
+
+cubed_sphere_shell_meshio.write("ignore_css.vtk")
+rcm_pyvista = pv.read("ignore_css.vtk")
+
+
+clipped_stack = rcm_pyvista.clip(origin=(0.0001,0.0,0.0), normal=(1, 0, 0), invert=False)
+
+pl = pv.Plotter()
+
+# pl.add_mesh(pvstack,'Blue', 'wireframe' )
+pl.add_mesh(clipped_stack, cmap="coolwarm", edge_color="Black", show_edges=True, 
+              use_transparency=False)
+pl.show()
+
+
 
 # %%
 ## Bug that needs to be fixed

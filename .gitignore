@@ -38,3 +38,8 @@ Jupyterbook/static_slides
 # jupytext and will produce spurious/unexpected checkpoints.
 
 .ipynb_checkpoints
+
+# Visualisation artefacts
+
+ignore*vtk
+ignore*msh 

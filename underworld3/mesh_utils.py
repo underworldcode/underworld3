@@ -12,6 +12,7 @@ def _from_cell_list(dim, cells, coords, comm):
     :arg coords: The coordinates of each vertex
     :arg comm: communicator to build the mesh on.
     """
+    
     # These types are /correct/, DMPlexCreateFromCellList wants int
     # and double (not PetscInt, PetscReal).
     if comm.rank == 0:

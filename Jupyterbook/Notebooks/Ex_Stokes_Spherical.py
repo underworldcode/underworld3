@@ -143,6 +143,7 @@ densvar.save(savefile)
 mesh.generate_xdmf(savefile)
 
 # %%
+"""
 import k3d
 import plot
 umag = stokes.u.fn.dot(stokes.u.fn)
@@ -154,6 +155,7 @@ with mesh.access():
 kplot.grid_visible=False
 kplot.display()
 kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc settings
+"""
 
 # %% [markdown]
 # ## Pyvista visualisation
@@ -192,10 +194,16 @@ contours = pv_vtkmesh.contour([1.0,5.0, 10.0], scalars="density")
 
 # %%
 pl = pv.Plotter()
-pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=False, 
+pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=True, 
             scalars="density", opacity="urange", use_transparency=False)
 pl.add_mesh(contours, opacity=0.5)
 
 pl.show()
+
+# %%
+umag = uw.function.evaluate(umag, mesh.data)
+
+# %%
+umag.max()
 
 # %%
