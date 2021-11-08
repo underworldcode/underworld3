@@ -30,7 +30,7 @@ boxHeight      = 1.0
 viscosityRatio = 1.0
 stokes_inner_tol = 1e-6
 stokes_outer_tol = 1e-5
-ppcell = 3
+fill_param = 3
 amplitude  = 0.02
 offset     = 0.2
 print_time = 10
@@ -91,14 +91,14 @@ def do_uw3():
     swarm  = uw.swarm.Swarm(mesh)
     # Add variable for material
     matSwarmVar      = swarm.add_variable(name="matSwarmVar",      num_components=1, dtype=PETSc.IntType)
-    # Note that `ppcell` specifies particles per cell per dim.
-    swarm.populate(ppcell=ppcell)
+    # Note that `fill_param` specifies particles per cell per dim.
+    swarm.populate(fill_param=fill_param)
 
     # Add some randomness to the particle distribution
     import numpy as np
     np.random.seed(0)
     with swarm.access(swarm.particle_coordinates):
-        factor = 0.5*boxLength/n_els/ppcell
+        factor = 0.5*boxLength/n_els/fill_param
         swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
 
     # define these for convenience. 

@@ -34,11 +34,6 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscMPIInt       *foundProcs, *globalProcs;
   PetscInt          n, N, numFound;
 
-  DM_Plex        *mesh = (DM_Plex *) dm->data;
-  if (ctx->dim ==3){
-    mesh->useHashLocation = PETSC_FALSE; 
-  }
-
   PetscFunctionBegin;
   PetscValidHeaderSpecific(dm, DM_CLASSID, 1);
   ierr = MPI_Comm_size(comm, &size);CHKERRMPI(ierr);
