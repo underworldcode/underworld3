@@ -1444,45 +1444,45 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
             # The 8 corners of the cubes
 
-            gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 101)
+            gmsh.model.geo.addPoint(-r2, -r2, -r2, lc, 100)
+            gmsh.model.geo.addPoint( r2, -r2, -r2, lc, 101)
             gmsh.model.geo.addPoint( r2,  r2, -r2, lc, 102)
-            gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 103)
-            gmsh.model.geo.addPoint(-r2,  r2, -r2, lc, 104)
+            gmsh.model.geo.addPoint(-r2,  r2, -r2, lc, 103)
+            gmsh.model.geo.addPoint(-r2, -r2,  r2, lc, 104)
             gmsh.model.geo.addPoint( r2, -r2,  r2, lc, 105)
-            gmsh.model.geo.addPoint( r2, -r2, -r2, lc, 106)
-            gmsh.model.geo.addPoint(-r2, -r2,  r2, lc, 107)
-            gmsh.model.geo.addPoint(-r2, -r2, -r2, lc, 108)
+            gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 106)
+            gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 107)
 
             # The 12 edges of the cube2
 
+            gmsh.model.geo.addCircleArc(100,1,101, 1000)
             gmsh.model.geo.addCircleArc(101,1,102, 1001)
-            gmsh.model.geo.addCircleArc(102,1,104, 1002)
-            gmsh.model.geo.addCircleArc(101,1,103, 1003)
-            gmsh.model.geo.addCircleArc(103,1,104, 1004)
+            gmsh.model.geo.addCircleArc(102,1,103, 1002)
+            gmsh.model.geo.addCircleArc(103,1,100, 1003)
 
-            gmsh.model.geo.addCircleArc(101,1,105, 1005)
-            gmsh.model.geo.addCircleArc(102,1,106, 1006)
-            gmsh.model.geo.addCircleArc(103,1,107, 1007)
-            gmsh.model.geo.addCircleArc(104,1,108, 1008)
+            gmsh.model.geo.addCircleArc(101,1,105, 1004)
+            gmsh.model.geo.addCircleArc(102,1,106, 1005)
+            gmsh.model.geo.addCircleArc(103,1,107, 1006)
+            gmsh.model.geo.addCircleArc(100,1,104, 1007)
 
+            gmsh.model.geo.addCircleArc(104,1,105, 1008)
             gmsh.model.geo.addCircleArc(105,1,106, 1009)
-            gmsh.model.geo.addCircleArc(106,1,108, 1010)
-            gmsh.model.geo.addCircleArc(107,1,108, 1011)
-            gmsh.model.geo.addCircleArc(105,1,107, 1012)
+            gmsh.model.geo.addCircleArc(106,1,107, 1010)
+            gmsh.model.geo.addCircleArc(107,1,104, 1011)
 
             ## These should all be transfinite lines
 
-            for i in range(1001, 1013):
+            for i in range(1000, 1012):
                 gmsh.model.geo.mesh.set_transfinite_curve(i, res)
 
             # The 6 faces of the cube2
 
-            gmsh.model.geo.addCurveLoop([1001, 1006, 1009, 1005], 10001, reorient=True)
-            gmsh.model.geo.addCurveLoop([1001, 1002, 1004, 1003], 10002, reorient=True)
-            gmsh.model.geo.addCurveLoop([1004, 1008, 1011, 1007], 10003, reorient=True)
-            gmsh.model.geo.addCurveLoop([1011, 1010, 1009, 1012], 10004, reorient=True)
-            gmsh.model.geo.addCurveLoop([1003, 1007, 1012, 1005], 10005, reorient=True)
-            gmsh.model.geo.addCurveLoop([1002, 1008, 1010, 1006], 10006, reorient=True)
+            gmsh.model.geo.addCurveLoop([1000, 1004, 1008, 1007], 10000, reorient=True)
+            gmsh.model.geo.addCurveLoop([1001, 1005, 1009, 1004], 10001, reorient=True)
+            gmsh.model.geo.addCurveLoop([1002, 1006, 1010, 1005], 10002, reorient=True)
+            gmsh.model.geo.addCurveLoop([1003, 1007, 1011, 1006], 10003, reorient=True)
+            gmsh.model.geo.addCurveLoop([1000, 1003, 1002, 1001], 10004, reorient=True)
+            gmsh.model.geo.addCurveLoop([1008, 1009, 1010, 1011], 10005, reorient=True)
 
             gmsh.model.geo.add_surface_filling([10001], 10101, sphereCenterTag=1)
             gmsh.model.geo.add_surface_filling([10002], 10102, sphereCenterTag=1)
@@ -1524,8 +1524,6 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.finalize()
 
             return cubed_sphere_ball_mesh
-
-
 
 
 class StructuredCubeSphereShellMesh(MeshFromMeshIO):
@@ -1617,31 +1615,32 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
                 
                 r2 = 1.0 / np.sqrt(3.0) # Generate a unit sphere
                 
-                genpt[0] = geom.add_point([  r2,  r2,  r2],  l)
-                genpt[1] = geom.add_point([  r2,  r2, -r2],  l)
-                genpt[2] = geom.add_point([ -r2,  r2,  r2],  l)
+                genpt[0] = geom.add_point([ -r2, -r2, -r2],  l)
+                genpt[1] = geom.add_point([  r2, -r2, -r2],  l)
+                genpt[2] = geom.add_point([  r2,  r2, -r2],  l)
                 genpt[3] = geom.add_point([ -r2,  r2, -r2],  l)
                 genpt[4] = geom.add_point([ -r2, -r2,  r2],  l)
-                genpt[5] = geom.add_point([ -r2, -r2, -r2],  l)
-                genpt[6] = geom.add_point([  r2, -r2,  r2],  l)
-                genpt[7] = geom.add_point([  r2, -r2, -r2],  l)
-                
+                genpt[5] = geom.add_point([  r2, -r2,  r2],  l)
+                genpt[6] = geom.add_point([  r2,  r2,  r2],  l)
+                genpt[7] = geom.add_point([ -r2,  r2,  r2],  l)
+
+              
                 # 12 edges of the cube
                 
-                b_circ00 = geom.add_circle_arc(genpt[0], cpoint, genpt[2])
-                b_circ01 = geom.add_circle_arc(genpt[2], cpoint, genpt[3])
-                b_circ02 = geom.add_circle_arc(genpt[1], cpoint, genpt[3])
-                b_circ03 = geom.add_circle_arc(genpt[0], cpoint, genpt[1])
+                b_circ00 = geom.add_circle_arc(genpt[0], cpoint, genpt[1])
+                b_circ01 = geom.add_circle_arc(genpt[1], cpoint, genpt[2])
+                b_circ02 = geom.add_circle_arc(genpt[2], cpoint, genpt[3])
+                b_circ03 = geom.add_circle_arc(genpt[0], cpoint, genpt[3])
 
-                b_circ04 = geom.add_circle_arc(genpt[4], cpoint, genpt[6])
-                b_circ05 = geom.add_circle_arc(genpt[4], cpoint, genpt[5])
-                b_circ06 = geom.add_circle_arc(genpt[5], cpoint, genpt[7])
-                b_circ07 = geom.add_circle_arc(genpt[6], cpoint, genpt[7])
+                b_circ04 = geom.add_circle_arc(genpt[1], cpoint, genpt[5])
+                b_circ05 = geom.add_circle_arc(genpt[2], cpoint, genpt[6])
+                b_circ06 = geom.add_circle_arc(genpt[3], cpoint, genpt[7])
+                b_circ07 = geom.add_circle_arc(genpt[0], cpoint, genpt[4])
 
-                b_circ08 = geom.add_circle_arc(genpt[0], cpoint, genpt[6])
-                b_circ09 = geom.add_circle_arc(genpt[2], cpoint, genpt[4])
-                b_circ10 = geom.add_circle_arc(genpt[3], cpoint, genpt[5])
-                b_circ11 = geom.add_circle_arc(genpt[1], cpoint, genpt[7])
+                b_circ08 = geom.add_circle_arc(genpt[4], cpoint, genpt[5])
+                b_circ09 = geom.add_circle_arc(genpt[5], cpoint, genpt[6])
+                b_circ10 = geom.add_circle_arc(genpt[6], cpoint, genpt[7])
+                b_circ11 = geom.add_circle_arc(genpt[4], cpoint, genpt[7])
 
                 for arc in [b_circ00, b_circ01, b_circ02, b_circ03,
                             b_circ04, b_circ05, b_circ06, b_circ07,
@@ -1651,41 +1650,44 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
                                                 mesh_type="Progression", coeff=1.0)
 
                 # 6 Cube faces
+
+
+
                 
-                face00_loop = geom.add_curve_loop([b_circ00, b_circ01, -b_circ02, -b_circ03])
+                face00_loop = geom.add_curve_loop([b_circ00, b_circ04, -b_circ08, -b_circ07])
                 face00 = geom.add_surface(face00_loop) 
                 geom.set_transfinite_surface(face00, arrangement="Left",
-                                            corner_pts = [genpt[0], genpt[2], genpt[3], genpt[1]])   
+                                            corner_pts = [genpt[0], genpt[1], genpt[5], genpt[4]])   
 
 
-                face01_loop = geom.add_curve_loop([-b_circ08, b_circ03, b_circ11, -b_circ07])
+                face01_loop = geom.add_curve_loop([-b_circ01, b_circ05, b_circ09, -b_circ04])
                 face01 = geom.add_surface(face01_loop) 
                 geom.set_transfinite_surface(face01, arrangement="Left",
-                                            corner_pts = [genpt[0], genpt[1], genpt[7], genpt[6]])   
+                                            corner_pts = [genpt[1], genpt[2], genpt[6], genpt[5]])   
 
 
-                face02_loop = geom.add_curve_loop([b_circ07, -b_circ06, -b_circ05, b_circ04])
+                face02_loop = geom.add_curve_loop([b_circ02, b_circ06, -b_circ10, -b_circ05])
                 face02 = geom.add_surface(face02_loop) 
                 geom.set_transfinite_surface(face02, arrangement="Left",
-                                            corner_pts = [genpt[4], genpt[5], genpt[6], genpt[7]])   
+                                            corner_pts = [genpt[2], genpt[3], genpt[7], genpt[6]])   
 
 
-                face03_loop = geom.add_curve_loop([b_circ01, b_circ10, -b_circ05, -b_circ09])
+                face03_loop = geom.add_curve_loop([-b_circ03, b_circ07, b_circ11, -b_circ06])
                 face03 = geom.add_surface(face03_loop) 
                 geom.set_transfinite_surface(face03, arrangement="Left",
-                                            corner_pts = [genpt[2], genpt[3], genpt[4], genpt[5]])   
+                                            corner_pts = [genpt[3], genpt[0], genpt[4], genpt[7]])   
 
 
-                face04_loop = geom.add_curve_loop([b_circ00, b_circ09,  b_circ04, -b_circ08])
+                face04_loop = geom.add_curve_loop([-b_circ00, b_circ03, -b_circ02, -b_circ01])
                 face04 = geom.add_surface(face04_loop) 
                 geom.set_transfinite_surface(face04, arrangement="Left",
-                                            corner_pts = [genpt[0], genpt[2], genpt[4], genpt[6]])   
+                                            corner_pts = [genpt[1], genpt[0], genpt[3], genpt[2]])   
 
 
-                face05_loop = geom.add_curve_loop([b_circ02, b_circ10,  b_circ06, -b_circ11])
+                face05_loop = geom.add_curve_loop([b_circ08, b_circ09,  b_circ10, b_circ11])
                 face05 = geom.add_surface(face05_loop) 
                 geom.set_transfinite_surface(face05, arrangement="Left",
-                                            corner_pts = [genpt[1], genpt[3], genpt[5], genpt[7]])   
+                                            corner_pts = [genpt[4], genpt[5], genpt[6], genpt[7]])   
 
 
                 geom.set_recombined_surfaces([face00, face01, face02, face03, face04, face05])
@@ -1730,7 +1732,7 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
 
             if simplex:
                 cells = cubed_sphere_pygmsh.cells[0][1]
-
+ 
                 t1 = cells[:,[3,0,1,5]]
                 t2 = cells[:,[3,2,1,5]]
                 t3 = cells[:,[3,2,6,5]]
@@ -1746,7 +1748,7 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
                 return tet_cubed_sphere_pygmsh
 
             else:
-                return cubed_sphere_pygmsh     
+                return cubed_sphere_pygmsh    
 
 
 class MeshVariable(_api_tools.Stateful):

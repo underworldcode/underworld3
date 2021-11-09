@@ -57,7 +57,7 @@ regional_cap_mesh = uw.mesh.StructuredCubeSphericalCap(
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
                                 radius_outer=1.0, 
-                                simplex=True, 
+                                simplex=False, 
                             )
 
 regional_cap_mesh.mesh2pyvista().plot(show_edges=True)
