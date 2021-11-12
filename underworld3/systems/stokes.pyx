@@ -112,8 +112,8 @@ class Stokes:
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        if not((velocityField==None) and (pressureField==None)):
-            raise ValueError("You must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
+        if (velocityField is None) ^ (pressureField is None):
+            raise ValueError("You (YOU!) must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
         
         if not velocityField:
             if p_degree==None:
@@ -399,7 +399,7 @@ class Stokes:
         # Setup subdms here too.
         # These will be used to copy back/forth SNES solutions
         # into user facing variables.
-        
+
         names, isets, dms = self.dm.createFieldDecomposition()
         self._subdict = {}
         for index,name in enumerate(names):

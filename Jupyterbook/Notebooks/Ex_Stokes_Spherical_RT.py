@@ -114,7 +114,7 @@ plot_mesh(mesh,uw.function.evaluate(density.fn,mesh.data[:]))
 # construct unit rvec
 import sympy
 rvec = mesh.rvec
-rmag = sympy.sqrt(sympy.vector.dot(rvec,rvec))
+density
 rhat = rvec/rmag
 rhat
 

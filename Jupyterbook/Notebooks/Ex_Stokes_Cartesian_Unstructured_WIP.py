@@ -22,19 +22,19 @@ import numpy as np
 options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-5
+options["ksp_rtol"] =  1.0e-3
 options["ksp_monitor_short"] = None
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 # options["snes_view"]=None
 # options["snes_test_jacobian"] = None
-options["snes_max_it"] = 1
+options["snes_max_it"] = 3
 options["pc_type"] = "fieldsplit"
 options["pc_fieldsplit_type"] = "schur"
 options["pc_fieldsplit_schur_factorization_type"] ="full"
 options["pc_fieldsplit_schur_precondition"] = "a11"
 options["fieldsplit_velocity_pc_type"] = "lu"
-options["fieldsplit_pressure_ksp_rtol"] = 1.e-5
+options["fieldsplit_pressure_ksp_rtol"] = 1.e-3
 options["fieldsplit_pressure_pc_type"] = "lu"
 
 # %%
@@ -99,7 +99,7 @@ s_s_2d_mesh = uw.mesh.Simplex_Box(dim=2,
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          elementRes=elementRes,
-                         cell_size=0.01,           
+                         cell_size=1.0,           
                                          )
 
 # %%
@@ -158,10 +158,8 @@ pl1.add_mesh(viz_mesh, scalars="density", cmap="coolwarm", edge_color="Black", s
 pl1.show()
 
 # %%
-
-# %%
 # body force
-unit_rvec = mesh_to_test.rvec / sympy.sqrt(mesh_to_test.rvec.dot(mesh_to_test.rvec))
+unit_rvec = mesh_to_test.rvec / (1.0e-10+sympy.sqrt(mesh_to_test.rvec.dot(mesh_to_test.rvec)))
 stokes.bodyforce = -unit_rvec*density
 stokes.bodyforce
 
@@ -170,8 +168,14 @@ stokes.bodyforce
 stokes.solve()
 
 # %%
+with mesh_to_test.access():
+    print(stokes.u.data)
+    
+uw.function.evaluate(stokes.bodyforce, mesh_to_test.data )
+
+# %%
 umag = stokes.u.fn.dot(stokes.u.fn) 
-viz_mesh.point_data["umag"] = uw.function.evaluate(umag, viz_mesh.points[:,0:2]*0.9999999 )
+viz_mesh.point_data["umag"] = uw.function.evaluate(umag, viz_mesh.points[:,0:2] )
 
 ## empty arrays
 u_mesh_points = np.zeros((mesh_to_test.data.shape[0], 3))
