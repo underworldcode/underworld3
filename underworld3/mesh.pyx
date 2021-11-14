@@ -1239,6 +1239,7 @@ class SphericalShell(MeshFromMeshIO):
         """
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
+            
         self.pygmesh = None
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:
@@ -1486,13 +1487,14 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.initialize()
             gmsh.model.add("cubed")
 
-            lc = 0.0
+            lc = 0.001 * radius_outer / (elementRes+1)
 
             r2 = radius_outer / np.sqrt(3)
+            r0 = 0.5 * radius_outer / np.sqrt(3)
 
             res = elementRes+1
 
-            gmsh.model.geo.addPoint(0.001,0.001,0.001,lc, 1)
+            gmsh.model.geo.addPoint(0.001,0.001,0.001,0.1, 1)
 
             # The 8 corners of the cubes
 
@@ -1504,6 +1506,15 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.model.geo.addPoint( r2, -r2,  r2, lc, 105)
             gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 106)
             gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 107)
+
+            gmsh.model.geo.addPoint(-r0, -r0, -r0, lc, 200)
+            gmsh.model.geo.addPoint( r0, -r0, -r0, lc, 201)
+            gmsh.model.geo.addPoint( r0,  r0, -r0, lc, 202)
+            gmsh.model.geo.addPoint(-r0,  r0, -r0, lc, 203)
+            gmsh.model.geo.addPoint(-r0, -r0,  r0, lc, 204)
+            gmsh.model.geo.addPoint( r0, -r0,  r0, lc, 205)
+            gmsh.model.geo.addPoint( r0,  r0,  r0, lc, 206)
+            gmsh.model.geo.addPoint(-r0,  r0,  r0, lc, 207)
 
             # The 12 edges of the cube2
 
@@ -1558,10 +1569,9 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
             gmsh.model.geo.synchronize()
 
-            gmsh.model.mesh.set_transfinite_volume(100001)
+#            gmsh.model.mesh.set_transfinite_volume(100001)
             if not simplex:
                 gmsh.model.geo.mesh.setRecombine(3, 100001)
-
 
             gmsh.model.geo.remove_all_duplicates()
             gmsh.model.mesh.generate(dim=3)
@@ -1570,7 +1580,7 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
                 gmsh.write(tfile.name)
-                gmsh.write("ignore_cubedsphere.msh")
+                # gmsh.write("ignore_cubedsphere.msh")
                 cubed_sphere_ball_mesh = meshio.read(tfile.name)
                 cubed_sphere_ball_mesh.remove_lower_dimensional_cells()
                 
