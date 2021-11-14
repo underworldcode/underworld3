@@ -44,7 +44,9 @@ class Stokes:
                  velocityField : Optional[underworld3.mesh.MeshVariable] =None,
                  pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
-                 p_degree      : Optional[int]                           =None ):
+                 p_degree      : Optional[int]                           =None,
+                 solver_name   : Optional[str]                           =""
+                  ):
         """
         This class provides functionality for a discrete representation
         of the Stokes flow equations.
@@ -102,7 +104,12 @@ class Stokes:
             If provided, it is up to the user to ensure that it is of appropriate order
             relative to the provided velocitxy variable (usually one order lower degree).
             If not provided, it will be set to one order lower degree than the velocity field.
-
+        solver_name :
+            Optional. The petsc options prefix for the SNES solve. This is important to provide
+            a name space when multiples solvers are constructed that may have different SNES options.
+            For example, if you name the solver "stokes", the SNES options such as `snes_rtol` become `stokes_snes_rtol`.
+            The default is blank, and an underscore will be added to the end of the solver name if not already present.
+            
         Notes
         -----
         Constructor must be called by collectively all processes.
@@ -113,13 +120,20 @@ class Stokes:
         self.dm   = mesh.dm.clone()
 
         if (velocityField is None) ^ (pressureField is None):
-            raise ValueError("You (YOU!) must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
+            raise ValueError("You must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
         
+        # I expect the following to break for anyone who wants to name their solver _stokes__ etc etc (LM)
+
+        if solver_name != "" and not solver_name.endswith("_"):
+            self.petsc_options_prefix = solver_name+"_"
+        else:
+            self.petsc_options_prefix = solver_name
+
         if not velocityField:
             if p_degree==None:
                 p_degree = u_degree - 1
 
-            # create public velocity/pressure variables
+         # create public velocity/pressure variables
             self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
             self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
         else:
@@ -391,6 +405,7 @@ class Stokes:
 
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
+        self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setDM(self.dm)
         self.snes.setFromOptions()
         cdef DM dm = self.dm
