@@ -16,7 +16,7 @@ options["snes_rtol"] = 1.0e-7
 # %%
 # Set some things
 k = 1. 
-h = 0.
+f = 0.
 t_i = 2.
 t_o = 1.
 r_i = 0.5
@@ -29,7 +29,7 @@ mesh = uw.mesh.SphericalShell(dim=2,radius_inner=r_i, radius_outer=r_o,cell_size
 # Create Poisson object
 poisson = Poisson(mesh)
 poisson.k = k
-poisson.h = h
+poisson.f = f
 
 # %%
 import sympy
@@ -84,7 +84,7 @@ mesh = uw.mesh.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o,cell_size
 # Create Poisson object
 poisson = Poisson(mesh)
 poisson.k = k
-poisson.h = h
+poisson.f = f
 
 # %%
 import sympy

@@ -43,8 +43,8 @@ class Poisson:
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        self._k = 1.
-        self._h = 0.
+        self.k = 1.
+        self.f = 0.
 
         self.bcs = []
 
@@ -65,13 +65,13 @@ class Poisson:
         self._k = sympify(value)
 
     @property
-    def h(self):
-        return self._h
-    @h.setter
-    def h(self, value):
+    def f(self):
+        return self._f
+    @f.setter
+    def f(self, value):
         self.is_setup = False
         # should add test here to make sure h is conformal
-        self._h = sympify(value)
+        self._f = sympify(value)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
@@ -94,11 +94,11 @@ class Poisson:
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = self.h
+        self._f0 = -self.f
         # f1 residual term
         self._f1 = gradient(self.u.fn)*self.k
         # g0 jacobian term
-        self._g0 = -diff_fn1_wrt_fn2(self.h,self.u.fn)
+        self._g0 = diff_fn1_wrt_fn2(self.f,self.u.fn)
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
         self._g1 = dk_du*gradient(self.u.fn)
