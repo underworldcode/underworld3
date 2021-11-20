@@ -43,8 +43,8 @@ Example
 from collections import defaultdict as _dd
 import time as _time
 import inspect as _inspect
-import underworld3 as _uw
-import underworld3.mpi as mpi
+from mpi4py import MPI
+RANK = MPI.COMM_WORLD.rank
 import os as _os
 
 timing = False
@@ -58,7 +58,7 @@ def start():
     global _currentDepth
     _maxdepth = 1
     _currentDepth = 0
-    if _uw.mpi.rank == 0:
+    if RANK == 0:
         if "UW_TIMING_ENABLE" in _os.environ:
             timing = True
         else:
@@ -106,7 +106,7 @@ def get_data(group_by="line_routine"):
         "routine"     : Class routine.
         "line_routine": Line&routine form an individual timing group.
     """
-    if _uw.mpi.rank != 0:
+    if RANK != 0:
         return
 
     # function to convert key into useful text
@@ -161,7 +161,7 @@ def print_table(group_by="line_routine", sort_by="total", display_fraction=0.95,
 
     """
     stop()
-    if _uw.mpi.rank != 0:
+    if RANK != 0:
         return
 
     regrouped_dict = get_data(group_by)

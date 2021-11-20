@@ -1,22 +1,15 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscQuadrature, FE, PetscFE
-from .petsc_types cimport PetscInt, PetscScalar, PetscErrorCode, PetscDSResidualFn
-from .petsc_types cimport PtrContainer
-from ._jitextension import getext
-from sympy import sympify
-import sympy
 from typing import Union
+import sympy
+
 import underworld3
 import underworld3.timing as timing
+from ._jitextension import getext
 
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
+include "./petsc_extras.pxi"
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetObjective( PetscDS, PetscInt, PetscDSResidualFn )
     PetscErrorCode DMPlexComputeIntegralFEM( PetscDM, PetscVec, PetscScalar*, void* )
-    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
-    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
 
 
 class Integral:
@@ -52,7 +45,7 @@ class Integral:
                   fn:    Union[float, int, sympy.Basic] ):
 
         self.mesh = mesh
-        self.fn = sympify(fn)
+        self.fn = sympy.sympify(fn)
         super().__init__()
 
     @timing.routine_timer_decorator

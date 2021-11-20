@@ -1,42 +1,18 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, IS, PetscIS, Quad, PetscQuadrature, FE, PetscFE, Mat, PetscMat
-from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
-from ..petsc_types cimport PtrContainer
-import underworld3 as uw
+from typing import Optional, Tuple
+
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
-from .._jitextension import getext, diff_fn1_wrt_fn2
-import underworld3.timing as timing
-from typing import Optional, Tuple
-import underworld3 
-
-# TODO
-# gil v nogil 
-# ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
-cdef extern from "petsc.h" nogil:
-    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
-    PetscErrorCode DMPlexSetMigrationSF( PetscDM, PetscSF )
-    PetscErrorCode DMPlexGetMigrationSF( PetscDM, PetscSF*)
-
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
-
-
-cdef extern from "petsc_compat.h":
-    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
-
-cdef extern from "petsc.h" nogil:
-    PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
-    PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
-    PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
-    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
-    PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
-    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
-    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
 
 from petsc4py import PETSc
-    
+
+import underworld3 
+import underworld3 as uw
+from .._jitextension import getext, diff_fn1_wrt_fn2
+import underworld3.timing as timing
+
+include "../petsc_extras.pxi"
+
 class Stokes:
     @timing.routine_timer_decorator
     def __init__(self, 
@@ -452,9 +428,19 @@ class Stokes:
         self.mesh.dm.createDS()
 
         self.mesh.update_lvec()
-        self.dm.compose("A", self.mesh.lvec)
-        # TODO required? - attach the aux dm to the original dm
-        self.dm.compose("dmAux", self.mesh.dm)
+        cdef DM dm = self.dm
+        cdef Vec cmesh_lvec
+        # PETSc == 3.16 introduced an explicit interface 
+        # for setting the aux-dm which we'll use when 
+        # available.
+        petsc_version_minor = PETSc.Sys().getVersion()[1]
+        if petsc_version_minor >=16:
+            cmesh_lvec = self.mesh.lvec
+            ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        else:
+            self.dm.compose("A", self.mesh.lvec)
+            self.dm.compose("dmAux", self.mesh.dm)
+
 
         # solve
         self.snes.solve(None,gvec)
