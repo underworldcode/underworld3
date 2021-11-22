@@ -253,9 +253,9 @@ class MeshClass(_api_tools.Stateful):
         The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
         """
         N = self.N
-        rvecguy = N.x*N.i + N.y*N.j
+        rvecguy = N.x * N.i + N.y * N.j
         if self.dim==3:
-            rvecguy += N.z*N.k
+            rvecguy += N.z * N.k
         return rvecguy
 
     @property
@@ -712,6 +712,48 @@ class Box(MeshClass):
         
 #         super().__init__(simplex=True)
 
+
+
+class MeshFromGmshFile(MeshClass):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                 dim         :int,
+                 filename    :str,
+                 cell_size   :Optional[float] = None,
+                 refinements :Optional[int]   = 0,
+                 simplex      :Optional[bool] = True  # Not sure if this will be useful
+                ):
+        """
+        This is a generic mesh class for which users will provide 
+        the mesh as a gmsh (.msh) file.
+        """
+
+        if cell_size and (refinements>0):
+            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
+
+        self.cell_size = cell_size
+        self.refinements = refinements
+
+        self.dm =  PETSc.DMPlex().createFromFile(filename)
+
+        from enum import Enum
+        class Boundary(Enum):
+            ALL_BOUNDARIES = 1
+        self.boundary = Boundary
+
+        bound = self.boundary.ALL_BOUNDARIES
+        self.dm.markBoundaryFaces(str(bound).encode('utf8'),bound.value)
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        self.dm.view()
+        super().__init__(simplex=simplex)
+
+
+
 class MeshFromCellList(MeshClass):
     @timing.routine_timer_decorator
     def __init__(self,
@@ -842,6 +884,8 @@ class MeshFromMeshIO(MeshFromCellList):
         if MPI.COMM_WORLD.rank==0:
             cells  = meshio.cells[0][1]
             coords = meshio.points[:,0:dim]
+
+        
   
         super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex)
 
@@ -928,6 +972,8 @@ class Hex_Box(MeshFromMeshIO):
 
         if MPI.COMM_WORLD.rank==0:
             mesh = Hex_Box.build_pygmsh( dim, elementRes, minCoords, maxCoords )
+        else:
+            mesh = None
 
         super().__init__(dim, mesh, cell_size, simplex=False)
 
@@ -1021,7 +1067,9 @@ class Simplex_Box(MeshFromMeshIO):
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:
             mesh = Simplex_Box.build_pygmsh(dim, elementRes, minCoords, maxCoords)
-    
+        else:
+            mesh = None
+
         super().__init__(dim, mesh, cell_size)
 
         self.elementRes = elementRes
@@ -1118,11 +1166,13 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
                             minCoords, maxCoords, 
                             coarse_cell_size,
                             global_cell_size)
+        else:
+            unstructured_simplex_box = None
 
         super().__init__(dim, unstructured_simplex_box, global_cell_size)
 
         self.pygmesh = unstructured_simplex_box
-        self.meshio = unstructured_simplex_box
+        self.meshio  = unstructured_simplex_box
         self.elementRes = None
         self.minCoords = minCoords
         self.maxCoords = maxCoords
@@ -1189,6 +1239,7 @@ class SphericalShell(MeshFromMeshIO):
         """
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
+            
         self.pygmesh = None
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:
@@ -1227,7 +1278,6 @@ class SphericalShell(MeshFromMeshIO):
 
                 self.pygmesh = geom.generate_mesh()
                 self.pygmesh.remove_lower_dimensional_cells()
-
 
         super().__init__(dim, self.pygmesh, cell_size, simplex=True)
 
@@ -1288,6 +1338,8 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 
         if MPI.COMM_WORLD.rank==0:  
             hex_box = StructuredCubeSphericalCap.build_pygmsh(elementRes, angles, radius_outer, radius_inner, simplex)
+        else:
+            hex_box = None
 
         super().__init__(3, hex_box, cell_size, simplex=simplex)
 
@@ -1372,7 +1424,7 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 class StructuredCubeSphereBallMesh(MeshFromMeshIO):
     @timing.routine_timer_decorator
     def __init__(self,
-                elementRes     :Tuple[int,  int]  = (16, 8), 
+                elementRes     :Tuple[int,  int]  = 8,
                 radius_outer   :Optional[float] = 1.0,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool] = False, 
@@ -1399,8 +1451,9 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
-
             cs_hex_box = StructuredCubeSphereBallMesh.build_pygmsh(elementRes, radius_outer, simplex=simplex)
+        else:
+            cs_hex_box = None
 
         super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
 
@@ -1434,13 +1487,14 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.initialize()
             gmsh.model.add("cubed")
 
-            lc = 0.0
+            lc = 0.001 * radius_outer / (elementRes+1)
 
             r2 = radius_outer / np.sqrt(3)
+            r0 = 0.5 * radius_outer / np.sqrt(3)
 
             res = elementRes+1
 
-            gmsh.model.geo.addPoint(0,0,0,lc, 1)
+            gmsh.model.geo.addPoint(0.001,0.001,0.001,0.1, 1)
 
             # The 8 corners of the cubes
 
@@ -1452,6 +1506,15 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.model.geo.addPoint( r2, -r2,  r2, lc, 105)
             gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 106)
             gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 107)
+
+            gmsh.model.geo.addPoint(-r0, -r0, -r0, lc, 200)
+            gmsh.model.geo.addPoint( r0, -r0, -r0, lc, 201)
+            gmsh.model.geo.addPoint( r0,  r0, -r0, lc, 202)
+            gmsh.model.geo.addPoint(-r0,  r0, -r0, lc, 203)
+            gmsh.model.geo.addPoint(-r0, -r0,  r0, lc, 204)
+            gmsh.model.geo.addPoint( r0, -r0,  r0, lc, 205)
+            gmsh.model.geo.addPoint( r0,  r0,  r0, lc, 206)
+            gmsh.model.geo.addPoint(-r0,  r0,  r0, lc, 207)
 
             # The 12 edges of the cube2
 
@@ -1484,12 +1547,14 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.model.geo.addCurveLoop([1000, 1003, 1002, 1001], 10004, reorient=True)
             gmsh.model.geo.addCurveLoop([1008, 1009, 1010, 1011], 10005, reorient=True)
 
-            gmsh.model.geo.add_surface_filling([10001], 10101, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10002], 10102, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10003], 10103, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10004], 10104, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10005], 10105, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10006], 10106, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10000], 10101, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10001], 10102, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10002], 10103, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10003], 10104, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10004], 10105, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10005], 10106, sphereCenterTag=1)
+
+            gmsh.model.geo.synchronize()
 
             for i in range(10101, 10107):
                 gmsh.model.geo.mesh.setTransfiniteSurface(i, "Left")
@@ -1504,23 +1569,21 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
             gmsh.model.geo.synchronize()
 
-            gmsh.model.mesh.set_transfinite_volume(100001)
+#            gmsh.model.mesh.set_transfinite_volume(100001)
             if not simplex:
                 gmsh.model.geo.mesh.setRecombine(3, 100001)
 
-            # gmsh.model.mesh.set_size([(3,100001)],10.0)
-
             gmsh.model.geo.remove_all_duplicates()
-            gmsh.model.remove_entities([[2,10111]], recursive=True)
             gmsh.model.mesh.generate(dim=3)
             gmsh.model.mesh.removeDuplicateNodes()
 
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
                 gmsh.write(tfile.name)
+                # gmsh.write("ignore_cubedsphere.msh")
                 cubed_sphere_ball_mesh = meshio.read(tfile.name)
                 cubed_sphere_ball_mesh.remove_lower_dimensional_cells()
-
+                
             gmsh.finalize()
 
             return cubed_sphere_ball_mesh
@@ -1565,8 +1628,9 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
 
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
-
             cs_hex_box = StructuredCubeSphereShellMesh.build_pygmsh(elementRes, radius_outer, radius_inner, simplex=simplex)
+        else:
+            cs_hex_box = None
 
         super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
 

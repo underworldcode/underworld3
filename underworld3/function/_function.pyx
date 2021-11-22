@@ -297,12 +297,14 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
 
 
         # grab closest cells to use as hint for DMInterpolationSetUp
+
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
         ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
         if ierr != 0:
-            raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
+            raise RuntimeError("Error {} encountered when trying to interpolate mesh variable.\n".format(ierr),
                                "Interpolation location is possibly outside the domain.")
+
         mesh.update_lvec()
         cdef Vec pyfieldvec = mesh.lvec
         # Use our custom routine as the PETSc one is broken. 
