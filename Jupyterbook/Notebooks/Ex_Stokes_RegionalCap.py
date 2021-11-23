@@ -53,11 +53,11 @@ rcm_pyvista.plot(show_edges=True)
 
 # +
 regional_cap_mesh = uw.mesh.StructuredCubeSphericalCap(
-                                elementRes=(6,6,6), 
+                                elementRes=(12,12,12), 
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
                                 radius_outer=1.0, 
-                                simplex=True, 
+                                simplex=False, 
                             )
 
 regional_cap_mesh.mesh2pyvista().plot(show_edges=True)

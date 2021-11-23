@@ -234,18 +234,6 @@ class Swarm(_api_tools.Stateful):
         When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
         When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
 
-
-        --- 
-        Currently (2021.11.15) supported by PETSc
-
-        When using a DMPLEX the following case are supported:
-             (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
-            (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
-           (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
-
-        In 3.15, GAUSS seems safest
-
-
         Parameters
         ----------
         fill_param:
@@ -259,8 +247,7 @@ class Swarm(_api_tools.Stateful):
         
         if layout==None:
             if self.mesh.isSimplex==True:
-                # layout=SwarmPICLayout.SUBDIVISION
-                layout=SwarmPICLayout.GAUSS
+                layout=SwarmPICLayout.REGULAR
             else:
                 layout=SwarmPICLayout.GAUSS
 
@@ -279,8 +266,6 @@ class Swarm(_api_tools.Stateful):
         # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
 
         self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
-
-        # Is there a reason to return the swarm object here (LM) ?
         return self
 
     @timing.routine_timer_decorator
@@ -311,9 +296,6 @@ class Swarm(_api_tools.Stateful):
 
         Example
         -------
-
-        # THIS IS FROM THE UW2 CODE, AND IT'S NOT VALID HERE
-
         >>> import underworld3 as uw
         >>> someMesh = uw.mesh.FeMesh_Cartesian()
         >>> with someMesh.deform_mesh():
@@ -369,13 +351,11 @@ class Swarm(_api_tools.Stateful):
                     # `SwarmVariable.data` interface is controlled by the context manager
                     # that we are currently within, and it is therefore too easy to  
                     # get things wrong that way.
-
                     cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
                     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, self.em_swarm.dim) )
                     cellid[:] = self.em_swarm.mesh.get_closest_cells(coords)
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
-
                     # now migrate.
                     self.em_swarm.dm.migrate(remove_sent_points=True)
                     # void these things too
