@@ -243,7 +243,8 @@ class Swarm(_api_tools.Stateful):
             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
 
-        In 3.15, GAUSS seems safest
+        In 3.15, GAUSS seems safest but note that the layout appears to be regular on the
+        hex unit cube and therefore badly spaced on the tetrahedron, even for gauss points layout. (LM)
 
 
         Parameters

@@ -6,7 +6,7 @@ import numpy as np
 options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-5
+options["ksp_rtol"] =  1.0e-3
 options["ksp_monitor_short"] = None
 # options["snes_type"]  = "fas"
 options["snes_converged_reason"] = None
@@ -19,7 +19,7 @@ options["pc_fieldsplit_type"] = "schur"
 options["pc_fieldsplit_schur_factorization_type"] ="full"
 options["pc_fieldsplit_schur_precondition"] = "a11"
 options["fieldsplit_velocity_pc_type"] = "lu"
-options["fieldsplit_pressure_ksp_rtol"] = 1.e-5
+options["fieldsplit_pressure_ksp_rtol"] = 1.e-3
 options["fieldsplit_pressure_pc_type"] = "lu"
 
 # %%
@@ -101,6 +101,11 @@ kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc s
 # now do 3D
 cell_size=0.035
 mesh = uw.mesh.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o,cell_size=cell_size)
+
+# %%
+# This is the structured mesh version
+
+mesh = uw.mesh.MeshFromGmshFile(dim=3, filename="hollow_sphere_r8.msh", simplex=False)
 
 # %%
 # Create Stokes object

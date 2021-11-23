@@ -462,6 +462,9 @@ class MeshClass(_api_tools.Stateful):
         ToDo: parallel safety
 
         ToDo: use vtk instead of pyvista 
+
+        ToDo: or use meshio to dump a vtk file and read that back in
+              note: remove lower dimensional cells to get pyvista to work well.
         """
 
         import vtk
@@ -713,7 +716,6 @@ class Box(MeshClass):
 #         super().__init__(simplex=True)
 
 
-
 class MeshFromGmshFile(MeshClass):
     @timing.routine_timer_decorator
     def __init__(self,
@@ -736,6 +738,9 @@ class MeshFromGmshFile(MeshClass):
 
         self.dm =  PETSc.DMPlex().createFromFile(filename)
 
+
+        ## I'm not sure how to map arbitrary labels here 
+
         from enum import Enum
         class Boundary(Enum):
             ALL_BOUNDARIES = 1
@@ -751,7 +756,6 @@ class MeshFromGmshFile(MeshClass):
 
         self.dm.view()
         super().__init__(simplex=simplex)
-
 
 
 class MeshFromCellList(MeshClass):
