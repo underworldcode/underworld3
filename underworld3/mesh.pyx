@@ -462,6 +462,9 @@ class MeshClass(_api_tools.Stateful):
         ToDo: parallel safety
 
         ToDo: use vtk instead of pyvista 
+
+        ToDo: or use meshio to dump a vtk file and read that back in
+              note: remove lower dimensional cells to get pyvista to work well.
         """
 
         import vtk
@@ -711,6 +714,48 @@ class Box(MeshClass):
 #         self.dm.view()        
         
 #         super().__init__(simplex=True)
+
+
+class MeshFromGmshFile(MeshClass):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                 dim         :int,
+                 filename    :str,
+                 cell_size   :Optional[float] = None,
+                 refinements :Optional[int]   = 0,
+                 simplex      :Optional[bool] = True  # Not sure if this will be useful
+                ):
+        """
+        This is a generic mesh class for which users will provide 
+        the mesh as a gmsh (.msh) file.
+        """
+
+        if cell_size and (refinements>0):
+            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
+
+        self.cell_size = cell_size
+        self.refinements = refinements
+
+        self.dm =  PETSc.DMPlex().createFromFile(filename)
+
+
+        ## I'm not sure how to map arbitrary labels here 
+
+        from enum import Enum
+        class Boundary(Enum):
+            ALL_BOUNDARIES = 1
+        self.boundary = Boundary
+
+        bound = self.boundary.ALL_BOUNDARIES
+        self.dm.markBoundaryFaces(str(bound).encode('utf8'),bound.value)
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        self.dm.view()
+        super().__init__(simplex=simplex)
 
 class MeshFromCellList(MeshClass):
     @timing.routine_timer_decorator

@@ -234,6 +234,17 @@ class Swarm(_api_tools.Stateful):
         When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
         When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
 
+        --- 
+        Currently (2021.11.15) supported by PETSc
+
+        When using a DMPLEX the following case are supported:
+             (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+            (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+           (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+
+        In 3.15, GAUSS seems safest but note that the layout appears to be regular on the
+        hex unit cube and therefore badly spaced on the tetrahedron, even for gauss points layout. (LM)
+
         Parameters
         ----------
         fill_param:
