@@ -53,10 +53,10 @@ def _cubedsphere_cells_and_coords(radius, refinement_level):
 
     # Compute panel numberings for each panel
     # We use the following "flatpack" arrangement of panels
-    #    3
-    #  1 0 2
-    #    4
-    #    5
+    #   3
+    #  102
+    #   4
+    #   5
 
     # 0 is the bottom of the cube, 5 is the top.
     # All panels are numbered from left to right, top to bottom

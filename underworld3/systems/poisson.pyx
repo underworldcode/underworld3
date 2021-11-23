@@ -5,7 +5,6 @@ import underworld3 as uw
 from .._jitextension import getext, diff_fn1_wrt_fn2
 from sympy import sympify
 import underworld3.timing as timing
-from typing import Optional, Tuple
 
 # TODO
 # gil v nogil 
@@ -13,8 +12,7 @@ from typing import Optional, Tuple
 
 cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
-    if ierr != 0: 
-        raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
+    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
 cdef extern from "petsc_compat.h":
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
@@ -33,28 +31,15 @@ from petsc4py import PETSc
     
 class Poisson:
     @timing.routine_timer_decorator
-    def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
-                 phiField : Optional[uw.mesh.MeshVariable] =None, 
-                 degree =2,
-                 solver_name: Optional[str] = ""):
-
+    def __init__(self, mesh, degree=1):
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        if solver_name != "" and not solver_name.endswith("_"):
-            self.petsc_options_prefix = solver_name+"_"
-        else:
-            self.petsc_options_prefix = solver_name
-
-        if not phiField:
-            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="phi", vtype=uw.VarType.SCALAR, degree=degree )
-        else:
-            self._u = phiField
-
+        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.VarType.SCALAR, degree=degree )
+        # create private variables
         options = PETSc.Options()
-        options.setValue("phi_private_petscspace_degree", degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree, "phi_private_", PETSc.COMM_WORLD)
+        options.setValue("uprivate_petscspace_degree", degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree, "uprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -65,7 +50,6 @@ class Poisson:
 
         self.is_setup = False
         super().__init__()
-    
 
     @property
     def u(self):
@@ -134,13 +118,11 @@ class Poisson:
         # these are fields for which the corresponding sympy functions 
         # should be replaced with the primary (instead of auxiliary) petsc 
         # field value arrays. in this instance, we want to switch out 
-        # `self.u` ## and `self.p` ## is this a Stokes hangover ... LM
-        # for the primary field 
+        # `self.u` and `self.p` for their primary field 
         # petsc equivalents. without specifying this list, 
         # the aux field equivalents will be used instead, which 
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
-
         prim_field_list = [self.u,]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
 
@@ -164,7 +146,6 @@ class Poisson:
 
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
-        self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setDM(self.dm)
         self.snes.setFromOptions()
         cdef DM dm = self.dm

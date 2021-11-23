@@ -55,27 +55,27 @@ stokes.bodyforce =  matvar.fn * N.j
 # Solve time
 stokes.solve()
 
-# %% [raw]
-# try:
-#     import underworld as uw2
-#     from underworld import function as fn
-#     from underworld import visualisation as viz
-# except ImportError:
-#     import warnings
-#     warnings.warn("Unable to run comparison as UW2 is not available")
-#     exit(1)
-# mesh2 = uw2.mesh.FeMesh_Cartesian(elementRes=(n_els, n_els),
-#                           minCoord=minCoord,
-#                           maxCoord=maxCoord)
+# %%
+try:
+    import underworld as uw2
+    from underworld import function as fn
+    from underworld import visualisation as viz
+except ImportError:
+    import warnings
+    warnings.warn("Unable to run comparison as UW2 is not available")
+    exit(1)
+mesh2 = uw2.mesh.FeMesh_Cartesian(elementRes=(n_els, n_els),
+                          minCoord=minCoord,
+                          maxCoord=maxCoord)
 
 # %%
 # uw2 fields
-#v2Field = mesh2.add_variable(nodeDofCount=2)
-#pField = mesh2.subMesh.add_variable(nodeDofCount=1)
+v2Field = mesh2.add_variable(nodeDofCount=2)
+pField = mesh2.subMesh.add_variable(nodeDofCount=1)
 
 # uw3 fields
-#fField = mesh2.add_variable(nodeDofCount=2)
-#vField = mesh2.add_variable(nodeDofCount=2)
+fField = mesh2.add_variable(nodeDofCount=2)
+vField = mesh2.add_variable(nodeDofCount=2)
 
 # %%
 with mesh.access():
