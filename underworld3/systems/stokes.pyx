@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import sympy
 from sympy import sympify
@@ -431,16 +431,9 @@ class Stokes:
         cdef DM dm = self.dm
         cdef Vec cmesh_lvec
         # PETSc == 3.16 introduced an explicit interface 
-        # for setting the aux-dm which we'll use when 
-        # available.
-        petsc_version_minor = PETSc.Sys().getVersion()[1]
-        if petsc_version_minor >=16:
-            cmesh_lvec = self.mesh.lvec
-            ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
-        else:
-            self.dm.compose("A", self.mesh.lvec)
-            self.dm.compose("dmAux", self.mesh.dm)
-
+        # for setting the aux-vector which we'll use when available.
+        cmesh_lvec = self.mesh.lvec
+        ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None,gvec)

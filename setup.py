@@ -7,7 +7,7 @@ from Cython.Build import cythonize
 import os
 import subprocess
 import numpy
-import petsc4py
+import petsc4py 
 
 if os.environ.get('CC') is None:
     import warnings
@@ -16,6 +16,14 @@ if os.environ.get('CC') is None:
     import mpi4py
     conf = mpi4py.get_config()
     os.environ['CC']  = conf["mpicc"]
+
+# PETSc version check - 3.16 or higher
+from petsc4py import PETSc
+petscVer = PETSc.Sys().getVersion()
+if petscVer[0] != 3 or petscVer[1] < 16:
+    msg = f"Minimum compatible version of petsc is 3.16.0, detected version " \
+          f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
+    raise RuntimeError(msg)
 
 def configure():
 

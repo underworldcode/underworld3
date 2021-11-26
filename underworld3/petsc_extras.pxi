@@ -36,9 +36,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexExtrude(PetscDM idm, PetscInt layers, PetscReal height, PetscBool orderHeight, const PetscReal extNormal[], PetscBool interpolate, PetscDM* dm)
     PetscErrorCode DMPlexGetMinRadius(PetscDM dm, PetscReal *minradius)
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
-#if ( (PETSC_VERSION_MAJOR==3) && (PETSC_VERSION_MINOR>=16) )
     PetscErrorCode DMSetAuxiliaryVec(PetscDM dm, PetscDMLabel label, PetscInt value, PetscVec aux)
-#endif
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
