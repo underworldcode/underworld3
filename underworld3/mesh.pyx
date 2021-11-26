@@ -1,45 +1,22 @@
 # cython: profile=False
-from libc.stdlib cimport malloc, free
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, FE, PetscFE, Vec, PetscVec, IS, PetscIS, PetscSF, MPI_Comm, PetscObject, Mat, PetscMat, GetCommDefault, PetscViewer
-from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
-from petsc4py import PETSc
-from .petsc_gen_xdmf import generateXdmf
-import contextlib
+from typing import Optional, Tuple
+import math
+
+import numpy
 import numpy as np
 cimport numpy as np
 import sympy
 import sympy.vector
-import underworld3 as uw 
-import underworld3
-import numpy
-from underworld3 import _api_tools
+
 from mpi4py import MPI
+from petsc4py import PETSc
+
+include "./petsc_extras.pxi"
+
+import underworld3
+import underworld3 as uw 
+from underworld3 import _api_tools
 import underworld3.timing as timing
-import math
-from typing import Optional, Tuple
-
-ctypedef enum PetscBool:
-    PETSC_FALSE
-    PETSC_TRUE
-
-cdef extern from "petsc.h" nogil:
-    PetscErrorCode DMPlexCreateBallMesh(MPI_Comm, PetscInt, PetscReal, PetscDM*)
-    PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
-    PetscErrorCode DMPlexGetMinRadius(PetscDM dm, PetscReal *minradius)
-    PetscErrorCode VecDestroy(PetscVec *v)
-    PetscErrorCode DMDestroy(PetscDM *dm)
-    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
-    PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
-    PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
-    PetscErrorCode DMCompositeGetLocalISs(PetscDM dm,PetscIS **isets)
-    PetscErrorCode DMPlexExtrude(PetscDM idm, PetscInt layers, PetscReal height, PetscBool orderHeight, const PetscReal extNormal[], PetscBool interpolate, PetscDM* dm)
-    # PetscErrorCode PetscViewerHDF5PushTimestepping(PetscViewer viewer)
-    MPI_Comm MPI_COMM_SELF
-
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
-
 
 class MeshClass(_api_tools.Stateful):
     @timing.routine_timer_decorator
@@ -88,18 +65,6 @@ class MeshClass(_api_tools.Stateful):
 
         # dictionary for variable coordinate arrays
         self._coord_array = {}
-        # let's go ahead and do an initial projection from linear (the default) 
-        # to linear. this really is a nothing operation, but a 
-        # side effect of this operation is that coordinate DM DMField is 
-        # converted to the required `PetscFE` type. this may become necessary
-        # later where we call the interpolation routines to project from the linear
-        # mesh coordinates to other mesh coordinates. 
-        options = PETSc.Options()
-        options.setValue("meshproj_petscspace_degree", 1) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, 1,"meshproj_", PETSc.COMM_WORLD)
-        cdef FE c_fe = cdmfe
-        cdef DM c_dm = self.dm
-        ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
         # now set copy of linear array into dictionary
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()

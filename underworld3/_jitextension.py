@@ -1,7 +1,7 @@
-import sympy
-import numpy as np
-import underworld3 
 from typing import List
+import subprocess
+import sympy
+import underworld3 
 import underworld3.timing as timing
 
 
@@ -245,7 +245,7 @@ ext_mods = [Extension(
     library_dirs={LIBDIRS},
     runtime_library_dirs={LIBDIRS},
     libraries={LIBFILES},
-    extra_compile_args=['-std=c99'],
+    extra_compile_args=['-std=c99','-O3'],
     extra_link_args=[]
 )]
 setup(ext_modules=cythonize(ext_mods))
@@ -292,7 +292,11 @@ cdef extern from "cy_ext.h" nogil:
     # Tags: RTLD_LOCAL, RTLD_Global, Gadi.
     import string
     import random
-    randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
+    import os
+    if not 'UW_JITNAME' in os.environ:
+        randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
+    else:
+        randstr = 'FUNC_' + str(len(_ext_dict.keys()))
 
     # Print includes
     for header in printer.headers:
@@ -342,7 +346,6 @@ cpdef PtrContainer getptrobj():
             f.write(strguy)
 
     # Build
-    import subprocess
     process = subprocess.Popen('python3 setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
     process.communicate()
 

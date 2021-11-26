@@ -1,13 +1,15 @@
-from petsc4py.PETSc cimport DM, PetscDM, Vec, PetscVec, MPI_Comm, PetscIS, IS
-from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool
-from petsc4py import PETSc
+from libc.stdlib cimport malloc, free
+
 import numpy as np
 import sympy
-import underworld3 as uw
-from libc.stdlib cimport malloc, free
+from petsc4py import PETSc
 cimport numpy as np
+
+import underworld3 as uw
 import underworld3.timing as timing
 import underworld3
+
+include "../petsc_extras.pxi"
 
 # Make Cython aware of this type.
 cdef extern from "petsc.h" nogil:
@@ -26,13 +28,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationSetUp(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool)
     PetscErrorCode DMInterpolationEvaluate(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
     PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
-    PetscErrorCode DMDestroy(PetscDM *dm)
-    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     MPI_Comm MPI_COMM_SELF
-
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """

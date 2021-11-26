@@ -1,24 +1,19 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscSF, IS, PetscIS, Quad, PetscQuadrature, FE, PetscFE, Mat, PetscMat
-from .petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool
-import petsc4py.PETSc as PETSc
-from .petsc_gen_xdmf import generateXdmf
-from mpi4py import MPI
+from typing import Optional, Tuple
 import contextlib
-#from typeguard import check_argument_types, check_return_type, typechecked
-import underworld3 as uw
+
 import numpy as np
+import petsc4py.PETSc as PETSc
+from mpi4py import MPI
+
+import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
-from typing import Optional, Tuple
+
+include "./petsc_extras.pxi"
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateMassMatrix(PetscDM dac, PetscDM daf, PetscMat *mat)
-    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     PetscErrorCode DMSwarmDestroyGlobalVectorFromField(PetscDM dm, const char fieldname[], PetscVec *vec)
-
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
 cdef inline object str2bytes(object s, char *p[]):
     if s is None:

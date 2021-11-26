@@ -30,7 +30,7 @@ poisson = Poisson(mesh)
 # %%
 # Set some things
 poisson.k = 1. 
-poisson.h = 0.
+poisson.f = 0.
 poisson.add_dirichlet_bc( 1., bnds.BOTTOM )  
 poisson.add_dirichlet_bc( 0., bnds.TOP )  
 
@@ -96,8 +96,8 @@ poisson.k
 # %%
 N = mesh.N
 abs_r2 = (N.x**2 + N.y**2)
-poisson.h = 16*abs_r2
-poisson.h
+poisson.f = -16*abs_r2
+poisson.f
 
 
 # %%
@@ -144,9 +144,9 @@ with mesh.access(diff):
 # %%
 # Set some things
 poisson.k = diff.fn   # Note the `.fn` here
-poisson.h = -h
-poisson.add_dirichlet_bc( T0, bnds.BOTTOM )  
-poisson.add_dirichlet_bc( T1, bnds.TOP )  
+poisson.f = h
+poisson.add_dirichlet_bc( T0, bnds.BOTTOM )
+poisson.add_dirichlet_bc( T1, bnds.TOP )
 
 # %%
 # Solve time

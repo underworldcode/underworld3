@@ -1,34 +1,19 @@
-from petsc4py.PETSc cimport DM, PetscDM, DS, PetscDS, Vec, PetscVec, PetscIS, FE, PetscFE, PetscQuadrature
-from ..petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, DMBoundaryConditionType, PetscDSResidualFn, PetscDSJacobianFn
-from ..petsc_types cimport PtrContainer
-import underworld3 as uw
-from .._jitextension import getext, diff_fn1_wrt_fn2
+from typing import Optional, Tuple
+
+import sympy
 from sympy import sympify
-import underworld3.timing as timing
-
-# TODO
-# gil v nogil 
-# ctypeds DMBoundaryConditionType etc.. is there a cleaner way? 
-
-cdef CHKERRQ(PetscErrorCode ierr):
-    cdef int interr = <int>ierr
-    if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
-
-cdef extern from "petsc_compat.h":
-    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
-
-
-cdef extern from "petsc.h" nogil:
-    PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
-    PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
-    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
-    PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
-    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
-    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
-
+from sympy.vector import gradient, divergence
 
 from petsc4py import PETSc
-    
+
+import underworld3 
+import underworld3 as uw
+from .._jitextension import getext, diff_fn1_wrt_fn2
+import underworld3.timing as timing
+
+include "../petsc_extras.pxi"
+
+
 class Poisson:
     @timing.routine_timer_decorator
     def __init__(self, mesh, degree=1):
@@ -43,8 +28,8 @@ class Poisson:
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        self._k = 1.
-        self._h = 0.
+        self.k = 1.
+        self.f = 0.
 
         self.bcs = []
 
@@ -65,13 +50,13 @@ class Poisson:
         self._k = sympify(value)
 
     @property
-    def h(self):
-        return self._h
-    @h.setter
-    def h(self, value):
+    def f(self):
+        return self._f
+    @f.setter
+    def f(self, value):
         self.is_setup = False
         # should add test here to make sure h is conformal
-        self._h = sympify(value)
+        self._f = sympify(value)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
@@ -94,11 +79,11 @@ class Poisson:
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = self.h
+        self._f0 = -self.f
         # f1 residual term
         self._f1 = gradient(self.u.fn)*self.k
         # g0 jacobian term
-        self._g0 = -diff_fn1_wrt_fn2(self.h,self.u.fn)
+        self._g0 = diff_fn1_wrt_fn2(self.f,self.u.fn)
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
         self._g1 = dk_du*gradient(self.u.fn)
@@ -140,7 +125,7 @@ class Poisson:
             comps_view = bc.components
             for boundary in bc.boundaries:
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-                PetscDSAddBoundary_UW( cdm.dm, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                PetscDSAddBoundary_UW( cdm.dm, 5, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
 
         self.dm.setUp()
 
@@ -193,16 +178,26 @@ class Poisson:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
+        cdef DM dm = self.dm
+
         self.mesh.update_lvec()
-        self.dm.compose("A", self.mesh.lvec)
-        self.dm.compose("dmAux", self.mesh.dm)
+        cdef Vec cmesh_lvec
+        # PETSc == 3.16 introduced an explicit interface 
+        # for setting the aux-dm which we'll use when 
+        # available.
+        petsc_version_minor = PETSc.Sys().getVersion()[1]
+        if petsc_version_minor >=16:
+            cmesh_lvec = self.mesh.lvec
+            ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        else:
+            self.dm.compose("A", self.mesh.lvec)
+            self.dm.compose("dmAux", self.mesh.dm)
 
         # solve
         self.snes.solve(None,gvec)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
-        cdef DM dm = self.dm
         # Copy solution back into user facing variable
         with self.mesh.access(self.u,):
             self.dm.globalToLocal(gvec, lvec)
