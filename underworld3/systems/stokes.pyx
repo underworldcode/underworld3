@@ -362,7 +362,7 @@ class Stokes:
             comps_view = bc.components
             for boundary in bc.boundaries:
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-                PetscDSAddBoundary_UW(cdm.dm, 5, NULL, str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                PetscDSAddBoundary_UW(cdm.dm, 5, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
         self.dm.setUp()
 
         self.dm.createClosureIndex(None)
