@@ -15,7 +15,7 @@ import vtk
 pv.global_theme.background = 'white'
 pv.global_theme.window_size = [1000, 500]
 pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = 'panel'
+pv.global_theme.jupyter_backend = 'pythreejs'
 pv.global_theme.smooth_shading = True
 
 # %%

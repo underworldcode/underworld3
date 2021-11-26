@@ -5,7 +5,7 @@ import numpy as np
 options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-3
+options["ksp_rtol"] =  1.0e-3  # For demonstration purposes we can use a loose tolerance
 options["ksp_monitor_short"] = None
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
@@ -53,11 +53,11 @@ rcm_pyvista.plot(show_edges=True)
 
 # +
 regional_cap_mesh = uw.mesh.StructuredCubeSphericalCap(
-                                elementRes=(12,12,12), 
+                                elementRes=(6,6,6), 
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
                                 radius_outer=1.0, 
-                                simplex=False, 
+                                simplex=True, 
                             )
 
 regional_cap_mesh.mesh2pyvista().plot(show_edges=True)
@@ -128,14 +128,12 @@ pl.add_arrows(stokes.u.coords, usol, mag=10.0)
 pl.add_mesh(contours, opacity=0.5)
 
 pl.show()
-
-# +
-# The hex mesh always seem problematic here ... 
-# I cannot manage to evaluate the stokes.u variable anywhere and the value of the u.data array appears to be zero everywhere if I use hex elements
-# There must be something missing in the way I understand this !
 # -
 
-usol.max()
+# The hex mesh always seem problematic here ... 
+
+
+densvar.coords
 
 uw.function.evaluate(unit_rvec, pv_vtkmesh.points)
 

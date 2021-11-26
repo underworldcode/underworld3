@@ -14,11 +14,28 @@ include "../petsc_extras.pxi"
 
 class Poisson:
     @timing.routine_timer_decorator
-    def __init__(self, mesh, degree=1):
+    def __init__(self, 
+                 mesh     : uw.mesh.MeshClass, 
+                 u_Field  : uw.mesh.MeshVariable = None, 
+                 degree =2,
+                 solver_name: str = ""):
+
+        ## Todo: this is obviously not particularly robust
+
+        if solver_name != "" and not solver_name.endswith("_"):
+            self.petsc_options_prefix = solver_name+"_"
+        else:
+            self.petsc_options_prefix = solver_name
+
+        ## Todo: some validity checking on the size / type of u_Field supplied
+        if not u_Field:
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )
+        else:
+            self._u = u_Field
+
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
 
-        self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u", vtype=uw.VarType.SCALAR, degree=degree )
         # create private variables
         options = PETSc.Options()
         options.setValue("uprivate_petscspace_degree", degree) # for private variables
@@ -130,6 +147,7 @@ class Poisson:
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
+        self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setFromOptions()
         cdef DM dm = self.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)

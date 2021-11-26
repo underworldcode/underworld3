@@ -239,9 +239,22 @@ class Swarm(_api_tools.Stateful):
         """
 
         self.fill_param = fill_param
+
+        """
+        Currently (2021.11.15) supported by PETSc release
+ 
+        When using a DMPLEX the following case are supported:
+              (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+
+        So this means, simplex mesh in 3D only supports GAUSS 
+
+        """
+
         
         if layout==None:
-            if self.mesh.isSimplex==True:
+            if self.mesh.isSimplex==True and self.dim == 2:
                 layout=SwarmPICLayout.REGULAR
             else:
                 layout=SwarmPICLayout.GAUSS
