@@ -1,5 +1,7 @@
 # cython: profile=False
 from typing import Optional, Tuple
+from enum import Enum
+
 import math
 
 import numpy
@@ -63,14 +65,40 @@ class MeshClass(_api_tools.Stateful):
         self._stale_lvec = True
         self._lvec = None
 
+        self._elementType = None
+
+
+        # The following is the new code from the master branch (3.16 compatible which always creates zeros)
+        """
         # dictionary for variable coordinate arrays
         self._coord_array = {}
+        
+        # now set copy of linear array into dictionary
+        arr = self.dm.getCoordinatesLocal().array
+        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
+        self._index = None
+        """
+
+        # This is a reversion to the old version (3.15 compatible which seems to work)
+
+        self._coord_array = {}
+        # let's go ahead and do an initial projection from linear (the default) 
+        # to linear. this really is a nothing operation, but a 
+        # side effect of this operation is that coordinate DM DMField is 
+        # converted to the required `PetscFE` type. this may become necessary
+        # later where we call the interpolation routines to project from the linear
+        # mesh coordinates to other mesh coordinates. 
+        options = PETSc.Options()
+        options.setValue("meshproj_petscspace_degree", 1) 
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, 1,"meshproj_", PETSc.COMM_WORLD)
+        cdef FE c_fe = cdmfe
+        cdef DM c_dm = self.dm
+        ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
         # now set copy of linear array into dictionary
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
         self._index = None
 
-        self._elementType = None
 
         super().__init__()
 
@@ -312,6 +340,7 @@ class MeshClass(_api_tools.Stateful):
         # if array already created, return. 
         if key in self._coord_array:
             return self._coord_array[key]
+
         # otherwise create and return
         cdmOld = self.dm.getCoordinateDM()
         cdmNew = cdmOld.clone()
@@ -624,16 +653,13 @@ class Box(MeshClass):
         for val in self.boundary:
             boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
             self.dm.createLabel(str(val).encode('utf8'))                   # create the label
-            boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
+            boundary_label = self.dm.getLabel(str(val).encode('utf8'))     # get label
             # Without this check, we have failures at this point in parallel. 
             # Further investigation required. JM.
             if boundary_set:
                 boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
         super().__init__(simplex=simplex)
-
-
-
 
 
 # JM: I don't think this class is required any longer
@@ -676,6 +702,100 @@ class Box(MeshClass):
 #         self.dm.view()        
         
 #         super().__init__(simplex=True)
+
+
+class MeshFromGmshFile(MeshClass):
+    @timing.routine_timer_decorator
+    def __init__(self,
+                 dim           :int,
+                 filename      :str,
+                 bound_markers :Optional[Enum] = None,
+                 cell_size     :Optional[float] = None,
+                 refinements   :Optional[int]   = 0,
+                 simplex       :Optional[bool] = True  # Not sure if this will be useful
+                ):
+        """
+        This is a generic mesh class for which users will provide 
+        the mesh as a gmsh (.msh) file.
+
+            - dim, simplex not inferred from the file at this point 
+            - the file pointed to by filename is a .msh file 
+            - bound_markers is an Enum that identifies the markers used by gmsh physical objects
+            - etc etc 
+        
+        """
+
+        if cell_size and (refinements>0):
+            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
+
+        self.cell_size = cell_size
+        self.refinements = refinements
+
+        options = PETSc.Options()
+        options["dm_plex_separate_marker"] = None
+
+        self.dm =  PETSc.DMPlex().createFromFile(filename)
+
+        if bound_markers is None:
+            class Boundary(Enum):
+                ALL_BOUNDARIES = 1
+            self.boundary = Boundary
+        else:
+            self.boundary = bound_markers
+
+
+        '''
+        # create boundary sets
+        for val in self.boundary:
+            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
+            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
+            boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
+            # Without this check, we have failures at this point in parallel. 
+            # Further investigation required. JM.
+            if boundary_set:
+                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+        '''
+
+        part = self.dm.getPartitioner()
+        part.setFromOptions()
+        self.dm.distribute()
+        self.dm.setFromOptions()
+
+        for val in self.boundary:
+            indexSet = self.dm.getStratumIS("Face Sets", val.value)
+            self.dm.createLabel(str(val).encode('utf8'))
+            label = self.dm.getLabel(str(val).encode('utf8'))
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+        for val in self.boundary:
+            indexSet = self.dm.getStratumIS("Vertex Sets", val.value)
+            self.dm.createLabel(str(val).encode('utf8'))
+            label = self.dm.getLabel(str(val).encode('utf8'))
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+# This is how we combine boundaries by loading multiple
+# index sets into the label (this example had the top boundary labeled in multiple parts)   
+    
+# mesh.dm.createLabel(str("Boundary.TOP").encode('utf8'))
+# label = mesh.dm.getLabel(str("Boundary.TOP").encode('utf8'))
+
+# for val in [mesh.boundary.U1, mesh.boundary.U2, mesh.boundary.U3, mesh.boundary.U4]:
+#     indexSet = mesh.dm.getStratumIS("Face Sets", val.value)
+#     if indexSet:
+#         label.insertIS(indexSet, 1)
+#     indexSet.destroy()
+
+
+        self.dm.view()
+        super().__init__(simplex=simplex)
+
+
+
+
 
 class MeshFromCellList(MeshClass):
     @timing.routine_timer_decorator
@@ -1126,7 +1246,6 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
         return unstructured_simplex_box
 
-
 class SphericalShell(MeshFromMeshIO):
 
     @timing.routine_timer_decorator
@@ -1189,7 +1308,6 @@ class SphericalShell(MeshFromMeshIO):
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
 
-
                 self.pygmesh = geom.generate_mesh()
                 self.pygmesh.remove_lower_dimensional_cells()
 
@@ -1204,6 +1322,8 @@ class SphericalShell(MeshFromMeshIO):
             self._elementType = vtk.VTK_TETRA
 
         return
+
+    
 
 
 # The following does not work correctly as the transfinite volume is not correctly 
@@ -1334,10 +1454,11 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
 ## 
 
 
-class StructuredCubeSphereBallMesh(MeshFromMeshIO):
+class StructuredCubeSphereBallMesh(MeshFromGmshFile):
     @timing.routine_timer_decorator
     def __init__(self,
-                elementRes     :Tuple[int,  int]  = (16, 8), 
+                dim            :Optional[int] = 2,
+                elementRes     :Tuple[int,  int]  = 8,
                 radius_outer   :Optional[float] = 1.0,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool] = False, 
@@ -1348,8 +1469,9 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
         Parameters
         ----------
+        dim:
         elementRes: 
-            Elements in the (NS & EW , R) direction 
+            Elements in the R direction 
         radius_outer :
             The outer radius for the spherical shell.
         simplex: 
@@ -1362,22 +1484,43 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
         import pygmsh
         self.pygmesh = None
 
+        # Really this should be "Labels for the mesh not boundaries"
+
+        class Boundary(Enum):
+            ALL_BOUNDARIES = 1
+            CENTRE = 10
+            TOP    = 20
+            UPPER  = 20
+
+        ## We should pass the boundary definitions to the mesh constructor to be sure
+        ## that we use consistent values for the labels
+
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
+            if dim == 2:
+                cs_hex_box, filename = StructuredCubeSphereBallMesh.build_pygmsh_2D(elementRes, radius_outer, simplex=simplex)
+            else: 
+                cs_hex_box, filename = StructuredCubeSphereBallMesh.build_pygmsh_3D(elementRes, radius_outer, simplex=simplex)
+        else:
+            cs_hex_box = None
 
-            cs_hex_box = StructuredCubeSphereBallMesh.build_pygmsh(elementRes, radius_outer, simplex=simplex)
+        super().__init__(dim, filename=filename, bound_markers=Boundary, 
+                              cell_size=cell_size, simplex=simplex)
 
-        super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
-
-        self.pygmesh = cs_hex_box
         self.meshio  = cs_hex_box
 
         import vtk
 
         if simplex:
-            self._elementType = vtk.VTK_TETRA
+            if dim==2:
+                self._elementType = vtk.VTK_TRIANGLE
+            else:
+                self._elementType = vtk.VTK_TETRA
         else:
-            self._elementType = vtk.VTK_HEXAHEDRON        
+            if dim==2:
+                self._elementType = vtk.VTK_QUAD
+            else:
+                self._elementType = vtk.VTK_HEXAHEDRON        
 
         self.elementRes = elementRes
 
@@ -1387,7 +1530,92 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
         return
 
-    def build_pygmsh(
+    def build_pygmsh_2D(
+            elementRes     :Optional[int]  = 16, 
+            radius_outer   :Optional[float] =1.0,
+            simplex        :Optional[bool]  =False
+            ):
+
+        import meshio
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("Mesh.SaveAll", 1)
+        gmsh.model.add("squared")
+
+        lc = 0.0 * radius_outer / (elementRes+1)
+        ro = radius_outer
+        r2 = radius_outer / np.sqrt(2)
+        res = elementRes*2+1
+
+        gmsh.model.geo.addPoint(0.0,0.0,0.0, lc, 1)
+        
+        gmsh.model.geo.addPoint( r2, r2, 0.0, lc, 10)
+        gmsh.model.geo.addPoint(-r2, r2, 0.0, lc, 11)
+        gmsh.model.geo.addPoint(-r2,-r2, 0.0, lc, 12)
+        gmsh.model.geo.addPoint( r2,-r2, 0.0, lc, 13)
+
+        gmsh.model.geo.add_circle_arc(10, 1, 11, tag=100)
+        gmsh.model.geo.add_circle_arc(11, 1, 12, tag=101)      
+        gmsh.model.geo.add_circle_arc(12, 1, 13, tag=102)      
+        gmsh.model.geo.add_circle_arc(13, 1, 10, tag=103)      
+
+        gmsh.model.geo.addCurveLoop([100, 101, 102, 103], 10000, reorient=True)
+        gmsh.model.geo.add_surface_filling([10000], 10101)
+        
+        gmsh.model.geo.mesh.set_transfinite_curve(100, res, meshType="Progression")
+        gmsh.model.geo.mesh.set_transfinite_curve(101, res, meshType="Progression")
+        gmsh.model.geo.mesh.set_transfinite_curve(102, res, meshType="Progression")
+        gmsh.model.geo.mesh.set_transfinite_curve(103, res, meshType="Progression")
+
+        gmsh.model.geo.mesh.setTransfiniteSurface(10101, "AlternateRight")
+        if not simplex:
+            gmsh.model.geo.mesh.setRecombine(2, 10101)
+
+
+        gmsh.model.geo.synchronize()
+        
+        centreMarker, upperMarker = 10, 20
+
+
+        #gmsh.model.add_physical_group(1, [100], outerMarker+1) # temp - to test the bc settings
+        #gmsh.model.add_physical_group(1, [101], outerMarker+2)
+        #gmsh.model.add_physical_group(1, [102], outerMarker+3)
+        #gmsh.model.add_physical_group(1, [103], outerMarker+4)
+        gmsh.model.add_physical_group(1, [100, 101, 102, 103], upperMarker)
+        
+        # Vertex groups (0d)
+        gmsh.model.add_physical_group(0, [1], centreMarker)
+
+        # Shove everything (else) in the garbage dump group because the 
+        # Option setting above does not seem to work on (my) version of gmsh
+
+        for d in range(0,3):
+            e = gmsh.model.getEntities(d)
+            gmsh.model.add_physical_group(d, [t for i,t in e], 9999)
+
+        gmsh.model.geo.remove_all_duplicates()
+        gmsh.model.mesh.generate(dim=2)
+        gmsh.model.mesh.removeDuplicateNodes()
+        
+        # Adjust points 
+
+
+       
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
+            gmsh.write(tfile.name)
+            gmsh.write("ignore_squared_disk.msh")
+            gmsh.write("ignore_squared_disk.vtk")
+            squared_disk_mesh = meshio.read(tfile.name)
+            squared_disk_mesh.remove_lower_dimensional_cells()
+
+        gmsh.finalize()
+
+        return squared_disk_mesh, "ignore_squared_disk.msh"
+        
+
+    def build_pygmsh_3D(
                 elementRes     :Optional[int]  = 16, 
                 radius_outer   :Optional[float] =1.0,
                 simplex        :Optional[bool]  =False
@@ -1398,14 +1626,16 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
             gmsh.initialize()
             gmsh.model.add("cubed")
+            gmsh.option.setNumber("Mesh.SaveAll", 1)
 
-            lc = 0.0
+            lc = 0.001 * radius_outer / (elementRes+1)
 
             r2 = radius_outer / np.sqrt(3)
+            r0 = 0.5 * radius_outer / np.sqrt(3)
 
             res = elementRes+1
 
-            gmsh.model.geo.addPoint(0,0,0,lc, 1)
+            gmsh.model.geo.addPoint(0.001,0.001,0.001,0.1, 1)
 
             # The 8 corners of the cubes
 
@@ -1420,20 +1650,20 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
 
             # The 12 edges of the cube2
 
-            gmsh.model.geo.addCircleArc(100,1,101, 1000)
-            gmsh.model.geo.addCircleArc(101,1,102, 1001)
-            gmsh.model.geo.addCircleArc(102,1,103, 1002)
-            gmsh.model.geo.addCircleArc(103,1,100, 1003)
+            gmsh.model.geo.add_circle_arc(100,1,101, 1000)
+            gmsh.model.geo.add_circle_arc(101,1,102, 1001)
+            gmsh.model.geo.add_circle_arc(102,1,103, 1002)
+            gmsh.model.geo.add_circle_arc(103,1,100, 1003)
 
-            gmsh.model.geo.addCircleArc(101,1,105, 1004)
-            gmsh.model.geo.addCircleArc(102,1,106, 1005)
-            gmsh.model.geo.addCircleArc(103,1,107, 1006)
-            gmsh.model.geo.addCircleArc(100,1,104, 1007)
+            gmsh.model.geo.add_circle_arc(101,1,105, 1004)
+            gmsh.model.geo.add_circle_arc(102,1,106, 1005)
+            gmsh.model.geo.add_circle_arc(103,1,107, 1006)
+            gmsh.model.geo.add_circle_arc(100,1,104, 1007)
 
-            gmsh.model.geo.addCircleArc(104,1,105, 1008)
-            gmsh.model.geo.addCircleArc(105,1,106, 1009)
-            gmsh.model.geo.addCircleArc(106,1,107, 1010)
-            gmsh.model.geo.addCircleArc(107,1,104, 1011)
+            gmsh.model.geo.add_circle_arc(104,1,105, 1008)
+            gmsh.model.geo.add_circle_arc(105,1,106, 1009)
+            gmsh.model.geo.add_circle_arc(106,1,107, 1010)
+            gmsh.model.geo.add_circle_arc(107,1,104, 1011)
 
             ## These should all be transfinite lines
 
@@ -1449,12 +1679,14 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             gmsh.model.geo.addCurveLoop([1000, 1003, 1002, 1001], 10004, reorient=True)
             gmsh.model.geo.addCurveLoop([1008, 1009, 1010, 1011], 10005, reorient=True)
 
-            gmsh.model.geo.add_surface_filling([10001], 10101, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10002], 10102, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10003], 10103, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10004], 10104, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10005], 10105, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10006], 10106, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10000], 10101, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10001], 10102, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10002], 10103, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10003], 10104, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10004], 10105, sphereCenterTag=1)
+            gmsh.model.geo.add_surface_filling([10005], 10106, sphereCenterTag=1)
+
+            gmsh.model.geo.synchronize()
 
             for i in range(10101, 10107):
                 gmsh.model.geo.mesh.setTransfiniteSurface(i, "Left")
@@ -1473,22 +1705,35 @@ class StructuredCubeSphereBallMesh(MeshFromMeshIO):
             if not simplex:
                 gmsh.model.geo.mesh.setRecombine(3, 100001)
 
-            # gmsh.model.mesh.set_size([(3,100001)],10.0)
+            centreMarker, outerMarker = 10, 20
+            gmsh.model.add_physical_group(0, [1], centreMarker)
+            gmsh.model.add_physical_group(2, [i for i in range(10101, 10107)], outerMarker)
+
+            # Shove everything in the garbage dump group because the 
+            # Option setting above does not seem to work on (my) version of gmsh
+
+            for d in range(0,4):
+                e = gmsh.model.getEntities(d)
+                gmsh.model.add_physical_group(d, [t for i,t in e], 9999)
 
             gmsh.model.geo.remove_all_duplicates()
-            gmsh.model.remove_entities([[2,10111]], recursive=True)
             gmsh.model.mesh.generate(dim=3)
             gmsh.model.mesh.removeDuplicateNodes()
 
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
                 gmsh.write(tfile.name)
+                gmsh.write("ignore_cubedsphereball.msh")
+                gmsh.write("ignore_cubedsphereball.vtk")
                 cubed_sphere_ball_mesh = meshio.read(tfile.name)
                 cubed_sphere_ball_mesh.remove_lower_dimensional_cells()
-
+                
             gmsh.finalize()
 
             return cubed_sphere_ball_mesh
+
+
+# Replace this one with Romain's CS code
 
 
 class StructuredCubeSphereShellMesh(MeshFromMeshIO):

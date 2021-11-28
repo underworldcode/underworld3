@@ -68,7 +68,6 @@ def test_self_points(n,dim):
 test_self_points(10000,2)
 test_self_points(10000,3)
 
-
 # Mesh vertex test
 def test_mesh_verts(res, dim):
     """
@@ -78,7 +77,7 @@ def test_mesh_verts(res, dim):
     and confirm displaced coords are still closest
     to mesh verts.
     """
-    mesh = uw.mesh.Mesh(elementRes=(res,)*dim)
+    mesh = uw.mesh.Box(elementRes=(res,)*dim)
     index = uw.algorithms.KDTree(mesh.data)
     index.build_index()
 
@@ -112,7 +111,7 @@ def test_mesh_centroid(res,dim,ppcell):
     that closest centroid coincides with particle 
     owning cell. 
     """
-    mesh = uw.mesh.Mesh(elementRes=(res,)*dim)
+    mesh = uw.mesh.Box(elementRes=(res,)*dim)
     centroids = np.zeros((res**dim,dim))
     for index in range(res**dim):
         centroids[index] = mesh.dm.computeCellGeometryFVM(index)[1]
@@ -121,7 +120,7 @@ def test_mesh_centroid(res,dim,ppcell):
 
     # add and populate swarm
     swarm  = uw.swarm.Swarm(mesh)
-    swarm.populate(ppcell=ppcell)
+    swarm.populate(fill_param=ppcell)
 
     with swarm.access():
         kdpt, dist, found = index.find_closest_point(swarm.data)

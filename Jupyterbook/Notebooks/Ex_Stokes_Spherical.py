@@ -6,7 +6,7 @@ import numpy as np
 options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-5
+options["ksp_rtol"] =  1.0e-3 # For demonstration purposes only 1.0e-3 is OK
 options["ksp_monitor_short"] = None
 # options["snes_type"]  = "fas"
 options["snes_converged_reason"] = None
@@ -19,7 +19,7 @@ options["pc_fieldsplit_type"] = "schur"
 options["pc_fieldsplit_schur_factorization_type"] ="full"
 options["pc_fieldsplit_schur_precondition"] = "a11"
 options["fieldsplit_velocity_pc_type"] = "lu"
-options["fieldsplit_pressure_ksp_rtol"] = 1.e-5
+options["fieldsplit_pressure_ksp_rtol"] = 1.0e-3
 options["fieldsplit_pressure_pc_type"] = "lu"
 
 # %%
@@ -86,6 +86,7 @@ mesh.generate_xdmf(savefile)
 import k3d
 import plot
 umag = stokes.u.fn.dot(stokes.u.fn)
+
 vertices_2d = plot.mesh_coords(mesh)
 vertices = np.zeros((vertices_2d.shape[0],3),dtype=np.float32)
 vertices[:,0:2] = vertices_2d[:]
@@ -170,7 +171,7 @@ import vtk
 pv.global_theme.background = 'white'
 pv.global_theme.window_size = [1000, 500]
 pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = 'panel'
+pv.global_theme.jupyter_backend = 'pythreejs'
 pv.global_theme.smooth_shading = True
 
 
@@ -181,9 +182,11 @@ import meshio, io
 with open("spheremesh.vtk", mode="wb") as f:
     mesh.pygmesh.write(f, file_format="vtk")
     
+umag = stokes.u.fn.dot(stokes.u.fn) # Stokes object was re-built
+
 pv_vtkmesh = pv.UnstructuredGrid("spheremesh.vtk")
 pv_vtkmesh.point_data['density'] = uw.function.evaluate(density,mesh.data)
-pv_vtkmesh.point_data['umag'] = uw.function.evaluate(umag,mesh.data)
+pv_vtkmesh.point_data['umag']    = uw.function.evaluate(umag, mesh.data)
 pv_vtkmesh.point_data['urange'] = 0.5 + 0.5 * np.minimum(1.0,pv_vtkmesh.point_data['umag'] / pv_vtkmesh.point_data['umag'].mean())
 
 

@@ -1,13 +1,12 @@
 import pytest
 
-
 def test_generate_2d_quads_mesh():
-    from underworld3 import Mesh
+    from underworld3 import mesh
     resX, resY = 10, 10
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
 
-    mesh = Mesh(elementRes=(resX, resY), 
+    mesh = mesh.Box(elementRes=(resX, resY), 
                 minCoords=(minX, minY),
                 maxCoords=(maxX, maxY),
                 simplex=False)
@@ -16,13 +15,13 @@ def test_generate_2d_quads_mesh():
     assert mesh.data.shape == ((resX+1)*(resY+1), mesh.dim)
 
 def test_generate_3d_quads_mesh():
-    from underworld3 import Mesh
+    from underworld3 import mesh
     resX, resY, resZ = 10, 10, 10
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
     minZ, maxZ = -5.0, 5.0
 
-    mesh = Mesh(elementRes=(resX, resY, resZ), 
+    mesh = mesh.Box(elementRes=(resX, resY, resZ), 
                 minCoords=(minX, minY, minZ),
                 maxCoords=(maxX, maxY, maxZ),
                 simplex=False)
@@ -31,12 +30,12 @@ def test_generate_3d_quads_mesh():
     assert mesh.data.shape == ((resX+1)*(resY+1)*(resZ+1), mesh.dim)
 
 def test_generate_2d_simplices_mesh():
-    from underworld3 import Mesh
+    from underworld3 import mesh
     resX, resY = 10, 10
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
 
-    mesh = Mesh(elementRes=(resX, resY), 
+    mesh = mesh.Box(elementRes=(resX, resY), 
                 minCoords=(minX, minY),
                 maxCoords=(maxX, maxY),
                 simplex=True)
@@ -45,13 +44,13 @@ def test_generate_2d_simplices_mesh():
     assert mesh.data.shape == ((resX+1)*(resY+1), mesh.dim)
 
 def test_generate_3d_simplices_mesh():
-    from underworld3 import Mesh
+    from underworld3 import mesh
     resX, resY, resZ = 10, 10, 10
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
     minZ, maxZ = -5.0, 5.0
 
-    mesh = Mesh(elementRes=(resX, resY, resZ), 
+    mesh = mesh.Box(elementRes=(resX, resY, resZ), 
                 minCoords=(minX, minY, minZ),
                 maxCoords=(maxX, maxY, maxZ),
                 simplex=True)
@@ -60,10 +59,10 @@ def test_generate_3d_simplices_mesh():
     assert mesh.data.shape == ((resX+1)*(resY+1)*(resZ+1), mesh.dim)
 
 
-def test_spherical_mesh():
-    from underworld3 import Spherical
-    mesh = Spherical(refinements=4)
-    return
+#def test_spherical_mesh():
+#    from underworld3 import Spherical
+#    mesh = Spherical(refinements=4)
+#    return
 
 def test_mesh_save(load_multi_meshes):
     load_multi_meshes.save("mesh.h5")
