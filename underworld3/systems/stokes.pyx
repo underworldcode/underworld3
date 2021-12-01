@@ -21,7 +21,8 @@ class Stokes:
                  pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
-                 solver_name   : Optional[str]                           =""
+                 solver_name   : Optional[str]                           ="",
+                 verbose       : Optional[str]                           =False
                   ):
         """
         This class provides functionality for a discrete representation
@@ -94,6 +95,7 @@ class Stokes:
 
         self.mesh = mesh
         self.dm   = mesh.dm.clone()
+        self.verbose = verbose
 
         if (velocityField is None) ^ (pressureField is None):
             raise ValueError("You must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
@@ -104,7 +106,6 @@ class Stokes:
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
-
 
         if not velocityField:
             if p_degree==None:
@@ -217,8 +218,22 @@ class Stokes:
         components = np.array(components, dtype=np.int32, ndmin=1)
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
-        BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
-        self.bcs.append(BC(components,sympify(fn),boundaries))
+        BC = namedtuple('BC', ['components', 'fn', 'boundaries', 'type'])
+        self.bcs.append(BC(components,sympify(fn),boundaries,'dirichlet'))
+
+    @timing.routine_timer_decorator
+    def add_neumann_bc(self, fn, boundaries, components):
+        # switch to numpy arrays
+        # ndmin arg forces an array to be generated even
+        # where comps/indices is a single value.
+        self.is_setup = False
+        import numpy as np
+        components = np.array(components, dtype=np.int32, ndmin=1)
+        boundaries = np.array(boundaries, dtype=object,   ndmin=1)
+        from collections import namedtuple
+        BC = namedtuple('BC', ['components', 'fn', 'boundaries', 'type'])
+        self.bcs.append(BC(components,sympify(fn),boundaries,'neumann'))
+
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
@@ -373,12 +388,45 @@ class Stokes:
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
+
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
             for boundary in bc.boundaries:
+                if self.verbose:
+                    print("Setting bc {} ({})".format(index, bc.type))
+                    print(" - components: {}".format(bc.components))
+                    print(" - boundary:   {}".format(bc.boundaries))
+                    print(" - fn:         {} ".format(bc.fn))
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-                PetscDSAddBoundary_UW(cdm.dm, 5, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
+                if bc.type == 'neumann':
+                    bc_type = 6
+                else:
+                    bc_type = 5
+
+                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
+        
         self.dm.setUp()
+
+
+        for index,bc in enumerate(self.bcs):
+            comps_view = bc.components
+            for boundary in bc.boundaries:
+                print("Setting bc {} / {}".format(index, bc))
+                # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
+
+                # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
+                if bc[3] == 'neumann':
+                    bc_type = 6
+                else:
+                    bc_type = 5
+
+                PetscDSAddBoundary_UW( cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+
+
+
+
+
 
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)

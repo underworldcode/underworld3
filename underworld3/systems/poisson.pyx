@@ -18,7 +18,8 @@ class Poisson:
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree =2,
-                 solver_name: str = ""):
+                 solver_name: str = "",
+                 verbose=False):
 
         ## Todo: this is obviously not particularly robust
 
@@ -49,6 +50,7 @@ class Poisson:
         self.bcs = []
 
         self.is_setup = False
+        self.verbose = verbose
         super().__init__()
 
     @property
@@ -70,7 +72,7 @@ class Poisson:
     @f.setter
     def f(self, value):
         self.is_setup = False
-        # should add test here to make sure h is conformal
+        # should add test here to make sure f is conformal
         self._f = sympify(value)
 
     @timing.routine_timer_decorator
@@ -83,8 +85,22 @@ class Poisson:
         components = np.array(components, dtype=np.int32, ndmin=1)
         boundaries = np.array(boundaries, dtype=object,   ndmin=1)
         from collections import namedtuple
-        BC = namedtuple('BC', ['components', 'fn', 'boundaries'])
-        self.bcs.append(BC(components,sympify(fn),boundaries))
+        BC = namedtuple('BC', ['components', 'fn', 'boundaries', 'type'])
+        self.bcs.append(BC(components,sympify(fn),boundaries, 'dirichlet'))
+
+    @timing.routine_timer_decorator
+    def add_neumann_bc(self, fn, boundaries, components=[0]):
+        # switch to numpy arrays
+        # ndmin arg forces an array to be generated even
+        # where comps/indices is a single value.
+        self.is_setup = False
+        import numpy as np
+        components = np.array(components, dtype=np.int32, ndmin=1)
+        boundaries = np.array(boundaries, dtype=object,   ndmin=1)
+        from collections import namedtuple
+        BC = namedtuple('BC', ['components', 'fn', 'boundaries', 'type'])
+        self.bcs.append(BC(components,sympify(fn),boundaries, "neumann"))
+
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
@@ -123,6 +139,7 @@ class Poisson:
         # the aux field equivalents will be used instead, which 
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
+
         prim_field_list = [self.u,]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
 
@@ -136,11 +153,24 @@ class Poisson:
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
+
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
             for boundary in bc.boundaries:
+                if self.verbose:
+                    print("Setting bc {} ({})".format(index, bc.type))
+                    print(" - components: {}".format(bc.components))
+                    print(" - boundary:   {}".format(bc.boundaries))
+                    print(" - fn:         {} ".format(bc.fn))
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-                PetscDSAddBoundary_UW( cdm.dm, 5, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
+                if bc.type == 'neumann':
+                    bc_type = 6
+                else:
+                    bc_type = 5
+
+                PetscDSAddBoundary_UW( cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
 
         self.dm.setUp()
 
