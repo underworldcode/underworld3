@@ -94,7 +94,6 @@ class Stokes:
         """
 
         self.mesh = mesh
-        self.dm   = mesh.dm.clone()
         self.verbose = verbose
 
         if (velocityField is None) ^ (pressureField is None):
@@ -123,7 +122,44 @@ class Stokes:
         self.fields["pressure"] = self.p
         self.fields["velocity"] = self.u
 
-        # create private variables
+
+        # Build the DM / FE structures (should be done on remeshing)
+
+        self._build_dm_and_mesh_discretisation()
+        self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
+
+        self.viscosity = 1.
+        self.bodyforce = (0.,0.)
+
+        self.bcs = []
+
+        # Construct strainrate tensor for future usage.
+        # Grab gradients, and let's switch out to sympy.Matrix notation
+        # immediately as it is probably cleaner for this.
+        N = mesh.N
+        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
+        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
+        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
+        grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
+        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
+        
+        # this attrib records if we need to re-setup
+        self.is_setup = False
+        super().__init__()
+
+    def _build_dm_and_mesh_discretisation(self):
+
+        """
+        Most of what is in the init phase that is not called by _setup_terms()
+
+        """
+        
+        mesh = self.mesh
+        u_degree = self.u.degree
+        p_degree = self.p.degree
+
+        self.dm   = mesh.dm.clone()
+
         options = PETSc.Options()
         options.setValue("uprivate_petscspace_degree", u_degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
@@ -146,24 +182,11 @@ class Stokes:
         c_fe = self.petsc_fe_p
         ierr = PetscFESetQuadrature(c_fe.fe,u_quad); CHKERRQ(ierr)
 
-        self.viscosity = 1.
-        self.bodyforce = (0.,0.)
-
-        self.bcs = []
-
-        # Construct strainrate tensor for future usage.
-        # Grab gradients, and let's switch out to sympy.Matrix notation
-        # immediately as it is probably cleaner for this.
-        N = mesh.N
-        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
-        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
-        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
-        grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
-        
-        # this attrib records if we need to re-setup
         self.is_setup = False
-        super().__init__()
+
+        return
+
+
 
     @property
     def u(self):
@@ -360,6 +383,7 @@ class Stokes:
         # the aux field equivalents will be used instead, which 
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
+
         prim_field_list = [self.u, self.p]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
         # create indexes so that we don't rely on indices that can change
@@ -407,26 +431,6 @@ class Stokes:
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
         self.dm.setUp()
-
-
-        for index,bc in enumerate(self.bcs):
-            comps_view = bc.components
-            for boundary in bc.boundaries:
-                print("Setting bc {} / {}".format(index, bc))
-                # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-
-                # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
-                if bc[3] == 'neumann':
-                    bc_type = 6
-                else:
-                    bc_type = 5
-
-                PetscDSAddBoundary_UW( cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
-
-
-
-
-
 
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
@@ -488,6 +492,7 @@ class Stokes:
         # from the quadratures (among other things no doubt). 
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
+
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 

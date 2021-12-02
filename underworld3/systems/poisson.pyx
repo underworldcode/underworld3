@@ -35,6 +35,28 @@ class Poisson:
             self._u = u_Field
 
         self.mesh = mesh
+        self.k = 1.
+        self.f = 0.
+
+        self.bcs = []
+
+        self.is_setup = False
+        self.verbose = verbose
+
+        # Build the DM / FE structures (should be done on remeshing)
+
+        self._build_dm_and_mesh_discretisation()
+        self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
+
+
+        super().__init__()
+
+
+    def _build_dm_and_mesh_discretisation(self):
+
+        degree = self._u.degree
+        mesh = self.mesh
+
         self.dm   = mesh.dm.clone()
 
         # create private variables
@@ -44,14 +66,10 @@ class Poisson:
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        self.k = 1.
-        self.f = 0.
-
-        self.bcs = []
-
         self.is_setup = False
-        self.verbose = verbose
-        super().__init__()
+
+        return
+
 
     @property
     def u(self):
