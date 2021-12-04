@@ -1,5 +1,6 @@
 # cython: profile=False
 from typing import Optional, Tuple, Union
+from collections import namedtuple
 from enum import Enum
 
 import math
@@ -12,6 +13,8 @@ import sympy.vector
 
 from mpi4py import MPI
 from petsc4py import PETSc
+
+import meshio
 
 include "./petsc_extras.pxi"
 
@@ -67,18 +70,6 @@ class MeshClass(_api_tools.Stateful):
 
         self._elementType = None
         self.degree = degree
-
-        # The following is the new code from the master branch (3.16 compatible which always creates zeros)
-        """
-        # dictionary for variable coordinate arrays
-        self._coord_array = {}
-        
-        # now set copy of linear array into dictionary
-        arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
-        self._index = None
-        """
-
         self.nuke_coords_and_rebuild()
 
         super().__init__()
@@ -719,11 +710,15 @@ class Box(MeshClass):
 
 
 class MeshFromGmshFile(MeshClass):
+
+    # Data structures for tracking gmsh labels
+    physical_label_group = namedtuple('Group', ('name', 'labels') )
+
     @timing.routine_timer_decorator
     def __init__(self,
                  dim           :int,
                  filename      :str,
-                 bound_markers :Optional[Enum] = None,
+                 label_groups  :Optional[list] = [],
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
@@ -738,7 +733,6 @@ class MeshFromGmshFile(MeshClass):
             - the file pointed to by filename needs to be a .msh file 
             - bound_markers is an Enum that identifies the markers used by gmsh physical objects
             - etc etc 
-        
         """
 
         if cell_size and (refinements>0):
@@ -751,20 +745,13 @@ class MeshFromGmshFile(MeshClass):
         options["dm_plex_separate_marker"] = None
 
         self.dm =  PETSc.DMPlex().createFromFile(filename)
-
-        if bound_markers is None:
-            class Boundary(Enum):
-                ALL_BOUNDARIES = 0
-            self.boundary = Boundary
-        else:
-            self.boundary = bound_markers
+        self.meshio = meshio.read(filename)
 
         part = self.dm.getPartitioner()
         part.setFromOptions()
         self.dm.distribute()
         self.dm.setFromOptions()
 
-        ## Many things expect this to be done
 
         try: 
             self.dm.markBoundaryFaces("Boundary.ALL_BOUNDARIES", value=self.boundary.ALL_BOUNDARIES.value)
@@ -772,42 +759,55 @@ class MeshFromGmshFile(MeshClass):
             pass
 
         ## Face Sets are boundaries defined by element surfaces (1d or 2d entities)
-
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Face Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
-
         ## Vertex Sets are discrete points 
+        ## pygmsh interlaces their labelling so, we have to try each one.
 
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Vertex Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
+        # Code to generate labels and label groups assuming the gmsh physical labels
+
+        label_dict = self.meshio.field_data
+
+        ## Face Sets are boundaries defined by element surfaces (1d or 2d entities)
+        ## Vertex Sets are discrete points 
+        ## pygmsh interlaces their labelling so, we have to try each one.
+
+        for l in label_dict:
+            self.dm.createLabel(str(l).encode('utf8'))
+            label = self.dm.getLabel(str(l).encode('utf8'))
+            
+            indexSet = self.dm.getStratumIS("Face Sets", label_dict[l][0])
+            if not indexSet: # try the other one 
+                indexSet = self.dm.getStratumIS("Vertex Sets", label_dict[l][0])
+            
             if indexSet:
                 label.insertIS(indexSet, 1)
+                
             indexSet.destroy()
+            
 
-# This is how we combine boundaries by loading multiple
-# index sets into the label (this example had the top boundary labeled in multiple parts)   
-    
-# mesh.dm.createLabel(str("Boundary.TOP").encode('utf8'))
-# label = mesh.dm.getLabel(str("Boundary.TOP").encode('utf8'))
+        ## Groups
 
-# for val in [mesh.boundary.U1, mesh.boundary.U2, mesh.boundary.U3, mesh.boundary.U4]:
-#     indexSet = mesh.dm.getStratumIS("Face Sets", val.value)
-#     if indexSet:
-#         label.insertIS(indexSet, 1)
-#     indexSet.destroy()
+        for g in label_groups:
+            self.dm.createLabel(str(g.name).encode('utf8'))
+            label = self.dm.getLabel(str(g.name).encode('utf8'))
+            
+            for l in label_dict:
+                print("Looking for {} in {}".format(l,g.labels))
+                if l in g.labels:
+                    indexSet = self.dm.getStratumIS("Face Sets", label_dict[l][0])
+                    if not indexSet: # try the other one 
+                        indexSet = self.dm.getStratumIS("Vertex Sets", label_dict[l][0])
 
+                    if indexSet:
+                        label.insertIS(indexSet, 1)
+
+                    indexSet.destroy()
+
+
+        # Provide these to the mesh for boundary conditions
+        self.labels =  ["Boundary.ALL_BOUNDARIES"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
 
         self.dm.view()
         super().__init__(simplex=simplex, degree=degree)
-
-
 
 
 
@@ -1280,7 +1280,8 @@ class SphericalShell(MeshFromGmshFile):
                  cell_size        :Optional[float] =0.05,
                  cell_size_upper  :Optional[float] =None,
                  cell_size_lower  :Optional[float] =None,
-                 degree           :Optional[int]     =2
+                 degree           :Optional[int]   =2,
+                 verbose          :Optional[bool]  =False
         ):
 
         """
@@ -1300,6 +1301,7 @@ class SphericalShell(MeshFromGmshFile):
             The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
             resolution.
         """
+
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
         self.pygmesh = None
@@ -1321,7 +1323,7 @@ class SphericalShell(MeshFromGmshFile):
 
                 if dim==2:
                     if radius_inner > 0.0:
-                        inner  = geom.add_circle((0.0,0.0,0.0),0.1*radius_outer, make_surface=False, mesh_size=cell_size_lower)
+                        inner  = geom.add_circle((0.0,0.0,0.0),radius_inner, make_surface=False, mesh_size=cell_size_lower)
                         domain = geom.add_circle((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper, holes=[inner])
                         geom.add_physical(inner.curve_loop.curves,  label="Lower")
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
@@ -1336,7 +1338,7 @@ class SphericalShell(MeshFromGmshFile):
 
                 else:
                     if radius_inner > 0.0:
-                        inner  = geom.add_ball((0.0,0.0,0.0),0.1*radius_outer, with_volume=False, mesh_size=cell_size_lower)
+                        inner  = geom.add_ball((0.0,0.0,0.0),radius_inner, with_volume=False, mesh_size=cell_size_lower)
                         domain = geom.add_ball((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper, holes=[inner.surface_loop])
                         geom.add_physical(inner.surface_loop.surfaces,  label="Lower")
                         geom.add_physical(domain.surface_loop.surfaces, label="Upper")
@@ -1349,27 +1351,11 @@ class SphericalShell(MeshFromGmshFile):
                         geom.add_physical(centre,  label="Centre")
                         geom.add_physical(domain.surface_loop.surfaces, label="Upper")
                         geom.add_physical(domain.volume, label="Elements")                   
+     
 
-                    pass 
-                    """
-                    ndimspherefunc = geom.add_ball
+                groups = [] # no groups !
 
-                    ball_outer = ndimspherefunc([0.0,]*dim, radius_outer, mesh_size=csize_local)
-
-                    if radius_inner > 0.:
-                        ball_inner = ndimspherefunc([0.0,]*dim, radius_inner, mesh_size=csize_local)
-                        geom.boolean_difference(ball_outer,ball_inner)
-                        geom.add_physical(ball_inner, label="Hidden")
-
-                    else:
-                        centre = geom.add_point((0.0,0.0,0.0), mesh_size=csize_local)
-                        geom.in_surface(centre, ball_outer)
-                        geom.add_physical(centre, label="Boundary.CENTRE")
-
-                        geom.add_physical(ball_outer, label="EverythingElse") # How to set the options with pygmsh
-                    """
-
-                geom.generate_mesh()
+                geom.generate_mesh(verbose=verbose)
 
                 import tempfile
                 import meshio
@@ -1387,15 +1373,7 @@ class SphericalShell(MeshFromGmshFile):
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
 
-
-        class Boundary(Enum):
-            ALL_BOUNDARIES = 0
-            LOWER  = 1
-            CENTRE = 1
-            UPPER  = 2
-            TOP    = 2
-
-        super().__init__(dim, filename="ignore_ball_mesh_geom.msh", bound_markers=Boundary, 
+        super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
                               cell_size=cell_size, simplex=True, degree=degree)
 
         import vtk
