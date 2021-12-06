@@ -23,6 +23,7 @@ class Stokes:
                  p_degree      : Optional[int]                           =None,
                  solver_name   : Optional[str]                           ="",
                  verbose       : Optional[str]                           =False
+
                   ):
         """
         This class provides functionality for a discrete representation

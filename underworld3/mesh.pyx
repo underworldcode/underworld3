@@ -1,6 +1,7 @@
 # cython: profile=False
 from typing import Optional, Tuple, Union
 from collections import namedtuple
+
 from enum import Enum
 
 import math
@@ -69,6 +70,7 @@ class MeshClass(_api_tools.Stateful):
         self._lvec = None
 
         self._elementType = None
+
         self.degree = degree
         self.nuke_coords_and_rebuild()
 
@@ -79,6 +81,7 @@ class MeshClass(_api_tools.Stateful):
         # This is a reversion to the old version (3.15 compatible which seems to work)
 
         self._coord_array = {}
+
         # let's go ahead and do an initial projection from linear (the default) 
         # to linear. this really is a nothing operation, but a 
         # side effect of this operation is that coordinate DM DMField is 
@@ -96,6 +99,7 @@ class MeshClass(_api_tools.Stateful):
         options = PETSc.Options()
         options.setValue("meshproj_petscspace_degree", self.degree) 
         cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, self.degree, "meshproj_", PETSc.COMM_WORLD)
+
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
@@ -104,7 +108,9 @@ class MeshClass(_api_tools.Stateful):
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
         self._index = None
 
+
         return
+
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -667,6 +673,7 @@ class Box(MeshClass):
         super().__init__(simplex=simplex, degree=degree)
 
 
+
 # JM: I don't think this class is required any longer
 # and the pygmsh version should instead be used. I'll
 # leave this implementation here for now.
@@ -724,15 +731,17 @@ class MeshFromGmshFile(MeshClass):
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
                 degree       :Optional[int]                      =1
 
+
                 ):
         """
         This is a generic mesh class for which users will provide 
         the mesh as a gmsh (.msh) file.
 
             - dim, simplex not inferred from the file at this point 
+
             - the file pointed to by filename needs to be a .msh file 
             - bound_markers is an Enum that identifies the markers used by gmsh physical objects
-            - etc etc 
+            - etc etc
         """
 
         if cell_size and (refinements>0):
@@ -747,11 +756,11 @@ class MeshFromGmshFile(MeshClass):
         self.dm =  PETSc.DMPlex().createFromFile(filename)
         self.meshio = meshio.read(filename)
 
+
         part = self.dm.getPartitioner()
         part.setFromOptions()
         self.dm.distribute()
         self.dm.setFromOptions()
-
 
         try: 
             self.dm.markBoundaryFaces("Boundary.ALL_BOUNDARIES", value=self.boundary.ALL_BOUNDARIES.value)
@@ -1272,6 +1281,7 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
 class SphericalShell(MeshFromGmshFile):
 
+
     @timing.routine_timer_decorator
     def __init__(self,
                  dim              :Optional[  int] =2,
@@ -1372,9 +1382,9 @@ class SphericalShell(MeshFromGmshFile):
                 # geom.set_mesh_size_callback(
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
-
         super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
                               cell_size=cell_size, simplex=True, degree=degree)
+
 
         import vtk
 
@@ -1558,6 +1568,17 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         ## We should pass the boundary definitions to the mesh constructor to be sure
         ## that we use consistent values for the labels
 
+        # Really this should be "Labels for the mesh not boundaries"
+
+        class Boundary(Enum):
+            ALL_BOUNDARIES = 1
+            CENTRE = 10
+            TOP    = 20
+            UPPER  = 20
+
+        ## We should pass the boundary definitions to the mesh constructor to be sure
+        ## that we use consistent values for the labels
+
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
             if dim == 2:
@@ -1569,6 +1590,7 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
 
         super().__init__(dim, filename=filename, bound_markers=Boundary, 
                               cell_size=cell_size, simplex=simplex, degree=degree)
+
 
         self.meshio  = cs_hex_box
 
@@ -1632,13 +1654,15 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         gmsh.model.geo.mesh.set_transfinite_curve(103, res, meshType="Progression")
 
         gmsh.model.geo.mesh.setTransfiniteSurface(10101)
+
         if not simplex:
             gmsh.model.geo.mesh.setRecombine(2, 10101)
 
 
         gmsh.model.geo.synchronize()
-        
+
         centreMarker, upperMarker = 1, 2
+
 
 
         #gmsh.model.add_physical_group(1, [100], outerMarker+1) # temp - to test the bc settings
@@ -1660,7 +1684,8 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         gmsh.model.geo.remove_all_duplicates()
         gmsh.model.mesh.generate(dim=2)
         gmsh.model.mesh.removeDuplicateNodes()
-               
+
+        
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
             gmsh.write(tfile.name)
