@@ -1,5 +1,7 @@
 # cython: profile=False
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+from collections import namedtuple
+
 from enum import Enum
 
 import math
@@ -13,6 +15,8 @@ import sympy.vector
 from mpi4py import MPI
 from petsc4py import PETSc
 
+import meshio
+
 include "./petsc_extras.pxi"
 
 import underworld3
@@ -22,7 +26,7 @@ import underworld3.timing as timing
 
 class MeshClass(_api_tools.Stateful):
     @timing.routine_timer_decorator
-    def __init__(self, simplex, *args,**kwargs):
+    def __init__(self, simplex, degree=1, *args,**kwargs):
         self.isSimplex = simplex
 
         # Enable hashing
@@ -67,40 +71,46 @@ class MeshClass(_api_tools.Stateful):
 
         self._elementType = None
 
+        self.degree = degree
+        self.nuke_coords_and_rebuild()
 
-        # The following is the new code from the master branch (3.16 compatible which always creates zeros)
-        """
-        # dictionary for variable coordinate arrays
-        self._coord_array = {}
-        
-        # now set copy of linear array into dictionary
-        arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
-        self._index = None
-        """
+        super().__init__()
+
+    def nuke_coords_and_rebuild(self):
 
         # This is a reversion to the old version (3.15 compatible which seems to work)
 
         self._coord_array = {}
+
         # let's go ahead and do an initial projection from linear (the default) 
         # to linear. this really is a nothing operation, but a 
         # side effect of this operation is that coordinate DM DMField is 
         # converted to the required `PetscFE` type. this may become necessary
         # later where we call the interpolation routines to project from the linear
         # mesh coordinates to other mesh coordinates. 
+
+
+        ## LM  - I put in the option to specify the default coordinate interpolation degree 
+        ## LM  - which seems sensible given linear interpolation seems likely to be a problem
+        ## LM  - for spherical meshes. However, I am not sure about this because it means that
+        ## LM  - the mesh coords and the size of the nodal array are different. This might break 
+        ## LM  - stuff so I will leave the default at 1
+
         options = PETSc.Options()
-        options.setValue("meshproj_petscspace_degree", 1) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, 1,"meshproj_", PETSc.COMM_WORLD)
+        options.setValue("meshproj_petscspace_degree", self.degree) 
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, self.degree, "meshproj_", PETSc.COMM_WORLD)
+
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
         # now set copy of linear array into dictionary
         arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
+        self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
         self._index = None
 
 
-        super().__init__()
+        return
+
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -594,7 +604,8 @@ class Box(MeshClass):
                 elementRes   :Optional[Tuple[  int,  int,  int]] =(16, 16), 
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
-                simplex      :Optional[bool]                     =False
+                simplex      :Optional[bool]                     =False,
+                degree       :Optional[int]                      =1
                 ):
         """
         Generates a 2 or 3-dimensional box mesh.
@@ -659,7 +670,8 @@ class Box(MeshClass):
             if boundary_set:
                 boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
 
-        super().__init__(simplex=simplex)
+        super().__init__(simplex=simplex, degree=degree)
+
 
 
 # JM: I don't think this class is required any longer
@@ -705,24 +717,31 @@ class Box(MeshClass):
 
 
 class MeshFromGmshFile(MeshClass):
+
+    # Data structures for tracking gmsh labels
+    physical_label_group = namedtuple('Group', ('name', 'labels') )
+
     @timing.routine_timer_decorator
     def __init__(self,
                  dim           :int,
                  filename      :str,
-                 bound_markers :Optional[Enum] = None,
+                 label_groups  :Optional[list] = [],
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
-                 simplex       :Optional[bool] = True  # Not sure if this will be useful
+                 simplex       :Optional[bool] = True,  # Not sure if this will be useful
+                degree       :Optional[int]                      =1
+
+
                 ):
         """
         This is a generic mesh class for which users will provide 
         the mesh as a gmsh (.msh) file.
 
             - dim, simplex not inferred from the file at this point 
-            - the file pointed to by filename is a .msh file 
+
+            - the file pointed to by filename needs to be a .msh file 
             - bound_markers is an Enum that identifies the markers used by gmsh physical objects
-            - etc etc 
-        
+            - etc etc
         """
 
         if cell_size and (refinements>0):
@@ -735,65 +754,69 @@ class MeshFromGmshFile(MeshClass):
         options["dm_plex_separate_marker"] = None
 
         self.dm =  PETSc.DMPlex().createFromFile(filename)
+        self.meshio = meshio.read(filename)
 
-        if bound_markers is None:
-            class Boundary(Enum):
-                ALL_BOUNDARIES = 1
-            self.boundary = Boundary
-        else:
-            self.boundary = bound_markers
-
-
-        '''
-        # create boundary sets
-        for val in self.boundary:
-            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
-            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
-            boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
-            # Without this check, we have failures at this point in parallel. 
-            # Further investigation required. JM.
-            if boundary_set:
-                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
-        '''
 
         part = self.dm.getPartitioner()
         part.setFromOptions()
         self.dm.distribute()
         self.dm.setFromOptions()
 
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Face Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
+        try: 
+            self.dm.markBoundaryFaces("Boundary.ALL_BOUNDARIES", value=self.boundary.ALL_BOUNDARIES.value)
+        except:
+            pass
+
+        ## Face Sets are boundaries defined by element surfaces (1d or 2d entities)
+        ## Vertex Sets are discrete points 
+        ## pygmsh interlaces their labelling so, we have to try each one.
+
+        # Code to generate labels and label groups assuming the gmsh physical labels
+
+        label_dict = self.meshio.field_data
+
+        ## Face Sets are boundaries defined by element surfaces (1d or 2d entities)
+        ## Vertex Sets are discrete points 
+        ## pygmsh interlaces their labelling so, we have to try each one.
+
+        for l in label_dict:
+            self.dm.createLabel(str(l).encode('utf8'))
+            label = self.dm.getLabel(str(l).encode('utf8'))
+            
+            indexSet = self.dm.getStratumIS("Face Sets", label_dict[l][0])
+            if not indexSet: # try the other one 
+                indexSet = self.dm.getStratumIS("Vertex Sets", label_dict[l][0])
+            
             if indexSet:
                 label.insertIS(indexSet, 1)
+                
             indexSet.destroy()
+            
 
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Vertex Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
+        ## Groups
 
-# This is how we combine boundaries by loading multiple
-# index sets into the label (this example had the top boundary labeled in multiple parts)   
-    
-# mesh.dm.createLabel(str("Boundary.TOP").encode('utf8'))
-# label = mesh.dm.getLabel(str("Boundary.TOP").encode('utf8'))
+        for g in label_groups:
+            self.dm.createLabel(str(g.name).encode('utf8'))
+            label = self.dm.getLabel(str(g.name).encode('utf8'))
+            
+            for l in label_dict:
+                print("Looking for {} in {}".format(l,g.labels))
+                if l in g.labels:
+                    indexSet = self.dm.getStratumIS("Face Sets", label_dict[l][0])
+                    if not indexSet: # try the other one 
+                        indexSet = self.dm.getStratumIS("Vertex Sets", label_dict[l][0])
 
-# for val in [mesh.boundary.U1, mesh.boundary.U2, mesh.boundary.U3, mesh.boundary.U4]:
-#     indexSet = mesh.dm.getStratumIS("Face Sets", val.value)
-#     if indexSet:
-#         label.insertIS(indexSet, 1)
-#     indexSet.destroy()
+                    if indexSet:
+                        label.insertIS(indexSet, 1)
 
+                    indexSet.destroy()
+
+
+        # Provide these to the mesh for boundary conditions
+        self.labels =  ["Boundary.ALL_BOUNDARIES"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
 
         self.dm.view()
-        super().__init__(simplex=simplex)
-
-
+        super().__init__(simplex=simplex, degree=degree)
 
 
 
@@ -805,7 +828,10 @@ class MeshFromCellList(MeshClass):
                  coords      :numpy.ndarray,
                  cell_size   :Optional[float] = None,
                  refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True
+                 simplex      :Optional[bool] = True,                
+                 degree       :Optional[int]  =1
+
+
                 ):
         """
         This is a generic mesh class for which users will provide 
@@ -883,7 +909,7 @@ class MeshFromCellList(MeshClass):
             print(f"Generated mesh minimum cell size: {2.*self.get_min_radius():.3E}. Requested size: {cell_size:.3E}.")
 
         self.dm.view()
-        super().__init__(simplex=simplex)
+        super().__init__(simplex=simplex, degree=degree)
 
 class MeshFromMeshIO(MeshFromCellList):
     @timing.routine_timer_decorator
@@ -892,7 +918,9 @@ class MeshFromMeshIO(MeshFromCellList):
                  meshio      :"MeshIO",
                  cell_size   :Optional[float] =None,
                  refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True
+                 simplex      :Optional[bool] = True,
+                 degree       :Optional[int]                      =1
+
                  ):
         """
         This is a generic mesh class for which users will provide 
@@ -928,7 +956,7 @@ class MeshFromMeshIO(MeshFromCellList):
             cells  = meshio.cells[0][1]
             coords = meshio.points[:,0:dim]
   
-        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex)
+        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex, degree=degree)
 
     def _get_local_cell_size(self,
                              dim        : int,
@@ -982,7 +1010,10 @@ class Hex_Box(MeshFromMeshIO):
                 elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05):
+                cell_size    :Optional[float] =0.05,
+                degree       :Optional[int]                      =1
+
+                ):
         """
         This class generates a Cartesian box of regular hexahedral (3D) or quadrilateral (2D) 
         elements. 
@@ -1014,7 +1045,7 @@ class Hex_Box(MeshFromMeshIO):
         if MPI.COMM_WORLD.rank==0:
             mesh = Hex_Box.build_pygmsh( dim, elementRes, minCoords, maxCoords )
 
-        super().__init__(dim, mesh, cell_size, simplex=False)
+        super().__init__(dim, mesh, cell_size, simplex=False, degree=degree)
 
         self.pygmesh = mesh
         self.elementRes = elementRes
@@ -1075,10 +1106,11 @@ class Simplex_Box(MeshFromMeshIO):
                 elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05):
+                cell_size    :Optional[float] =0.05,
+                degree       :Optional[int]  =1
+                ):
         """
-        This class generates a spherical shell, or a full sphere
-        where the inner radius is zero.
+        This class generates a box with gmsh
 
         Parameters
         ----------
@@ -1107,7 +1139,7 @@ class Simplex_Box(MeshFromMeshIO):
         if MPI.COMM_WORLD.rank==0:
             mesh = Simplex_Box.build_pygmsh(dim, elementRes, minCoords, maxCoords)
     
-        super().__init__(dim, mesh, cell_size)
+        super().__init__(dim, mesh, cell_size, degree=degree, simplex=True)
 
         self.elementRes = elementRes
         self.minCoords = minCoords
@@ -1159,11 +1191,12 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
                 coarse_cell_size: Optional[float]=0.1, 
-                global_cell_size:Optional[float]=0.05
+                global_cell_size:Optional[float]=0.05,
+                degree       :Optional[int]        =1
+
                 ):
         """
-        This class generates a spherical shell, or a full sphere
-        where the inner radius is zero.
+        This class generates a box
 
         Parameters
         ----------
@@ -1204,7 +1237,7 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
                             coarse_cell_size,
                             global_cell_size)
 
-        super().__init__(dim, unstructured_simplex_box, global_cell_size)
+        super().__init__(dim, unstructured_simplex_box, global_cell_size, simplex=True, degree=degree)
 
         self.pygmesh = unstructured_simplex_box
         self.meshio = unstructured_simplex_box
@@ -1246,14 +1279,21 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
         return unstructured_simplex_box
 
-class SphericalShell(MeshFromMeshIO):
+class SphericalShell(MeshFromGmshFile):
+
 
     @timing.routine_timer_decorator
     def __init__(self,
-                 dim            :Optional[  int] =2,
-                 radius_outer   :Optional[float] =1.0,
-                 radius_inner   :Optional[float] =0.5,
-                 cell_size      :Optional[float] =0.05):
+                 dim              :Optional[  int] =2,
+                 radius_outer     :Optional[float] =1.0,
+                 radius_inner     :Optional[float] =0.5,
+                 cell_size        :Optional[float] =0.05,
+                 cell_size_upper  :Optional[float] =None,
+                 cell_size_lower  :Optional[float] =None,
+                 degree           :Optional[int]   =2,
+                 verbose          :Optional[bool]  =False
+        ):
+
         """
         This class generates a spherical shell, or a full sphere
         where the inner radius is zero.
@@ -1271,48 +1311,80 @@ class SphericalShell(MeshFromMeshIO):
             The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
             resolution.
         """
+
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
         self.pygmesh = None
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:
-            if   dim==2:
-                domain_area = math.pi*(radius_outer**2 - radius_inner**2)
-                # Add factor of 2 to `cell_size`. This is a fudge factor to bring
-                # the typical generated cell_size from the pygmsh mesh closer to what
-                # petsc reports.
-                csize_local = self._get_local_cell_size(2,domain_area,2.*cell_size)
-            elif dim==3:
-                domain_vol = 4./3.*math.pi*(radius_outer**3 - radius_inner**3)
-                # Add factor of 4 to `cell_size`. This is a fudge factor to bring
-                # the typical generated cell_size from the pygmsh mesh closer to what
-                # petsc reports.
-                csize_local = self._get_local_cell_size(3,domain_vol,4.*cell_size)
-            else:
-                raise ValueError("`dim` must be in [2,3].")
+
+            csize_local = cell_size
+
+            if cell_size_upper is None:
+                cell_size_upper = cell_size
+
+            if cell_size_lower is None:
+                cell_size_lower = cell_size
 
             import pygmsh
             # Generate local mesh.
-            with pygmsh.occ.Geometry() as geom:
+            with pygmsh.geo.Geometry() as geom:
                 geom.characteristic_length_max = csize_local
+
                 if dim==2:
-                    ndimspherefunc = geom.add_disk
+                    if radius_inner > 0.0:
+                        inner  = geom.add_circle((0.0,0.0,0.0),radius_inner, make_surface=False, mesh_size=cell_size_lower)
+                        domain = geom.add_circle((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper, holes=[inner])
+                        geom.add_physical(inner.curve_loop.curves,  label="Lower")
+                        geom.add_physical(domain.curve_loop.curves, label="Upper")
+                        geom.add_physical(domain.plane_surface, label="Elements")
+                    else:
+                        centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                        domain = geom.add_circle((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper)
+                        geom.in_surface(centre, domain.plane_surface)
+                        geom.add_physical(centre, label="Centre")
+                        geom.add_physical(domain.curve_loop.curves, label="Upper")
+                        geom.add_physical(domain.plane_surface, label="Elements")
+
                 else:
-                    ndimspherefunc = geom.add_ball
-                ball_outer = ndimspherefunc([0.0,]*dim, radius_outer)
-                if radius_inner > 0.:
-                    ball_inner = ndimspherefunc([0.0,]*dim, radius_inner)
-                    geom.boolean_difference(ball_outer,ball_inner)
+                    if radius_inner > 0.0:
+                        inner  = geom.add_ball((0.0,0.0,0.0),radius_inner, with_volume=False, mesh_size=cell_size_lower)
+                        domain = geom.add_ball((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper, holes=[inner.surface_loop])
+                        geom.add_physical(inner.surface_loop.surfaces,  label="Lower")
+                        geom.add_physical(domain.surface_loop.surfaces, label="Upper")
+                        geom.add_physical(domain.volume, label="Elements")
+
+                    else:
+                        centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                        domain = geom.add_ball((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper)  
+                        geom.in_volume(centre, domain.volume)
+                        geom.add_physical(centre,  label="Centre")
+                        geom.add_physical(domain.surface_loop.surfaces, label="Upper")
+                        geom.add_physical(domain.volume, label="Elements")                   
+     
+
+                groups = [] # no groups !
+
+                geom.generate_mesh(verbose=verbose)
+
+                import tempfile
+                import meshio
+
+                with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
+                    geom.save_geometry(tfile.name)
+                    geom.save_geometry("ignore_ball_mesh_geom.msh")
+                    # Can save vtk file here if required ... or not
+                    geom.save_geometry("ignore_ball_mesh_geom.vtk")
+                    self.meshio = meshio.read(tfile.name)
+                    self.meshio.remove_lower_dimensional_cells()
+
                 # The following is an example of setting a callback for variable resolution.
                 # geom.set_mesh_size_callback(
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
+        super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
+                              cell_size=cell_size, simplex=True, degree=degree)
 
-                self.pygmesh = geom.generate_mesh()
-                self.pygmesh.remove_lower_dimensional_cells()
-
-
-        super().__init__(dim, self.pygmesh, cell_size, simplex=True)
 
         import vtk
 
@@ -1324,7 +1396,6 @@ class SphericalShell(MeshFromMeshIO):
         return
 
     
-
 
 # The following does not work correctly as the transfinite volume is not correctly 
 # meshed ... / cannot be generated consistently with these surface descriptions. 
@@ -1339,6 +1410,7 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
                 radius_outer   :Optional[float] =1.0,
                 radius_inner   :Optional[float] =0.5,
                 simplex        :Optional[bool] = False, 
+                degree         :Optional[int]  =2,
                 cell_size      :Optional[float] =1.0
                 ):
 
@@ -1374,9 +1446,8 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
         if MPI.COMM_WORLD.rank==0:  
             hex_box = StructuredCubeSphericalCap.build_pygmsh(elementRes, angles, radius_outer, radius_inner, simplex)
 
-        super().__init__(3, hex_box, cell_size, simplex=simplex)
+        super().__init__(3, hex_box, cell_size, simplex=simplex, degree=degree)
 
-        self.pygmesh = hex_box
         self.meshio = hex_box
 
         import vtk
@@ -1462,6 +1533,7 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
                 radius_outer   :Optional[float] = 1.0,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool] = False, 
+                degree         :Optional[int]  = 2
                 ):
 
         """
@@ -1482,7 +1554,19 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         """
         
         import pygmsh
-        self.pygmesh = None
+        self.meshio = None
+
+        # Really this should be "Labels for the mesh not boundaries"
+
+        class Boundary(Enum):
+            ALL_BOUNDARIES = 0
+            CENTRE = 1
+            LOWER  = 1
+            TOP    = 2
+            UPPER  = 2
+
+        ## We should pass the boundary definitions to the mesh constructor to be sure
+        ## that we use consistent values for the labels
 
         # Really this should be "Labels for the mesh not boundaries"
 
@@ -1505,7 +1589,8 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
             cs_hex_box = None
 
         super().__init__(dim, filename=filename, bound_markers=Boundary, 
-                              cell_size=cell_size, simplex=simplex)
+                              cell_size=cell_size, simplex=simplex, degree=degree)
+
 
         self.meshio  = cs_hex_box
 
@@ -1568,14 +1653,16 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         gmsh.model.geo.mesh.set_transfinite_curve(102, res, meshType="Progression")
         gmsh.model.geo.mesh.set_transfinite_curve(103, res, meshType="Progression")
 
-        gmsh.model.geo.mesh.setTransfiniteSurface(10101, "AlternateRight")
+        gmsh.model.geo.mesh.setTransfiniteSurface(10101)
+
         if not simplex:
             gmsh.model.geo.mesh.setRecombine(2, 10101)
 
 
         gmsh.model.geo.synchronize()
-        
-        centreMarker, upperMarker = 10, 20
+
+        centreMarker, upperMarker = 1, 2
+
 
 
         #gmsh.model.add_physical_group(1, [100], outerMarker+1) # temp - to test the bc settings
@@ -1597,11 +1684,8 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         gmsh.model.geo.remove_all_duplicates()
         gmsh.model.mesh.generate(dim=2)
         gmsh.model.mesh.removeDuplicateNodes()
+
         
-        # Adjust points 
-
-
-       
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
             gmsh.write(tfile.name)
@@ -1745,6 +1829,7 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
                 radius_inner   :Optional[float] = 0.5,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool] = False, 
+                degree       :Optional[int]    =2
                 ):
 
         """
@@ -1771,16 +1856,15 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
             
         import pygmsh
 
-        self.pygmesh = None
+        self.meshio = None
 
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:  
 
             cs_hex_box = StructuredCubeSphereShellMesh.build_pygmsh(elementRes, radius_outer, radius_inner, simplex=simplex)
 
-        super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
+        super().__init__(3, cs_hex_box, cell_size, simplex=simplex, degree=degree)
 
-        self.pygmesh = cs_hex_box
         self.meshio  = cs_hex_box
 
         import vtk
@@ -2092,7 +2176,7 @@ class MeshVariable(_api_tools.Stateful):
         cdef PetscInt fields = self.field_id
         if self._lvec==None:
             # Create a subdm for this variable.
-            # This allows us to generate a local vectors.
+            # This allows us to generate a local vector.
             ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
             self._lvec  = subdm.createLocalVector()
             self._lvec.zeroEntries()       # not sure if required, but to be sure. 
@@ -2131,21 +2215,89 @@ class MeshVariable(_api_tools.Stateful):
             raise RuntimeError("Data must be accessed via the mesh `access()` context manager.")
         return self._data
 
-    def min(self) -> float:
+    def min(self) -> Union[float , tuple]:
         """
         The global variable minimum value.
         """
         if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set as of yet.")
-        return self._gvec.min()
+            raise RuntimeError("It doesn't appear that any data has been set.")
 
-    def max(self) -> float:
+        if self.num_components == 1:
+            return self._gvec.min()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideMin(i)[1])
+
+            return tuple(cpts)
+
+    def max(self) -> Union[float , tuple]:
         """
         The global variable maximum value.
         """
         if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set as of yet.")
-        return self._gvec.max()
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.max()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideMax(i)[1])
+
+            return tuple(cpts)
+
+    def sum(self) -> Union[float , tuple]:
+        """
+        The global variable maximum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.sum()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideSum(i))
+
+            return tuple(cpts)
+
+    def norm(self, norm_type) -> Union[float , tuple]:
+        """
+        The global variable maximum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.norm(norm_type)
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideNorm(i, norm_type))
+
+            return tuple(cpts)
+
+
+    def mean(self) -> Union[float , tuple]:
+        """
+        The global variable maximum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            vecsize = self._lvec.getSize()
+            return self._gvec.sum() / vecsize
+        else:
+            vecsize = self._lvec.getSize() / self.num_components
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideSum(i)/vecsize)
+
+            return tuple(cpts)
+
 
     @property
     def coords(self) -> numpy.ndarray:
