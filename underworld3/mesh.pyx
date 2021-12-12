@@ -67,6 +67,7 @@ class MeshClass(_api_tools.Stateful):
         self._accessed = False
         self._stale_lvec = True
         self._lvec = None
+        self.petsc_fe = None
 
         self._elementType = None
         self.degree = degree
@@ -79,6 +80,7 @@ class MeshClass(_api_tools.Stateful):
         # This is a reversion to the old version (3.15 compatible which seems to work)
 
         self._coord_array = {}
+
         # let's go ahead and do an initial projection from linear (the default) 
         # to linear. this really is a nothing operation, but a 
         # side effect of this operation is that coordinate DM DMField is 
@@ -95,13 +97,20 @@ class MeshClass(_api_tools.Stateful):
 
         options = PETSc.Options()
         options.setValue("meshproj_petscspace_degree", self.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, self.degree, "meshproj_", PETSc.COMM_WORLD)
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex,
+                                                    self.degree,  "meshproj_", PETSc.COMM_WORLD)
+    
+        self.petsc_fe = cdmfe
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
-        # now set copy of linear array into dictionary
+
+        # now set copy of this array into dictionary
+
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
+
+        # invalidate the k-d tree 
         self._index = None
 
         return
@@ -722,7 +731,7 @@ class MeshFromGmshFile(MeshClass):
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
-                degree       :Optional[int]                      =1
+                 degree       :Optional[int]                      =1
 
                 ):
         """
@@ -1358,7 +1367,6 @@ class SphericalShell(MeshFromGmshFile):
                 geom.generate_mesh(verbose=verbose)
 
                 import tempfile
-                import meshio
 
                 with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
                     geom.save_geometry(tfile.name)
@@ -2099,8 +2107,7 @@ class MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[name] = self
-
-
+    
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
