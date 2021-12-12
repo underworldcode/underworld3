@@ -17,9 +17,10 @@ class Poisson:
     def __init__(self, 
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable = None, 
-                 degree =2,
+                 degree     = 2,
                  solver_name: str = "",
-                 verbose=False):
+                 verbose    = False):
+
 
         ## Todo: this is obviously not particularly robust
 
