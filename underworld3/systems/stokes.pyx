@@ -123,6 +123,10 @@ class Stokes:
         self.fields["velocity"] = self.u
 
 
+        # Some other setup 
+
+
+
         # Build the DM / FE structures (should be done on remeshing)
 
         self._build_dm_and_mesh_discretisation()
@@ -143,6 +147,11 @@ class Stokes:
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
         
+
+
+
+
+
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()
@@ -164,8 +173,9 @@ class Stokes:
         options.setValue("uprivate_petscspace_degree", u_degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_u.setName("velocity")
-        self.petsc_fe_u_id = self.dm.getNumFields()
+        self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+
         options.setValue("pprivate_petscspace_degree", p_degree)
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
         self.petsc_fe_p.setName("pressure")
