@@ -81,14 +81,10 @@ PIC for composition
 
 ### Tasks
 
-  - [ ] Investigate cython for functions
-  - [ ] Petsc4py compatibility 
-  - [ ] alias .data and .array
-  - [ ] rejig a few models top down ... 
-  - [ ] audit the petsc / petsc4py features corresponding to uw ones
-  - [ ] Can we get early into TS (TS-lite)
-  - [ ] (Build a gLucifer equivalent for the DM - as generic as possible)
-  - [ ] Evaluate Julian's C-based prototype
-  - [ ] Documentation strategy
-  
-  
+  - [ ] Solver options - robust for viscosity contrasts, customisable and quick.
+  - [ ] Investigate generalising context managers. LM - example of mesh vars dependent on functions.
+  - [ ] Proper quadratice mesh interpolations for deformed meshes.
+  - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
+  - [ ] Further integrals/reduction operators on fields variables.
+  - [ ] nKK nanoflann exposure.
+  - [ ] create developer docs for software stack and general development strategy.
