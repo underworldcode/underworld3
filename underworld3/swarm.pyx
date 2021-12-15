@@ -45,7 +45,8 @@ class SwarmPICLayout(Enum):
 
 class SwarmVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
-    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True, _proxy=True):
+    def __init__(self, name, swarm, num_components, 
+                 vtype=None, dtype=float, proxy_degree=2, _register=True, _proxy=True, _nn_proxy=False):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -71,7 +72,11 @@ class SwarmVariable(_api_tools.Stateful):
         # create proxy variable
         self._meshVar = None
         if _proxy:
-            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
+            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_degree)
+
+        self._register = _register
+        self._proxy = _proxy
+        self._nn_proxy = _nn_proxy
 
         super().__init__()
 
@@ -79,14 +84,50 @@ class SwarmVariable(_api_tools.Stateful):
         """
         This method updates the proxy mesh variable for the current 
         swarm & particle variable state.
+
+        Here is how it works:
+
+            1) for each particle, create a distance-weighted average on the node data
+            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
+
+        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+
         """
+
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             return
-        nnmap = self.swarm._get_map(self)
-        # set NN vals on mesh var
+
+
+        # 1 - Average particles to nodes with distance weighted average
+
+        kd = uw.algorithms.KDTree(self._meshVar.coords)
+        kd.build_index()
+
+        with self.swarm.access():
+            n,d,b = kd.find_closest_point(self.swarm.particle_coordinates.data)
+
+        node_values  = np.zeros((self._meshVar.coords.shape[0],self.num_components))
+        w = np.zeros(self._meshVar.coords.shape[0]) 
+
+        if not self._nn_proxy:
+            with self.swarm.access():
+                for i in range(self.data.shape[0]):
+                    if b[i]:
+                        node_values[n[i],:] += self.data[i,:] / (1.0e-16+d[n[i]])
+                        w[n[i]] += 1.0 / (1.0e-16+d[n[i]])
+
+            node_values[np.where(w > 0.0)[0],:] /= w[np.where(w > 0.0)[0]].reshape(-1,1)
+
+        # 2 - set NN vals on mesh var where w == 0.0 
+         
+        p_nnmap = self.swarm._get_map(self)
+
         with self.swarm.mesh.access(self._meshVar), self.swarm.access():
-            self._meshVar.data[:,:] = self.data[nnmap,:]
+            self._meshVar.data[...] = node_values[...]
+            self._meshVar.data[np.where(w==0.0),:] = self.data[p_nnmap[np.where(w==0.0)],:]
+        
+        return      
 
     @timing.routine_timer_decorator
     def project_from(self, meshvar):
@@ -241,7 +282,7 @@ class Swarm(_api_tools.Stateful):
         self.fill_param = fill_param
 
         """
-        Currently (2021.11.15) supported by PETSc release
+        Currently (2021.11.15) supported by PETSc release 3.16.x
  
         When using a DMPLEX the following case are supported:
               (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
@@ -274,11 +315,11 @@ class Swarm(_api_tools.Stateful):
         # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
 
         self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
-        return self
+        return # self # LM: Is there any reason to return self ?
 
     @timing.routine_timer_decorator
-    def add_variable(self, name, num_components=1, dtype=float):
-        return SwarmVariable(name, self, num_components, dtype=dtype)
+    def add_variable(self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False):
+        return SwarmVariable(name, self, num_components, dtype=dtype, proxy_degree=proxy_degree, _nn_proxy=_nn_proxy)
 
     @property
     def vars(self):

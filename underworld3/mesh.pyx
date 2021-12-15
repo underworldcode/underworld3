@@ -68,6 +68,7 @@ class MeshClass(_api_tools.Stateful):
         self._accessed = False
         self._stale_lvec = True
         self._lvec = None
+        self.petsc_fe = None
 
         self._elementType = None
 
@@ -89,7 +90,6 @@ class MeshClass(_api_tools.Stateful):
         # later where we call the interpolation routines to project from the linear
         # mesh coordinates to other mesh coordinates. 
 
-
         ## LM  - I put in the option to specify the default coordinate interpolation degree 
         ## LM  - which seems sensible given linear interpolation seems likely to be a problem
         ## LM  - for spherical meshes. However, I am not sure about this because it means that
@@ -98,19 +98,25 @@ class MeshClass(_api_tools.Stateful):
 
         options = PETSc.Options()
         options.setValue("meshproj_petscspace_degree", self.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, self.degree, "meshproj_", PETSc.COMM_WORLD)
 
+        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex,
+                                                    self.degree,  "meshproj_", PETSc.COMM_WORLD)
+        self.petsc_fe = cdmfe
+      
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
-        # now set copy of linear array into dictionary
+
+        # now set copy of this array into dictionary
+
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
+
+        # invalidate the cell-search k-d tree 
+
         self._index = None
 
-
         return
-
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -434,6 +440,7 @@ class MeshClass(_api_tools.Stateful):
 
         return self._indexMap[closest_points]
 
+ 
     def get_min_radius(self) -> double:
         """
         This method returns the minimum distance from any cell centroid to a face.
@@ -725,11 +732,11 @@ class MeshFromGmshFile(MeshClass):
     def __init__(self,
                  dim           :int,
                  filename      :str,
-                 label_groups  :Optional[list] = [],
+                 label_groups  :Optional[list]  = [],
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
-                 simplex       :Optional[bool] = True,  # Not sure if this will be useful
-                degree       :Optional[int]                      =1
+                 simplex       :Optional[bool]  = True,  # Not sure if this will be useful
+                 degree       :Optional[int]    =1
 
 
                 ):
@@ -810,7 +817,6 @@ class MeshFromGmshFile(MeshClass):
                         label.insertIS(indexSet, 1)
 
                     indexSet.destroy()
-
 
         # Provide these to the mesh for boundary conditions
         self.labels =  ["Boundary.ALL_BOUNDARIES"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
@@ -2124,8 +2130,7 @@ class MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[name] = self
-
-
+    
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
@@ -2232,13 +2237,7 @@ class MeshVariable(_api_tools.Stateful):
             return tuple(cpts)
 
     def max(self) -> Union[float , tuple]:
-        """
-        The global variable maximum value.
-        """
-        if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set.")
 
-        if self.num_components == 1:
             return self._gvec.max()
         else:
             cpts = []
@@ -2288,7 +2287,8 @@ class MeshVariable(_api_tools.Stateful):
             raise RuntimeError("It doesn't appear that any data has been set.")
 
         if self.num_components == 1:
-            vecsize = self._lvec.getSize()
+
+          vecsize = self._lvec.getSize()
             return self._gvec.sum() / vecsize
         else:
             vecsize = self._lvec.getSize() / self.num_components
