@@ -90,7 +90,6 @@ class MeshClass(_api_tools.Stateful):
         # later where we call the interpolation routines to project from the linear
         # mesh coordinates to other mesh coordinates. 
 
-
         ## LM  - I put in the option to specify the default coordinate interpolation degree 
         ## LM  - which seems sensible given linear interpolation seems likely to be a problem
         ## LM  - for spherical meshes. However, I am not sure about this because it means that
@@ -112,9 +111,8 @@ class MeshClass(_api_tools.Stateful):
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
 
-        # invalidate the k-d tree 
+        # invalidate the cell-search k-d tree 
         self._index = None
-
 
         return
 
@@ -441,6 +439,7 @@ class MeshClass(_api_tools.Stateful):
 
         return self._indexMap[closest_points]
 
+ 
     def get_min_radius(self) -> double:
         """
         This method returns the minimum distance from any cell centroid to a face.
