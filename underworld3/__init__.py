@@ -1,6 +1,7 @@
 from petsc4py import PETSc
 #PETSc.Log().begin()
 import underworld3.mesh
+import underworld3.meshes
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
