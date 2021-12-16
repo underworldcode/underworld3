@@ -474,6 +474,8 @@ class MeshClass(_api_tools.Stateful):
           - sum
           - L2 norm
           - rms
+
+          NOTE: this currently assumes scalar variables !
         """    
 
 #       This uses a private work MeshVariable and the various norms defined there but
@@ -897,6 +899,41 @@ class MeshVariable(_api_tools.Stateful):
 
             return tuple(cpts)
 
+    def stats(self):
+        """
+        The equivalent of mesh.stats but using the native coordinates for this variable
+        Not set up for vector variables so we just skip that for now.
+
+        Returns various norms on the mesh using the native mesh discretisation for this
+        variable. It is a wrapper on the various _gvec stats routines for the variable.
+
+          - size
+          - mean
+          - min
+          - max
+          - sum
+          - L2 norm
+          - rms
+        """    
+
+        if self.num_components > 1:
+            raise NotImplementedError('stats not available for multi-component variables')
+
+#       This uses a private work MeshVariable and the various norms defined there but
+#       could either be simplified to just use petsc vectors, or extended to 
+#       compute integrals over the elements which is in line with uw1 and uw2 
+
+        from petsc4py.PETSc import NormType 
+
+        vsize =  self._gvec.getSize()
+        vmean  = self.mean()
+        vmax   = self.max()[1]
+        vmin   = self.min()[1]
+        vsum   = self.sum()
+        vnorm2 = self.norm(NormType.NORM_2)
+        vrms   = vnorm2 / np.sqrt(vsize)
+
+        return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
     @property
     def coords(self) -> numpy.ndarray:
