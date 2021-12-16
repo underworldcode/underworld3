@@ -735,7 +735,7 @@ class MeshFromGmshFile(MeshClass):
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
-                 degree       :Optional[int]                      =1
+                 degree        :Optional[int]    =1
 
 
                 ):
@@ -2292,10 +2292,10 @@ class MeshVariable(_api_tools.Stateful):
             raise RuntimeError("It doesn't appear that any data has been set.")
 
         if self.num_components == 1:
-            vecsize = self._lvec.getSize()
+            vecsize = self._gvec.getSize()
             return self._gvec.sum() / vecsize
         else:
-            vecsize = self._lvec.getSize() / self.num_components
+            vecsize = self._gvec.getSize() / self.num_components
             cpts = []
             for i in range(0,self.num_components):
                 cpts.append(self._gvec.strideSum(i)/vecsize)
