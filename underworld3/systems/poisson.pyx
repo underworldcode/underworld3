@@ -49,6 +49,10 @@ class Poisson:
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
 
+        # Some other setup 
+
+        self.mesh._equation_systems_register.append(self)
+
 
         super().__init__()
 

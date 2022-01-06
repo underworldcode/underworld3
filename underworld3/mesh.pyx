@@ -32,6 +32,7 @@ class MeshClass(_api_tools.Stateful):
         # Enable hashing
         options = PETSc.Options()
         options["dm_plex_hash_location"] = 0
+
         # Need some tweaks for <3.16.
         petsc_version_minor = PETSc.Sys().getVersion()[1]
         if petsc_version_minor < 16:
@@ -65,7 +66,11 @@ class MeshClass(_api_tools.Stateful):
         import weakref
         self._vars = weakref.WeakValueDictionary()
 
-     
+        # a list of equation systems that will
+        # need to be rebuilt if the mesh coordinates change
+
+        self._equation_systems_register = []
+
         self._accessed = False
         self._stale_lvec = True
         self._lvec = None
@@ -76,15 +81,19 @@ class MeshClass(_api_tools.Stateful):
         self.degree = degree
         self.nuke_coords_and_rebuild()
 
-        # A private work array
+        # A private work array used in the stats routines. 
+        # This is defined now since we cannot make a new one
+        # once the init phase of uw3 is complete.
+
         self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=3 ) 
 
+        # 
 
         super().__init__()
 
     def nuke_coords_and_rebuild(self):
 
-        # This is a reversion to the old version (3.15 compatible which seems to work)
+        # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
 
         self._coord_array = {}
 
@@ -164,6 +173,27 @@ class MeshClass(_api_tools.Stateful):
     def __del__(self):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
+
+    def deform_mesh(self, 
+                    new_coords: numpy.ndarray):
+        """
+        This method will update the mesh coordinates and reset any cached coordinates in
+        the mesh and in equation systems that are registered on the mesh. 
+
+        The coord array that is passed in should match the shape of self.data
+        """
+
+        coord_vec = self.dm.getCoordinatesLocal()
+        coords = coord_vec.array.reshape(-1,self.dim)
+        coords[...] = new_coords[...]
+                
+        self.dm.setCoordinatesLocal(coord_vec)
+        self.nuke_coords_and_rebuild()
+    
+        for eq_system in self._equation_systems_register:
+            eq_system._rebuild_after_mesh_update()
+
+        return
 
     def access(self, *writeable_vars:"MeshVariable"):
         """
@@ -510,10 +540,8 @@ class MeshClass(_api_tools.Stateful):
         order of the element is needed.
         
         ToDo: check for pyvista installation
-
         ToDo: parallel safety
-
-        ToDo: use vtk instead of pyvista 
+        ToDo: use vtk instead of pyvista ?
         """
 
         import vtk
