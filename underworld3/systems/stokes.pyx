@@ -126,9 +126,9 @@ class Stokes:
 
         # Some other setup 
 
+        self.mesh._equation_systems_register.append(self)
 
-
-        # Build the DM / FE structures (should be done on remeshing)
+        # Build the DM / FE structures (should be done on remeshing, which is usually handled by the mesh register above)
 
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
