@@ -91,6 +91,7 @@ class SwarmVariable(_api_tools.Stateful):
             2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
 
         Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+        Todo: some form of global fall-back for when there are no particles on a processor 
 
         """
 

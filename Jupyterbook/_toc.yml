@@ -19,34 +19,34 @@ parts:
       - file: Theory/NonLinear
 
 
-  - caption: Notebooks
-    chapters:
-    - file: Notebooks/Index
-      sections:
-      - file: Notebooks/Ex_Evaluate.py
-      - file: Notebooks/Ex_Poisson_Cartesian.py
-      - file: Notebooks/Ex_Poisson_Spherical.py
-      - file: Notebooks/Ex_Stokes_Cartesian_RT.py
-      - file: Notebooks/Ex_Stokes_Cartesian_SolC.py
-      - file: Notebooks/Ex_Stokes_Cartesian_SolNL.py
-      - file: Notebooks/Ex_Stokes_Cartesian_matField.py
-      - file: Notebooks/Ex_Stokes_Spherical.py
-      - file: Notebooks/Ex_Stokes_Spherical_WIP.py
-      - file: Notebooks/NEx_Stokes_pyvista_WIP.ipynb
+  # - caption: Notebooks
+  #   chapters:
+  #   - file: Notebooks/Index
+  #     sections:
+  #     - file: Notebooks/Ex_Evaluate.py
+  #     - file: Notebooks/Ex_Poisson_Cartesian.py
+  #     - file: Notebooks/Ex_Poisson_Spherical.py
+  #     - file: Notebooks/Ex_Stokes_Cartesian_RT.py
+  #     - file: Notebooks/Ex_Stokes_Cartesian_SolC.py
+  #     - file: Notebooks/Ex_Stokes_Cartesian_SolNL.py
+  #     - file: Notebooks/Ex_Stokes_Cartesian_matField.py
+  #     - file: Notebooks/Ex_Stokes_Spherical.py
+  #     - file: Notebooks/Ex_Stokes_Spherical_WIP.py
+  #     - file: Notebooks/NEx_Stokes_pyvista_WIP.ipynb
 
 
 
-  - caption: Tutorials
-    chapters:
-    - file: Lectures/Index
-      sections: 
-      - file: Lectures/Lecture_example_1
-      - file: Lectures/Lecture_example_2
+  # - caption: Tutorials
+  #   chapters:
+  #   - file: Lectures/Index
+  #     sections: 
+  #     - file: Lectures/Lecture_example_1
+  #     - file: Lectures/Lecture_example_2
 
-  - caption: Glossary
-    chapters:
-    - file: Glossary
+  # - caption: Glossary
+  #   chapters:
+  #   - file: Glossary
 
-  - caption: Bibliography
-    chapters:
-    - file: Bibliography
+  # - caption: Bibliography
+  #   chapters:
+  #   - file: Bibliography

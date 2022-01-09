@@ -149,10 +149,6 @@ class Stokes:
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
         
 
-
-
-
-
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()

@@ -53,7 +53,6 @@ class Poisson:
 
         self.mesh._equation_systems_register.append(self)
 
-
         super().__init__()
 
 
@@ -134,19 +133,23 @@ class Poisson:
 
         # f0 residual term
         self._f0 = -self.f
+
         # f1 residual term
         self._f1 = gradient(self.u.fn)*self.k
+
         # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(self.f,self.u.fn)
+        self._g0 = diff_fn1_wrt_fn2(self.f,self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
+
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
         self._g1 = dk_du*gradient(self.u.fn)
+
         # g3 jacobian term
         dk_dux = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.x))
         dk_duy = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.y))
         dk_duz = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.z))
         dk = dk_dux*N.i + dk_duy*N.j + dk_duz*N.k
-        self._g3 = dk|gradient(self.u.fn)                         # outer product for nonlinear part
+        self._g3 = dk | gradient(self.u.fn)                       # outer product for nonlinear part
         self._g3 += self.k*( (N.i|N.i) + (N.j|N.j) + (N.k|N.k) )  # linear part using dyadic identity
 
         fns_residual = (self._f0, self._f1)
