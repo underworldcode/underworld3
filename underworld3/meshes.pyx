@@ -146,7 +146,7 @@ class MeshFromGmshFile(MeshClass):
         self.dm.setFromOptions()
 
         try: 
-            self.dm.markBoundaryFaces("Boundary.ALL_BOUNDARIES", value=self.boundary.ALL_BOUNDARIES.value)
+            self.dm.markBoundaryFaces("All_dm_boundaries", value=1)
         except:
             pass
 
