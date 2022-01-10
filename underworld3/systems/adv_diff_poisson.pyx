@@ -12,14 +12,15 @@ import underworld3.timing as timing
 include "../petsc_extras.pxi"
 
 
-class Poisson:
+class AdvDiffusion:
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
-                 u_Field  : uw.mesh.MeshVariable = None, 
-                 degree     = 2,
+                 mesh       : uw.mesh.MeshClass, 
+                 u_Field    : uw.mesh.MeshVariable = None, 
+                 ustar_Field: uw.mesh.MeshVariable = None, 
+                 degree       = 2,
                  solver_name: str = "",
-                 verbose    = False):
+                 verbose      = False):
 
 
         ## Todo: this is obviously not particularly robust
@@ -31,13 +32,15 @@ class Poisson:
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
-            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_adv_diff", vtype=uw.VarType.SCALAR, degree=degree )
         else:
             self._u = u_Field
 
         self.mesh = mesh
         self.k = 1.
         self.f = 0.
+        self.dt = 1.0
+        self.ustar = ustar_Field
 
         self.bcs = []
 
@@ -97,6 +100,15 @@ class Poisson:
         # should add test here to make sure f is conformal
         self._f = sympify(value)
 
+    @property
+    def dt(self):
+        return self._dt
+    @dt.setter
+    def dt(self, value):
+        self.is_setup = False
+        # should add test here to make sure f is conformal
+        self._dt = sympify(value)
+
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
         # switch to numpy arrays
@@ -132,13 +144,13 @@ class Poisson:
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = -self.f
+        self._f0 = -self.f + (self.u.fn - self.ustar.fn) / self.dt
 
         # f1 residual term
-        self._f1 = gradient(self.u.fn)*self.k
+        self._f1 = gradient(self.u.fn+self.ustar.fn)*self.k*0.5
 
         # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(self._f0,self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
+        self._g0 = diff_fn1_wrt_fn2(-self._f0,self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
 
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
@@ -213,6 +225,7 @@ class Poisson:
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
+              timestep = 1.0,
               _force_setup:    bool =False ):
         """
         Generates solution to constructed system.
@@ -221,9 +234,12 @@ class Poisson:
         ------
         zero_init_guess:
             If `True`, a zero initial guess will be used for the 
-            system solution. Otherwise, the current values of `self.u` 
-            and `self.p` will be used.
+            system solution. Otherwise, the current values of `self.u` will be used.
         """
+
+        if timestep != self.dt:
+            self.dt = timestep    # this will force an initialisation because the functions need to be updated
+
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
 

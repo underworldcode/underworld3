@@ -698,6 +698,8 @@ class SphericalShell(MeshFromGmshFile):
         if radius_inner>=radius_outer:
             raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
         self.pygmesh = None
+        groups = [] 
+
         # Only root proc generates pygmesh, then it's distributed.
         if MPI.COMM_WORLD.rank==0:
 
@@ -746,7 +748,6 @@ class SphericalShell(MeshFromGmshFile):
                         geom.add_physical(domain.volume, label="Elements")                   
      
 
-                groups = [] # no groups !
 
                 geom.generate_mesh(verbose=verbose)
 
@@ -764,6 +765,7 @@ class SphericalShell(MeshFromGmshFile):
                 # geom.set_mesh_size_callback(
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
+
         super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
                               cell_size=cell_size, simplex=True, degree=degree)
 
