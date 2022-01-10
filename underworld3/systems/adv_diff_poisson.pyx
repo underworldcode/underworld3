@@ -41,6 +41,7 @@ class AdvDiffusion:
         self.f = 0.
         self.dt = 1.0
         self.ustar = ustar_Field
+        self.theta = 0.5
 
         self.bcs = []
 
@@ -76,7 +77,6 @@ class AdvDiffusion:
         self.is_setup = False
 
         return
-
 
     @property
     def u(self):
@@ -147,10 +147,10 @@ class AdvDiffusion:
         self._f0 = -self.f + (self.u.fn - self.ustar.fn) / self.dt
 
         # f1 residual term
-        self._f1 = gradient(self.u.fn+self.ustar.fn)*self.k*0.5
+        self._f1 = gradient(self.u.fn*self.theta + self.ustar.fn*(1.0-self.theta))*self.k
 
         # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(-self._f0,self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
+        self._g0 = diff_fn1_wrt_fn2(self._f0, self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
 
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
