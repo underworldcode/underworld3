@@ -156,7 +156,6 @@ class SwarmVariable(_api_tools.Stateful):
         ksp.setFromOptions()
 
 
-
 #   ierr = DMGetGlobalVector(dm, &fhat);CHKERRQ(ierr);
 #   ierr = DMGetGlobalVector(dm, &rhs);CHKERRQ(ierr);
         rhs = meshvardm.getGlobalVec()
@@ -205,8 +204,6 @@ class SwarmVariable(_api_tools.Stateful):
         ksp.destroy()
         M.destroy()
         M_p.destroy()
-
-
 
     @property
     def data(self):

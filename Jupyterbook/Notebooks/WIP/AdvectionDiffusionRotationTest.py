@@ -39,7 +39,7 @@ options["adv_diff_snes_type"] = "qn"
 options["adv_diff_ksp_rtol"] = 1.0e-3
 options["adv_diff_ksp_monitor"] = None
 options["adv_diff_ksp_type"] = "fgmres"
-options["adv_diff_pre_type"] = "lu"
+options["adv_diff_pre_type"] = "gamg"
 options["adv_diff_snes_converged_reason"] = None
 options["adv_diff_snes_monitor_short"] = None
 # options["adv_diff_snes_view"]=None
@@ -54,41 +54,14 @@ options["adv_diff_snes_rtol"] = 1.0e-3
 import meshio
 
 meshball = uw.meshes.SphericalShell(dim=2, radius_inner=0.5,
-                                    radius_outer=1.0, cell_size=0.15,
+                                    radius_outer=1.0, cell_size=0.1,
                                     degree=1, verbose=True)
-
-
-# +
-# check the mesh if in a notebook / serial
-
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:    
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 570]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
-    pv.global_theme.smooth_shading = True
-    
-    pvmesh = meshball.mesh2pyvista()
-    
-    pl = pv.Plotter()
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, 
-                  use_transparency=False, opacity=0.5)
-
-    pl.show()
 # -
 
+
 v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
 t_soln = uw.mesh.MeshVariable("T",    meshball, 1, degree=3)
-t_star = uw.mesh.MeshVariable("Tstar",meshball, 1, degree=3)
+t_0    = uw.mesh.MeshVariable("T0",   meshball, 1, degree=3)
 
 
 swarm  = uw.swarm.Swarm(mesh=meshball)
@@ -119,19 +92,6 @@ nswarm.dm.restoreField("DMSwarm_cellid")
 nswarm.dm.migrate(remove_sent_points=True)
 
 # +
-# Create Stokes object
-
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
-                u_degree=2, p_degree=1, solver_name="stokes")
-
-# Constant visc
-stokes.viscosity = 1.
-
-# Velocity boundary conditions
-stokes.add_dirichlet_bc( (0.,0.), "Upper" , (0,1) )
-stokes.add_dirichlet_bc( (0.,0.), "Lower" , (0,1) )
-
-# +
 # Create a density structure / buoyancy force
 # gravity will vary linearly from zero at the centre 
 # of the sphere to (say) 1 at the surface
@@ -140,7 +100,6 @@ import sympy
 
 radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec)) # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10+radius_fn)
-gravity_fn = radius_fn
 
 # Some useful coordinate stuff 
 
@@ -150,11 +109,21 @@ y = meshball.N.y
 r  = sympy.sqrt(x**2+y**2)
 th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 
+# Rigid body rotation v_theta = constant, v_r = 0.0
+
+theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
+v_x = - r * theta_dot * sympy.sin(th)
+v_y =   r * theta_dot * sympy.cos(th)
+
+with meshball.access(v_soln):
+    v_soln.data[:,0] = uw.function.evaluate(v_x, v_soln.coords)    
+    v_soln.data[:,1] = uw.function.evaluate(v_y, v_soln.coords)
+
 # +
 # Create adv_diff object
 
 # Set some things
-k = 1. 
+k = 1.0e-6
 h = 0.0 
 t_i = 2.
 t_o = 1.
@@ -162,14 +131,12 @@ r_i = 0.5
 r_o = 1.0
 delta_t = 1.0
 
-adv_diff = uw.systems.AdvDiffusion(meshball, u_Field=t_soln, ustar_Field=nT1, solver_name="adv_diff", degree=3)
+adv_diff = uw.systems.AdvDiffusion(meshball, u_Field=t_soln, 
+                                   ustar_Field=nT1, 
+                                   solver_name="adv_diff", 
+                                   degree=3)
 adv_diff.k = k
 adv_diff.theta = 0.5
-# adv_diff.f = t_soln.fn / delta_t - t_star.fn / delta_t
-# -
-
-
-
 
 # +
 # Define T boundary conditions via a sympy function
@@ -182,106 +149,49 @@ adv_diff.add_dirichlet_bc(  1.0,  "Lower" )
 adv_diff.add_dirichlet_bc(  0.0,  "Upper" )
 
 with nswarm.access(nT1):
-    nT1.data[...] = uw.function.evaluate(init_t, nswarm.data).reshape(-1,1)
+    nT1.data[...] = uw.function.evaluate(init_t, nswarm.particle_coordinates.data).reshape(-1,1)
     
+with meshball.access(t_0, t_soln):
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
+    t_soln.data[...] = t_0.data[...]
+
 # -
 
 with nswarm.access(nT1):
-    print(nT1.data.min(), nT1.data.max())
-
-
-adv_diff.solve(timestep=0.001)
-
-
-print(meshball.stats((t_soln.fn)))
-print(meshball.stats((t_soln.fn-nT1.fn)))
-
-# +
-buoyancy_force = 1.0e5 *  t_soln.fn 
-stokes.bodyforce = unit_rvec * buoyancy_force  
-
-stokes.solve()
-
-# +
-# check the mesh if in a notebook / serial
-
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
-    pv.global_theme.smooth_shading = True
-    
-    pv.start_xvfb()
-    
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    with meshball.access():
-        usol = stokes.u.data.copy()
-  
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
- 
-    arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
-    arrow_loc[:,0:2] = stokes.u.coords[...]
-    
-    arrow_length = np.zeros((stokes.u.coords.shape[0],3))
-    arrow_length[:,0:2] = usol[...] 
-    
-    pl = pv.Plotter()
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-                  use_transparency=False, opacity=0.5)
-    
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.001)
-    #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-    
-    # pl.add_points(pdata)
-
-    pl.show(cpos="xy")
-# -
-
-
+    print(nT1.data.min(), nT1.data.max(), nT1.data.mean()) 
 
 
 # +
-# Create a new swarm which samples all the T points
+# The position update should be built into the solve.
+# However, it does mean that we can do an angular velocity 
+# update of the positions
 
-# +
-# This code is impossibly slow, but we might be able to add points using a cell based layout
-# t_soln is a third order field but that is not fixed in stone ... 
-
-# s = uw.swarm.Swarm(meshball)
-
-# s.dm.finalizeFieldRegister()
-# s.dm.setPointCoordinates(t_soln.coords, redundant=False, mode=PETSc.InsertMode.ADD_VALUES)
-
-# +
-delta_t = stokes.dt()
-
-# with meshball.access():
+delta_t = 0.1
 
 with nswarm.access(nswarm.particle_coordinates, nX0):
-    v_at_Tpts = uw.function.evaluate(v_soln.fn, nswarm.particle_coordinates.data)
     nX0.data[...] = nswarm.data[...]
-    nswarm.data[...] -= 0.25 * delta_t * v_at_Tpts
-    
+
+    n_x = uw.function.evaluate(r * sympy.cos(th+delta_t*theta_dot), nswarm.data)
+    n_y = uw.function.evaluate(r * sympy.sin(th+delta_t*theta_dot), nswarm.data)
+
+    nswarm.data[:,0] = n_x
+    nswarm.data[:,1] = n_y
+
+
 with nswarm.access(nT1):
     nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)
-    
+
 # restore coords 
 with nswarm.access(nswarm.particle_coordinates):
     nswarm.data[...] = nX0.data[...]
+
+# delta_t will be baked in when this is defined ... so re-define it 
+adv_diff.solve(timestep=delta_t)
+
 # -
 
+
+print(meshball.stats((t_soln.fn)))
 
 
 # +
@@ -300,20 +210,22 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
-    
+    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
+    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
+
     pv.start_xvfb()
     
     pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
     with meshball.access():
-        usol = stokes.u.data.copy()
+        usol = v_soln.data.copy()
   
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn-nT1.fn, meshball.data)
+    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
  
-    arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
-    arrow_loc[:,0:2] = stokes.u.coords[...]
+    arrow_loc = np.zeros((v_soln.coords.shape[0],3))
+    arrow_loc[:,0:2] = v_soln.coords[...]
     
-    arrow_length = np.zeros((stokes.u.coords.shape[0],3))
+    arrow_length = np.zeros((v_soln.coords.shape[0],3))
     arrow_length[:,0:2] = usol[...] 
     
     pl = pv.Plotter()
@@ -323,36 +235,92 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
                   use_transparency=False, opacity=0.5)
     
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.001)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.01)
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
 
+
+# -
+def plot_T_mesh(filename):
+
+    import mpi4py
+
+    if mpi4py.MPI.COMM_WORLD.size==1:
+
+        import numpy as np
+        import pyvista as pv
+        import vtk
+
+        pv.global_theme.background = 'white'
+        pv.global_theme.window_size = [750, 750]
+        pv.global_theme.antialiasing = True
+        pv.global_theme.jupyter_backend = 'pythreejs'
+        pv.global_theme.smooth_shading = True
+        pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
+        pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
+
+        pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+
+        with meshball.access():
+            usol = v_soln.data.copy()
+
+        pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
+
+        arrow_loc = np.zeros((v_soln.coords.shape[0],3))
+        arrow_loc[:,0:2] = v_soln.coords[...]
+
+        arrow_length = np.zeros((v_soln.coords.shape[0],3))
+        arrow_length[:,0:2] = usol[...] 
+
+        pl = pv.Plotter()
+
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+                      use_transparency=False, opacity=0.5)
+
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.005)
+
+        pl.remove_scalar_bar("T")
+        pl.remove_scalar_bar("mag")
+
+
+        pl.screenshot(filename="{}.png".format(filename), window_size=(1000,1000), 
+                      return_img=False)
+        # pl.show()
+
+with meshball.access(t_0, t_soln):
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
+    t_soln.data[...] = t_0.data[...]
+
+
 # +
-# Convection model / update in time
+# Advection/diffusion model / update in time
 
-for step in range(0,100):
+delta_t = 0.05
+adv_diff.k=0.0
+expt_name="rotation_test_k_00"
+
+plot_T_mesh(filename="{}_step_{}".format(expt_name,0))
+
+for step in range(1,21):
     
-    stokes.solve()
-    delta_t = 0.1*stokes.dt() 
-
 ## This first order update is a placeholder only !
-#     v_at_Tpts = uw.function.evaluate(v_soln.fn, t_soln.coords)
-#     landing_pts = t_soln.coords - delta_t * v_at_Tpts
-    
-#     # Evaluate T at the launch points
-#     with meshball.access(t_star):
-#         Tstar = uw.function.evaluate(t_soln.fn, landing_pts)
-#         t_star.data[...] = Tstar.reshape(-1,1)[...]
+    # with nswarm.access(nswarm.particle_coordinates, nX0):
+    #     v_at_Tpts = uw.function.evaluate(v_soln.fn, nswarm.particle_coordinates.data)
+    #     nX0.data[...] = nswarm.data[...]
+    #     nswarm.data[...] -= delta_t * v_at_Tpts
 
-
-## This first order update is a placeholder only !
+## And this is a bit of a cheat really ... 
     with nswarm.access(nswarm.particle_coordinates, nX0):
-        v_at_Tpts = uw.function.evaluate(v_soln.fn, nswarm.particle_coordinates.data)
         nX0.data[...] = nswarm.data[...]
-        nswarm.data[...] -= delta_t * v_at_Tpts
+
+        n_x = uw.function.evaluate(r * sympy.cos(th-delta_t*theta_dot), nswarm.data)
+        n_y = uw.function.evaluate(r * sympy.sin(th-delta_t*theta_dot), nswarm.data)
+
+        nswarm.data[:,0] = n_x
+        nswarm.data[:,1] = n_y
 
     with nswarm.access(nT1):
         nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)
@@ -375,15 +343,17 @@ for step in range(0,100):
         print(tstats)
         print(dtstats)
         
+    plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
+
     # savefile = "output_conv/convection_cylinder_{}_iter.h5".format(step) 
     # meshball.save(savefile)
     # v_soln.save(savefile)
     # t_soln.save(savefile)
     # meshball.generate_xdmf(savefile)
  
+# -
 
 
-# +
 # savefile = "output_conv/convection_cylinder.h5".format(step) 
 # meshball.save(savefile)
 # v_soln.save(savefile)
@@ -392,144 +362,15 @@ for step in range(0,100):
 
 
 
-
 # +
+import imageio as iio
+from pathlib import Path
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
-    pv.global_theme.smooth_shading = True
-    
-    pv.start_xvfb()
-    
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    with meshball.access():
-        usol = stokes.u.data.copy()
-  
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
- 
-    arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
-    arrow_loc[:,0:2] = stokes.u.coords[...]
-    
-    arrow_length = np.zeros((stokes.u.coords.shape[0],3))
-    arrow_length[:,0:2] = usol[...] 
-    
-    pl = pv.Plotter()
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-                  use_transparency=False, opacity=0.5)
-    
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0005)
-    #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-    
-    # pl.add_points(pdata)
-
-    pl.show(cpos="xy")
+images = list()
+for file in Path("output/RotationTestK001/").iterdir():
+    im = iio.imread(file)
+    images.append(im)
 # -
-
-0/0
-
-# +
-# Evaluate Tstar via 
-# 1) node positions traced upstream
-# 2) swarm positions traced upstream then projected back to nodes with inv. distance weights.
-
-# T on the particles:
-
-with swarm.access(T1):
-    T1.data[:,0] = uw.function.evaluate(t_soln.fn, swarm.particle_coordinates.data)
-
-# +
-kd = uw.algorithms.KDTree(t_soln.coords)
-kd.build_index()
-
-with swarm.access():
-    n,d,b = kd.find_closest_point(swarm.particle_coordinates.data)
-
-tstar_mesh = np.zeros((t_soln.coords.shape[0]))
-w = np.zeros((t_soln.coords.shape[0]))
-
-with meshball.access():
-    for i in range(0,n.shape[0]):
-        with swarm.access():
-            tstar_mesh[n[i]] += T1.data[i] / (1.0e-10 + d[n[i]])
-        w[n[i]] += 1.0 / (1.0e-10 + d[n[i]])
-        
-tstar_mesh /= w
-# -
-
-np.where(w == 0.0)
-
-# +
-pl2 = pv.Plotter()
-
-pvmesh2 = pvmesh.copy()
-pvmesh2.scale([0.8]*3)
-
-
-t_start = pv.PolyData(t_soln.coords)
-
-with swarm.access():
-    t_points = pv.PolyData(swarm.particle_coordinates.data[0:27])
-    t_points["T"] = T1.data[0:27]
-
-
-pl2.add_mesh(pvmesh,'Green', 'wireframe', opacity=0.5)
-# pl2.add_mesh(pvmesh2,'White',  opacity=1.0)
-
-# pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=False, 
-#               use_transparency=False, opacity=0.5)
-# pl.add_arrows(meshball.data, u_mesh, mag=25.0)
-
-# pl2.add_points(t_start, color="Black", point_size=2.0)
-pl2.add_points(t_points, cmap="coolwarm", scalars="T")
-
-   
-pl2.show()
-# -
-
-aa,bb =meshball.dm.getTransitiveClosure(895)
-
-meshball.dm.getConeSize(895)
-
-meshball.pygmesh.cells[0].data.shape
-
-0/0
-
-# +
-pl = pv.Plotter()
-
-pvmesh2 = pvmesh.copy()
-pvmesh2.scale([0.95]*3)
-
-pl.add_mesh(pvmesh,'Green', 'wireframe', opacity=0.5)
-pl.add_mesh(pvmesh2,'White',  opacity=1.0)
-
-# pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=False, 
-#               use_transparency=False, opacity=0.5)
-# pl.add_arrows(meshball.data, u_mesh, mag=25.0)
-with s.access():
-    pl.add_points(s.particle_coordinates.data, cmap="CoolWarm", color="Tstar", point_size=2.0 )
-pl.show()
-# -
-
-
-
-
-
-
 
 
 

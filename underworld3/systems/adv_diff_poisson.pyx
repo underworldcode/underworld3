@@ -18,7 +18,8 @@ class AdvDiffusion:
                  mesh       : uw.mesh.MeshClass, 
                  u_Field    : uw.mesh.MeshVariable = None, 
                  ustar_Field: uw.mesh.MeshVariable = None, 
-                 degree       = 2,
+                 degree     : int  = 2,
+                 theta      : float = 0.5,
                  solver_name: str = "",
                  verbose      = False):
 
@@ -41,7 +42,7 @@ class AdvDiffusion:
         self.f = 0.
         self.dt = 1.0
         self.ustar = ustar_Field
-        self.theta = 0.5
+        self._theta = theta
 
         self.bcs = []
 
@@ -106,8 +107,16 @@ class AdvDiffusion:
     @dt.setter
     def dt(self, value):
         self.is_setup = False
-        # should add test here to make sure f is conformal
         self._dt = sympify(value)
+
+    @property
+    def theta(self):
+        return self._theta
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
+
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
