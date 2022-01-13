@@ -8,21 +8,32 @@ import underworld3
 import underworld3 as uw
 from .._jitextension import getext, diff_fn1_wrt_fn2
 import underworld3.timing as timing
+import numpy as np
 
 include "../petsc_extras.pxi"
 
 
 class AdvDiffusion:
+    """ Characteristics-based advection diffusion solver:
+
+    Uses a theta timestepping approach with semi-Lagrange sample backwards in time using 
+    a mid-point advection scheme (based on our particle swarm implementation)
+    """
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
     @timing.routine_timer_decorator
     def __init__(self, 
                  mesh       : uw.mesh.MeshClass, 
                  u_Field    : uw.mesh.MeshVariable = None, 
-                 ustar_Field: uw.mesh.MeshVariable = None, 
+                 V_Field    : uw.mesh.MeshVariable = None, 
                  degree     : int  = 2,
                  theta      : float = 0.5,
                  solver_name: str = "",
                  verbose      = False):
 
+
+        AdvDiffusion.instances += 1
 
         ## Todo: this is obviously not particularly robust
 
@@ -37,12 +48,15 @@ class AdvDiffusion:
         else:
             self._u = u_Field
 
+
+        self._V = V_Field
+
+
         self.mesh = mesh
         self.k = 1.
         self.f = 0.
         self.dt = 1.0
-        self.ustar = ustar_Field
-        self._theta = theta
+        self.theta = theta
 
         self.bcs = []
 
@@ -57,6 +71,27 @@ class AdvDiffusion:
         # Some other setup 
 
         self.mesh._equation_systems_register.append(self)
+
+        # Add the nodal point swarm which we'll use to track the characteristics
+
+        nswarm = uw.swarm.Swarm(self.mesh)
+        nT1 = uw.swarm.SwarmVariable("advdiff_Tstar_{}".format(self.instances), nswarm, 1)
+        nX0 = uw.swarm.SwarmVariable("advdiff_X0_{}".format(self.instances), nswarm, nswarm.dim)
+
+        nswarm.dm.finalizeFieldRegister()
+        nswarm.dm.addNPoints(self._u.coords.shape[0]+1) # why + 1 ? That's the number of spots actually allocated
+        cellid = nswarm.dm.getField("DMSwarm_cellid")
+        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, nswarm.dim) )
+        coords[...] = self._u.coords[...]
+        cellid[:] = self.mesh.get_closest_cells(coords)
+        nswarm.dm.restoreField("DMSwarmPIC_coor")
+        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.migrate(remove_sent_points=True)
+
+        self._nswarm  = nswarm
+        self._u_star  = nT1
+        self._X0      = nX0
+
 
         super().__init__()
 
@@ -153,10 +188,10 @@ class AdvDiffusion:
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = -self.f + (self.u.fn - self.ustar.fn) / self.dt
+        self._f0 = -self.f + (self.u.fn - self._u_star.fn) / self.dt
 
         # f1 residual term
-        self._f1 = gradient(self.u.fn*self.theta + self.ustar.fn*(1.0-self.theta))*self.k
+        self._f1 = gradient(self.u.fn*self.theta + self._u_star.fn*(1.0-self.theta))*self.k
 
         # g0 jacobian term
         self._g0 = diff_fn1_wrt_fn2(self._f0, self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
@@ -234,8 +269,9 @@ class AdvDiffusion:
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
-              timestep = 1.0,
-              _force_setup:    bool =False ):
+              timestep       : float = 1.0,
+              coords         : np.ndarray = None,
+              _force_setup   : bool =False ):
         """
         Generates solution to constructed system.
 
@@ -251,6 +287,44 @@ class AdvDiffusion:
 
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
+
+        # mid pt update scheme by default, but it is possible to supply
+        # coords to over-ride this (e.g. rigid body rotation example)
+
+
+        # placeholder definitions can be removed later
+        nswarm = self._nswarm
+        t_soln = self._u
+        v_soln = self._V
+        nX0 = self._X0
+        nT1 = self._u_star
+        delta_t = timestep
+
+        with nswarm.access(nX0):
+            nX0.data[...] = nswarm.data[...]
+
+        if coords is None: # Mid point method to find launch points (T*)
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Tpts = uw.function.evaluate(v_soln.fn, nswarm.data)
+                nswarm.data[...] -= 0.5 * delta_t * v_at_Tpts
+
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Tpts_half_dt = uw.function.evaluate(v_soln.fn, nswarm.data)
+                nswarm.data[...] = nX0.data[...] - delta_t * v_at_Tpts
+
+        else:  # launch points (T*) provided by omniscience user
+            with nswarm.access(nswarm.particle_coordinates):
+                nswarm.data[...] = coords[...]
+
+        with nswarm.access(nT1):
+            nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)
+
+        # restore coords 
+        with nswarm.access(nswarm.particle_coordinates):
+            nswarm.data[...] = nX0.data[...]
+
+        # Now solve the poisson equation which depends on the self._u_star field that
+        # we have now computed
 
         gvec = self.dm.getGlobalVec()
 

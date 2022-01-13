@@ -114,7 +114,8 @@ class MeshFromGmshFile(MeshClass):
                  cell_size     :Optional[float] = None,
                  refinements   :Optional[int]   = 0,
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
-                 degree        :Optional[int]    =1
+                 degree        :Optional[int]    =1,
+                 verbose        :Optional[bool]  =False
                 ):
         """
         This is a generic mesh class for which users will provide 
@@ -127,14 +128,17 @@ class MeshFromGmshFile(MeshClass):
             - etc etc
         """
 
+        self.verbose = verbose
+
         if cell_size and (refinements>0):
             raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
 
         self.cell_size = cell_size
         self.refinements = refinements
 
+
         options = PETSc.Options()
-        options["dm_plex_separate_marker"] = None
+        # options["dm_plex_separate_marker"] = None # this is never used and flags errors for mpirun
 
         self.dm =  PETSc.DMPlex().createFromFile(filename)
         self.meshio = meshio.read(filename)
@@ -198,7 +202,9 @@ class MeshFromGmshFile(MeshClass):
         # Provide these to the mesh for boundary conditions
         self.labels =  ["Boundary.ALL_BOUNDARIES"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
 
-        self.dm.view()
+        if self.verbose:
+            self.dm.view()
+
         super().__init__(simplex=simplex, degree=degree)
 
 
@@ -664,7 +670,6 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
 class SphericalShell(MeshFromGmshFile):
 
-
     @timing.routine_timer_decorator
     def __init__(self,
                  dim              :Optional[  int] =2,
@@ -767,7 +772,7 @@ class SphericalShell(MeshFromGmshFile):
                 # )
 
         super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
-                              cell_size=cell_size, simplex=True, degree=degree)
+                              cell_size=cell_size, simplex=True, degree=degree, verbose=verbose)
 
 
         import vtk
@@ -916,8 +921,9 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
                 elementRes     :Tuple[int,  int]  = 8,
                 radius_outer   :Optional[float] = 1.0,
                 cell_size      :Optional[float] = 1e30,
-                simplex        :Optional[bool] = False, 
-                degree         :Optional[int]  = 2
+                simplex        :Optional[bool]  = False, 
+                degree         :Optional[int]   = 2,
+                verbose        :Optional[bool]  = False
                 ):
 
         """
@@ -939,6 +945,7 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
         
         import pygmsh
         self.meshio = None
+        self.verbose = verbose
 
         # Really this should be "Labels for the mesh not boundaries"
 
@@ -973,7 +980,7 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
             cs_hex_box = None
 
         super().__init__(dim, filename=filename, bound_markers=Boundary, 
-                              cell_size=cell_size, simplex=simplex, degree=degree)
+                              cell_size=cell_size, simplex=simplex, degree=degree, verbose=verbose)
 
 
         self.meshio  = cs_hex_box
