@@ -91,6 +91,10 @@ extensions = [
               sources = ['underworld3/systems/stokes.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
+    Extension('underworld3.systems.navier_stokes',
+              sources = ['underworld3/systems/navier_stokes.pyx',],
+              extra_compile_args=extra_compile_args,
+              **conf),
     Extension('underworld3.swarm',
               sources = ['underworld3/swarm.pyx',],
               extra_compile_args=extra_compile_args,
@@ -107,7 +111,6 @@ extensions = [
               sources = ['underworld3/systems/adv_diff_poisson.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-
     Extension('underworld3.function._function',
               sources = ['underworld3/function/_function.pyx', 'underworld3/function/petsc_tools.c',],
               extra_compile_args=extra_compile_args,

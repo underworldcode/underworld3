@@ -98,27 +98,25 @@ class SwarmVariable(_api_tools.Stateful):
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             return
-
-
+       
         # 1 - Average particles to nodes with distance weighted average
 
         kd = uw.algorithms.KDTree(self._meshVar.coords)
         kd.build_index()
 
         with self.swarm.access():
-            n,d,b = kd.find_closest_point(self.swarm.particle_coordinates.data)
+            n,d,b = kd.find_closest_point(self.swarm.data)
+   
+            node_values  = np.zeros((self._meshVar.coords.shape[0],self.num_components))
+            w = np.zeros(self._meshVar.coords.shape[0]) 
 
-        node_values  = np.zeros((self._meshVar.coords.shape[0],self.num_components))
-        w = np.zeros(self._meshVar.coords.shape[0]) 
-
-        if not self._nn_proxy:
-            with self.swarm.access():
+            if not self._nn_proxy:
                 for i in range(self.data.shape[0]):
                     if b[i]:
-                        node_values[n[i],:] += self.data[i,:] / (1.0e-16+d[n[i]])
-                        w[n[i]] += 1.0 / (1.0e-16+d[n[i]])
+                        node_values[n[i],:] += self.data[i,:] / (1.0e-16+d[i])
+                        w[n[i]] += 1.0 / (1.0e-16+d[i])
 
-            node_values[np.where(w > 0.0)[0],:] /= w[np.where(w > 0.0)[0]].reshape(-1,1)
+                node_values[np.where(w > 0.0)[0],:] /= w[np.where(w > 0.0)[0]].reshape(-1,1)
 
         # 2 - set NN vals on mesh var where w == 0.0 
          
@@ -415,6 +413,7 @@ class Swarm(_api_tools.Stateful):
                     if (self.em_swarm.particle_coordinates in writeable_vars) or \
                        (var                                in writeable_vars) :
                         var._update()
+
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time()-stime, "Swarm.access",1)
         return exit_manager(self)
@@ -423,7 +422,7 @@ class Swarm(_api_tools.Stateful):
         # generate tree if not avaiable
         if not self._index:
             with self.access():
-                self._index = uw.algorithms.KDTree(self.particle_coordinates.data)
+                self._index = uw.algorithms.KDTree(self.data)
 
         # get or generate map
         meshvar_coords = var._meshVar.coords

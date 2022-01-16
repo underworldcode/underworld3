@@ -29,7 +29,7 @@ class AdvDiffusion:
                  V_Field    : uw.mesh.MeshVariable = None, 
                  degree     : int  = 2,
                  theta      : float = 0.5,
-                 solver_name: str = "",
+                 solver_name: str = "adv_diff_",
                  verbose      = False):
 
 
@@ -42,6 +42,19 @@ class AdvDiffusion:
         else:
             self.petsc_options_prefix = solver_name
 
+        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+
+        # Here we can set some defaults for this set of KSP / SNES solvers
+        self.petsc_options["snes_type"] = "newtonls"
+        self.petsc_options["ksp_rtol"] = 1.0e-3
+        self.petsc_options["ksp_monitor"] = None
+        self.petsc_options["ksp_type"] = "fgmres"
+        self.petsc_options["pre_type"] = "gamg"
+        self.petsc_options["snes_converged_reason"] = None
+        self.petsc_options["snes_monitor_short"] = None
+        # self.petsc_options["snes_view"] = None
+        self.petsc_options["snes_rtol"] = 1.0e-3
+
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
             self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_adv_diff", vtype=uw.VarType.SCALAR, degree=degree )
@@ -51,11 +64,10 @@ class AdvDiffusion:
 
         self._V = V_Field
 
-
         self.mesh = mesh
         self.k = 1.
         self.f = 0.
-        self.dt = 1.0
+        self.delta_t = 1.0
         self.theta = theta
 
         self.bcs = []
@@ -137,12 +149,12 @@ class AdvDiffusion:
         self._f = sympify(value)
 
     @property
-    def dt(self):
-        return self._dt
-    @dt.setter
-    def dt(self, value):
+    def delta_t(self):
+        return self._delta_t
+    @delta_t.setter
+    def delta_t(self, value):
         self.is_setup = False
-        self._dt = sympify(value)
+        self._delta_t = sympify(value)
 
     @property
     def theta(self):
@@ -194,8 +206,7 @@ class AdvDiffusion:
         self._f1 = gradient(self.u.fn*self.theta + self._u_star.fn*(1.0-self.theta))*self.k
 
         # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(self._f0, self.u.fn)  ## Should this one be -self._f0 rather than self.f ?
-
+        self._g0 = diff_fn1_wrt_fn2(self._f0, self.u.fn)  
         # g1 jacobian term
         dk_du = diff_fn1_wrt_fn2(self.k,self.u.fn)
         self._g1 = dk_du*gradient(self.u.fn)
@@ -282,15 +293,14 @@ class AdvDiffusion:
             system solution. Otherwise, the current values of `self.u` will be used.
         """
 
-        if timestep != self.dt:
-            self.dt = timestep    # this will force an initialisation because the functions need to be updated
+        if timestep != self.delta_t:
+            self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
 
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
 
         # mid pt update scheme by default, but it is possible to supply
         # coords to over-ride this (e.g. rigid body rotation example)
-
 
         # placeholder definitions can be removed later
         nswarm = self._nswarm
@@ -310,7 +320,7 @@ class AdvDiffusion:
 
             with nswarm.access(nswarm.particle_coordinates):
                 v_at_Tpts_half_dt = uw.function.evaluate(v_soln.fn, nswarm.data)
-                nswarm.data[...] = nX0.data[...] - delta_t * v_at_Tpts
+                nswarm.data[...] = nX0.data[...] - delta_t * v_at_Tpts_half_dt
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):

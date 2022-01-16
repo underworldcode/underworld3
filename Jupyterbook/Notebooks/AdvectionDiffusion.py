@@ -18,42 +18,10 @@ from underworld3 import function
 
 import numpy as np
 
-options = PETSc.Options()
+# options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
 # options["dm_plex_check_all"] = None
-
-# Options directed at the Stokes solver
-
-options["stokes_ksp_rtol"] =  1.0e-3
-# options["stokes_ksp_monitor"] = None
-# options["stokes_snes_converged_reason"] = None
-options["stokes_snes_monitor_short"] = None
-options["stokes_snes_max_it"] = 1
-options["stokes_pc_type"] = "fieldsplit"
-options["stokes_pc_fieldsplit_type"] = "schur"
-options["stokes_pc_fieldsplit_schur_factorization_type"] ="full"
-options["stokes_pc_fieldsplit_schur_precondition"] = "a11"
-options["stokes_fieldsplit_velocity_pc_type"] = "lu"
-options["stokes_fieldsplit_pressure_ksp_rtol"] = 1.e-3
-options["stokes_fieldsplit_pressure_pc_type"] = "lu"
-
-# Options directed at the adv_diff solver
-
-# options["adv_diff_pc_type"]  = "svd"
-options["adv_diff_snes_type"] = "newtonls"
-options["adv_diff_ksp_rtol"] = 1.0e-3
-# options["adv_diff_ksp_monitor"] = None
-options["adv_diff_ksp_type"] = "fgmres"
-options["adv_diff_pre_type"] = "gamg"
-options["adv_diff_snes_converged_reason"] = None
-options["adv_diff_snes_monitor_short"] = None
-# options["adv_diff_snes_view"]=None
-options["adv_diff_snes_rtol"] = 1.0e-3
-
-# import os
-# os.environ["SYMPY_USE_CACHE"]="no"
-
 # options.getAll()
 
 # +
@@ -133,6 +101,10 @@ swarm.populate(fill_param=3)
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
                 u_degree=2, p_degree=1, solver_name="stokes")
 
+# Set solve options here (or remove default values
+# stokes.petsc_options.getAll()
+stokes.petsc_options.delValue("ksp_monitor")
+
 # Constant visc
 stokes.viscosity = 1.
 
@@ -192,6 +164,9 @@ adv_diff.add_dirichlet_bc(  0.0,  "Upper" )
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
     t_soln.data[...] = t_0.data[...]
+# -
+
+
 
 # +
 buoyancy_force = 1.0e6 * t_soln.fn / (0.5)**3 
@@ -199,10 +174,12 @@ stokes.bodyforce = unit_rvec * buoyancy_force
 
 # check the stokes solve converges
 stokes.solve()
+# -
 
-# +
+adv_diff
+
 # Check the diffusion part of the solve converges 
-# adv_diff.solve(timestep=0.0001)
+adv_diff.solve(timestep=0.0001)
 
 
 # +

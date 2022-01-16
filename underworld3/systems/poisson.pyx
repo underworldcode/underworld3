@@ -29,6 +29,20 @@ class Poisson:
         else:
             self.petsc_options_prefix = solver_name
 
+        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+
+        # Here we can set some defaults for this set of KSP / SNES solvers
+        self.petsc_options["snes_type"] = "newtonls"
+        self.petsc_options["ksp_rtol"] = 1.0e-3
+        self.petsc_options["ksp_monitor"] = None
+        self.petsc_options["ksp_type"] = "fgmres"
+        self.petsc_options["pre_type"] = "gamg"
+        self.petsc_options["snes_converged_reason"] = None
+        self.petsc_options["snes_monitor_short"] = None
+        # self.petsc_options["snes_view"] = None
+        self.petsc_options["snes_rtol"] = 1.0e-3
+
+
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
             self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )

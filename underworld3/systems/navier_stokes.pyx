@@ -3,6 +3,7 @@ from typing import Optional
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
+import numpy as np
 
 from petsc4py import PETSc
 
@@ -13,7 +14,10 @@ import underworld3.timing as timing
 
 include "../petsc_extras.pxi"
 
-class Stokes:
+class NavierStokes:
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
     @timing.routine_timer_decorator
     def __init__(self, 
                  mesh          : underworld3.mesh.MeshClass, 
@@ -21,7 +25,9 @@ class Stokes:
                  pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
-                 solver_name   : Optional[str]                           ="stokes_",
+                 inv_prandtl   : Optional[float]                         =0.0,
+                 theta         : Optional[float]                         =0.5,
+                 solver_name   : Optional[str]                           ="navier_stokes_",
                  verbose       : Optional[str]                           =False
                   ):
         """
@@ -36,9 +42,9 @@ class Stokes:
 
         .. math::
             \\begin{align}
-            \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
+            \\sigma_{ij,j} + f_i =& \\: 0  &  \\text{ in }  \\Omega \\\\
+            u_{k,k} =& \\: 0      & \\ text{ in }  \\Omega \\\\
+            u_i =& \\: g_i        & \\text{ on }   \\Gamma_{g_i} \\\\
             \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
             \\end{align}
 
@@ -93,6 +99,8 @@ class Stokes:
 
         """
 
+        NavierStokes.instances += 1
+
         self.mesh = mesh
         self.verbose = verbose
 
@@ -127,7 +135,6 @@ class Stokes:
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.e-3
         self.petsc_options["fieldsplit_pressure_pc_type"] = "lu" 
 
-
         if not velocityField:
             if p_degree==None:
                 p_degree = u_degree - 1
@@ -144,10 +151,36 @@ class Stokes:
         self.fields["pressure"] = self.p
         self.fields["velocity"] = self.u
 
+        # Parameters
+        self.delta_t = 0.001
+        self.theta = theta
+        self.inv_prandtl = inv_prandtl
 
         # Some other setup 
 
         self.mesh._equation_systems_register.append(self)
+
+        # Add the nodal point swarm which we'll use to track the characteristics
+
+        nswarm = uw.swarm.Swarm(self.mesh)
+        nU1 = uw.swarm.SwarmVariable("ns_Ustar_{}".format(self.instances), nswarm, nswarm.dim)
+        nP1 = uw.swarm.SwarmVariable("ns_Pstar_{}".format(self.instances), nswarm, 1)
+        nX0 = uw.swarm.SwarmVariable("ns_X0_{}".format(self.instances), nswarm, nswarm.dim,
+                                                   _proxy=False)
+        nswarm.dm.finalizeFieldRegister()
+        nswarm.dm.addNPoints(self._u.coords.shape[0]+1) # why + 1 ? That's the number of spots actually allocated
+        cellid = nswarm.dm.getField("DMSwarm_cellid")
+        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, nswarm.dim) )
+        coords[...] = self._u.coords[...]
+        cellid[:] = self.mesh.get_closest_cells(coords)
+        nswarm.dm.restoreField("DMSwarmPIC_coor")
+        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.migrate(remove_sent_points=True)
+
+        self._nswarm  = nswarm
+        self._u_star  = nU1
+        self._p_star  = nP1
+        self._X0      = nX0
 
         # Build the DM / FE structures (should be done on remeshing, which is usually handled by the mesh register above)
 
@@ -167,9 +200,14 @@ class Stokes:
         grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
         grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
+        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
         
-
+        grad_u_star_x = gradient(self.u_star.fn.dot(N.i)).to_matrix(N)
+        grad_u_star_y = gradient(self.u_star.fn.dot(N.j)).to_matrix(N)
+        grad_u_star_z = gradient(self.u_star.fn.dot(N.k)).to_matrix(N)
+        grad_u_star = sympy.Matrix((grad_u_star_x.T,grad_u_star_y.T,grad_u_star_z.T))
+        self._strainrate_star = 1/2 * (grad_u_star + grad_u_star.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
+    
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()
@@ -178,7 +216,6 @@ class Stokes:
 
         """
         Most of what is in the init phase that is not called by _setup_terms()
-
         """
         
         mesh = self.mesh
@@ -214,26 +251,63 @@ class Stokes:
 
         return
 
-
-
     @property
     def u(self):
         return self._u
     @property
+    def u_star(self):
+        return self._u_star
+    @property
     def p(self):
         return self._p
+    @property
+    def p_star(self):
+        return self._p_star
     @property
     def strainrate(self):
         return self._strainrate
     @property
+    def strainrate_star(self):
+        return self._strainrate_star
+    @property
     def stress_deviator(self):
         return 2*self.viscosity*self.strainrate
+    @property
+    def stress_deviator_star(self):
+        return 2*self.viscosity*self.strainrate_star
     @property
     def stress(self):
         return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
     @property
+    def stress_star(self):
+        return self.stress_deviator_star - sympy.eye(self.mesh.dim)*self.p_star.fn
+    @property
     def div_u(self):
         return divergence(self.u.fn)
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t = sympify(value)
+
+    @property
+    def inv_prandtl(self):
+        return self._inv_prandtl
+    @inv_prandtl.setter
+    def inv_prandtl(self, value):
+        self.is_setup = False
+        self._inv_prandtl = sympify(value)
+
+    @property
+    def theta(self):
+        return self._theta
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
 
     @property
     def viscosity(self):
@@ -292,9 +366,9 @@ class Stokes:
 
         # residual terms
         fns_residual = []
-        self._u_f0 = -self.bodyforce
+        self._u_f0 = -self.bodyforce + self.inv_prandtl * (self.u.fn - self._u_star.fn) / self.delta_t
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress
+        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta)
         fns_residual.append(self._u_f1)
         self._p_f0 = self.div_u
         fns_residual.append(self._p_f0)
@@ -304,6 +378,10 @@ class Stokes:
         dim = self.mesh.dim
         N = self.mesh.N
         fns_jacobian = []
+
+        # strain_rate_ave_dt = self.theta*self.strainrate + (1.0-self.theta) * self.strainrate_star
+        strain_rate_ave_dt = self.strainrate
+
 
         ### uu terms
         ##  linear part
@@ -336,10 +414,11 @@ class Stokes:
             row = []
             for i in range(dim):
                 # 2 * d_mu_d_u_x_{k} * \dot\eps * e_{i}  
-                row.append(2*d_mu_d_u_x[k]*self.strainrate[:,i])
+                row.append(2*d_mu_d_u_x[k]*strain_rate_ave_dt[:,i])
             rows.append(row)
         self._uu_g2 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g2)
+
 
         ## velocity gradient dependant part
         # build derivatives with respect to velocity gradients (u_x_dx,u_x_dy,u_x_dz,u_y_dx,u_y_dy,u_y_dz,u_z_dx,u_z_dy,u_z_dz)
@@ -359,7 +438,7 @@ class Stokes:
             row = []
             for i in range(dim):
                 # 2 * \dot\eps * e_{i} * d_mu_d_u_i_k   
-                row.append(2*self.strainrate[:,i]*d_mu_d_u_i_dk[k].T)
+                row.append(2*strain_rate_ave_dt[:,i]*d_mu_d_u_i_dk[k].T)
             rows.append(row)
         self._uu_g3 += sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g3)
@@ -367,7 +446,7 @@ class Stokes:
         ## pressure dependant part
         # get derivative with respect to pressure
         d_mu_d_p = diff_fn1_wrt_fn2(self.viscosity,self.p.fn)
-        self._up_g2 = (2*d_mu_d_p*self.strainrate).as_immutable()
+        self._up_g2 = (2 * d_mu_d_p * strain_rate_ave_dt).as_immutable()
         # add linear in pressure part
         self._up_g2 += -sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._up_g2)
@@ -482,6 +561,8 @@ class Stokes:
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
+              timestep       : float = 1.0e-32,
+              coords         : np.ndarray = None,
               _force_setup:    bool =False ):
         """
         Generates solution to constructed system.
@@ -493,8 +574,59 @@ class Stokes:
             system solution. Otherwise, the current values of `self.u` 
             and `self.p` will be used.
         """
+
+        if timestep != self.delta_t:
+            self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
+
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
+
+        # mid pt update scheme by default, but it is possible to supply
+        # coords to over-ride this (e.g. rigid body rotation example)
+
+        # placeholder definitions can be removed later
+        nswarm = self._nswarm
+        u_soln = self._u
+        p_soln = self._p
+        nX0 = self._X0
+        nU1 = self._u_star
+        nP1 = self._p_star
+        delta_t = timestep
+
+        with nswarm.access(nX0):
+            nX0.data[...] = nswarm.data[...]
+
+        if coords is None: # Mid point method to find launch points (T*)
+            if delta_t > self.dt():
+                substeps = int(np.floor(delta_t / self.dt())) + 1
+                print("substeps = {}".format(substeps))
+            else:
+                substeps = 1
+           
+            for substep in range(0, substeps):
+                sub_delta_t = timestep / substeps
+
+                with nswarm.access(nswarm.particle_coordinates):
+                    v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                    nswarm.data[...] -= sub_delta_t * v_at_Vpts
+
+#               # May not work if points go outside the boundary ... 
+#               with nswarm.access(nswarm.particle_coordinates):
+#                   v_at_Vpts_half_dt = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+#                   nswarm.data[...] -= sub_delta_t * (v_at_Vpts_half_dt - 0.5 * v_at_Vpts )
+       
+
+        else:  # launch points (T*) provided by omniscience user
+            with nswarm.access(nswarm.particle_coordinates):
+                nswarm.data[...] = coords[...]
+
+        with nswarm.access(nU1, nP1):
+            nU1.data[...] = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+            nP1.data[...] = uw.function.evaluate(p_soln.fn, nswarm.data).reshape(-1,1)
+
+        # restore coords 
+        with nswarm.access(nswarm.particle_coordinates):
+            nswarm.data[...] = nX0.data[...]
 
         gvec = self.dm.getGlobalVec()
 
@@ -575,7 +707,7 @@ class Stokes:
         
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
-        max_magvel_glob = comm.allreduce( max_magvel, op=MPI.MAX)
+        max_magvel_glob = comm.allreduce( max_magvel, op=MPI.MAX) + 1.0e-16
 
         min_dx = self.mesh.get_min_radius()
         return min_dx/max_magvel_glob
