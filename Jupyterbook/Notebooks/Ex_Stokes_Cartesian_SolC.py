@@ -20,7 +20,7 @@ options["snes_max_it"] = 1
 
 # %%
 n_els = 32
-mesh = uw.mesh.Box(elementRes=(n_els,n_els))
+mesh = uw.meshes.Box(elementRes=(n_els,n_els))
 v_degree = 1
 stokes = uw.systems.Stokes(mesh, u_degree=v_degree )
 
@@ -42,8 +42,19 @@ stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], 1 )  # top/bottom: c
 stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: components, function, markers
 
 # %%
+stokes._u_f1
+
+# %%
+stokes._uu_g2
+
+# %%
+0/0
+
+# %%
 # Solve time
 stokes.solve()
+
+# %%
 
 # %%
 try:

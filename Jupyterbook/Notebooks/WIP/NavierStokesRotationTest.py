@@ -50,20 +50,19 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
 v_x = -1.0 *  r * theta_dot * sympy.sin(th)
 v_y =         r * theta_dot * sympy.cos(th)
-
-# +
-coord_vec = meshball.dm.getCoordinates()
-
-coords = coord_vec.array.reshape(-1,2)
-mesh_th = np.arctan2(coords[:,1], coords[:,0]).reshape(-1,1)
-mesh_r  = np.hypot(coords[:,0], coords[:,1]).reshape(-1,1)
-coords *= 1.0 + 0.5 * (1.0-mesh_r) * np.cos(mesh_th*5.0)
-meshball.dm.setCoordinates(coord_vec)
-
-meshball.meshio.points[:,0] = coords[:,0]
-meshball.meshio.points[:,1] = coords[:,1]
-
 # -
+
+# coord_vec = meshball.dm.getCoordinates()
+#
+# coords = coord_vec.array.reshape(-1,2)
+# mesh_th = np.arctan2(coords[:,1], coords[:,0]).reshape(-1,1)
+# mesh_r  = np.hypot(coords[:,0], coords[:,1]).reshape(-1,1)
+# coords *= 1.0 + 0.5 * (1.0-mesh_r) * np.cos(mesh_th*5.0)
+# meshball.dm.setCoordinates(coord_vec)
+#
+# meshball.meshio.points[:,0] = coords[:,0]
+# meshball.meshio.points[:,1] = coords[:,1]
+
 
 v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
@@ -89,9 +88,14 @@ navier_stokes.petsc_options["snes_type"]="newtonls"
 navier_stokes.petsc_options["snes_max_it"]=150
 navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
 navier_stokes.petsc_options["fieldsplit_velocity_pc_type"] = "lu"
+# navier_stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# navier_stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+
 
 # Constant visc
 navier_stokes.viscosity = 1.0
+navier_stokes.penalty=1.0
 
 navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
@@ -109,9 +113,14 @@ with meshball.access(v_soln):
 navier_stokes.estimate_dt()
 
 navier_stokes.solve(timestep=0.01)
+navier_stokes.estimate_dt()
 
-for i in range(0,10):
-    navier_stokes.solve(timestep=0.01, zero_init_guess=False)
+navier_stokes._uu_g0
+# navier_stokes._pp_g0
+
+navier_stokes.penalty
+
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -228,11 +237,11 @@ def plot_T_mesh(filename):
 
        # pl.show()
 
+
+
+
+
 0/0
-
-
-
-
 
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)

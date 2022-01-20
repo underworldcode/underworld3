@@ -166,6 +166,7 @@ class NavierStokes:
         self.delta_t = 0.001
         self.theta = theta
         self.rho = rho
+        self.penalty = 1.0
 
         # Build the DM / FE structures (should be done on remeshing, which is usually handled by the mesh register above)
 
@@ -234,7 +235,9 @@ class NavierStokes:
         grad_u_star_z = gradient(self.u_star.fn.dot(N.k)).to_matrix(N)
         grad_u_star = sympy.Matrix((grad_u_star_x.T,grad_u_star_y.T,grad_u_star_z.T))
         self._strainrate_star = 1/2 * (grad_u_star + grad_u_star.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
-    
+
+        self._penalty_term = (sympy.eye(self.mesh.dim)*self.div_u).as_immutable()
+
         super().__init__()
 
     def _build_dm_and_mesh_discretisation(self):
@@ -327,6 +330,13 @@ class NavierStokes:
     def rho(self, value):
         self.is_setup = False
         self._rho = sympify(value)
+    @property
+    def penalty(self):
+        return self._penalty
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        self._penalty = sympify(value)
 
     @property
     def theta(self):
@@ -395,7 +405,7 @@ class NavierStokes:
         fns_residual = []
         self._u_f0 = -self.bodyforce + self.rho * (self.u.fn - self._u_star.fn) / self.delta_t
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta)
+        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta) + self.penalty * self._penalty_term
         fns_residual.append(self._u_f1)
         self._p_f0 = self.div_u * self.theta + self.div_u_star * (1.0-self.theta)
         fns_residual.append(self._p_f0)
@@ -409,7 +419,6 @@ class NavierStokes:
         strain_rate_ave_dt = self.theta*self.strainrate + (1.0-self.theta) * self.strainrate_star
         # strain_rate_ave_dt = self.strainrate
 
-
         ### uu terms
 
         g0 = sympy.eye(dim)
@@ -419,7 +428,6 @@ class NavierStokes:
 
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
-
 
         ##  linear part
 
@@ -517,7 +525,7 @@ class NavierStokes:
         fns_jacobian.append(self._pu_g1)
 
         # pp term
-        self._pp_g0 = 1/(self.viscosity +  self.rho)
+        self._pp_g0 = 1/(self.viscosity) #  + self.rho / self.delta_t)
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code.
@@ -549,6 +557,7 @@ class NavierStokes:
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        # PetscDSSetJacobian(              ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])

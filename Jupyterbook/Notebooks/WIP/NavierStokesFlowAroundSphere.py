@@ -24,8 +24,8 @@ import meshio, pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.075
-csize_circle = 0.033
+csize = 0.1
+csize_circle = 0.05
 
 width = 5.0
 height = 1.0
@@ -189,7 +189,7 @@ with pipemesh.access(v_soln):
 # different options for NS solve cf to Stokes-like solve
 
 navier_stokes.verbose=False
-navier_stokes.petsc_options["snes_type"]="qn"
+navier_stokes.petsc_options["snes_type"]="newtonls"
 navier_stokes.petsc_options["snes_qn_type"]="lbfgs"
 navier_stokes.petsc_options["snes_rtol"]=1.0e-4
 navier_stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-5
@@ -201,8 +201,14 @@ navier_stokes.petsc_options["snes_qn_scale_type"]="diagonal"
 navier_stokes.petsc_options["snes_qn_restart_type"]="powell"
 #navier_stokes.petsc_options["snes_qn_m"]=25
 
+# navier_stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+navier_stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+
+
 navier_stokes.rho=1.0
 navier_stokes.theta=0.5
+navier_stokes.penalty=0.0
 
 expt_name = "pipe_flow_cylinder_R025_V25"
 # -
