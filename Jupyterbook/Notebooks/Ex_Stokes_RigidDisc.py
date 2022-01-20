@@ -10,36 +10,17 @@ from underworld3 import function
 
 import numpy as np
 
-options = PETSc.Options()
+# options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
 # options["dm_plex_check_all"] = None
 
-options["stokes_ksp_rtol"] =  1.0e-1
-options["stokes_ksp_monitor"] = None
-options["stokes_snes_converged_reason"] = None
-options["stokes_snes_monitor_short"] = None
 
-# options["stokes_snes_view"]=None
-# options["stokes_snes_test_jacobian"] = None
-options["stokes_snes_max_it"] = 1
-options["stokes_pc_type"] = "fieldsplit"
-options["stokes_pc_fieldsplit_type"] = "schur"
-options["stokes_pc_fieldsplit_schur_factorization_type"] ="full"
-options["stokes_pc_fieldsplit_schur_precondition"] = "a11"
-options["stokes_fieldsplit_velocity_pc_type"] = "lu"
-options["stokes_fieldsplit_pressure_ksp_rtol"] = 1.e-3
-options["stokes_fieldsplit_pressure_pc_type"] = "lu"
-
-import os
-os.environ["SYMPY_USE_CACHE"]="no"
-# -
-
+# +
 import meshio
-meshball = uw.mesh.StructuredCubeSphereBallMesh(dim=2, elementRes=7, radius_outer=1.0, simplex=True)
-# meshball = uw.mesh.SphericalShell(dim=2, radius_inner=0.0, radius_outer=1.0, cell_size=0.05)
 
-
+meshball = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True)                       
+# -
 
 v_soln = uw.mesh.MeshVariable('U',meshball, 2, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',meshball, 1, degree=1 )
@@ -63,7 +44,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.smooth_shading = True
     
     pvmesh = meshball.mesh2pyvista()
-    pvmesh.plot(show_edges=True)
+    pvmesh.plot(show_edges=True, cpos="xy")
 
 
 # +
@@ -103,14 +84,20 @@ vy =  vtheta*sympy.cos(th)
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
                 u_degree=2, p_degree=1, solver_name="stokes")
 
+# stokes.petsc_options.getAll() # to see the defaults 
+
+stokes.petsc_options["fieldsplit_velocity_pc_type"]="lu" # serial
+stokes.petsc_options["snes_converged_reason"]=None
+stokes.petsc_options["snes_monitor"]=None
+
+
 # Constant visc
 stokes.viscosity = 1.
 
 # Velocity boundary conditions
 
-stokes.add_dirichlet_bc( (0.0, 0.0), meshball.boundary.TOP, (0,1))
-# stokes.add_dirichlet_bc( (vx, vy), meshball.boundary.TOP, (0,1))
-stokes.add_dirichlet_bc( (0.0, 0.0), meshball.boundary.CENTRE , (0,1))
+stokes.add_dirichlet_bc( (0.0, 0.0), "Upper",  (0,1))
+stokes.add_dirichlet_bc( (0.0, 0.0), "Centre", (0,1))
 
 # -
 
@@ -127,22 +114,6 @@ stokes.bodyforce = Rayleigh * unit_rvec * t_init # minus * minus
 uw.function.evaluate(-unit_rvec * t_init, meshball.data)[0:10,:]
 
 stokes.solve()
-
-# +
-kd = uw.algorithms.KDTree(meshball.data)
-kd.build_index()
-n,d,b = kd.find_closest_point(t_soln.coords)
-
-t_mesh = np.zeros((meshball.data.shape[0]))
-w = np.zeros((meshball.data.shape[0]))
-
-with meshball.access():
-    for i in range(0,n.shape[0]):
-        t_mesh[n[i]] += t_soln.data[i] / (1.0e-10 + d[n[i]])
-        w[n[i]] += 1.0 / (1.0e-10 + d[n[i]])
-        
-t_mesh /= w
-
 
 # +
 # An alternative is to use the swarm project_from method using these points to make a swarm
@@ -166,7 +137,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     
     pvmesh = meshball.mesh2pyvista()
     
-    pvmesh.point_data["T"] = t_mesh
+    with meshball.access():
+        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
  
     with meshball.access():
         usol = stokes.u.data
@@ -184,7 +156,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, 
                   use_transparency=False, opacity=0.5)
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.5)
-    pl.show()
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.1)
+    pl.show(cpos="xy")
 
 

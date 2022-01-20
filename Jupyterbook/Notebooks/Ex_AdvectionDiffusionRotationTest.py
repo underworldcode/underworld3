@@ -1,6 +1,6 @@
-# # Navier Stokes test: boundary driven ring with step change in boundary conditions
+# # Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
 #
-# This should develop a boundary layer with sqrt(t) growth rate
+#
 
 # +
 import petsc4py
@@ -8,7 +8,6 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
-from underworld3.systems import NavierStokes
 from underworld3 import function
 
 import numpy as np
@@ -17,20 +16,59 @@ options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
 # options["dm_plex_check_all"] = None
+
+# import os
+# os.environ["SYMPY_USE_CACHE"]="no"
+
 # options.getAll()
+# -
+
+
 
 # +
 import meshio
 
 meshball = uw.meshes.SphericalShell(dim=2, radius_inner=0.5,
-                                    radius_outer=1.0, 
-                                    cell_size=0.075,
-                                    cell_size_lower=0.05,
+                                    radius_outer=1.0, cell_size=0.05,
                                     degree=1, verbose=False)
+# -
+
+
+v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
+t_soln = uw.mesh.MeshVariable('T',    meshball, 1, degree=3 )
+t_0    = uw.mesh.MeshVariable('T0',   meshball, 1, degree=3 )
 
 
 # +
-# Define some functions on the mesh
+# swarm  = uw.swarm.Swarm(mesh=meshball)
+# T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
+# X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
+# swarm.populate(fill_param=3)
+
+
+# +
+# Create adv_diff object
+
+# Set some things
+k = 1.0e-6
+h = 0.1 
+t_i = 2.
+t_o = 1.
+r_i = 0.5
+r_o = 1.0
+delta_t = 1.0
+
+adv_diff = uw.systems.AdvDiffusion(meshball, 
+                                   u_Field=t_soln, 
+                                   V_Field=v_soln, # not needed if coords is provided 
+                                   solver_name="adv_diff", 
+                                   degree=t_soln.degree)
+adv_diff.k = k
+
+# +
+# Create a density structure / buoyancy force
+# gravity will vary linearly from zero at the centre 
+# of the sphere to (say) 1 at the surface
 
 import sympy
 
@@ -48,70 +86,52 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 # Rigid body rotation v_theta = constant, v_r = 0.0
 
 theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
-v_x = -1.0 *  r * theta_dot * sympy.sin(th)
-v_y =         r * theta_dot * sympy.cos(th)
-
-# +
-coord_vec = meshball.dm.getCoordinates()
-
-coords = coord_vec.array.reshape(-1,2)
-mesh_th = np.arctan2(coords[:,1], coords[:,0]).reshape(-1,1)
-mesh_r  = np.hypot(coords[:,0], coords[:,1]).reshape(-1,1)
-coords *= 1.0 + 0.5 * (1.0-mesh_r) * np.cos(mesh_th*5.0)
-meshball.dm.setCoordinates(coord_vec)
-
-meshball.meshio.points[:,0] = coords[:,0]
-meshball.meshio.points[:,1] = coords[:,1]
-
-# -
-
-v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
-
-
-# +
-# Create Stokes object (switch out for NS in a minute)
-
-navier_stokes = NavierStokes(meshball, 
-                velocityField=v_soln, 
-                pressureField=p_soln, 
-                u_degree=2, 
-                p_degree=1, 
-                inv_prandtl=10.0,
-                theta=0.5,
-                solver_name="navier_stokes")
-
-# Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
-navier_stokes.petsc_options.delValue("ksp_monitor")
-navier_stokes.petsc_options["ksp_rtol"]=3.0e-4
-navier_stokes.petsc_options["snes_type"]="newtonls"
-navier_stokes.petsc_options["snes_max_it"]=150
-navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
-navier_stokes.petsc_options["fieldsplit_velocity_pc_type"] = "lu"
-
-# Constant visc
-navier_stokes.viscosity = 1.0
-
-navier_stokes.bodyforce = unit_rvec * 1.0e-16
-
-# Velocity boundary conditions
-navier_stokes.add_dirichlet_bc( (v_x,v_y), "Upper" , (0,1) )
-navier_stokes.add_dirichlet_bc( (0.0,0.0), "Lower" , (0,1) )
-
-# +
-# navier_stokes.petsc_options.getAll()
-# -
+v_x = - r * theta_dot * sympy.sin(th)
+v_y =   r * theta_dot * sympy.cos(th)
 
 with meshball.access(v_soln):
-    v_soln.data[...] = 0.0
+    v_soln.data[:,0] = uw.function.evaluate(v_x, v_soln.coords)    
+    v_soln.data[:,1] = uw.function.evaluate(v_y, v_soln.coords)
 
-navier_stokes.dt()
+# +
+# Define T boundary conditions via a sympy function
 
-navier_stokes.solve(timestep=0.01)
+import sympy
+abs_r  = sympy.sqrt(meshball.rvec.dot(meshball.rvec))
 
-for i in range(0,10):
-    navier_stokes.solve(timestep=0.01, zero_init_guess=False)
+init_t = sympy.exp(-30.0 * ( meshball.N.x**2 + (meshball.N.y-0.75)**2 ))
+
+adv_diff.add_dirichlet_bc(  0.0,  "Lower" )
+adv_diff.add_dirichlet_bc(  0.0,  "Upper" )
+
+# with nswarm.access(nT1):
+#     nT1.data[...] = uw.function.evaluate(init_t, nswarm.particle_coordinates.data).reshape(-1,1)
+    
+with meshball.access(t_0, t_soln):
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
+    t_soln.data[...] = t_0.data[...]
+
+
+# +
+# We can over-ride the swarm-particle update routine since we can integrate
+# the velocity field by hand. 
+
+with adv_diff._nswarm.access():
+    coords0 = adv_diff._nswarm.data.copy()
+
+delta_t = 0.0001
+    
+n_x = uw.function.evaluate(r * sympy.cos(th-delta_t*theta_dot), coords0)
+n_y = uw.function.evaluate(r * sympy.sin(th-delta_t*theta_dot), coords0)
+
+coords = np.empty_like(coords0)
+coords[:,0] = n_x
+coords[:,1] = n_y
+
+# delta_t will be baked in when this is defined ... so re-define it 
+adv_diff.solve(timestep=delta_t) # , coords=coords)
+
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -134,11 +154,14 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
-#     points = np.zeros((t_soln.coords.shape[0],3))
-#     points[:,0] = t_soln.coords[:,0]
-#     points[:,1] = t_soln.coords[:,1]
+    points = np.zeros((t_soln.coords.shape[0],3))
+    points[:,0] = t_soln.coords[:,0]
+    points[:,1] = t_soln.coords[:,1]
 
-#     point_cloud = pv.PolyData(points)
+    point_cloud = pv.PolyData(points)
+
+    with meshball.access():
+        point_cloud.point_data["T"] = t_0.data.copy()
 
     with meshball.access():
         usol = v_soln.data.copy()
@@ -152,17 +175,17 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pl = pv.Plotter()
 
  
-    pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-2, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
-    # pl.add_points(point_cloud, cmap="coolwarm", 
-    #               render_points_as_spheres=False,
-    #               point_size=10, opacity=0.66
-    #             )
+    pl.add_points(point_cloud, cmap="coolwarm", 
+                  render_points_as_spheres=False,
+                  point_size=10, opacity=0.66
+                )
 
 
     pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
-    # pl.remove_scalar_bar("T")
+    pl.remove_scalar_bar("T")
     pl.remove_scalar_bar("mag")
 
     pl.show()
@@ -227,12 +250,6 @@ def plot_T_mesh(filename):
                       return_img=False)
 
        # pl.show()
-
-0/0
-
-
-
-
 
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)

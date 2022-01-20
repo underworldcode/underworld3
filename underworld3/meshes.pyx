@@ -26,6 +26,12 @@ from   underworld3.mesh import MeshClass
 import underworld3.timing as timing
 
 
+
+
+
+## NOTE this Box mesh class uses the petsc meshing routines which assume triangle or tetgen
+## and so are not automatically compatible with our recommended installation
+
 class Box(MeshClass):
     @timing.routine_timer_decorator
     def __init__(self, 
@@ -104,7 +110,7 @@ class Box(MeshClass):
 class MeshFromGmshFile(MeshClass):
 
     # Data structures for tracking gmsh labels
-    physical_label_group = namedtuple('Group', ('name', 'labels') )
+    physical_label_group = namedtuple('LabelGroup', ('name', 'labels') )
 
     @timing.routine_timer_decorator
     def __init__(self,
@@ -124,8 +130,17 @@ class MeshFromGmshFile(MeshClass):
             - dim, simplex not inferred from the file at this point 
 
             - the file pointed to by filename needs to be a .msh file 
-            - bound_markers is an Enum that identifies the markers used by gmsh physical objects
-            - etc etc
+            - labels are extracted from the gmsh file "physical labels"
+
+            DISABLED:
+            - groups are named collections of labels (or aliases)
+                    sides = LabelGroup("Sides", ["Left", "Right"]) 
+                    centre_alias = LabelGroup("Center", ["Centre"])
+
+            - Note that the PETSc gmsh reader does not honour membership of multiple 
+              physical groups as indicated in a gmsh file - only the first one is used 
+            - Note 2, that the use of aliases causes the current mesh save routines to hang.
+
         """
 
         self.verbose = verbose
@@ -135,7 +150,6 @@ class MeshFromGmshFile(MeshClass):
 
         self.cell_size = cell_size
         self.refinements = refinements
-
 
         options = PETSc.Options()
         # options["dm_plex_separate_marker"] = None # this is never used and flags errors for mpirun
@@ -181,7 +195,7 @@ class MeshFromGmshFile(MeshClass):
             
 
         ## Groups
-
+        """
         for g in label_groups:
             self.dm.createLabel(str(g.name).encode('utf8'))
             label = self.dm.getLabel(str(g.name).encode('utf8'))
@@ -197,10 +211,12 @@ class MeshFromGmshFile(MeshClass):
                         label.insertIS(indexSet, 1)
 
                     indexSet.destroy()
-
+        """
+        # See note above - this is disabled since it crashes the mesh writing routines. 
+        label_groups = []
 
         # Provide these to the mesh for boundary conditions
-        self.labels =  ["Boundary.ALL_BOUNDARIES"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
+        self.labels =  ["All_dm_boundaries"] + [ l for l in label_dict ] + [ g.name for g in label_groups ]
 
         if self.verbose:
             self.dm.view()
@@ -551,7 +567,7 @@ class Simplex_Box(MeshFromMeshIO):
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
                 cell_size    :Optional[float] =1.0):
- 
+
         xx = maxCoords[0]-minCoords[0]
         yy = maxCoords[1]-minCoords[1]
         zz = maxCoords[2]-minCoords[2]
@@ -573,16 +589,16 @@ class Simplex_Box(MeshFromMeshIO):
 # pygmesh generator for Tet/Tri-based structured, box mesh
 # Note boundary labels are needed (cf PETSc box mesh above)
 
-class Unstructured_Simplex_Box(MeshFromMeshIO):
+class Unstructured_Simplex_Box(MeshFromGmshFile):
     @timing.routine_timer_decorator
     def __init__(self,
                 dim          :Optional[  int] = 2,
                 minCoords    :Optional[Tuple[float,float,float]] =None,
                 maxCoords    :Optional[Tuple[float,float,float]] =None,
-                coarse_cell_size: Optional[float]=0.1, 
-                global_cell_size:Optional[float]=0.05,
-                degree       :Optional[int]        =1
-
+                cell_size    :Optional[float]=0.1, 
+                degree       :Optional[int]   =1,
+                regular      :Optional[bool]  = True,
+                verbose      :Optional[bool] = False
                 ):
         """
         This class generates a box
@@ -595,12 +611,13 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
             Optional. Tuple specifying minimum mesh location. 
         maxCoord:
             Optional. Tuple specifying maximum mesh location.
-        coarse_cell_size :
-            The target cell size for the unstructured template mesh that will later be refined for 
-            solving the unknowns. 
-        global_cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. 
+        cell_size:
+            Optional. Float specifying size to gmsh 
+        regular:
+            Optional. Whether to ask gmsh for a regular layout of nodes
+        verbose:
+            Optional. Ask gmsh to report the building process  
+
         """
 
         if minCoords==None: 
@@ -615,24 +632,21 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
         if len(maxCoords) == 2:
             maxCoords = (maxCoords[0], maxCoords[1], 0.0)
 
-
         self.pygmesh = None
+
         # Only root proc generates pygmesh, then it's distributed.
-
-
         if MPI.COMM_WORLD.rank==0:
-            unstructured_simplex_box = Unstructured_Simplex_Box.build_pygmsh(dim, 
-                            minCoords, maxCoords, 
-                            coarse_cell_size,
-                            global_cell_size)
+            Unstructured_Simplex_Box.build_pygmsh_file(dim, "ignore_UnstructuredSimplexBox.msh", 
+                            minCoords, maxCoords, cell_size, regular, verbose)
 
-        super().__init__(dim, unstructured_simplex_box, global_cell_size, simplex=True, degree=degree)
+        # Top / Bottom are aliased to Upper and Lower for consistency with the Cylinder / Sphere
 
-        self.pygmesh = unstructured_simplex_box
-        self.meshio = unstructured_simplex_box
-        self.elementRes = None
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
+        top_alias = self.physical_label_group("Upper",["Top"])
+        bottom_alias = self.physical_label_group("Lower",["Bottom"])
+        
+        super().__init__(dim, filename="ignore_UnstructuredSimplexBox.msh", label_groups=[top_alias, bottom_alias], 
+                              cell_size=cell_size, simplex=True, degree=degree, 
+                              verbose=verbose)
 
         import vtk
 
@@ -643,30 +657,87 @@ class Unstructured_Simplex_Box(MeshFromMeshIO):
 
         return
 
-    def build_pygmsh(
-                     dim, 
-                     minCoords, maxCoords, 
-                     coarse_cell_size,  
-                     global_cell_size ):
-
-
-        xx = maxCoords[0]-minCoords[0]
-        yy = maxCoords[1]-minCoords[1]
-        zz = maxCoords[2]-minCoords[2]
+    def build_pygmsh_file(dim,
+                          filename,
+                            minCoords, maxCoords, 
+                            cell_size,
+                            regular,
+                            verbose ):
 
         import pygmsh
-        with pygmsh.occ.Geometry() as geom:
-            if dim == 2:
-                # args: corner point (3-tuple), width, height, corner-roundness ... 
-                box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
-            else:
-                # args: corner point (3-tuple), size (3-tuple) ... 
-                box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
+        # with pygmsh.occ.Geometry() as geom:
+        #     if dim == 2:
+        #         # args: corner point (3-tuple), width, height, corner-roundness ... 
+        #         box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
+        #     else:
+        #         # args: corner point (3-tuple), size (3-tuple) ... 
+        #         box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
 
-            unstructured_simplex_box = geom.generate_mesh()  
-            unstructured_simplex_box.remove_lower_dimensional_cells()
+        #     unstructured_simplex_box = geom.generate_mesh()  
+        #     unstructured_simplex_box.remove_lower_dimensional_cells()
 
-        return unstructured_simplex_box
+
+        if dim == 2:
+            with pygmsh.geo.Geometry() as geom:
+
+                geom.characteristic_length_max = cell_size
+                
+                domain = geom.add_rectangle(xmin=minCoords[0],ymin=minCoords[1], 
+                                            xmax=maxCoords[0],ymax=maxCoords[1], 
+                                            z=0, mesh_size=cell_size)
+                
+                if regular:
+                    geom.set_transfinite_surface(domain.surface, arrangement="", corner_pts=[])
+                
+                geom.add_physical(domain.surface.curve_loop.curves[0], label="Bottom")
+                geom.add_physical(domain.surface.curve_loop.curves[1], label="Right")
+                geom.add_physical(domain.surface.curve_loop.curves[2], label="Top")
+                geom.add_physical(domain.surface.curve_loop.curves[3], label="Left")
+            
+                geom.add_physical(domain.surface, label="Elements")    
+                
+                geom.generate_mesh(dim=2, verbose=verbose)
+                geom.save_geometry(filename)
+
+        else:
+
+            with pygmsh.geo.Geometry() as geom:
+
+                geom.characteristic_length_max = cell_size
+                
+                domain = geom.add_box(  x0=minCoords[0],
+                                        y0=minCoords[1],
+                                        z0=minCoords[2],
+                                        x1=maxCoords[0],
+                                        y1=maxCoords[1],
+                                        z1=maxCoords[2],
+                                        mesh_size=cell_size)
+                
+                faces = domain.surface_loop.surfaces
+                
+                for face in faces:
+                    geom.set_transfinite_surface(face, arrangement="", corner_pts=[])
+                    
+                geom.set_transfinite_volume(domain.volume, corner_pts=[])
+                
+                geom.add_physical(faces[0], label="Right")
+                geom.add_physical(faces[1], label="Back")
+                geom.add_physical(faces[2], label="Top")
+                geom.add_physical(faces[3], label="Bottom")
+                geom.add_physical(faces[4], label="Front")
+                geom.add_physical(faces[5], label="Left")
+
+                geom.add_physical(domain.volume, label="Elements")    
+                
+                geom.generate_mesh(dim=3, verbose=verbose)
+                geom.save_geometry(filename)
+
+            return 
+
+
+
+####
+
 
 class SphericalShell(MeshFromGmshFile):
 
@@ -736,6 +807,9 @@ class SphericalShell(MeshFromGmshFile):
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
                         geom.add_physical(domain.plane_surface, label="Elements")
 
+                        centre_alias = self.physical_label_group("Center", ["Centre"])
+                        groups.append(centre_alias)
+
                 else:
                     if radius_inner > 0.0:
                         inner  = geom.add_ball((0.0,0.0,0.0),radius_inner, with_volume=False, mesh_size=cell_size_lower)
@@ -750,7 +824,11 @@ class SphericalShell(MeshFromGmshFile):
                         geom.in_volume(centre, domain.volume)
                         geom.add_physical(centre,  label="Centre")
                         geom.add_physical(domain.surface_loop.surfaces, label="Upper")
-                        geom.add_physical(domain.volume, label="Elements")                   
+                        geom.add_physical(domain.volume, label="Elements")  
+
+                        centre_alias = self.physical_label_group("Center", ["Centre"])
+                        groups.append(centre_alias)
+                 
      
 
 
@@ -771,7 +849,8 @@ class SphericalShell(MeshFromGmshFile):
                 #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
                 # )
 
-        super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=groups, 
+
+        super().__init__(dim, filename="ignore_ball_mesh_geom.msh", label_groups=[groups], 
                               cell_size=cell_size, simplex=True, degree=degree, verbose=verbose)
 
 

@@ -14,6 +14,9 @@ import underworld3.timing as timing
 include "../petsc_extras.pxi"
 
 class Stokes:
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
     @timing.routine_timer_decorator
     def __init__(self, 
                  mesh          : underworld3.mesh.MeshClass, 
@@ -93,6 +96,8 @@ class Stokes:
 
         """
 
+        Stokes.instances += 1
+
         self.mesh = mesh
         self.verbose = verbose
 
@@ -123,9 +128,10 @@ class Stokes:
         self.petsc_options["pc_fieldsplit_schur_factorization_type"] = "full"
         self.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
-        self.petsc_options["fieldsplit_velocity_pc_type"]  = "lu"
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.e-3
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "lu" 
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
+        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
 
         if not velocityField:
@@ -558,7 +564,7 @@ class Stokes:
         self.dm.restoreGlobalVec(gvec)
 
     @timing.routine_timer_decorator
-    def dt(self):
+    def estimate_dt(self):
         """
         Calculates an appropriate advective timestep for the given 
         mesh and velocity configuration.
@@ -566,11 +572,14 @@ class Stokes:
         # we'll want to do this on an element by element basis 
         # for more general mesh
 
-        # first let's extract a max global velocity magnitude
+        # first let's extract a max global velocity magnitude 
         import math
         with self.mesh.access():
             vel = self.u.data
-            magvel_squared = vel[:,0]**2 + vel[:,1]**2
+            magvel_squared = vel[:,0]**2 + vel[:,1]**2 
+            if self.mesh.dim ==3:
+                magvel_squared += vel[:,2]**2 
+
             max_magvel = math.sqrt(magvel_squared.max())
         
         from mpi4py import MPI
@@ -579,3 +588,5 @@ class Stokes:
 
         min_dx = self.mesh.get_min_radius()
         return min_dx/max_magvel_glob
+
+

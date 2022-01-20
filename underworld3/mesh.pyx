@@ -125,7 +125,9 @@ class MeshClass(_api_tools.Stateful):
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
 
-        # invalidate the cell-search k-d tree 
+        self._get_mesh_centroids()
+
+        # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
 
         return
@@ -446,14 +448,14 @@ class MeshClass(_api_tools.Stateful):
         """
         # Create index if required
         if not self._index:
-            from underworld3.swarm import Swarm
+            from underworld3.swarm import Swarm, SwarmPICLayout
             # Create a temp swarm which we'll use to populate particles
             # at gauss points. These will then be used as basis for 
             # kd-tree indexing back to owning cells.
             tempSwarm = Swarm(self)
             # 4^dim pop is used. This number may need to be considered
             # more carefully, or possibly should be coded to be set dynamically. 
-            tempSwarm.populate(fill_param=4)
+            tempSwarm.populate(fill_param=4, layout=SwarmPICLayout.GAUSS)
             with tempSwarm.access():
                 # Build index on particle coords
                 self._indexCoords = tempSwarm.particle_coordinates.data.copy()
@@ -473,6 +475,29 @@ class MeshClass(_api_tools.Stateful):
             raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.")
 
         return self._indexMap[closest_points]
+
+
+
+    def _get_mesh_centroids(self):
+        """
+        Obtain and cache the mesh centroids using underworld swarm technology. 
+        This routine is called when the mesh is built / rebuilt
+        """
+
+        from underworld3.swarm import Swarm, SwarmPICLayout
+        tempSwarm = Swarm(self)
+        tempSwarm.populate(fill_param=1, layout=SwarmPICLayout.GAUSS)
+
+
+        with tempSwarm.access():
+            # Build index on particle coords
+            self._centroids = tempSwarm.data.copy()
+
+        # That's it ! we should check that these objects are deleted correctly
+
+        return
+
+
 
  
     def get_min_radius(self) -> double:
