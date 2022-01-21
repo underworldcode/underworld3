@@ -150,7 +150,6 @@ class Stokes:
         self.fields["pressure"] = self.p
         self.fields["velocity"] = self.u
 
-
         # Some other setup 
 
         self.mesh._equation_systems_register.append(self)
@@ -175,7 +174,6 @@ class Stokes:
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
         
-
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()

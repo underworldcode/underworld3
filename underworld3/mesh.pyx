@@ -112,10 +112,11 @@ class MeshClass(_api_tools.Stateful):
 
         options = PETSc.Options()
         options.setValue("meshproj_petscspace_degree", self.degree) 
+
         cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex,
                                                     self.degree,  "meshproj_", PETSc.COMM_WORLD)
-    
         self.petsc_fe = cdmfe
+      
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
@@ -131,7 +132,6 @@ class MeshClass(_api_tools.Stateful):
         self._index = None
 
         return
-
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -699,7 +699,6 @@ class MeshClass(_api_tools.Stateful):
                       
         return cell_vertices
 
-
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, name                             : str, 
@@ -886,13 +885,7 @@ class MeshVariable(_api_tools.Stateful):
             return tuple(cpts)
 
     def max(self) -> Union[float , tuple]:
-        """
-        The global variable maximum value.
-        """
-        if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set.")
 
-        if self.num_components == 1:
             return self._gvec.max()
         else:
             cpts = []
