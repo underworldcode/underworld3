@@ -59,8 +59,7 @@ with pygmsh.occ.Geometry() as geom:
 # -
 
 import meshio
-mesh = uw.mesh.StructuredCubeSphereBallMesh(dim=2, elementRes=7, radius_outer=1.0, simplex=True)
-# mesh = uw.mesh.SphericalShell(dim=2, radius_inner=0.01, radius_outer=1.0, cell_size=0.05)
+mesh = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True)                       
 
 t_soln = uw.mesh.MeshVariable("T", mesh, 1, degree=3)
 
@@ -94,7 +93,8 @@ if PETSc.Comm.size == 1:
 # +
 # Create Poisson object
 
-poisson = uw.systems.Poisson(mesh, u_Field=t_soln, solver_name="poisson", degree=3)
+poisson = uw.systems.Poisson(mesh, u_Field=t_soln, 
+                             solver_name="poisson", degree=3)
 poisson.k = k
 poisson.f = 0.0
 
@@ -103,17 +103,16 @@ bcs_var = uw.mesh.MeshVariable("bcs",mesh, 1)
 # +
 import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
-bc = sympy.cos(mesh.N.y)
+bc = sympy.cos(2.0*mesh.N.y)
 
 with mesh.access(bcs_var):
     bcs_var.data[:,0] = uw.function.evaluate(bc, mesh.data)
 
-poisson.add_dirichlet_bc( 0.0, mesh.boundary.TOP )
-poisson.add_dirichlet_bc( 1.0, mesh.boundary.CENTRE )
-
+poisson.add_dirichlet_bc( bcs_var.fn, "Upper", components=0 )
+poisson.add_dirichlet_bc( 1.0, "Centre" )
 # -
 
-poisson.bcs
+poisson.petsc_options.getAll()
 
 poisson.solve()
 
@@ -143,11 +142,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.add_mesh(pvmesh,'Blue', 'wireframe' )
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, 
                   use_transparency=False)
-    pl.show()
-# -
-with mesh.access():
-    print(t_soln.data.min(), t_soln.data.max())
-
+    pl.show(cpos="xy")
 # +
 # savefile = "output/poisson_cyindrical_2d.h5" 
 # mesh.save(savefile)

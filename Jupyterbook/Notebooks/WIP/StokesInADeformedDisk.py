@@ -125,7 +125,6 @@ Rayleigh = 1.0e5
 
 surface_exaggeration = 100
 surface_fn = sympy.exp(-5.0/meshball.cell_size * (1.0-r)**2) / surface_exaggeration
-# -
 
 
 # +

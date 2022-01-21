@@ -1,12 +1,10 @@
+---
 # The Underworld Geodynamics Platform
-
-
 
 ## A parallel, python, particle-in-cell, finite-element code for Geodynamics
 
 ````{sidebar} Underworld 3
 ```{figure} Figures/MansoursNightmare.png
----
 width: 50mm
 name: democratic-republic-of-uw
 ---

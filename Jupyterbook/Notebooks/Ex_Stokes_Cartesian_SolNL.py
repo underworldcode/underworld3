@@ -34,7 +34,7 @@ options["snes_rtol"] = 1.0e-7
 # %%
 n_els = 32
 v_degree = 1
-mesh = uw.mesh.Box(elementRes=(n_els,n_els))
+mesh = uw.meshes.Box(elementRes=(n_els,n_els))
 
 # %%
 # NL problem 
@@ -84,3 +84,5 @@ if rank==0: print(f"RMS diff = {rel_rms_diff}")
 
 if not np.allclose(rel_rms_diff, 0.00109, rtol=1.e-2):
     raise RuntimeError("Solve did not produce expected result.")
+
+# %%
