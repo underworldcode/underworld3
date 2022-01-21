@@ -488,7 +488,6 @@ class MeshClass(_api_tools.Stateful):
         tempSwarm = Swarm(self)
         tempSwarm.populate(fill_param=1, layout=SwarmPICLayout.GAUSS)
 
-
         with tempSwarm.access():
             # Build index on particle coords
             self._centroids = tempSwarm.data.copy()
@@ -885,7 +884,13 @@ class MeshVariable(_api_tools.Stateful):
             return tuple(cpts)
 
     def max(self) -> Union[float , tuple]:
+        """
+        The global variable minimum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
 
+        if self.num_components == 1:
             return self._gvec.max()
         else:
             cpts = []
