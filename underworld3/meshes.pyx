@@ -750,6 +750,7 @@ class SphericalShell(MeshFromGmshFile):
                  cell_size_upper  :Optional[float] =None,
                  cell_size_lower  :Optional[float] =None,
                  degree           :Optional[int]   =2,
+                 centre_point     :Optional[bool]  =True,
                  verbose          :Optional[bool]  =False
         ):
 
@@ -800,15 +801,20 @@ class SphericalShell(MeshFromGmshFile):
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
                         geom.add_physical(domain.plane_surface, label="Elements")
                     else:
-                        centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                        
                         domain = geom.add_circle((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper)
-                        geom.in_surface(centre, domain.plane_surface)
-                        geom.add_physical(centre, label="Centre")
+                        
+                        if centre_point:
+                            centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                            geom.in_surface(centre, domain.plane_surface)
+                            geom.add_physical(centre, label="Centre")
+                            centre_alias = self.physical_label_group("Center", ["Centre"])
+                            groups.append(centre_alias)
+
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
                         geom.add_physical(domain.plane_surface, label="Elements")
 
-                        centre_alias = self.physical_label_group("Center", ["Centre"])
-                        groups.append(centre_alias)
+
 
                 else:
                     if radius_inner > 0.0:

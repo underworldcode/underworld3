@@ -29,7 +29,8 @@ class NavierStokes:
                  rho           : Optional[float]                         =0.0,
                  theta         : Optional[float]                         =0.5,
                  solver_name   : Optional[str]                           ="navier_stokes_",
-                 verbose       : Optional[str]                           =False
+                 verbose       : Optional[str]                           =False,
+                 _Ppre_fn      = None
                   ):
         """
         This class provides functionality for a discrete representation
@@ -217,6 +218,7 @@ class NavierStokes:
 
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
+        self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
 
@@ -322,7 +324,6 @@ class NavierStokes:
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
     @property
     def rho(self):
         return self._rho
@@ -337,7 +338,6 @@ class NavierStokes:
     def penalty(self, value):
         self.is_setup = False
         self._penalty = sympify(value)
-
     @property
     def theta(self):
         return self._theta
@@ -345,7 +345,6 @@ class NavierStokes:
     def theta(self, value):
         self.is_setup = False
         self._theta = sympify(value)
-
     @property
     def viscosity(self):
         return self._viscosity
@@ -525,7 +524,13 @@ class NavierStokes:
         fns_jacobian.append(self._pu_g1)
 
         # pp term
-        self._pp_g0 = 1/(self.viscosity) #  + self.rho / self.delta_t)
+
+        # pp term
+        if self._Ppre_fn is None:
+            self._pp_g0 = 1/(self.viscosity + self.rho / self.delta_t)
+        else:
+            self._pp_g0 = self._Ppre_fn
+
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code.
@@ -560,7 +565,7 @@ class NavierStokes:
         # PetscDSSetJacobian(              ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_g0]],                                 NULL,                                 NULL,                                 NULL)

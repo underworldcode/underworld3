@@ -1,4 +1,4 @@
-# # Convection in a disc with internal heating and rigid boundaries
+# # Convection in a disc with internal heating and rigid or free boundaries
 #
 #
 
@@ -19,14 +19,45 @@ import numpy as np
 # options.getAll()
 
 # +
+Free_Slip = True
+Rayleigh = 1.0e5
+H_int = 1
+res = 0.05
+r_o = 1.0
+r_i = 0.0
+
+expt_name = "Disc_Ra1e5_H1"
+
+# +
 import meshio
 
 meshball = uw.meshes.SphericalShell(dim=2, 
-                                    radius_inner=0.0,
-                                    radius_outer=1.0, cell_size=0.05,
+                                    radius_inner=r_i,
+                                    radius_outer=r_o, 
+                                    cell_size=res,
+                                    centre_point=False,
                                     degree=1, verbose=False)
 
-meshball.dm.view()
+# meshball.dm.view()
+
+
+# ===
+
+import sympy
+
+radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec)) # normalise by outer radius if not 1.0
+unit_rvec = meshball.rvec / (1.0e-10+radius_fn)
+gravity_fn = radius_fn
+
+# Some useful coordinate stuff 
+
+x = meshball.N.x
+y = meshball.N.y
+# z = meshball.N.z
+
+r  = sympy.sqrt(x**2+y**2)  # cf radius_fn which is 0->1 
+th = sympy.atan2(y+1.0e-5,x+1.0e-5)
+
 
 
 # +
@@ -62,30 +93,8 @@ v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
 t_soln = uw.mesh.MeshVariable("T",    meshball, 1, degree=3)
 t_0    = uw.mesh.MeshVariable("T0",   meshball, 1, degree=3)
+r_mesh = uw.mesh.MeshVariable("r",   meshball, 1, degree=1)
 
-
-# +
-# swarm  = uw.swarm.Swarm(mesh=meshball)
-# T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
-# X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
-# swarm.populate(fill_param=3)
-
-
-# +
-# Create Stokes object
-
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
-                u_degree=2, p_degree=1, solver_name="stokes", verbose=True)
-
-# Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
-stokes.petsc_options.delValue("ksp_monitor")
-
-# Constant visc
-stokes.viscosity = 1.
-
-# Velocity boundary conditions
-stokes.add_dirichlet_bc( (0.,0.), "Upper" , (0,1) )
 
 
 # +
@@ -107,9 +116,41 @@ y = meshball.N.y
 r  = sympy.sqrt(x**2+y**2)
 th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 
-Rayleigh = 1.0e4
-H_int = 100
-expt_name = "Disc_Ra1e4_H10"
+
+# +
+# Create Stokes object
+import sympy
+
+stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
+                u_degree=2, p_degree=1, solver_name="stokes", verbose=True)
+
+# Inexact Jacobian may be OK.
+stokes.petsc_options["snes_rtol"]=1.0e-3
+stokes.petsc_options["ksp_rtol"]=1.0e-3
+
+# Set solve options here (or remove default values
+# stokes.petsc_options.getAll()
+stokes.petsc_options.delValue("ksp_monitor")
+
+# Constant visc
+stokes.viscosity = 1.
+
+# Velocity boundary conditions
+
+if Free_Slip:
+    
+    hw = 1000.0 / res 
+    surface_fn = sympy.exp(-((r - r_o) / r_o)**2 * hw)
+
+#     o_mask_fn = 0.5 - 0.5 * sympy.tanh(5000.0*(r-rm_o)) 
+#     i_mask_fn = 0.5 - 0.5 * sympy.tanh(5000.0*(r-rm_i)) 
+#     surface_fn = o_mask_fn - i_mask_fn
+
+else:
+    surface_fn = 0.0
+    stokes.add_dirichlet_bc( (0.,0.), "Upper" , (0,1) )
+    
+
 
 # +
 # Create adv_diff object
@@ -145,9 +186,15 @@ adv_diff.add_dirichlet_bc(  0.0,  "Upper" )
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
     t_soln.data[...] = t_0.data[...]
+# -
+with meshball.access(r_mesh):
+    r_mesh.data[:,0] = uw.function.evaluate(r, meshball.data)
+
 # +
-buoyancy_force = Rayleigh * t_soln.fn 
-stokes.bodyforce = gravity_fn * unit_rvec * buoyancy_force  
+buoyancy_force = gravity_fn * Rayleigh * t_soln.fn 
+buoyancy_force -= Rayleigh * 100.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
+
+stokes.bodyforce = unit_rvec * buoyancy_force  
 
 # check the stokes solve converges
 stokes.solve()
@@ -155,11 +202,6 @@ stokes.solve()
 # +
 # Check the diffusion part of the solve converges 
 # adv_diff.solve(timestep=0.01*stokes.estimate_dt())
-# -
-
-
-
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -185,7 +227,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         usol = stokes.u.data.copy()
   
     pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
- 
+    pvmesh.point_data["S"]  = uw.function.evaluate(surface_fn, meshball.data)
+
     arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
     arrow_loc[:,0:2] = stokes.u.coords[...]
     
@@ -196,20 +239,18 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
                   use_transparency=False, opacity=0.5)
     
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.01)
+    pl.add_arrows(arrow_loc, arrow_length, mag=10000/Rayleigh)
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+
+
 # -
-
-
-
-
 def plot_T_mesh(filename):
 
     import mpi4py
@@ -253,7 +294,8 @@ def plot_T_mesh(filename):
         pl = pv.Plotter()
 
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=10/Rayleigh)
+
 
         pl.add_points(point_cloud, cmap="coolwarm", 
                       render_points_as_spheres=False,
@@ -270,12 +312,14 @@ def plot_T_mesh(filename):
                       return_img=False)
         # pl.show()
 
+
+
 # +
 # Convection model / update in time
 
 expt_name="output/{}".format(expt_name)
 
-for step in range(0,250):
+for step in range(0,1000):
     
     stokes.solve()
     
@@ -289,17 +333,16 @@ for step in range(0,250):
         print("Timestep {}, dt {}".format(step, delta_t))
         print(tstats)
         
-#     plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
-
-
-    savefile = "{}_ts_{}.h5".format(expt_name,step)
-    meshball.save(savefile)
-    v_soln.save(savefile)
-    t_soln.save(savefile)
-    meshball.generate_xdmf(savefile)
-    
+        
+    plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
 
     
+#    savefile = "{}_ts_{}.h5".format(expt_name,step)
+#    meshball.save(savefile)
+#     v_soln.save(savefile)
+#     t_soln.save(savefile)
+#     meshball.generate_xdmf(savefile)
+
 # -
 
 
@@ -354,7 +397,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     
     pl = pv.Plotter()
    
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.001, opacity=0.75)
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     

@@ -25,7 +25,8 @@ class Stokes:
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
                  solver_name   : Optional[str]                           ="stokes_",
-                 verbose       : Optional[str]                           =False
+                 verbose       : Optional[str]                           =False,
+                 _Ppre_fn      = None
                   ):
         """
         This class provides functionality for a discrete representation
@@ -161,6 +162,7 @@ class Stokes:
 
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
+        self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
 
@@ -217,7 +219,6 @@ class Stokes:
         self.is_setup = False
 
         return
-
 
 
     @property
@@ -310,6 +311,15 @@ class Stokes:
         fns_jacobian = []
 
         ### uu terms
+
+        g0 = sympy.eye(dim)
+        for i in range(dim):
+            for j in range(dim):
+                g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
+
+        self._uu_g0 = g0.as_immutable()
+        fns_jacobian.append(self._uu_g0)
+
         ##  linear part
         # note that g3 is effectively a block
         # but it seems that petsc expects a version
@@ -402,7 +412,11 @@ class Stokes:
         fns_jacobian.append(self._pu_g1)
 
         # pp term
-        self._pp_g0 = 1/self.viscosity
+        if self._Ppre_fn is None:
+            self._pp_g0 = 1/self.viscosity
+        else:
+            self._pp_g0 = self._Ppre_fn
+
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code.
@@ -433,10 +447,10 @@ class Stokes:
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[self._p_f0]],                                NULL)
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
-        PetscDSSetJacobian(              ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_g0]],                                 NULL,                                 NULL,                                 NULL)
