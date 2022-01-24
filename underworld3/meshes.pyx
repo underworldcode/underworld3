@@ -221,6 +221,21 @@ class MeshFromGmshFile(MeshClass):
         if self.verbose:
             self.dm.view()
 
+        # The mesh may over-ride this ... 
+
+        import vtk
+
+        if simplex:
+            if dim==2:
+                self._elementType = vtk.VTK_TRIANGLE
+            else:
+                self._elementType = vtk.VTK_TETRA
+        else:
+            if dim==2:
+                self._elementType = vtk.VTK_QUAD
+            else:
+                self._elementType = vtk.VTK_HEXAHEDRON        
+
         super().__init__(simplex=simplex, degree=degree)
 
 

@@ -14,6 +14,8 @@ from underworld3 import function
 
 import numpy as np
 
+res=0.2
+
 options = PETSc.Options()
 # options["help"] = None
 # options["pc_type"]  = "svd"
@@ -24,8 +26,8 @@ os.environ["SYMPY_USE_CACHE"]="no"
 # -
 
 meshball = uw.meshes.SphericalShell(dim=2, degree=1, radius_inner=0.0, 
-                                    radius_outer=1.0, cell_size=0.1, 
-                                    cell_size_upper=0.075)
+                                    radius_outer=1.0, cell_size=res, 
+                                    cell_size_upper=0.75*res)
 
 
 v_soln  = uw.mesh.MeshVariable('U', meshball, 2, degree=2 )
@@ -75,10 +77,9 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 
 Rayleigh = 1.0e5
 
-o_mask_fn = 0.5 - 0.5 * sympy.tanh(1000.0*(r-1.01)) 
-i_mask_fn = 0.5 - 0.5 * sympy.tanh(1000.0*(r-0.99)) 
+hw = 1000.0 / res 
+surface_fn = sympy.exp(-(r-1.0)**2 * hw)
 
-surface_fn = o_mask_fn - i_mask_fn
 
 
 # +
@@ -94,13 +95,17 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln,
                 u_degree=2, p_degree=1, solver_name="stokes")
 
 # Inexact Jacobian may be OK.
+stokes.petsc_options["snes_type"]="newtonls"
 stokes.petsc_options["snes_rtol"]=1.0e-4
+stokes.petsc_options["snes_max_it"]=3
 stokes.petsc_options["ksp_rtol"]=1.0e-2
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-2
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-2
 
-stokes.viscosity = 1.
+i_fn = 0.5 - 0.5 * sympy.tanh(1000.0*(r-0.5)) 
+stokes.viscosity = 1.0 + 10 * i_fn
+
 
 
 # There is a null space with the unconstrained blob
@@ -130,11 +135,28 @@ buoyancy_force -= Rayleigh * 1000.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
 stokes.bodyforce = unit_rvec * buoyancy_force  
 
 # This may help the solvers - penalty in the preconditioner
-stokes._Ppre_fn = 1.0 / (stokes.viscosity + Rayleigh * 1000.0 * surface_fn)
+stokes._Ppre_fn = 1.0 / (stokes.viscosity + 1000.0 * surface_fn)
 
 # -
 
 stokes.solve()
+
+stokes._u_f1
+
+stokes._uu_g3
+
+# +
+sympy.Matrix([[2,0,0,0,1,0,0,0,1],
+              [0,0,0,1,0,0,0,0,0],
+              [0,0,0,0,0,0,1,0,0],
+              [0,1,0,0,0,0,0,0,0],
+              [1,0,0,0,2,0,0,0,1],
+              [0,0,0,0,0,0,0,1,0],
+              [0,0,1,0,0,0,0,0,0],
+              [0,0,0,0,0,1,0,0,0],
+              [1,0,0,0,1,0,0,0,2]])
+              
+            
 
 # +
 # check the mesh if in a notebook / serial
@@ -149,6 +171,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 600]
+    
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True

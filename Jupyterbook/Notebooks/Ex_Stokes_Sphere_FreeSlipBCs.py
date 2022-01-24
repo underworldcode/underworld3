@@ -25,77 +25,25 @@ os.environ["SYMPY_USE_CACHE"]="no"
 Free_Slip = True
 Rayleigh = 1.0e5
 H_int = 1
-res = 0.05
+res = 0.3
 r_o = 1.0
 r_i = 0.0
-expt_name = "Sphere_Stokes_test_1"
-# -
-
-
-meshball = uw.meshes.SphericalShell(dim=3, degree=1, 
-                                    radius_inner=r_i, 
-                                    centre_point=False,
-                                    radius_outer=r_o, 
-                                    cell_size=res, 
-                                    cell_size_upper=res,
-                                    verbose=True)
-
-
+expt_name = "Sphere_Stokes_test_2"
 
 
 # +
-
-# import mpi4py, pygmsh
-
-# if mpi4py.MPI.COMM_WORLD.rank==0:
-
-    
-#     radius_inner = r_i
-#     radius_outer = r_o
-#     cell_size_lower = res
-#     cell_size_upper = res
-    
-#     # Generate local mesh on boss process
-    
-#     with pygmsh.geo.Geometry() as geom:
-
-#         geom.characteristic_length_max = res
-
-#         if radius_inner > 0.0:
-#             inner  = geom.add_ball((0.0,0.0,0.0),radius_inner, with_volume=False, mesh_size=cell_size_upper)
-#             outer  = geom.add_ball((0.0,0.0,0.0), radius_outer, with_volume=False, mesh_size=cell_size_upper)
-#             domain = geom.add_ball((0.0,0.0,0.0), radius_outer*1.25, mesh_size=cell_size_upper, holes=[inner.surface_loop])
-            
-#             for surf in outer.surface_loop.surfaces:
-#                 geom.in_volume(surf, domain.volume)
-
-
-#             geom.add_physical(inner.surface_loop.surfaces,  label="Centre")
-#             geom.add_physical(outer.surface_loop.surfaces,  label="Upper")
-#             geom.add_physical(domain.surface_loop.surfaces, label="Celestial_Sphere")
-#             geom.add_physical(domain.volume, label="Elements")
-
-#         else:
-#             centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
-#             outer  = geom.add_ball((0.0,0.0,0.0), radius_outer, with_volume=False, mesh_size=cell_size_upper)
-#             domain = geom.add_ball((0.0,0.0,0.0), radius_outer*1.25, mesh_size=cell_size_upper)
-#             geom.in_volume(centre, domain.volume)
-
-#             for surf in outer.surface_loop.surfaces:
-#                 geom.in_volume(surf, domain.volume)
-
-#             geom.add_physical(centre,  label="Centre")
-#             geom.add_physical(outer.surface_loop.surfaces, label="Upper")
-#             geom.add_physical(domain.surface_loop.surfaces, label="Celestial_Sphere")
-#             geom.add_physical(domain.volume, label="Elements")    
-
-#         geom.generate_mesh(dim=3, verbose=False)
-#         geom.save_geometry("ignore_celestial_3d.msh")
-#         geom.save_geometry("ignore_celestial_3d.vtk")
-
-    
-# # meshball = uw.meshes.MeshFromGmshFile(dim=3, degree=1, filename="ignore_celestial_3d.msh", label_groups=[], simplex=True)
+# meshball = uw.meshes.SphericalShell(dim=3, degree=1, 
+#                                     radius_inner=r_i, 
+#                                     centre_point=False,
+#                                     radius_outer=r_o, 
+#                                     cell_size=res, 
+#                                     cell_size_upper=res,
+#                                     verbose=True)
 # -
+
+meshball = uw.meshes.MeshFromGmshFile(dim=3, filename="Sample_Meshes_Gmsh/test_mesh_sphere_at_res_02.msh", 
+                                      verbose=True, simplex=True)
+
 
 v_soln  = uw.mesh.MeshVariable('U', meshball, meshball.dim, degree=2 )
 p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
@@ -118,7 +66,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = meshball.mesh2pyvista()
+    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TETRA)
     pvmesh.plot(show_edges=True)
 
 
@@ -140,7 +88,11 @@ y = meshball.N.y
 z = meshball.N.z
 
 r  = sympy.sqrt(x**2+y**2+z**2)  # cf radius_fn which is 0->1 
-th = sympy.atan2(y+1.0e-5,x+1.0e-5)
+th = sympy.atan2(y+1.0e-10,x+1.0e-10)
+ph = sympy.acos(z / (r+1.0e-10))
+
+
+# 1000 is the penalty value that enforces the free-slip condition
 
 hw = 1000.0 / res 
 surface_fn = sympy.exp(-((r - r_o) / r_o)**2 * hw)
@@ -167,7 +119,8 @@ stokes.petsc_options["ksp_rtol"]=1.0e-3
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-2
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-2
 
-stokes.viscosity = 1.
+i_fn = 0.5 - 0.5 * sympy.tanh(1000.0*(r-0.5)) 
+stokes.viscosity = 1.0 + 100 * i_fn
 
 # -
 

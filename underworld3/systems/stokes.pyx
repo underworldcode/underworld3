@@ -320,6 +320,11 @@ class Stokes:
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
 
+
+        # The following is buggy and it seems easier to write out the 
+        # pattern of non-zero terms
+        
+        """
         ##  linear part
         # note that g3 is effectively a block
         # but it seems that petsc expects a version
@@ -335,6 +340,27 @@ class Stokes:
                     g3[col,row] += 1
         self._uu_g3 = (g3*self.viscosity).as_immutable()
         # fns_jacobian.append(self._uu_g3) add this guy below
+        """
+
+        if dim==2:
+            g3 = sympy.Matrix([ [2,0,0,1],
+                                [0,0,1,0],
+                                [0,1,0,0],
+                                [1,0,0,2]])
+            self._uu_g3 = (g3*self.viscosity).as_immutable()
+        else:
+            g3 = sympy.Matrix([ [2,0,0,0,1,0,0,0,1],
+                                [0,0,0,1,0,0,0,0,0],
+                                [0,0,0,0,0,0,1,0,0],
+                                [0,1,0,0,0,0,0,0,0],
+                                [1,0,0,0,2,0,0,0,1],
+                                [0,0,0,0,0,0,0,1,0],
+                                [0,0,1,0,0,0,0,0,0],
+                                [0,0,0,0,0,1,0,0,0],
+                                [1,0,0,0,1,0,0,0,2]])
+            self._uu_g3 = (g3*self.viscosity).as_immutable()
+
+            
 
         ## velocity dependant part
         # build derivatives with respect to velocities (v_x,v_y,v_z)
