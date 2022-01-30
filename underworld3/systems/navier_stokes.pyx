@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 
 import sympy
 from sympy import sympify
@@ -30,7 +30,10 @@ class NavierStokes:
                  theta         : Optional[float]                         =0.5,
                  solver_name   : Optional[str]                           ="navier_stokes_",
                  verbose       : Optional[str]                           =False,
-                 _Ppre_fn      = None
+                 _Ppre_fn      = None,
+                restore_points_func: Callable = None,
+
+
                   ):
         """
         This class provides functionality for a discrete representation
@@ -176,6 +179,8 @@ class NavierStokes:
         
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
+        self.restore_points_to_domain_func = restore_points_func
+
 
 
         # Some other setup 
@@ -310,7 +315,7 @@ class NavierStokes:
         return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
     @property
     def stress_star(self):
-        return self.stress_deviator_star - sympy.eye(self.mesh.dim)*self.p.fn  # keep pressure term simple
+        return self.stress_deviator_star - sympy.eye(self.mesh.dim)*self.p_star.fn  # keep pressure term simple
     @property
     def div_u(self):
         return divergence(self.u.fn)
@@ -404,9 +409,9 @@ class NavierStokes:
         fns_residual = []
         self._u_f0 = -self.bodyforce + self.rho * (self.u.fn - self._u_star.fn) / self.delta_t
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta) + self.penalty * self._penalty_term
+        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta) 
         fns_residual.append(self._u_f1)
-        self._p_f0 = self.div_u * self.theta + self.div_u_star * (1.0-self.theta)
+        self._p_f0 = self.div_u # * self.theta  + self.div_u_star * (1.0-self.theta)
         fns_residual.append(self._p_f0)
 
         ## jacobian terms
@@ -418,7 +423,7 @@ class NavierStokes:
         strain_rate_ave_dt = self.theta*self.strainrate + (1.0-self.theta) * self.strainrate_star
         # strain_rate_ave_dt = self.strainrate
 
-        ### uu terms
+        ### uu terms - g0 is the matrix \partial f_0_i / \partial v_j
 
         g0 = sympy.eye(dim)
         for i in range(dim):
@@ -428,11 +433,14 @@ class NavierStokes:
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
 
+
+        ## - g1 is the matrix \partial f_0_i / \partial epsilon_jk
+
         # The following is buggy and it seems easier to write out the 
         # pattern of non-zero terms
         
         """
-        ##  linear part
+        ##  linear part (non-linear viscosity part later ... )
         # note that g3 is effectively a block
         # but it seems that petsc expects a version
         # that is transposed (in the block sense) relative
@@ -473,11 +481,12 @@ class NavierStokes:
         # build derivatives with respect to velocities (v_x,v_y,v_z)
         d_mu_d_u_x = dim*[None,]
         for i in range(dim):
-            d_mu_d_u_x[i] = diff_fn1_wrt_fn2(self.viscosity,self.u.fn.dot(N.base_vectors()[i]))
+            d_mu_d_u_x[i] = diff_fn1_wrt_fn2(self.viscosity, self.u.fn.dot(N.base_vectors()[i]))
         # now construct required matrix. build submats first. 
         # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
         #       expected by PETSc
         # TODO: This needs to be checked!
+
         rows = []
         for k in range(dim):
             row = []
@@ -681,40 +690,50 @@ class NavierStokes:
         # limitations of the swarm data structures make it difficult to use mid point 
         # integration, so instead we take several small steps ... 
 
-            numerical_dt = self.estimate_dt()
+#          numerical_dt = self.estimate_dt()
+#
+#          if delta_t > 0.25 * numerical_dt:
+#              substeps = int(np.floor(delta_t / (0.25*numerical_dt))) + 1
+#              if self.verbose and mpi4py.MPI.COMM_WORLD.rank==0:
+#                  print("substeps = {}".format(substeps))
+#          else:
+#              substeps = 1
+#         
+#          for substep in range(0, substeps):
+#              sub_delta_t = timestep / substeps
 
-            if delta_t > 0.25 * numerical_dt:
-                substeps = int(np.floor(delta_t / (0.25*numerical_dt))) + 1
-                if self.verbose and mpi4py.MPI.COMM_WORLD.rank==0:
-                    print("substeps = {}".format(substeps))
-            else:
-                substeps = 1
-           
-            for substep in range(0, substeps):
-                sub_delta_t = timestep / substeps
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
 
-                with nswarm.access(nswarm.particle_coordinates):
-                    v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-                    nswarm.data[...] -= sub_delta_t * v_at_Vpts
+               # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    mid_pt_coords = self.restore_points_to_domain_func(mid_pt_coords)
 
-                with nswarm.access():
-                    if nswarm.data.shape[0] > 1.05 * n_points: #  and self.verbose:
-                        print("Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
+                nswarm.data[...] = mid_pt_coords
 
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                new_coords = nX0.data[...] - delta_t * v_at_Vpts
 
-#               # May not work if points go outside the boundary ... 
-#               with nswarm.access(nswarm.particle_coordinates):
-#                   v_at_Vpts_half_dt = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-#                   nswarm.data[...] -= sub_delta_t * (v_at_Vpts_half_dt - 0.5 * v_at_Vpts )
-       
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    new_coords = self.restore_points_to_domain_func(new_coords)
+
+                nswarm.data[...] = new_coords
+
+#                with nswarm.access():
+#                    if nswarm.data.shape[0] > 1.05 * n_points: #  and self.verbose:
+#                         print("Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):
                 nswarm.data[...] = coords[...]
 
         with nswarm.access(nU1, nP1):
-            nU1.data[...] = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-            nP1.data[...] = uw.function.evaluate(p_soln.fn, nswarm.data).reshape(-1,1)
+            nU1.data[...] = uw.function.evaluate(self._u.fn, nswarm.data).reshape(-1,self.mesh.dim)
+            nP1.data[...] = uw.function.evaluate(self._p.fn, nswarm.data).reshape(-1,1)
+            print("uStar minmax (dt):", nU1.data.min(), nU1.data.max(), delta_t)
 
         # restore coords 
         with nswarm.access(nswarm.particle_coordinates):

@@ -19,6 +19,8 @@ options = PETSc.Options()
 # options["dm_plex_check_all"] = None
 # options.getAll()
 
+expt_name = "Cylinder_NS_rho10"
+
 # +
 import meshio
 
@@ -50,22 +52,34 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
 v_x = -1.0 *  r * theta_dot * sympy.sin(th)
 v_y =         r * theta_dot * sympy.cos(th)
-# -
 
+# +
 # coord_vec = meshball.dm.getCoordinates()
-#
+
 # coords = coord_vec.array.reshape(-1,2)
 # mesh_th = np.arctan2(coords[:,1], coords[:,0]).reshape(-1,1)
 # mesh_r  = np.hypot(coords[:,0], coords[:,1]).reshape(-1,1)
 # coords *= 1.0 + 0.5 * (1.0-mesh_r) * np.cos(mesh_th*5.0)
 # meshball.dm.setCoordinates(coord_vec)
-#
+
 # meshball.meshio.points[:,0] = coords[:,0]
 # meshball.meshio.points[:,1] = coords[:,1]
+# -
 
 
 v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
+
+
+# +
+# Mesh restore function for advection of points
+# Which probably should be a feature of the mesh type ...
+
+def points_in_disc(coords): 
+    r = np.sqrt(coords[:,0]**2 + coords[:,1]**2).reshape(-1,1)
+    outside = np.where(r>1.0)
+    coords[outside] *= 0.999 / r[outside]
+    return coords
 
 
 # +
@@ -76,9 +90,11 @@ navier_stokes = NavierStokes(meshball,
                 pressureField=p_soln, 
                 u_degree=2, 
                 p_degree=1, 
-                rho=1.0,
-                theta=0.5,
-                solver_name="navier_stokes")
+                rho=10.0,
+                theta=1.0,
+                solver_name="navier_stokes",
+                restore_points_func=points_in_disc
+                        )
 
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
@@ -95,7 +111,7 @@ navier_stokes.petsc_options["fieldsplit_velocity_pc_type"] = "lu"
 
 # Constant visc
 navier_stokes.viscosity = 1.0
-navier_stokes.penalty=1.0
+navier_stokes.penalty=0.0
 
 navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
@@ -110,17 +126,10 @@ navier_stokes.add_dirichlet_bc( (0.0,0.0), "Lower" , (0,1) )
 with meshball.access(v_soln):
     v_soln.data[...] = 0.0
 
-navier_stokes.estimate_dt()
-
 navier_stokes.solve(timestep=0.01)
 navier_stokes.estimate_dt()
 
-navier_stokes._uu_g0
-# navier_stokes._pp_g0
-
-navier_stokes.penalty
-
-
+navier_stokes.estimate_dt()
 
 # +
 # check the mesh if in a notebook / serial
@@ -175,10 +184,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pl.remove_scalar_bar("mag")
 
     pl.show()
-
-
-# -
-def plot_T_mesh(filename):
+# +
+def plot_V_mesh(filename):
 
     import mpi4py
 
@@ -198,18 +205,17 @@ def plot_T_mesh(filename):
 
         pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
-        points = np.zeros((t_soln.coords.shape[0],3))
-        points[:,0] = t_soln.coords[:,0]
-        points[:,1] = t_soln.coords[:,1]
+        # points = np.zeros((p_soln.coords.shape[0],3))
+        # points[:,0] = p_soln.coords[:,0]
+        # points[:,1] = p_soln.coords[:,1]
 
-        point_cloud = pv.PolyData(points)
+        # point_cloud = pv.PolyData(points)
 
         with meshball.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
+             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
 
         with meshball.access():
             usol = v_soln.data.copy()
-
 
         arrow_loc = np.zeros((v_soln.coords.shape[0],3))
         arrow_loc[:,0:2] = v_soln.coords[...]
@@ -219,143 +225,54 @@ def plot_T_mesh(filename):
         
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.01/Vb, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", 
-                      render_points_as_spheres=False,
-                      point_size=10, opacity=0.66
-                    )
         
 
-        pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+#         pl.add_points(point_cloud, cmap="coolwarm", 
+#                       render_points_as_spheres=False,
+#                       point_size=10, opacity=0.66
+#                     )
+        
 
-        pl.remove_scalar_bar("T")
+        # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
+                  use_transparency=False, opacity=0.5)
+
+
+
+        pl.remove_scalar_bar("P")
         pl.remove_scalar_bar("mag")
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
                       return_img=False)
 
        # pl.show()
-
-
-
-
-
-0/0
-
-with meshball.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
-    t_soln.data[...] = t_0.data[...]
-
-
-# +
-# Advection/diffusion model / update in time
-
-delta_t = 0.05
-adv_diff.k=0.01
-expt_name="output/rotation_test_k_001"
-
-plot_T_mesh(filename="{}_step_{}".format(expt_name,0))
-
-for step in range(1,21):
-    
-    # This shows how we over-rule the mid-point scheme that is provided
-    # by the adv_diff solver
-    
-    with adv_diff._nswarm.access():
-        print(adv_diff._nswarm.data.shape)
-        coords0 = adv_diff._nswarm.data.copy()
-
-        n_x = uw.function.evaluate(r * sympy.cos(th-delta_t*theta_dot), coords0)
-        n_y = uw.function.evaluate(r * sympy.sin(th-delta_t*theta_dot), coords0)
-
-        coords = np.empty_like(coords0)
-        coords[:,0] = n_x
-        coords[:,1] = n_y
-
-   
-    # delta_t will be baked in when this is defined ... so re-define it 
-    adv_diff.solve(timestep=delta_t, coords=coords)
-    
-    # stats then loop
-    
-    tstats = t_soln.stats()    
-    
-    if mpi4py.MPI.COMM_WORLD.rank==0:
-        print("Timestep {}, dt {}".format(step, delta_t))
-        print(tstats)
-        
-    plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
-
-    # savefile = "output_conv/convection_cylinder_{}_iter.h5".format(step) 
-    # meshball.save(savefile)
-    # v_soln.save(savefile)
-    # t_soln.save(savefile)
-    # meshball.generate_xdmf(savefile)
- 
-
-
-# +
-# check the mesh if in a notebook / serial
-
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-    pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
-
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    points = np.zeros((t_soln.coords.shape[0],3))
-    points[:,0] = t_soln.coords[:,0]
-    points[:,1] = t_soln.coords[:,1]
-
-    point_cloud = pv.PolyData(points)
-
-    with meshball.access():
-        point_cloud.point_data["T"] = t_soln.data-t_0.data
-
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0],3))
-    arrow_loc[:,0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0],3))
-    arrow_length[:,0:2] = usol[...] 
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
-
-    pl.add_points(point_cloud, cmap="coolwarm", 
-                  render_points_as_spheres=False,
-                  point_size=10, opacity=0.66
-                )
-
-
-    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-
-    pl.remove_scalar_bar("T")
-    pl.remove_scalar_bar("mag")
-
-    pl.show()
 # -
 
-# savefile = "output_conv/convection_cylinder.h5".format(step) 
-# meshball.save(savefile)
-# v_soln.save(savefile)
-# t_soln.save(savefile)
-# meshball.generate_xdmf(savefile)
+navier_stokes._uu_g0
+navier_stokes.theta=1.0
+
+# +
+# Convection model / update in time
+
+
+for step in range(0,1000):
+        
+    delta_t = 0.001 # 5.0*navier_stokes.estimate_dt() 
+    navier_stokes.solve(timestep=delta_t)
+        
+    if mpi4py.MPI.COMM_WORLD.rank==0:
+        print("Timestep {}, dt {}".format(step, delta_t))
+
+    if step%10 == 0:
+        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,step))
+
+
+
+# + language="sh"
+#
+# ls -tr output
+# -
 
 

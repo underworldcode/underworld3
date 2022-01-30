@@ -97,6 +97,12 @@ r_mesh = uw.mesh.MeshVariable("r",   meshball, 1, degree=1)
 
 
 
+
+
+
+
+
+
 # +
 # Create a density structure / buoyancy force
 # gravity will vary linearly from zero at the centre 
@@ -153,6 +159,21 @@ else:
 
 
 # +
+# Advection / diffusion mesh restore function
+# Which probably should be a feature of the mesh type ...
+
+def points_in_disc(coords): 
+    r = np.sqrt(coords[:,0]**2 + coords[:,1]**2).reshape(-1,1)
+    outside = np.where(r>1.0)
+    coords[outside] *= 0.999 / r[outside]
+    return coords
+
+
+
+
+
+
+# +
 # Create adv_diff object
 
 # Set some things
@@ -166,6 +187,7 @@ adv_diff = uw.systems.AdvDiffusion(meshball,
                                    V_Field=v_soln,
                                    solver_name="adv_diff", 
                                    degree=3,
+                                   restore_points_func = points_in_disc,
                                    verbose=False)
 
 adv_diff.k = k
@@ -192,7 +214,7 @@ with meshball.access(r_mesh):
 
 # +
 buoyancy_force = gravity_fn * Rayleigh * t_soln.fn 
-buoyancy_force -= Rayleigh * 100.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
+buoyancy_force -= Rayleigh * 1000.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
 
 stokes.bodyforce = unit_rvec * buoyancy_force  
 
