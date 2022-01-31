@@ -144,7 +144,10 @@ with meshbox.access(t_0, t_soln):
 
 
 # +
-buoyancy_force = 1.0e6 * t_soln.fn 
+expt_name="output/Ra1e6_NL"
+
+Rayleigh = 1.0e6
+buoyancy_force = Rayleigh * t_soln.fn 
 stokes.bodyforce = meshbox.N.j * buoyancy_force  
 
 # check the stokes solve is set up and that it converges
@@ -153,15 +156,15 @@ stokes.solve()
 # +
 # Now make the viscosity non-linear
 
-stokes.viscosity = 0.1 + 10.0 / (1.0 + stokes._strainrate_inv2**2)
-stokes._Ppre_fn = 1.0/stokes.viscosity
+stokes.viscosity = 0.1 + 10.0 / (1.0 + stokes._strainrate_inv2)
+stokes._Ppre_fn = 1.0 / (stokes.viscosity)
 
 # -
 
 with meshbox.access():
     print(v_soln.data.min(), v_soln.data.max())
 
-stokes.solve()
+stokes.solve(zero_init_guess=False)
 
 # Check the diffusion part of the solve converges 
 adv_diff.solve(timestep=0.01*stokes.estimate_dt())
@@ -261,7 +264,7 @@ def plot_T_mesh(filename):
         pl = pv.Plotter()
 
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=1.0/Rayleigh, opacity=0.75)
 
         pl.add_points(point_cloud, cmap="coolwarm", 
                       render_points_as_spheres=False,
@@ -281,7 +284,6 @@ def plot_T_mesh(filename):
 # +
 # Convection model / update in time
 
-expt_name="output/Ra1e6_NL"
 
 for step in range(0,250):
     
