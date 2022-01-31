@@ -95,7 +95,8 @@ class Stokes:
         -----
         Constructor must be called by collectively all processes.
 
-        """
+        """       
+
 
         Stokes.instances += 1
 
@@ -174,8 +175,15 @@ class Stokes:
         grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
         grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immuate so it can be hashed later
-        
+        grad_p = gradient(self.p.fn).to_matrix(N)
+
+        self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
+        self._L = grad_u 
+        self._G = grad_p
+
+        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
+        self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
+
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()
@@ -310,58 +318,37 @@ class Stokes:
         N = self.mesh.N
         fns_jacobian = []
 
-        ### uu terms
+        # uu terms  
+        
+        ## J_uu_00 block - G0 which is d f_0_i / d u_j
 
-        g0 = sympy.eye(dim)
+        g0 = sympy.Matrix.zeros(dim,dim)
         for i in range(dim):
             for j in range(dim):
-                g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
-
+                # g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
+                g0[i,j] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._V[j])
+                
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
 
+        ## J_uu_01 block - G1 which is d f_0_i / d L_kl
 
-        # The following is buggy and it seems easier to write out the 
-        # pattern of non-zero terms
-        
-        """
-        ##  linear part
-        # note that g3 is effectively a block
-        # but it seems that petsc expects a version
-        # that is transposed (in the block sense) relative
-        # to what i'd expect. need to ask matt about this. JM.
-        g3 = sympy.eye(dim**2)
-        for i in range(dim):
-            for j in range(i,dim):
-                row = i*dim+i
-                col = j*dim+j
-                g3[row,col] += 1
-                if row != col:
-                    g3[col,row] += 1
-        self._uu_g3 = (g3*self.viscosity).as_immutable()
-        # fns_jacobian.append(self._uu_g3) add this guy below
-        """
+        g1 = sympy.Matrix.zeros(dim,dim**2)
+        ### This term is zero for stokes / navier-stokes
 
-        if dim==2:
-            g3 = sympy.Matrix([ [2,0,0,1],
-                                [0,0,1,0],
-                                [0,1,0,0],
-                                [1,0,0,2]])
-            self._uu_g3 = (g3*self.viscosity).as_immutable()
-        else:
-            g3 = sympy.Matrix([ [2,0,0,0,1,0,0,0,1],
-                                [0,0,0,1,0,0,0,0,0],
-                                [0,0,0,0,0,0,1,0,0],
-                                [0,1,0,0,0,0,0,0,0],
-                                [1,0,0,0,2,0,0,0,1],
-                                [0,0,0,0,0,0,0,1,0],
-                                [0,0,1,0,0,0,0,0,0],
-                                [0,0,0,0,0,1,0,0,0],
-                                [1,0,0,0,1,0,0,0,2]])
-            self._uu_g3 = (g3*self.viscosity).as_immutable()
+        ## J_uu_10 block - G2 which is d f_1_ij / d u_k
 
-            
+        g2 = sympy.Matrix.zeros(dim**2,dim)
+        for k in range(0,dim):
+            for i in range(0,dim):
+                for j in range(0,dim):
+                    ii = i + 2*k 
+                    g2[ii,j] = sympy.diff(self.stress_deviator[i,j], self._V[k])
+ 
+        self._uu_g2 = g2.as_immutable()  # construct full matrix from sub matrices
+        fns_jacobian.append(self._uu_g2)
 
+        '''
         ## velocity dependant part
         # build derivatives with respect to velocities (v_x,v_y,v_z)
         d_mu_d_u_x = dim*[None,]
@@ -380,9 +367,29 @@ class Stokes:
             rows.append(row)
         self._uu_g2 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g2)
+        '''
+
+        ## J_uu_11 block - G2 which is d f_1_ij / d L_kl
 
         ## velocity gradient dependant part
         # build derivatives with respect to velocity gradients (u_x_dx,u_x_dy,u_x_dz,u_y_dx,u_y_dy,u_y_dz,u_z_dx,u_z_dy,u_z_dz)
+        # As long as we express everything in terms of _L terms, then sympy
+        # can construct the derivatives wrt _L correctly here
+
+        g3 = sympy.Matrix.zeros(dim**2,dim**2)
+
+        for k in range(0,dim):
+            for l in range(0,dim):
+                for i in range(0,dim):
+                    for j in range(0,dim):
+                        ii = i + dim*k 
+                        jj = j + dim*l
+                        g3[ii,jj] = sympy.diff(self.stress_deviator[i,j], self._L[k,l])
+
+        self._uu_g3 = g3.as_immutable()  
+        fns_jacobian.append(self._uu_g3)
+
+        """
         d_mu_d_u_i_dk = dim*[None,]
         for i in range(dim):
             lst = dim*[None,]
@@ -402,18 +409,52 @@ class Stokes:
                 row.append(2*self.strainrate[:,i]*d_mu_d_u_i_dk[k].T)
             rows.append(row)
         self._uu_g3 += sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
-        fns_jacobian.append(self._uu_g3)
+        # fns_jacobian.append(self._uu_g3)
+        """
 
-        ## pressure dependant part
-        # get derivative with respect to pressure
+        # pressure dependant part of velocity block  d f_0_i d_p 
+        # ZERO
+        # pressure-gradient dependant part of velocity block  d f_0_i d_grad p_j  
+        # ZERO
+
+        # pressure-dependent terms in f1  d f_1_ij, dp
+
+        g2 = sympy.Matrix.zeros(dim,dim)
+
+        for i in range(0,dim):
+            for j in range(0,dim):
+                g2[i,j] = sympy.diff(self.stress[i,j], self.p.fn) 
+
+        self._up_g2 = g2.as_immutable()
+        fns_jacobian.append(self._up_g2)
+
+        # pressure-gradient dependent terms in f1  d f_1_ij, d grad p_k
+
+        g3 = sympy.Matrix.zeros(dim**2,dim)
+        for k in range(0,dim):
+            for i in range(0,dim):
+                for j in range(0,dim):
+                    ii = i + 2*k 
+                    g3[ii,j] = sympy.diff(self.stress[i,j], self._G[k])
+ 
+        self._up_g3 = g3.as_immutable()  # construct full matrix from sub matrices
+        fns_jacobian.append(self._up_g3)
+
+    
+        """
+        ## get derivative with respect to pressure
         d_mu_d_p = diff_fn1_wrt_fn2(self.viscosity,self.p.fn)
         self._up_g2 = (2*d_mu_d_p*self.strainrate).as_immutable()
+
         # add linear in pressure part
         self._up_g2 += -sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._up_g2)
+        """
 
         ## pressure gradient dependant part
         # build derivatives with respect to pressure gradients (p_dx, p_dy, p_dz)
+
+        """
         grad_p = gradient(self.p.fn)
         lst = dim*[None,]
         for i in range(dim):
@@ -432,8 +473,12 @@ class Stokes:
             rows.append(row)
         self._up_g3 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._up_g3) 
+        """
 
-        # pu terms
+        # pu terms  
+        # THE ONLY RHS term in the pressure is div_u  (i.e. pf_0 = div u)
+        # d pf_0 d_Lij = identity matrix
+
         self._pu_g1 = sympy.eye(dim).as_immutable()
         fns_jacobian.append(self._pu_g1)
 

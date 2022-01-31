@@ -84,5 +84,3 @@ if rank==0: print(f"RMS diff = {rel_rms_diff}")
 
 if not np.allclose(rel_rms_diff, 0.00109, rtol=1.e-2):
     raise RuntimeError("Solve did not produce expected result.")
-
-# %%
