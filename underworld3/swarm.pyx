@@ -220,6 +220,7 @@ class Swarm(_api_tools.Stateful):
     def __init__(self, mesh):
         self.mesh = mesh
         self.dim = mesh.dim
+        self.cdim = mesh.cdim
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
@@ -231,7 +232,7 @@ class Swarm(_api_tools.Stateful):
         self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords
-        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False, _proxy=False)
+        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.cdim, dtype=float, _register=False, _proxy=False)
 
         # add variable to handle particle cell id
         self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)

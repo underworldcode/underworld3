@@ -1,17 +1,11 @@
 # %%
+import pygmsh, meshio
+
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Poisson
 import numpy as np
-options = PETSc.Options()
-# options["pc_type"]  = "svd"
-options["ksp_rtol"] = 1.0e-7
-# options["ksp_monitor_short"] = None
-# options["snes_type"]  = "fas"
-options["snes_converged_reason"] = None
-options["snes_monitor_short"] = None
-# options["snes_view"]=None
-options["snes_rtol"] = 1.0e-7
+
 
 # %%
 # Set some things
@@ -25,73 +19,132 @@ r_o = 1.0
 # %%
 # first do 2D
 cell_size=0.02
-mesh = uw.mesh.SphericalShell(dim=2,radius_inner=r_i, radius_outer=r_o,cell_size=cell_size)
+
+mesh = uw.meshes.SphericalShell(dim=2,radius_inner=r_i, degree=1,
+                                radius_outer=r_o,cell_size=cell_size)
+
+t_soln  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
+
+
 # Create Poisson object
-poisson = Poisson(mesh)
-poisson.k = k
+poisson = Poisson(mesh, u_Field=t_soln)
+poisson.k = 1.0 # + 0.1 * t_soln.fn**1.5
 poisson.f = f
+
+poisson.petsc_options["snes_rtol"] = 1.0e-6
+poisson.petsc_options.delValue("ksp_monitor")
+poisson.petsc_options.delValue("ksp_rtol")
+
 
 # %%
 import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise( ( t_i,  abs_r < 0.5*(r_i+r_o) ),
                       ( t_o,                 True ) )
-poisson.add_dirichlet_bc( bc, mesh.boundary.ALL_BOUNDARIES )
+poisson.add_dirichlet_bc( bc, "All_dm_boundaries" )
 
 # %%
 bc
 
 # %%
-# Solve time
 poisson.solve()
 
 # %%
 # Check. Construct simple solution for above config.
 import math
-A = (t_i-t_o)/(math.log(r_i)-math.log(r_o))
-B = t_o - A*math.log(r_o)
-r = np.linalg.norm(poisson.u.coords,axis=1)
-sol = A*np.log(r) + B
-import numpy as np
+A = (t_i-t_o)/(sympy.log(r_i)-math.log(r_o))
+B = t_o - A*sympy.log(r_o)
+sol = A*sympy.log(sympy.sqrt(mesh.N.x**2+mesh.N.y**2)) + B
+
 with mesh.access():
-    if not np.allclose(sol,poisson.u.data[:,0],rtol=5e-04):
-        raise RuntimeError("Unexpected values encountered.")
+    mesh_analytic_soln = uw.function.evaluate(sol,mesh.data)
+    mesh_numerical_soln = uw.function.evaluate(t_soln.fn,mesh.data)
+
+import numpy as np
+if not np.allclose(mesh_analytic_soln,mesh_numerical_soln,rtol=0.001):
+    raise RuntimeError("Unexpected values encountered.")
 
 # %%
-savefile = "output/poisson_spherical_2d.h5" 
+poisson.k = 1.0 + 0.1 * poisson.u.fn**1.5
+poisson.f = 0.01 * poisson.u.fn**0.5
+poisson.solve(zero_init_guess=False, _force_setup=True)
+
+# %%
+poisson._g0
+
+# %%
+poisson._g1
+
+# %%
+poisson._g2
+
+# %%
+poisson._g3
+
+# %%
+0/0
+
+# %%
+# Validate
+
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.smooth_shading = True
+    
+    pvmesh = mesh.mesh2pyvista()
+
+    with mesh.access():
+        pvmesh.point_data["T"]  = mesh_analytic_soln
+        pvmesh.point_data["T2"] = mesh_numerical_soln
+        pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"] 
+    
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T2",
+                  use_transparency=False, opacity=0.5)
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
+# %%
+savefile = "output/poisson_disc.h5" 
 mesh.save(savefile)
 poisson.u.save(savefile)
 mesh.generate_xdmf(savefile)
 
 # %%
-import k3d
-import plot
-vertices_2d = plot.mesh_coords(mesh)
-vertices = np.zeros((vertices_2d.shape[0],3),dtype=np.float32)
-vertices[:,0:2] = vertices_2d[:]
-indices = plot.mesh_faces(mesh)
-kplot = k3d.plot()
-with mesh.access():
-    kplot += k3d.mesh(vertices, indices,attribute=poisson.u.data, color_map=k3d.basic_color_maps.BlackBodyRadiation,wireframe=True)
-kplot.grid_visible=False
-kplot.display()
-kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc settings
-
-# %%
 # now do 3D
-cell_size=0.025
-mesh = uw.mesh.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o,cell_size=cell_size)
+cell_size=0.1
+mesh_3d = uw.meshes.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o, degree=1, cell_size=cell_size)
+t_soln_3d  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
+
 # Create Poisson object
-poisson = Poisson(mesh)
+poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
 poisson.k = k
 poisson.f = f
+
+poisson.petsc_options["snes_rtol"] = 1.0e-6
+poisson.petsc_options.delValue("ksp_monitor")
+poisson.petsc_options.delValue("ksp_rtol")
 
 # %%
 import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise( ( t_i,  abs_r < 0.5*(r_i+r_o) ),
                       ( t_o,                 True ) )
-poisson.add_dirichlet_bc( bc, mesh.boundary.ALL_BOUNDARIES )
+poisson.add_dirichlet_bc( bc, "All_dm_boundaries" )
 
 # %%
 bc
@@ -102,26 +155,60 @@ poisson.solve()
 
 # %%
 # Check. Construct simple solution for above config.
-import math
-A = (t_i-t_o)/(1./r_i-1./r_o)
-B = t_o - A/r_o
-r = np.linalg.norm(poisson.u.coords,axis=1)
-sol = A/r + B
-import numpy as np
+
+A = (t_i-t_o)/(1/r_i-1/r_o)
+B =  t_o - A / r_o
+sol = A/(sympy.sqrt(mesh_3d.N.x**2+mesh_3d.N.y**2+mesh_3d.N.z**2)) + B
+
 with mesh.access():
-    if not np.allclose(sol,poisson.u.data[:,0],rtol=2e-02):
-        # abs_diff = np.abs(sol-poisson.u.data[:,0])
-        # argmax = abs_diff.argmax()
-        # print(argmax,(sol[argmax],poisson.u.data[argmax,0]))
-        raise RuntimeError("Unexpected values encountered.")
+    mesh_analytic_soln = uw.function.evaluate(sol,mesh_3d.data)
+    mesh_numerical_soln = uw.function.evaluate(t_soln_3d.fn,mesh_3d.data)
+
+import numpy as np
+if not np.allclose(mesh_analytic_soln,mesh_numerical_soln,rtol=0.01):
+    raise RuntimeError("Unexpected values encountered.")
 
 # %%
-vertices = np.array(plot.mesh_coords(mesh),dtype=np.float32)
-indices = plot.mesh_faces(mesh)
-kplot = k3d.plot()
-with mesh.access():
-    kplot += k3d.mesh(vertices, indices,attribute=poisson.u.data, color_map=k3d.basic_color_maps.BlackBodyRadiation,wireframe=True)
-kplot.display()
+# Validate
+
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.smooth_shading = True
+    
+    pvmesh = mesh_3d.mesh2pyvista()
+
+    with mesh_3d.access():
+        pvmesh.point_data["T"]  = mesh_analytic_soln
+        pvmesh.point_data["T2"] = mesh_numerical_soln
+        pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"] 
+        
+    clipped = pvmesh.clip(origin=(0.001,0.0,0.0), normal=(1, 0, 0), invert=True)
+
+    
+    pl = pv.Plotter()
+    
+
+    pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="DT",
+                  use_transparency=False, opacity=1.0)
+ 
+
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
+# %%
 
 # %%
 savefile = "output/poisson_spherical_3d.h5" 

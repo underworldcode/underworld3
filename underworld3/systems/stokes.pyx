@@ -26,6 +26,7 @@ class Stokes:
                  p_degree      : Optional[int]                           =None,
                  solver_name   : Optional[str]                           ="stokes_",
                  verbose       : Optional[str]                           =False,
+                 penalty       : Optional[float]                         = 0.0,
                  _Ppre_fn      = None
                   ):
         """
@@ -164,6 +165,7 @@ class Stokes:
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
         self._Ppre_fn = _Ppre_fn
+        self._penalty =  penalty
 
         self.bcs = []
 
@@ -272,6 +274,16 @@ class Stokes:
         #     raise RuntimeError("Body force term must be a vector quantity.")
         self._bodyforce = symval
 
+
+    @property
+    def penalty(self):
+        return self._penalty
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._penalty = symval
+
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components):
         # switch to numpy arrays
@@ -300,22 +312,35 @@ class Stokes:
 
 
     @timing.routine_timer_decorator
-    def _setup_terms(self):
+    def _setup_problem_description(self):
+
+        dim = self.mesh.dim
         N = self.mesh.N
 
         # residual terms
         fns_residual = []
-        self._u_f0 = -self.bodyforce
+        self._u_f0 = -self.bodyforce # + self.penalty * (self.div_u)**2 * (N.i +  N.j + N.k)
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress
+
+        self._u_f1 = self.stress + sympy.eye(dim) * self.penalty * self.div_u
         fns_residual.append(self._u_f1)
+        
         self._p_f0 = self.div_u
         fns_residual.append(self._p_f0)
 
-        ## jacobian terms
-        # needs to be checked!
+        return fns_residual
+
+
+    @timing.routine_timer_decorator
+    def _setup_terms(self):
         dim = self.mesh.dim
         N = self.mesh.N
+
+        # residual terms
+        fns_residual = self._setup_problem_description()
+
+        ## jacobian terms
+
         fns_jacobian = []
 
         # uu terms  
@@ -331,10 +356,17 @@ class Stokes:
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
 
-        ## J_uu_01 block - G1 which is d f_0_i / d L_kl
+        ## J_uu_01 block - G1 which is d f_0_i / d L_kl  (Non linear RHS with gradients)
 
         g1 = sympy.Matrix.zeros(dim,dim**2)
-        ## Not used 
+        for l in range(0,dim):
+            for k in range(0,dim):
+                for i in range(0,dim):
+                    jj = l + 2*k
+                    g1[i,jj] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._L[k,l])
+        
+        self._uu_g1 = g1.as_immutable()  # construct full matrix from sub matrices
+        fns_jacobian.append(self._uu_g1)
 
         ### This term is zero for stokes / navier-stokes
 
@@ -344,8 +376,8 @@ class Stokes:
         for k in range(0,dim):
             for i in range(0,dim):
                 for j in range(0,dim):
-                    ii = i + 2*k 
-                    g2[ii,j] = sympy.diff(self._u_f1[i,j], self._V[k])
+                    ii = i + 2*j 
+                    g2[ii,k] = sympy.diff(self._u_f1[i,j], self._V[k])
  
         self._uu_g2 = g2.as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g2)
@@ -366,7 +398,7 @@ class Stokes:
                         jj = j + dim*l
                         g3[ii,jj] = sympy.diff(self._u_f1[i,j], self._L[k,l])
 
-        self._uu_g3 = g3.T.as_immutable()  
+        self._uu_g3 = g3.as_immutable()  
         fns_jacobian.append(self._uu_g3)
 
         # pressure dependant part of velocity block  d f_0_i d_p 
@@ -412,7 +444,7 @@ class Stokes:
 
         # pp term
         if self._Ppre_fn is None:
-            self._pp_g0 = 1/self.viscosity
+            self._pp_g0 = 1/(self.viscosity)
         else:
             self._pp_g0 = self._Ppre_fn
 
@@ -446,10 +478,10 @@ class Stokes:
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[self._p_f0]],                                NULL)
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
-        PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]], ext.fns_jacobian[i_jac[self._uu_g1]], ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]], ext.fns_jacobian[i_jac[self._uu_g1]], ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_g0]],                                 NULL,                                 NULL,                                 NULL)
