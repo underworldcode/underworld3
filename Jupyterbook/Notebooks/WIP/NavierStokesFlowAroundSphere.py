@@ -25,7 +25,7 @@ import meshio, pygmsh
 # Mesh a 2D pipe with a circular hole
 
 csize = 0.05
-csize_circle = 0.03
+csize_circle = 0.025
 res = csize_circle
 
 width = 5.0
@@ -135,10 +135,8 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 # -
 
-inclusion_unit_rvec
-
-v_soln = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=3 )
-p_soln = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=2 )
+v_soln = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=2 )
+p_soln = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=1 )
 
 
 # +
@@ -163,23 +161,28 @@ navier_stokes = NavierStokes(pipemesh,
 # Constant visc
 
 navier_stokes.rho=10.0
-navier_stokes.theta=1.0
+navier_stokes.theta=0.75
 navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
-Vb = 25.0
+Vb = 50.0
 Free_Slip = True
-expt_name = "pipe_flow_cylinder_R025F_25_rho10_iii"
+expt_name = "pipe_flow_cylinder_R025_50_rho10"
 
 if Free_Slip:
     hw = 1000.0 / res 
     surface_fn = sympy.exp(-((r - radius) / radius)**2 * hw)
-    navier_stokes.bodyforce -= 1.0e4 * Vb * navier_stokes.rho * v_soln.fn.dot(inclusion_unit_rvec) * surface_fn * inclusion_unit_rvec
+    navier_stokes.bodyforce -= 1.0e5 * Vb * navier_stokes.rho * v_soln.fn.dot(inclusion_unit_rvec) * surface_fn * inclusion_unit_rvec
+    navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t + 1.0e5 * Vb * surface_fn)
+    # navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity )
+
 
 else:
-    surface_fn = 0.0
+    surface_fn =  1.0e-32 * r
     navier_stokes.add_dirichlet_bc( (0.0,0.0), "inclusion" , (0,1) )  
+    
+    
 
 # Velocity boundary conditions
 
@@ -226,7 +229,7 @@ def plot_V_mesh(filename):
         pv.global_theme.jupyter_backend = 'pythreejs'
         pv.global_theme.smooth_shading = True
         pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-        pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
+        pv.global_theme.camera['position'] = [0.0, 0.0, 2.0] 
 
         pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
@@ -272,41 +275,45 @@ def plot_V_mesh(filename):
         pl.remove_scalar_bar("P")
        # pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
+        pl.screenshot(filename="{}.png".format(filename), window_size=(2560,1280), 
                       return_img=False)
 
        # pl.show()
 
-for step in range(0,1000):
+ts = 0
+
+for step in range(0,500):
     delta_t = min(0.01, 5.0*navier_stokes.estimate_dt())
     navier_stokes.solve(timestep=delta_t, zero_init_guess=True)
     
     if mpi4py.MPI.COMM_WORLD.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
                 
-    if step%10 == 0:
+    if ts%1 == 0:
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name,step))
 
+    ts += 1
 
-    
     # savefile = "output/{}_ts_{}.h5".format(expt_name,step) 
     # pipemesh.save(savefile)
     # v_soln.save(savefile)
     # p_soln.save(savefile)
     # pipemesh.generate_xdmf(savefile)
 
+
+
 # +
-display(navier_stokes._uu_g0)
-display(navier_stokes._uu_g3)
-display(navier_stokes._uu_g2)
+# display(navier_stokes._uu_g0)
+# display(navier_stokes._uu_g3)
+# display(navier_stokes._uu_g2)
 
-display(navier_stokes._up_g2)
-display(navier_stokes._up_g3)
-display(navier_stokes._pu_g1)
+# display(navier_stokes._up_g2)
+# display(navier_stokes._up_g3)
+# display(navier_stokes._pu_g1)
 
-# -
 
-navier_stokes.petsc_options.getAll()
+# +
+# navier_stokes.petsc_options.getAll()
 
 # +
 # Solves a Stokes initial condition for this problem to avoid a crash-start 
@@ -314,14 +321,9 @@ navier_stokes.petsc_options.getAll()
 
 # navier_stokes.petsc_options["snes_type"]="newtonls"
 # navier_stokes.petsc_options["snes_rtol"]=1.0e-3
-
-
 # navier_stokes.rho =0.01  # will trigger a rebuild and options are all re-read
 # navier_stokes.solve(timestep=pipemesh.get_min_radius()/Vb)
-# -
 
-
-navier_stokes.restore_points_to_domain_func is None
 
 # +
 # check the mesh if in a notebook / serial
@@ -335,12 +337,12 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     import vtk
 
     pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.window_size = [1250, 1250]
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-    pv.global_theme.camera['position'] = [0.0, 0.0, 10.0] 
+    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
 
     pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
@@ -354,7 +356,9 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         usol = v_soln.data.copy()
         
     with pipemesh.access():
-        pvmesh.point_data["S"] = uw.function.evaluate(r-radius, pipemesh.data)
+        pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
+        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
+
 
     v_vectors = np.zeros((pipemesh.data.shape[0],3))
     v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -388,14 +392,14 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     #               point_size=10, opacity=0.66
     #             )
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=1.0)
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)
 
-    pl.remove_scalar_bar("S")
-    pl.remove_scalar_bar("mag")
+    # pl.remove_scalar_bar("S")
+    # pl.remove_scalar_bar("mag")
 
     pl.show()
 # + active=""
@@ -403,6 +407,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 # -
 
 0/0
+
 
 
 def plot_T_mesh(filename):
