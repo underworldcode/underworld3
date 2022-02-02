@@ -25,9 +25,22 @@ from underworld3 import _api_tools
 import underworld3.timing as timing
 
 class MeshClass(_api_tools.Stateful):
+
+    mesh_instances = 0
+
     @timing.routine_timer_decorator
-    def __init__(self, simplex, degree=1, *args,**kwargs):
+    def __init__(self, simplex, degree=1, cdim=None, *args,**kwargs):
+
+        MeshClass.mesh_instances += 1
+
         self.isSimplex = simplex
+
+        # Entertain a mesh that is a manifold of lower dimension
+
+        if cdim is not None:
+            self.cdim = cdim 
+        else:
+            self.cdim = self.dim 
 
         # Enable hashing
         options = PETSc.Options()
@@ -79,6 +92,7 @@ class MeshClass(_api_tools.Stateful):
         self._elementType = None
 
         self.degree = degree
+
         self.nuke_coords_and_rebuild()
 
         # A private work array used in the stats routines. 
@@ -88,7 +102,6 @@ class MeshClass(_api_tools.Stateful):
         self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=3 ) 
 
         # 
-
         super().__init__()
 
     def nuke_coords_and_rebuild(self):
@@ -111,10 +124,10 @@ class MeshClass(_api_tools.Stateful):
         ## LM  - stuff so I will leave the default at 1
 
         options = PETSc.Options()
-        options.setValue("meshproj_petscspace_degree", self.degree) 
+        options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree) 
 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex,
-                                                    self.degree,  "meshproj_", PETSc.COMM_WORLD)
+        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex,
+                                                    self.degree,  "meshproj_{}_".format(self.mesh_instances), PETSc.COMM_WORLD)
         self.petsc_fe = cdmfe
       
         cdef FE c_fe = cdmfe
@@ -124,21 +137,24 @@ class MeshClass(_api_tools.Stateful):
         # now set copy of this array into dictionary
 
         arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.dim).copy()
+        self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.cdim).copy()
 
         self._get_mesh_centroids()
 
         # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
 
-        return
 
     @timing.routine_timer_decorator
+
     def update_lvec(self):
+
+
         """
         This method creates and/or updates the mesh variable local vector. 
         If the local vector is already up to date, this method will do nothing.
         """
+
         cdef DM dm = self.dm
         if self._stale_lvec:
             if not self._lvec:
@@ -186,7 +202,7 @@ class MeshClass(_api_tools.Stateful):
         """
 
         coord_vec = self.dm.getCoordinatesLocal()
-        coords = coord_vec.array.reshape(-1,self.dim)
+        coords = coord_vec.array.reshape(-1,self.cdim)
         coords[...] = new_coords[...]
                 
         self.dm.setCoordinatesLocal(coord_vec)
@@ -290,7 +306,7 @@ class MeshClass(_api_tools.Stateful):
         """
         The tuple of base scalar objects (N.x,N.y,N.z) for the mesh. 
         """
-        return self._N.base_scalars()[0:self.dim]
+        return self._N.base_scalars()[0:self.cdim]
 
     @property
     def rvec(self) -> sympy.vector.Vector:
@@ -298,10 +314,10 @@ class MeshClass(_api_tools.Stateful):
         The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
         """
         N = self.N
-        rvecguy = N.x*N.i + N.y*N.j
-        if self.dim==3:
-            rvecguy += N.z*N.k
-        return rvecguy
+        r_vec = N.x*N.i + N.y*N.j
+        if self.cdim==3:
+            r_vec += N.z*N.k
+        return r_vec
 
     @property
     def data(self) -> numpy.ndarray:
@@ -311,7 +327,7 @@ class MeshClass(_api_tools.Stateful):
         # get flat array
 
         arr = self.dm.getCoordinatesLocal().array
-        return arr.reshape(-1, self.dim)
+        return arr.reshape(-1, self.cdim)
 
     @property
     def dim(self) -> int:
@@ -398,7 +414,7 @@ class MeshClass(_api_tools.Stateful):
         cdmNew = cdmOld.clone()
         options = PETSc.Options()
         options.setValue("coordinterp_petscspace_degree", var.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
+        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
         cdmNew.setField(0,cdmfe)
         cdmNew.createDS()
         (matInterp, vecScale) = cdmOld.createInterpolation(cdmNew)
@@ -413,7 +429,7 @@ class MeshClass(_api_tools.Stateful):
         cdmNew.globalToLocal(coordsNewG,coordsNewL)
         arr = coordsNewL.array
         # reshape and grab copy
-        arrcopy = arr.reshape(-1,self.dim).copy()
+        arrcopy = arr.reshape(-1,self.cdim).copy()
         # record into coord array
         self._coord_array[key] = arrcopy
         # clean up
@@ -575,7 +591,7 @@ class MeshClass(_api_tools.Stateful):
             elementType = self.elementType
 
         # vtk defines all meshes using 3D coordinate arrays
-        if self.dim == 2: 
+        if self.cdim == 2: 
             coords = self.data
             vtk_coords = np.zeros((coords.shape[0], 3))
             vtk_coords[:,0:2] = coords[:,:]
