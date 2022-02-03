@@ -12,13 +12,16 @@ import underworld3.timing as timing
 include "../petsc_extras.pxi"
 
 
-class Poisson:
+class Projection:
+
+    instances = 0
+
     @timing.routine_timer_decorator
     def __init__(self, 
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
-                 solver_name: str = "",
+                 solver_name: str = "projection_",
                  verbose    = False):
 
 
@@ -45,12 +48,11 @@ class Poisson:
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
-            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_proj", vtype=uw.VarType.SCALAR, degree=degree )
         else:
             self._u = u_Field
 
         self.mesh = mesh
-        self.k = 1.
         self.f = 0.
 
         grad_u = gradient(self.u.fn).to_matrix(mesh.N)
@@ -96,14 +98,6 @@ class Poisson:
         return self._u
 
     @property
-    def k(self):
-        return self._k
-    @k.setter
-    def k(self, value):
-        self.is_setup = False
-        # should add test here to make sure k is conformal
-        self._k = sympify(value)
-    @property
     def f(self):
         return self._f
     @f.setter
@@ -145,11 +139,11 @@ class Poisson:
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # f1 residual term (weighted integration)
+        # residual terms
         self._f0 = -self.f
 
-        # f1 residual term (integration by parts / gradients)
-        self._f1 = gradient(self.u.fn)*self.k
+        # f1 residual term
+        self._f1 = sympy.Matrix.zeros(dim,1)
 
         return 
 
@@ -166,15 +160,14 @@ class Poisson:
         ## can be changed by the user in inherited classes
 
         self._setup_problem_description()
-        fns_residual = [self._f0, self._f1] 
-
-        
+        fns_residual = [self._f0, self._f1.as_immutable()] 
 
         ## The jacobians are determined from the above (assuming we 
         ## do not concern ourselves with the zeros)
 
         # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(self._f0,self.u.fn)  
+        # self._g0 = diff_fn1_wrt_fn2(self._f0, self.u.fn)  
+        self._g0 = sympy.diff(self._f0, self.u.fn)   
 
         # g1 jacobian term - d f_0 d_q_i  (generally zero)
         g1 = sympy.Matrix.zeros(1,dim)
@@ -185,26 +178,18 @@ class Poisson:
         # g2 jacobian term - d f1_i d_u
         g2 = sympy.Matrix.zeros(dim,1)
         for i in range(0,dim):
-                g2[i,0] = sympy.diff(self._f1.dot(N.base_vectors()[i]), self.u.fn)    
+            g2[i,0] = sympy.diff(self._f1[i], self.u.fn)    
+
         self._g2 = g2.as_immutable()
 
         # g3 jacobian term - d q_i / d grad_u_j
 
         g3 = sympy.Matrix.zeros(dim,dim)
         for i in range(0,dim):
-            for j in range(0,dim):
-                g3[i,j] = sympy.diff(self._f1.dot(N.base_vectors()[i]), self._L[j])        
+           for j in range(0,dim):
+               g3[i,j] = sympy.diff(self._f1[i], self._L[j])        
 
         self._g3 = g3.as_immutable()
-
-        """
-        dk_dux = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.x))
-        dk_duy = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.y))
-        dk_duz = diff_fn1_wrt_fn2(self.k, self.u.fn.diff(N.z))
-        dk = dk_dux*N.i + dk_duy*N.j + dk_duz*N.k
-        self._g3 = dk | gradient(self.u.fn)                       # outer product for nonlinear part
-        self._g3 += self.k*( (N.i|N.i) + (N.j|N.j) + (N.k|N.k) )  # linear part using dyadic identity
-        """
 
         fns_jacobian = (self._g0, self._g1, self._g2, self._g3)
 
@@ -225,11 +210,10 @@ class Poisson:
         # set functions 
         self.dm.createDS()
         cdef DS ds = self.dm.getDS()
-        PetscDSSetResidual(ds.ds, 0, ext.fns_residual[0], ext.fns_residual[1])
+        PetscDSSetResidual(ds.ds, 0, ext.fns_residual[0], NULL)
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(ds.ds, 0, 0, ext.fns_jacobian[0], ext.fns_jacobian[1], ext.fns_jacobian[2], ext.fns_jacobian[3])
-        
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm

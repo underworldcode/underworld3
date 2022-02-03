@@ -317,18 +317,18 @@ class Stokes:
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # residual terms
-        fns_residual = []
+        # residual terms 
+
+        # terms that become part of the weighted integral
         self._u_f0 = -self.bodyforce # + self.penalty * (self.div_u)**2 * (N.i +  N.j + N.k)
-        fns_residual.append(self._u_f0)
 
+        # Integration by parts into the stiffness matrix
         self._u_f1 = self.stress + sympy.eye(dim) * self.penalty * self.div_u
-        fns_residual.append(self._u_f1)
-        
-        self._p_f0 = self.div_u
-        fns_residual.append(self._p_f0)
 
-        return fns_residual
+        # forces in the constraint (pressure) equations
+        self._p_f0 = self.div_u
+
+        return 
 
 
     @timing.routine_timer_decorator
@@ -337,7 +337,8 @@ class Stokes:
         N = self.mesh.N
 
         # residual terms
-        fns_residual = self._setup_problem_description()
+        self._setup_problem_description()
+        fns_residual = [self._u_f0, self._u_f1, self._p_f0]
 
         ## jacobian terms
 
