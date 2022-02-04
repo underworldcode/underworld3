@@ -68,6 +68,9 @@ stokes.bodyforce = sol_bf
 stokes.viscosity = 1.
 stokes.solve()
 # %%
+stokes._u_f0
+
+# %%
 # get strainrate
 sr = stokes.strainrate
 # not sure if the following is needed as div_u should be zero

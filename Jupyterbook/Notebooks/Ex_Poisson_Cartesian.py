@@ -164,10 +164,13 @@ with mesh.access():
 
 
 # %%
+poisson._g3
+
+# %%
+0/0
+
+# %%
 # Now create system with mesh variable as source term.
-
-
-
 
 mesh = uw.mesh.Box(elementRes=(9,9), minCoords=(-2.2,-.4))
 bnds = mesh.boundary

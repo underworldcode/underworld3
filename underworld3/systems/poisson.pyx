@@ -145,11 +145,11 @@ class Poisson:
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # f1 residual term (weighted integration)
+        # f1 residual term (weighted integration) - scalar function
         self._f0 = -self.f
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = gradient(self.u.fn)*self.k
+        self._f1 = (self._L)*self.k
 
         return 
 
@@ -166,9 +166,7 @@ class Poisson:
         ## can be changed by the user in inherited classes
 
         self._setup_problem_description()
-        fns_residual = [self._f0, self._f1] 
-
-        
+        fns_residual = [self._f0, self._f1.as_immutable()] 
 
         ## The jacobians are determined from the above (assuming we 
         ## do not concern ourselves with the zeros)
@@ -185,7 +183,7 @@ class Poisson:
         # g2 jacobian term - d f1_i d_u
         g2 = sympy.Matrix.zeros(dim,1)
         for i in range(0,dim):
-                g2[i,0] = sympy.diff(self._f1.dot(N.base_vectors()[i]), self.u.fn)    
+                g2[i,0] = sympy.diff(self._f1[i], self.u.fn)    
         self._g2 = g2.as_immutable()
 
         # g3 jacobian term - d q_i / d grad_u_j
@@ -193,7 +191,7 @@ class Poisson:
         g3 = sympy.Matrix.zeros(dim,dim)
         for i in range(0,dim):
             for j in range(0,dim):
-                g3[i,j] = sympy.diff(self._f1.dot(N.base_vectors()[i]), self._L[j])        
+                g3[i,j] = sympy.diff(self._f1[i], self._L[j])        
 
         self._g3 = g3.as_immutable()
 

@@ -55,7 +55,7 @@ class Projection:
         self.mesh = mesh
         self.f = 0.
 
-        grad_u = gradient(self.u.fn).to_matrix(mesh.N)
+        grad_u  = gradient(self.u.fn).to_matrix(mesh.N)
         self._L = grad_u
 
         self.bcs = []
@@ -132,7 +132,6 @@ class Projection:
         BC = namedtuple('BC', ['components', 'fn', 'boundaries', 'type'])
         self.bcs.append(BC(components,sympify(fn),boundaries, "neumann"))
 
-
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
@@ -146,7 +145,6 @@ class Projection:
         self._f1 = sympy.Matrix.zeros(dim,1)
 
         return 
-
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
