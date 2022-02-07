@@ -11,7 +11,6 @@ import underworld3.timing as timing
 
 include "../petsc_extras.pxi"
 
-
 class Projection:
 
     instances = 0

@@ -5,6 +5,8 @@
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Poisson
+from underworld3.systems import Projection
+
 import numpy as np
 import sympy
 
@@ -17,12 +19,12 @@ mesh.dm.view()
 # %%
 # Create Poisson object
 poisson = Poisson(mesh, degree=3)
-gradient = uw.systems.Projection(mesh, degree=2)
+gradient = Projection(mesh, degree=2)
 
 # %%
 # Set some things
 poisson.k = 1. 
-poisson.f = 1.0e-32
+poisson.f = 0.0
 poisson.add_dirichlet_bc( 1., "Bottom" )  
 poisson.add_dirichlet_bc( 0., "Top" )  
 
@@ -31,38 +33,72 @@ poisson.add_dirichlet_bc( 0., "Top" )
 poisson.solve()
 
 # %%
-# Gradient of actual function
-
-with mesh.access(poisson.u):
-    poisson.u.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.y*np.pi), poisson.u.coords)
-
-# %%
 gradient.f = gradient.u.fn - sympy.vector.gradient(poisson.u.fn).to_matrix(mesh.N)[1]
-gradient.petsc_options["snes_rtol"] = 1.0e-8
+gradient.g = sympy.Array([0.0, 0.0])
+gradient.petsc_options["snes_rtol"] = 1.0e-6
 gradient.petsc_options["ksp_rtol"] = 1.0e-8
 gradient.solve()
 
 # %%
-_,_,_,_,_,l2,rms =  gradient.u.stats()
-
-# %%
 # non-linear smoothing term (probably not needed especially at the boundary)
-gradient.f += 1.0 / (100000*rms) * sympy.vector.gradient(gradient.u.fn).dot(sympy.vector.gradient(gradient.u.fn))
-gradient.solve(zero_init_guess=True)
+gradient.f = gradient.u.fn - sympy.diff(poisson.u.fn, mesh.N.y) \
+             + (gradient._L[0]**2 + gradient._L[1]**2) / 1000
 
-# %%
-# with mesh.access():
-#     print(gradient.u.data)
+gradient.solve(zero_init_guess=True)
 
 # %%
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
 with mesh.access():
-    mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.data)
-    mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.data)
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
+    mesh_numerical_soln = uw.function.evaluate(gradient.u.fn, mesh.data)
+    if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
         raise RuntimeError("Unexpected values encountered.")
+
+# %%
+
+# %%
+# Validate
+
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.smooth_shading = True
+    
+    pvmesh = mesh.mesh2pyvista()
+
+    with mesh.access():
+        pvmesh.point_data["T"] = mesh_numerical_soln
+        pvmesh.point_data["dTdy"] = uw.function.evaluate(gradient.u.fn, mesh.data) 
+
+    
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dTdy",
+                  use_transparency=False, opacity=0.5)
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
+# %%
+with mesh.access(poisson.u):
+    poisson.u.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.y*np.pi), poisson.u.coords)
+    
+gradient.f = gradient.u.fn - sympy.vector.gradient(poisson.u.fn).to_matrix(mesh.N)[1]
+gradient.petsc_options["snes_rtol"] = 1.0e-8
+gradient.petsc_options["ksp_rtol"] = 1.0e-8
+gradient.solve()
 
 # %%
 # Validate
@@ -93,15 +129,13 @@ if MPI.COMM_WORLD.size==1:
     
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dTdy",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="DT",
                   use_transparency=False, opacity=0.5)
     
     pl.camera_position="xy"
      
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")  
-
-# %%
 
 # %%
 pvmesh.point_data["dTdy"].min(), pvmesh.point_data["dTdy"].max()

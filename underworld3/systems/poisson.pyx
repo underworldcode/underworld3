@@ -149,7 +149,7 @@ class Poisson:
         self._f0 = -self.f
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = (self._L)*self.k
+        self._f1 = self.k * (self._L)
 
         return 
 

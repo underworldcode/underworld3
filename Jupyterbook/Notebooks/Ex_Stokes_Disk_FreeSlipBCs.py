@@ -32,8 +32,10 @@ meshball = uw.meshes.SphericalShell(dim=2, degree=1, radius_inner=0.0,
 
 v_soln  = uw.mesh.MeshVariable('U', meshball, 2, degree=2 )
 p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln  = uw.mesh.MeshVariable("T", meshball, 1, degree=3 )
+t_soln  = uw.mesh.MeshVariable("\Delta T", meshball, 1, degree=3 )
 
+
+t_soln.fn
 
 # +
 # check the mesh if in a notebook / serial
@@ -104,9 +106,7 @@ stokes.petsc_options["ksp_rtol"]=1.0e-2
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-2
 
 i_fn = 0.5 - 0.5 * sympy.tanh(1000.0*(r-0.5)) 
-stokes.viscosity = 1.0 + 10 * i_fn
-
-
+stokes.viscosity = 1.0 # + 10 * i_fn
 
 # There is a null space with the unconstrained blob
 # and it may be necessary to set at least one point 
@@ -115,6 +115,10 @@ stokes.viscosity = 1.0 + 10 * i_fn
 # stokes.add_dirichlet_bc( (0.0, 0.0), "Centre" , (0,1))
 
 # -
+
+
+
+
 
 
 t_init = 0.001 * sympy.exp(-5.0*(x**2+(y-0.5)**2))
@@ -132,7 +136,8 @@ print(t_soln.min(), t_soln.max())
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
 buoyancy_force -= Rayleigh * 1000.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
-stokes.bodyforce = unit_rvec * buoyancy_force  
+stokes.bodyforce = unit_rvec * buoyancy_force 
+stokes.penalty = 0.0001
 
 # This may help the solvers - penalty in the preconditioner
 stokes._Ppre_fn = 1.0 / (stokes.viscosity + 1000.0 * surface_fn)
@@ -140,23 +145,6 @@ stokes._Ppre_fn = 1.0 / (stokes.viscosity + 1000.0 * surface_fn)
 # -
 
 stokes.solve()
-
-stokes._u_f1
-
-stokes._uu_g3
-
-# +
-sympy.Matrix([[2,0,0,0,1,0,0,0,1],
-              [0,0,0,1,0,0,0,0,0],
-              [0,0,0,0,0,0,1,0,0],
-              [0,1,0,0,0,0,0,0,0],
-              [1,0,0,0,2,0,0,0,1],
-              [0,0,0,0,0,0,0,1,0],
-              [0,0,1,0,0,0,0,0,0],
-              [0,0,0,0,0,1,0,0,0],
-              [1,0,0,0,1,0,0,0,2]])
-              
-            
 
 # +
 # check the mesh if in a notebook / serial
@@ -202,5 +190,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pl.show(cpos="xy")
     
 # -
+
+
 
 
