@@ -22,7 +22,7 @@ jobs:
         run: |
           docker pull underworldcode/base
           SHA256=$(docker inspect --format='{{index .RepoDigests 0}}' underworldcode/base)
-          sed -i "/sha256/c\FROM ${SHA256} as base_runtime" ./docs/development/docker/underworld2/Dockerfile
+          sed -i "/sha256/c\FROM ${SHA256} as base_runtime" Dockerfile
 
       - name: Login to DockerHub
         uses: docker/login-action@v1 
