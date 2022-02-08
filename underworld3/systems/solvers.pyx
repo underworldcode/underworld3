@@ -1,19 +1,17 @@
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
+import numpy as np 
 
-from typing import Optional
-
+from typing import Optional, Callable
 
 from petsc4py import PETSc
 
-import underworld3 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_SaddlePoint
-
-
 from .._jitextension import getext, diff_fn1_wrt_fn2
 import underworld3.timing as timing
+
 
 include "../petsc_extras.pxi"
 
@@ -40,7 +38,6 @@ class SNES_Poisson(SNES_Scalar):
         ## Parent class will set up default values etc
         super().__init__(mesh, u_Field, degree, solver_name, verbose)
 
-
         # Here we can set some defaults for this set of KSP / SNES solvers
         #self.petsc_options = PETSc.Options(self.petsc_options_prefix)
         #self.petsc_options["snes_type"] = "newtonls"
@@ -53,17 +50,12 @@ class SNES_Poisson(SNES_Scalar):
         #self.petsc_options["snes_view"] = None
         #self.petsc_options["snes_rtol"] = 1.0e-3
 
-
-        # Should be done by super().__init__() ... 
-
-        # self._build_dm_and_mesh_discretisation()
-        # self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
-        # self.mesh._equation_systems_register.append(self)
-
         # Register the problem setup function
-
         self._setup_problem_description = self.poisson_problem_description
 
+        # default values for properties
+        self.f = 0.0
+        self.k = 1.0
 
 
     ## This function is the one we will typically over-ride to build specific solvers. 
@@ -79,7 +71,6 @@ class SNES_Poisson(SNES_Scalar):
         self.F0  = -self.f
 
         # f1 residual term (integration by parts / gradients)
-
         # isotropic
         self.F1  = self.k * (self._L)
 
@@ -112,22 +103,21 @@ class SNES_Poisson(SNES_Scalar):
 ## --------------------------------
 
 
-
 class SNES_Stokes(SNES_SaddlePoint):
 
     instances = 0
 
     def __init__(self, 
-                 mesh          : underworld3.mesh.MeshClass, 
-                 velocityField : Optional[underworld3.mesh.MeshVariable] =None,
-                 pressureField : Optional[underworld3.mesh.MeshVariable] =None,
+                 mesh          : uw.mesh.MeshClass, 
+                 velocityField : Optional[uw.mesh.MeshVariable] =None,
+                 pressureField : Optional[uw.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
                  solver_name   : Optional[str]                           ="",
                  verbose       : Optional[str]                           =False,
                  penalty       : Optional[float]                         = 0.0,
                  _Ppre_fn      = None
-                  ):
+                ):
         """
         This class provides functionality for a discrete representation
         of the Stokes flow equations.
@@ -393,5 +383,198 @@ class SNES_Projection(SNES_Scalar):
 
         return 
 
+#################################################
+# Characteristics-based advection-diffusion 
+# solver based on SNES_Poisson and swarm-to-nodes
+#
+# Note that the solve() method has the swarm 
+# handler. 
+#################################################
 
- 
+class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
+
+    """ Characteristics-based advection diffusion solver:
+
+    Uses a theta timestepping approach with semi-Lagrange sample backwards in time using 
+    a mid-point advection scheme (based on our particle swarm implementation)
+    """
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh       : uw.mesh.MeshClass, 
+                 u_Field    : uw.mesh.MeshVariable = None, 
+                 V_Field    : uw.mesh.MeshVariable = None, 
+                 degree     : int  = 2,
+                 theta      : float = 0.5,
+                 solver_name: str = "",
+                 restore_points_func: Callable = None,
+                 verbose      = False):
+
+
+        SNES_AdvectionDiffusion_SLCN.instances += 1
+
+        if solver_name == "":
+            solver_name = "AdvDiff_slcn_{}_".format(self.instances)
+
+        ## Parent class will set up default values etc
+        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+
+        # These are unique to the advection solver
+        self._V = V_Field
+        self._Lstar =  sympy.derive_by_array(self._U, self._X).reshape(self.mesh.dim)
+
+        self.delta_t = 1.0
+        self.theta = theta
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.adv_diff_slcn_problem_description
+
+        self.is_setup = False
+
+        # Add the nodal point swarm which we'll use to track the characteristics
+
+        # There seems to be an issue with points launched from proc. boundaries
+        # and managing the deletion of points, so a small perturbation to the coordinate
+        # might fix this.
+
+        nswarm = uw.swarm.Swarm(self.mesh)
+        nT1 = uw.swarm.SwarmVariable("advdiff_Tstar_{}".format(self.instances), nswarm, 1)
+        nX0 = uw.swarm.SwarmVariable("advdiff_X0_{}".format(self.instances), nswarm, nswarm.dim)
+
+        nswarm.dm.finalizeFieldRegister()
+        nswarm.dm.addNPoints(self._u.coords.shape[0]+1) # why + 1 ? That's the number of spots actually allocated
+        cellid = nswarm.dm.getField("DMSwarm_cellid")
+        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, nswarm.dim) )
+        coords[...] = self._u.coords[...] # + perturbation
+        cellid[:] = self.mesh.get_closest_cells(coords)
+
+        # Move slightly within the chosen cell to avoid edge effects 
+        centroid_coords = self.mesh._centroids[cellid]
+        shift = 1.0e-4 * self.mesh.get_min_radius()
+        coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
+
+        nswarm.dm.restoreField("DMSwarmPIC_coor")
+        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.migrate(remove_sent_points=True)
+
+        self._nswarm  = nswarm
+        self._u_star  = nT1
+        self._X0      = nX0
+
+        return
+
+
+    def adv_diff_slcn_problem_description(self):
+
+        N = self.mesh.N
+
+        # f0 residual term
+        self.F0 = -self.f + (self.u.fn - self._u_star.fn) / self.delta_t
+
+        # f1 residual term
+        self.F1 = (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
+        
+        return
+
+    @property
+    def u(self):
+        return self._u
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t = sympify(value)
+
+    @property
+    def theta(self):
+        return self._theta
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
+
+
+    @timing.routine_timer_decorator
+    def solve(self, 
+              zero_init_guess: bool =True, 
+              timestep       : float = 1.0,
+              coords         : np.ndarray = None,
+              _force_setup   : bool =False ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the 
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
+
+        if timestep != self.delta_t:
+            self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
+
+        if (not self.is_setup) or _force_setup:
+            self._setup_terms()
+
+        # mid pt update scheme should be preferred by default, but it is possible to supply
+        # coords to over-ride this (e.g. rigid body rotation example)
+
+        # placeholder definitions can be removed later
+        nswarm = self._nswarm
+        t_soln = self._u
+        v_soln = self._V
+        nX0 = self._X0
+        nT1 = self._u_star
+        delta_t = timestep
+
+        with nswarm.access(nX0):
+            nX0.data[...] = nswarm.data[...]
+
+        with self.mesh.access():
+            n_points = t_soln.data.shape[0]
+
+        if coords is None: # Mid point method to find launch points (T*)
+
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    mid_pt_coords = self.restore_points_to_domain_func(mid_pt_coords)
+
+                nswarm.data[...] = mid_pt_coords
+
+            ## Let the swarm be updated, and then move the rest of the way
+
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                new_coords = nX0.data[...] - delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    new_coords = self.restore_points_to_domain_func(new_coords)
+
+                nswarm.data[...] = new_coords
+
+        else:  # launch points (T*) provided by omniscience user
+            with nswarm.access(nswarm.particle_coordinates):
+                nswarm.data[...] = coords[...]
+
+        with nswarm.access(nT1):
+            nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)
+
+        # restore coords 
+        with nswarm.access(nswarm.particle_coordinates):
+            nswarm.data[...] = nX0.data[...]
+
+        # Over to you Poisson Solver
+
+        super().solve(zero_init_guess, _force_setup )
+
+        return

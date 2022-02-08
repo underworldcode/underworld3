@@ -58,11 +58,15 @@ r_i = 0.5
 r_o = 1.0
 delta_t = 1.0
 
+
+
+# +
 adv_diff = uw.systems.AdvDiffusion(meshball, 
                                    u_Field=t_soln, 
                                    V_Field=v_soln, # not needed if coords is provided 
                                    solver_name="adv_diff", 
                                    degree=t_soln.degree)
+
 adv_diff.k = k
 
 # +
@@ -355,16 +359,17 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
-    pl.remove_scalar_bar("T")
+    # pl.remove_scalar_bar("T")
     pl.remove_scalar_bar("mag")
 
     pl.show()
-# -
 
+# +
 # savefile = "output_conv/convection_cylinder.h5".format(step) 
 # meshball.save(savefile)
 # v_soln.save(savefile)
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
+# -
 
 

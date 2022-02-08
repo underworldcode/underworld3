@@ -180,8 +180,6 @@ class SNES_Scalar:
     # We don't add any validation here ... we should check that these
     # can be ingested by the _setup_terms() function
 
- 
-
     @timing.routine_timer_decorator
     def _setup_terms(self):
         from sympy.vector import gradient
@@ -502,11 +500,6 @@ class SNES_SaddlePoint:
         # Grab gradients, and let's switch out to sympy.Matrix notation
         # immediately as it is probably cleaner for this.
         N = mesh.N
-        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
-        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
-        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
-        grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        grad_p = gradient(self.p.fn).to_matrix(N)
 
         ## sympy.Array 
         self._U = sympy.Array((self._u.fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
@@ -516,10 +509,16 @@ class SNES_SaddlePoint:
         self._G = sympy.derive_by_array(self._P, self._X)
 
         # deprecated
+        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
+        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
+        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
+        grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
+        grad_p = gradient(self.p.fn).to_matrix(N)
+        # deprecated
         self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
         self._L1 = grad_u 
         self._G1 = grad_p
-
+        # deprecated (use self._E, self._Einv2 in SNES_Stokes)
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
         self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
 
@@ -584,7 +583,7 @@ class SNES_SaddlePoint:
         self.is_setup = False
         # should add test here to make sure k is conformal
         self._UF1 = sympify(value)
- 
+
     @property
     def PF0(self):
         return self._PF0
@@ -631,16 +630,16 @@ class SNES_SaddlePoint:
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
-        # residual terms can be redefined here 
+        # residual terms can be redefined by
+        # writing your own version of this method
 
         # terms that become part of the weighted integral
-        # self._u_f0 = -self.bodyforce
         # self.UF0 = # some_expression_u_f0(_V,_P. _L, _G)
 
         # Integration by parts into the stiffness matrix
         # self.UF1 = # some_expression_u_f1(_V,_P, _L, _G)
 
-        # forces in the constraint (pressure) equations
+        # rhs in the constraint (pressure) equations
         # self.PF0 = # some_expression_p_f0(_V,_P, _L, _G)
 
         return 
