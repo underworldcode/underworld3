@@ -33,16 +33,15 @@ poisson.add_dirichlet_bc( 0., "Top" )
 poisson.solve()
 
 # %%
-gradient.f = gradient.u.fn - sympy.vector.gradient(poisson.u.fn).to_matrix(mesh.N)[1]
-gradient.g = sympy.Array([0.0, 0.0])
-gradient.petsc_options["snes_rtol"] = 1.0e-6
-gradient.petsc_options["ksp_rtol"] = 1.0e-8
+
+# %%
+gradient.F0 = gradient.u.fn - sympy.diff(poisson.u.fn, mesh.N.x)
 gradient.solve()
 
 # %%
 # non-linear smoothing term (probably not needed especially at the boundary)
-gradient.f = gradient.u.fn - sympy.diff(poisson.u.fn, mesh.N.y) \
-             + (gradient._L[0]**2 + gradient._L[1]**2) / 1000
+gradient.F0  = gradient.u.fn - sympy.diff(poisson.u.fn, mesh.N.y) 
+# gradient.f += (gradient._L[0]**2 + gradient._L[1]**2) / 1000
 
 gradient.solve(zero_init_guess=True)
 
@@ -54,8 +53,6 @@ with mesh.access():
     mesh_numerical_soln = uw.function.evaluate(gradient.u.fn, mesh.data)
     if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
         raise RuntimeError("Unexpected values encountered.")
-
-# %%
 
 # %%
 # Validate

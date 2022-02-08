@@ -99,7 +99,7 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln,
 # Inexact Jacobian may be OK.
 stokes.petsc_options["snes_type"]="newtonls"
 stokes.petsc_options["snes_rtol"]=1.0e-4
-stokes.petsc_options["snes_max_it"]=3
+stokes.petsc_options["snes_max_it"]=10
 stokes.petsc_options["ksp_rtol"]=1.0e-2
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-2
@@ -117,10 +117,6 @@ stokes.viscosity = 1.0 # + 10 * i_fn
 # -
 
 
-
-
-
-
 t_init = 0.001 * sympy.exp(-5.0*(x**2+(y-0.5)**2))
 
 # +
@@ -134,10 +130,9 @@ t_mean = t_soln.mean()
 print(t_soln.min(), t_soln.max())
 # +
 
-buoyancy_force = Rayleigh * gravity_fn * t_init
-buoyancy_force -= Rayleigh * 1000.0 *  v_soln.fn.dot(unit_rvec) * surface_fn
+buoyancy_force = Rayleigh * gravity_fn * t_init 
+buoyancy_force -= Rayleigh * 1000.0 *  v_soln.fn.dot(unit_rvec) * surface_fn 
 stokes.bodyforce = unit_rvec * buoyancy_force 
-stokes.penalty = 0.0001
 
 # This may help the solvers - penalty in the preconditioner
 stokes._Ppre_fn = 1.0 / (stokes.viscosity + 1000.0 * surface_fn)

@@ -40,6 +40,7 @@ class SNES_Poisson(SNES_Scalar):
         ## Parent class will set up default values etc
         super().__init__(mesh, u_Field, degree, solver_name, verbose)
 
+
         # Here we can set some defaults for this set of KSP / SNES solvers
         #self.petsc_options = PETSc.Options(self.petsc_options_prefix)
         #self.petsc_options["snes_type"] = "newtonls"
@@ -75,12 +76,31 @@ class SNES_Poisson(SNES_Scalar):
         N   = self.mesh.N
 
         # f1 residual term (weighted integration) - scalar function
-        self._f0 = -self.f
+        self.F0  = -self.f
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.k * (self._L)
+
+        # isotropic
+        self.F1  = self.k * (self._L)
 
         return 
+
+    @property
+    def f(self):
+        return self._f
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympify(value)
+    
+    @property
+    def k(self):
+        return self._k
+    @k.setter
+    def k(self, value):
+        self.is_setup = False
+        self._k = sympify(value)
+   
 
 
 ## --------------------------------
@@ -183,6 +203,10 @@ class SNES_Stokes(SNES_SaddlePoint):
 
         self.penalty = 0.0
 
+        # User-facing operations are matrices / vectors by preference
+        self._E = self._L + self._L.transpose()/2
+        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E)**2).trace()) # scalar 2nd invariant
+
 
         # Here we can set some petsc defaults for this solver
         # self.petsc_options = PETSc.Options(self.petsc_options_prefix)
@@ -212,6 +236,67 @@ class SNES_Stokes(SNES_SaddlePoint):
         self.is_setup = False
 
         return
+   
+    @timing.routine_timer_decorator
+    def stokes_problem_description(self):
+
+        dim = self.mesh.dim
+        N = self.mesh.N
+
+        # residual terms can be redefined here 
+
+        # terms that become part of the weighted integral
+        self.UF0 = -self.bodyforce
+
+        # Integration by parts into the stiffness matrix
+        self.UF1 = self.stress + self.penalty * self.div_u * sympy.eye(dim)
+
+        # forces in the constraint (pressure) equations
+        self.PF0 = self.div_u
+
+        return 
+
+    ## note ... this is probably over-simple
+    ## due to isotropy. Once anisotropy is allowed, sympy
+    ## is going to require us to work with NDim arrays in place of
+    ## matrices ... but they need to go back to matrices for the 
+    ## pointwise function evaluation
+     
+    @property
+    def strainrate(self):
+        return sympy.Matrix(self._E)
+    @property
+    def stress_deviator(self):
+        return 2*self.viscosity*self.strainrate
+    @property
+    def stress(self):
+        return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
+    @property
+    def div_u(self):
+        return divergence(self.u.fn)
+    @property
+    def viscosity(self):
+        return self._viscosity
+    @viscosity.setter
+    def viscosity(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        if isinstance(symval, sympy.vector.Vector):
+            raise RuntimeError("Viscosity appears to be a vector quantity. Scalars are required.")
+        if isinstance(symval, sympy.Matrix):
+            raise RuntimeError("Viscosity appears to be a matrix quantity. Scalars are required.")
+        self._viscosity = symval
+
+    @property
+    def bodyforce(self):
+        return self._bodyforce
+    @bodyforce.setter
+    def bodyforce(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        # if not isinstance(symval, sympy.vector.Vector):
+        #     raise RuntimeError("Body force term must be a vector quantity.")
+        self._bodyforce = symval
 
     @property
     def penalty(self):
@@ -222,24 +307,6 @@ class SNES_Stokes(SNES_SaddlePoint):
         symval = sympify(value)
         self._penalty = symval
 
-    
-
-    @timing.routine_timer_decorator
-    def stokes_problem_description(self):
-
-        dim = self.mesh.dim
-        N = self.mesh.N
-
-        # residual terms 
-
-        # terms that become part of the weighted integral
-        self._u_f0 = -self.bodyforce
-        # Integration by parts into the stiffness matrix
-        self._u_f1 = self.stress 
-        # forces in the constraint (pressure) equations
-        self._p_f0 = self.div_u
-
-        return 
 
 
     @timing.routine_timer_decorator
@@ -296,24 +363,12 @@ class SNES_Projection(SNES_Scalar):
                          degree, 
                          solver_name, verbose,  )
 
-        self._g = sympy.Array([0.0, 0.0])
-
-        self._setup_problem_description = self.projection_problem_description
+        # self._setup_problem_description = self.projection_problem_description
 
         self.is_setup = False
-
-
 
         return
 
-    @property
-    def g(self):
-        return self._g
-    @g.setter
-    def g(self, value):
-        self.is_setup = False
-        # should add test here to make sure g is conformal
-        self._g = sympy.Array(sympify(value)).reshape(self.mesh.dim)
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
@@ -321,11 +376,9 @@ class SNES_Projection(SNES_Scalar):
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # residual terms
-        self._f0 = -self.f
-
-        # f1 residual term
-        self._f1 = self.g
+        # residual terms - could add smoothing here ... 
+        # otherwise there is nothing to do that is different from
+        # the generic class
 
         return 
 

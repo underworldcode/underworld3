@@ -59,8 +59,8 @@ class SNES_Scalar:
             self._u = u_Field
 
         self.mesh = mesh
-        self.k = 1.
-        self.f = 0.
+        self._F0 = 0.0
+        self._F1 = sympy.Array.zeros(mesh.dim)
 
         grad_u = gradient(self.u.fn).to_matrix(mesh.N)
         self._L = grad_u
@@ -87,6 +87,25 @@ class SNES_Scalar:
         super().__init__()
 
 
+    @property
+    def F0(self):
+        return self._F0
+    @F0.setter
+    def F0(self, value):
+        self.is_setup = False
+        # should add test here to make sure k is conformal
+        self._F0 = sympify(value)
+
+    @property
+    def F1(self):
+        return self._F1
+    @F1.setter
+    def F1(self, value):
+        self.is_setup = False
+        # should add test here to make sure k is conformal
+        self._F1 = sympify(value)
+ 
+
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -109,22 +128,6 @@ class SNES_Scalar:
     def u(self):
         return self._u
 
-    @property
-    def k(self):
-        return self._k
-    @k.setter
-    def k(self, value):
-        self.is_setup = False
-        # should add test here to make sure k is conformal
-        self._k = sympify(value)
-    @property
-    def f(self):
-        return self._f
-    @f.setter
-    def f(self, value):
-        self.is_setup = False
-        # should add test here to make sure f is conformal
-        self._f = sympy.Array(sympify(value)).reshape(1)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
@@ -159,17 +162,25 @@ class SNES_Scalar:
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
-        dim = self.mesh.dim
-        N   = self.mesh.N
+        # We might choose to modify the definition of F0  / F1 
+        # by changing this function in a sub-class
 
-        # f1 residual term (weighted integration) - scalar function
-        self._f0 = -self.f
+        # f0 residual term (weighted integration) - scalar RHS function
+        # self.F0 = # some_expression_f0(self._U, self._L)
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.k * (self._L)
+        # self.F1 = # some_expresion_f1(self._U, self._L)
 
         return 
 
+    # The properties that are used in the problem description
+    # F0 is a scalar function (can include u, grad_u)
+    # F1_i is a vector valued function (can include u, grad_u)
+
+    # We don't add any validation here ... we should check that these
+    # can be ingested by the _setup_terms() function
+
+ 
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
@@ -183,61 +194,32 @@ class SNES_Scalar:
         ## can be changed by the user in inherited classes
 
         self._setup_problem_description()
-        fns_residual = [self._f0.as_immutable(), self._f1.as_immutable()] 
 
         ## The jacobians are determined from the above (assuming we 
         ## do not concern ourselves with the zeros)
 
-        F0 = sympy.Array(self._f0)
-        F1 = sympy.Array(self._f1)
+        F0 = sympy.Array(self.F0).as_immutable()
+        F1 = sympy.Array(self.F1).as_immutable()
+
+        fns_residual = [F0, F1] 
 
         G0 = sympy.derive_by_array(F0, self._U)
         G1 = sympy.derive_by_array(F0, self._L)
         G2 = sympy.derive_by_array(F1, self._U)
         G3 = sympy.derive_by_array(F1, self._L)
 
-        # Re-organise if needed
+        # Re-organise if needed / make hashable
         
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
 
-        ########################### 
-
-        """
-        # g0 jacobian term
-        self._g0 = diff_fn1_wrt_fn2(self._f0,self.u.fn)  
-
-        # g1 jacobian term - d f_0 d_q_i  (generally zero)
-        g1 = sympy.Matrix.zeros(dim,1)
-        for i in range(0,dim):
-            g1[i]  = sympy.diff(self._f0, self._L[i])
-        self._g1 = g1.as_immutable()
-
-        # g2 jacobian term - d f1_i d_u
-        g2 = sympy.Matrix.zeros(1,dim)
-        for i in range(0,dim):
-                g2[i] = sympy.diff(self._f1[i], self.u.fn)    
-        self._g2 = g2.as_immutable()
-
-        # g3 jacobian term - d q_i / d grad_u_j
-
-        g3 = sympy.Matrix.zeros(dim,dim)
-        for i in range(0,dim):
-            for j in range(0,dim):
-                g3[i,j] = sympy.diff(self._f1[i], self._L[j])        
-
-        self._g3 = g3.as_immutable()
-        """
-
+        ##################
 
         fns_jacobian = (self._G0, self._G1, self._G2, self._G3)
 
         ################## 
-
-
-
 
         # generate JIT code.
         # first, we must specify the primary fields.
@@ -361,8 +343,6 @@ class SNES_Scalar:
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
-
-
 
 
 class SNES_SaddlePoint:
@@ -534,9 +514,8 @@ class SNES_SaddlePoint:
         self._X = sympy.Array(self.mesh.r)
         self._L = sympy.derive_by_array(self._U, self._X).transpose()
         self._G = sympy.derive_by_array(self._P, self._X)
-        self._E = (self._L + self._L.transpose())/2
-        self._Einv2 = sympy.sqrt((self._E.tomatrix()**2).trace()) # scalar 2nd invariant
 
+        # deprecated
         self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
         self._L1 = grad_u 
         self._G1 = grad_p
@@ -589,45 +568,38 @@ class SNES_SaddlePoint:
         return
 
     @property
+    def UF0(self):
+        return self._UF0
+    @UF0.setter
+    def UF0(self, value):
+        self.is_setup = False
+        # should add test here to make sure k is conformal
+        self._UF0 = sympify(value)
+
+    @property
+    def UF1(self):
+        return self._UF1
+    @UF1.setter
+    def UF1(self, value):
+        self.is_setup = False
+        # should add test here to make sure k is conformal
+        self._UF1 = sympify(value)
+ 
+    @property
+    def PF0(self):
+        return self._PF0
+    @PF0.setter
+    def PF0(self, value):
+        self.is_setup = False
+        # should add test here to make sure k is conformal
+        self._PF0 = sympify(value)
+
+    @property
     def u(self):
         return self._u
     @property
     def p(self):
         return self._p
-    @property
-    def strainrate(self):
-        return self._strainrate
-    @property
-    def stress_deviator(self):
-        return 2*self.viscosity*self.strainrate
-    @property
-    def stress(self):
-        return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
-    @property
-    def div_u(self):
-        return divergence(self.u.fn)
-    @property
-    def viscosity(self):
-        return self._viscosity
-    @viscosity.setter
-    def viscosity(self, value):
-        self.is_setup = False
-        symval = sympify(value)
-        if isinstance(symval, sympy.vector.Vector):
-            raise RuntimeError("Viscosity appears to be a vector quantity. Scalars are required.")
-        if isinstance(symval, sympy.Matrix):
-            raise RuntimeError("Viscosity appears to be a matrix quantity. Scalars are required.")
-        self._viscosity = symval
-    @property
-    def bodyforce(self):
-        return self._bodyforce
-    @bodyforce.setter
-    def bodyforce(self, value):
-        self.is_setup = False
-        symval = sympify(value)
-        # if not isinstance(symval, sympy.vector.Vector):
-        #     raise RuntimeError("Body force term must be a vector quantity.")
-        self._bodyforce = symval
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components):
@@ -659,19 +631,17 @@ class SNES_SaddlePoint:
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
-        dim = self.mesh.dim
-        N = self.mesh.N
-
-        # residual terms 
+        # residual terms can be redefined here 
 
         # terms that become part of the weighted integral
-        self._u_f0 = -self.bodyforce
+        # self._u_f0 = -self.bodyforce
+        # self.UF0 = # some_expression_u_f0(_V,_P. _L, _G)
 
         # Integration by parts into the stiffness matrix
-        self._u_f1 = self.stress 
+        # self.UF1 = # some_expression_u_f1(_V,_P, _L, _G)
 
         # forces in the constraint (pressure) equations
-        self._p_f0 = self.div_u
+        # self.PF0 = # some_expression_p_f0(_V,_P, _L, _G)
 
         return 
 
@@ -682,12 +652,24 @@ class SNES_SaddlePoint:
 
         # residual terms
         self._setup_problem_description()
-        fns_residual = [self._u_f0, self._u_f1, self._p_f0]
+        # fns_residual = [self._u_f0, self._u_f1, self._p_f0]
+
+        F0  = sympy.Array((self._UF0.to_matrix(self.mesh.N))[0:dim])
+        F1  = sympy.Array(self._UF1)
+        FP0 = sympy.Array(self._PF0).reshape(1)
+
+
+        u_F0 = sympy.ImmutableDenseMatrix(F0)
+        u_F1 = sympy.ImmutableDenseMatrix(F1)
+        p_F0 = sympy.ImmutableDenseMatrix(FP0)
+
+        fns_residual = [u_F0, u_F1, p_F0] 
 
         ## jacobian terms
 
         fns_jacobian = []
 
+        """
         # uu terms  
         
         ## J_uu_00 block - G0 which is d f_0_i / d u_j
@@ -707,8 +689,8 @@ class SNES_SaddlePoint:
         for l in range(0,dim):
             for k in range(0,dim):
                 for i in range(0,dim):
-                    jj = l + 2*k
-                    g1[i,jj] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._L1[k,l])
+                    kk = k + 2*l
+                    g1[i,kk] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._L1[k,l])
         
         self._uu_g1 = g1.as_immutable()  # construct full matrix from sub matrices
         # fns_jacobian.append(self._uu_g1)
@@ -794,16 +776,11 @@ class SNES_SaddlePoint:
             self._pp_g0 = self._Ppre_fn
 
         # fns_jacobian.append(self._pp_g0)
+        """
 
         ## Alternative ... using sympy ARRAY which should generalize well
         ## but has some issues with the change in ordering in petsc v. sympy.
         ## so we will leave both here to compare across a range of problems.
-
-        dim = self.mesh.dim
-
-        F0 = sympy.Array((self._u_f0.to_matrix(self.mesh.N))[0:dim])
-        F1 = sympy.Array(self._u_f1)
-        FP0 = sympy.Array(self._p_f0).reshape(1)
 
         G0 = sympy.derive_by_array(F0, self._U)
         G1 = sympy.derive_by_array(F0, self._L)
@@ -871,8 +848,8 @@ class SNES_SaddlePoint:
         # set functions 
         self.dm.createDS()
         cdef DS ds = self.dm.getDS()
-        PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[self._u_f0]], ext.fns_residual[i_res[self._u_f1]])
-        PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[self._p_f0]],                                NULL)
+        PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[u_F0]], ext.fns_residual[i_res[u_F1]])
+        PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[p_F0]],                          NULL)
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
