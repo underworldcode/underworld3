@@ -347,12 +347,12 @@ class SNES_Stokes(SNES_SaddlePoint):
 ## --------------------------------
 
 class SNES_Projection(SNES_Scalar):
-"""
-Generic solver that is used to project functions to nodal points.
-At present this is only a name-wrapper on the SNES_scalar class
-but we can make it specific to the job ... perhaps callable with
-the RHS as a parameter.
-"""
+    """
+    Generic solver that is used to project functions to nodal points.
+    At present this is only a name-wrapper on the SNES_scalar class
+    but we can make it specific to the job ... perhaps callable with
+    the RHS as a parameter.
+    """
 
     instances = 0
 
