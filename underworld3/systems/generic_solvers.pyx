@@ -652,12 +652,11 @@ class SNES_SaddlePoint:
 
         # residual terms
         self._setup_problem_description()
-        # fns_residual = [self._u_f0, self._u_f1, self._p_f0]
 
+        # Array form to work well with what is below
         F0  = sympy.Array((self._UF0.to_matrix(self.mesh.N))[0:dim])
         F1  = sympy.Array(self._UF1)
         FP0 = sympy.Array(self._PF0).reshape(1)
-
 
         u_F0 = sympy.ImmutableDenseMatrix(F0)
         u_F1 = sympy.ImmutableDenseMatrix(F1)
@@ -668,115 +667,6 @@ class SNES_SaddlePoint:
         ## jacobian terms
 
         fns_jacobian = []
-
-        """
-        # uu terms  
-        
-        ## J_uu_00 block - G0 which is d f_0_i / d u_j
-
-        g0 = sympy.Matrix.zeros(dim,dim)
-        for i in range(dim):
-            for j in range(dim):
-                # g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
-                g0[i,j] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._V[j])
-                
-        self._uu_g0 = g0.as_immutable()
-        # fns_jacobian.append(self._uu_g0)
-
-        ## J_uu_01 block - G1 which is d f_0_i / d L_kl  (Non linear RHS with gradients)
-
-        g1 = sympy.Matrix.zeros(dim,dim**2)
-        for l in range(0,dim):
-            for k in range(0,dim):
-                for i in range(0,dim):
-                    kk = k + 2*l
-                    g1[i,kk] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._L1[k,l])
-        
-        self._uu_g1 = g1.as_immutable()  # construct full matrix from sub matrices
-        # fns_jacobian.append(self._uu_g1)
-
-        ### This term is zero for stokes / navier-stokes
-
-        ## J_uu_10 block - G2 which is d f_1_ij / d u_k
-
-        g2 = sympy.Matrix.zeros(dim**2,dim)
-        for k in range(0,dim):
-            for i in range(0,dim):
-                for j in range(0,dim):
-                    ii = i + 2*j 
-                    g2[ii,k] = sympy.diff(self._u_f1[i,j], self._V[k])
- 
-        self._uu_g2 = g2.as_immutable()  # construct full matrix from sub matrices
-        # fns_jacobian.append(self._uu_g2)
-
-        ## J_uu_11 block - G2 which is d f_1_ij / d L_kl
-
-        ## velocity gradient dependant part
-        # build derivatives with respect to velocity gradients (u_x_dx,u_x_dy,u_x_dz,u_y_dx,u_y_dy,u_y_dz,u_z_dx,u_z_dy,u_z_dz)
-        # As long as we express everything in terms of _L terms, then sympy
-        # can construct the derivatives wrt _L correctly here
-
-        g3 = sympy.Matrix.zeros(dim**2,dim**2)
-        for k in range(0,dim):
-            for l in range(0,dim):
-                for i in range(0,dim):
-                    for j in range(0,dim):
-                        ii = i + dim*k 
-                        jj = j + dim*l
-                        g3[ii,jj] = sympy.diff(self._u_f1[i,j], self._L1[k,l])
-
-        self._uu_g3 = g3.as_immutable()  
-        # fns_jacobian.append(self._uu_g3)
-
-        # pressure dependant part of velocity block  d f_0_i d_p 
-        # ZERO
-
-        # pressure-gradient dependant part of velocity block  d f_0_i d_grad p_j  
-        # ZERO
-
-        # pressure-dependent terms in f1  d f_1_ij, dp
-
-        g2 = sympy.Matrix.zeros(dim,dim)
-        for i in range(0,dim):
-            for j in range(0,dim):
-                g2[i,j] = sympy.diff(self._u_f1[i,j], self.p.fn) 
-
-        self._up_g2 = g2.as_immutable()
-        fns_jacobian.append(self._up_g2)
-
-        # pressure-gradient dependent terms in f1  d f_1_ij, d grad p_k
-
-        g3 = sympy.Matrix.zeros(dim**2,dim)
-        for k in range(0,dim):
-            for i in range(0,dim):
-                for j in range(0,dim):
-                    ii = i + 2*k 
-                    g3[ii,j] = sympy.diff(self._u_f1[i,j], self._G1[k])
- 
-        self._up_g3 = g3.as_immutable()  # construct full matrix from sub matrices
-        fns_jacobian.append(self._up_g3)
-
-        # pu terms  
-        # THE ONLY RHS term in the pressure is div_u  (i.e. pf_0 = div u)
-        # d pf_0 d_Lij = identity matrix
-
-        g1 = sympy.Matrix.zeros(dim,dim)
-        for i in range(0,dim):
-            for j in range(0,dim):
-                g1[i,j] = sympy.diff(self._p_f0, self._L1[i,j])
-
-        self._pu_g1 = g1.as_immutable()
-        # OR # self._pu_g1 = sympy.eye(dim).as_immutable()
-        # fns_jacobian.append(self._pu_g1)
-
-        # pp term
-        if self._Ppre_fn is None:
-            self._pp_g0 = 1/(self.viscosity)
-        else:
-            self._pp_g0 = self._Ppre_fn
-
-        # fns_jacobian.append(self._pp_g0)
-        """
 
         ## Alternative ... using sympy ARRAY which should generalize well
         ## but has some issues with the change in ordering in petsc v. sympy.
@@ -796,7 +686,7 @@ class SNES_SaddlePoint:
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
-        # U/P block (check permutations ??)
+        # U/P block (check permutations - they don't seem to be necessary here)
 
         self._up_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(F0, self._P).reshape(dim))
         self._up_G1 = sympy.ImmutableMatrix(sympy.derive_by_array(F0, self._G).reshape(dim,dim))
@@ -805,7 +695,7 @@ class SNES_SaddlePoint:
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
-        # P/U block (check permutations ??)
+        # P/U block (check permutations - they don't seem to be necessary here)
 
         # self._pu_G0 =  sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._U).reshape(dim))
         self._pu_G1 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._L).reshape(dim,dim))
