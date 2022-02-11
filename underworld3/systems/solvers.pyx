@@ -338,8 +338,11 @@ class SNES_Stokes(SNES_SaddlePoint):
 
 class SNES_Projection(SNES_Scalar):
     """
-    Generic solver that is used to project functions to nodal points.
-    At present this is only a name-wrapper on the SNES_scalar class
+    Generic solver that is used to compute functions 
+    (sympy can't evaluate many useful things like stresses !)
+    and return values at nodal points.
+
+    At present this is only a name-wrapper on the SNES_Scalar class
     but we can make it specific to the job ... perhaps callable with
     the RHS as a parameter.
     """
@@ -447,7 +450,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         nswarm.dm.addNPoints(self._u.coords.shape[0]+1) # why + 1 ? That's the number of spots actually allocated
         cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape( (-1, nswarm.dim) )
-        coords[...] = self._u.coords[...] # + perturbation
+        coords[...] = self._u.coords[...] 
         cellid[:] = self.mesh.get_closest_cells(coords)
 
         # Move slightly within the chosen cell to avoid edge effects 
