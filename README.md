@@ -76,6 +76,9 @@ PIC for composition
 - [x] 2D - L2 projection into FEM space (Petsc shall provide)
 - [ ] 3D - L2 projection into FEM space (Petsc shall provide but not in 3D)
 
+- [ ] Petsc Integrals
+- [ ] uw.fn evaluate (for Sympy functions)
+
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
 - [x] HDF5 -> XDMF -> Paraview
 - [ ] LavaVu  
