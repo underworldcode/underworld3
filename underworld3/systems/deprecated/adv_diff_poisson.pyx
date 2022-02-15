@@ -373,20 +373,7 @@ class AdvDiffusion:
                     new_coords = self.restore_points_to_domain_func(new_coords)
 
                 nswarm.data[...] = new_coords
-
-
-
-
-
-#                with nswarm.access():
-#                    if self.verbose and nswarm.data.shape[0] > 1.05 * n_points:
-#                         print("2 - Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
-
-#               # May not work if points go outside the boundary ... 
-#               with nswarm.access(nswarm.particle_coordinates):
-#                   v_at_Vpts_half_dt = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-#                   nswarm.data[...] -= sub_delta_t * (v_at_Vpts_half_dt - 0.5 * v_at_Vpts )
-    
+  
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):

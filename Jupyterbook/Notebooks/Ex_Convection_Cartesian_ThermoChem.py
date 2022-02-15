@@ -21,7 +21,9 @@ import numpy as np
 # options.getAll()
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), maxCoords=(1.0,1.0,1.0), cell_size=1.0/16.0, regular=True)
+meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), 
+                                             maxCoords=(1.0,1.0,1.0), cell_size=1.0/24.0, 
+                                             regular=False)
 meshbox.dm.view()   
 
 # +
@@ -63,7 +65,7 @@ t_0    = uw.mesh.MeshVariable("T0",   meshbox, 1, degree=3)
 swarm  = uw.swarm.Swarm(mesh=meshbox)
 Mat = uw.swarm.SwarmVariable("Material", swarm, 1, proxy_degree=3)
 X0 = uw.swarm.SwarmVariable("X0", swarm, meshbox.dim, _proxy=False)
-swarm.populate(fill_param=3)
+swarm.populate(fill_param=5)
 
 
 # +
@@ -89,7 +91,12 @@ stokes.add_dirichlet_bc( (0.0,), "Right" ,  (0,) )
 stokes.add_dirichlet_bc( (0.0,), "Top" ,    (1,) )
 stokes.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
 
+# -
 
+
+mMat = uw.mesh.MeshVariable("mMat", meshbox, 1, degree=2)
+projector = uw.systems.solvers.SNES_Projection(meshbox, mMat )
+projector.smoothing = 1.0e-3
 
 # +
 # Create a density structure / buoyancy force
@@ -123,6 +130,8 @@ adv_diff = uw.systems.AdvDiffusion(meshbox,
 adv_diff.k = k
 adv_diff.theta = 0.5
 
+adv_diff.add_dirichlet_bc(  1.0,  "Bottom" )
+adv_diff.add_dirichlet_bc(  0.0,  "Top" )
 
 
 # +
@@ -131,16 +140,29 @@ adv_diff.theta = 0.5
 import sympy
 init_t = 0.01 * sympy.sin(5.0*x) * sympy.sin(np.pi*y) + (1.0-y)
 
-adv_diff.add_dirichlet_bc(  1.0,  "Bottom" )
-adv_diff.add_dirichlet_bc(  0.0,  "Top" )
-
 with meshbox.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
     t_soln.data[...] = t_0.data[...]
+# -
 
+
+with swarm.access(Mat):
+    Mat.data[:,0] = 0.5 + 0.5 * np.tanh(100.0*(swarm.data[:,1]-0.25))
+
+projector.uw_function = Mat.fn
+projector.solve()
 
 # +
-buoyancy_force = 1.0e6 * t_soln.fn 
+expt_name="output/Ra1e6_Rc5e5"
+
+# # +ve Rc means heavy chemical component,
+# -ve Rc means light chemical component
+
+# Here we are using the projected mMat field but we
+# can switch this out for the particle field 
+# to show the equivalence
+
+buoyancy_force = 1.0e6 * t_soln.fn + 5.0e5 * mMat.fn  
 stokes.bodyforce = meshbox.N.j * buoyancy_force  
 
 # check the stokes solve is set up and that it converges
@@ -233,8 +255,9 @@ def plot_T_mesh(filename):
             points[:,1] = swarm.data[:,1]
 
         swarm_point_cloud = pv.PolyData(points)
-
-
+        
+        with swarm.access():
+            swarm_point_cloud.point_data["M"] = Mat.data.copy()
 
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
@@ -242,7 +265,8 @@ def plot_T_mesh(filename):
         with meshbox.access():
             usol = stokes.u.data.copy()
 
-        pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshbox.data)
+        pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshbox.data)        
+        pvmesh.point_data["M"]  = uw.function.evaluate(mMat.fn, meshbox.data)
 
         arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
         arrow_loc[:,0:2] = stokes.u.coords[...]
@@ -253,21 +277,22 @@ def plot_T_mesh(filename):
         pl = pv.Plotter()
 
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", 
-                      render_points_as_spheres=False,
-                      point_size=10, opacity=0.5
-                    )
+        # pl.add_points(point_cloud, cmap="gray", 
+        #               render_points_as_spheres=False,
+        #               point_size=10, opacity=0.5
+        #             )
         
-        pl.add_points(swarm_point_cloud, color="Black",
+        pl.add_points(swarm_point_cloud, cmap="RdYlBu",
                   render_points_as_spheres=True,
-                  point_size=2.0, opacity=1.0
+                  point_size=7.5, opacity=1.0
                 )
 
-        pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-
-        pl.remove_scalar_bar("T")
+        pl.add_mesh(pvmesh, cmap="gray", edge_color="Black", show_edges=True, scalars="M",
+                  use_transparency=False, opacity=0.5)
+        
+        pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("mag")
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
@@ -279,45 +304,17 @@ def plot_T_mesh(filename):
 # +
 # Convection model / update in time
 
-expt_name="output/Ra1e6_TC"
 
 for step in range(0,50):
     
     stokes.solve(zero_init_guess=False)
-    delta_t = 5.0*stokes.estimate_dt() 
+    delta_t = 3.0e-5 # 5.0*stokes.estimate_dt() 
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
     
-    
-    # update swarm locations. 
-    
-    # Ideally this would just be 
-    # swarm.timestep(V, dt, order) ... but let's do this explicitly first
-    
-    # 1. Previous locations 
-    with swarm.access(X0):
-        X0.data[...] = swarm.data[...]
-        
-        
-    with swarm.access(swarm.particle_coordinates):
-        v_at_Vpts = uw.function.evaluate(v_soln.fn, swarm.data).reshape(-1,meshbox.dim)
-        mid_pt_coords = swarm.data[...] + 0.5 * delta_t * v_at_Vpts
+    # update swarm locations using v_soln
 
-        # validate_coords to ensure they live within the domain (or there will be trouble)
-        # mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
-
-        swarm.data[...] = mid_pt_coords
-
-        ## Let the swarm be updated, and then move the rest of the way
-
-    with swarm.access(swarm.particle_coordinates):
-        v_at_Vpts = uw.function.evaluate(v_soln.fn, swarm.data).reshape(-1,meshbox.dim)
-        new_coords = X0.data[...] + delta_t * v_at_Vpts
-
-        # validate_coords to ensure they live within the domain (or there will be trouble)
-        # new_coords = self.restore_points_to_domain_func(new_coords)
-
-        swarm.data[...] = new_coords
-  
+    swarm.advection(v_soln.fn, delta_t, order=2, corrector=True)
+    projector.solve(zero_init_guess=False)
     
     # stats then loop
     tstats = t_soln.stats()
@@ -371,15 +368,22 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         points[:,1] = swarm.data[:,1]
 
     swarm_point_cloud = pv.PolyData(points)
+    
+    with swarm.access():
+        swarm_point_cloud.point_data["M"] = Mat.data.copy()
 
     with meshbox.access():
         point_cloud.point_data["T"] = t_soln.data.copy()
+        
+    point_cloud.point_data["M"] = uw.function.evaluate(mMat.fn, t_soln.coords)
 
 
     with meshbox.access():
         usol = stokes.u.data.copy()
   
     pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshbox.data)
+    pvmesh.point_data["M"]  = uw.function.evaluate(mMat.fn, meshbox.data) 
+
  
     arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
     arrow_loc[:,0:2] = stokes.u.coords[...]
@@ -389,27 +393,23 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     
     pl = pv.Plotter()
    
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     
-    pl.add_points(point_cloud, cmap="coolwarm", 
-                  render_points_as_spheres=True,
-                  point_size=7.5, opacity=0.25
-                )
+    # pl.add_points(point_cloud, cmap="gray", scalars="M",
+    #               render_points_as_spheres=True,
+    #               point_size=7.5, opacity=0.25
+    #             )
     
-    pl.add_points(swarm_point_cloud, color="Black",
+    pl.add_points(swarm_point_cloud, cmap="RdYlBu",
                   render_points_as_spheres=True,
                   point_size=3.0, opacity=1.0
                 )
     
+    pl.add_mesh(pvmesh, cmap="gray", edge_color="Black", show_edges=True, scalars="M",
+                  use_transparency=False, opacity=0.5)
     
-    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-
+    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
     pl.show(cpos="xy")
-# -
-
-
-
-

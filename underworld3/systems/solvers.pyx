@@ -238,16 +238,18 @@ class SNES_Stokes(SNES_SaddlePoint):
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # residual terms can be redefined here 
+        # residual terms can be redefined here. We leave the 
+        # UF0, UF1, PF0 terms in place to allow injection of 
+        # additional terms. These are pre-defined to be zero
 
         # terms that become part of the weighted integral
-        self.UF0 = -self.bodyforce
+        self._u_f0 = self.UF0 -self.bodyforce
 
         # Integration by parts into the stiffness matrix
-        self.UF1 = self.stress + self.penalty * self.div_u * sympy.eye(dim)
+        self._u_f1 = self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
 
         # forces in the constraint (pressure) equations
-        self.PF0 = self.div_u
+        self._p_f0 = self.PF0 + self.div_u
 
         return 
 
@@ -338,13 +340,12 @@ class SNES_Stokes(SNES_SaddlePoint):
 
 class SNES_Projection(SNES_Scalar):
     """
-    Generic solver that is used to compute functions 
-    (sympy can't evaluate many useful things like stresses !)
-    and return values at nodal points.
+    Map underworld (pointwise) function to continuous
+    nodal point values in least-squares sense.
 
-    At present this is only a name-wrapper on the SNES_Scalar class
-    but we can make it specific to the job ... perhaps callable with
-    the RHS as a parameter.
+    Solver can be given boundary conditions that
+    the continuous function needs to satisfy and 
+    non-linear constraints will be handled by SNES
     """
 
     instances = 0
@@ -353,9 +354,9 @@ class SNES_Projection(SNES_Scalar):
     def __init__(self, 
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable = None, 
-                 degree     = 2,
                  solver_name: str = "projection_",
                  verbose    = False):
+
 
         SNES_Projection.instances += 1
 
@@ -364,12 +365,12 @@ class SNES_Projection(SNES_Scalar):
 
         super().__init__(mesh, 
                          u_Field,
-                         degree, 
-                         solver_name, verbose,  )
+                         u_Field.degree, 
+                         solver_name, verbose )
 
-        # self._setup_problem_description = self.projection_problem_description
-
+        self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
+        self._smoothing = 0.0
 
         return
 
@@ -380,11 +381,37 @@ class SNES_Projection(SNES_Scalar):
         dim = self.mesh.dim
         N = self.mesh.N
 
-        # residual terms - could add smoothing here ... 
-        # otherwise there is nothing to do that is different from
-        # the generic class
+        # residual terms - defines the problem:
+        # solve for a best fit to the continuous mesh
+        # variable given the values in self.function 
+        # F0 is left in place for the user to inject 
+        # non-linear constraints if required
+        
+        self._f0 = self.F0 + self.u.fn - self.uw_function
+
+        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+
+        self._f1 = self.F1 + self.smoothing * self._L
 
         return 
+
+    @property
+    def uw_function(self):
+        return self._uw_function
+    @uw_function.setter
+    def uw_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_function = user_uw_function
+
+    @property
+    def smoothing(self):
+        return self._smoothing
+    @smoothing.setter
+    def smoothing(self, smoothing_factor):
+        self.is_setup = False
+        self._smoothing = sympify(smoothing_factor)
+
+    
 
 #################################################
 # Characteristics-based advection-diffusion 
@@ -415,7 +442,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
                  restore_points_func: Callable = None,
                  verbose      = False):
 
-
         SNES_AdvectionDiffusion_SLCN.instances += 1
 
         if solver_name == "":
@@ -426,7 +452,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         # These are unique to the advection solver
         self._V = V_Field
-        self._Lstar =  sympy.derive_by_array(self._U, self._X).reshape(self.mesh.dim)
 
         self.delta_t = 1.0
         self.theta = theta
@@ -466,6 +491,12 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._u_star  = nT1
         self._X0      = nX0
 
+        # if we want u_star to satisfy the bcs then this will need to be 
+        # a projection-mesh variable but it should be ok given these points
+        # are designed to land on the mesh
+
+        self._Lstar =  sympy.derive_by_array(self._u_star, self._X).reshape(self.mesh.dim)
+
         return
 
 
@@ -474,10 +505,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         N = self.mesh.N
 
         # f0 residual term
-        self.F0 = -self.f + (self.u.fn - self._u_star.fn) / self.delta_t
+        self._f0 = self.F0 - self.f + (self.u.fn - self._u_star.fn) / self.delta_t
 
         # f1 residual term
-        self.F1 = (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
+        self._f1 = self.F1 + (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
         
         return
 
@@ -500,7 +531,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
     def theta(self, value):
         self.is_setup = False
         self._theta = sympify(value)
-
 
     @timing.routine_timer_decorator
     def solve(self, 
@@ -538,11 +568,13 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         with nswarm.access(nX0):
             nX0.data[...] = nswarm.data[...]
 
-        with self.mesh.access():
-            n_points = t_soln.data.shape[0]
+        # replace this with built-in mid-point swarm advection (corrector term off)
+        # and note the negative timestep
 
         if coords is None: # Mid point method to find launch points (T*)
+            nswarm.advection(self._v, -timestep, order=2, corrector=False, restore_points_to_domain_func=self.restore_points_to_domain_func)
 
+            '''    
             with nswarm.access(nswarm.particle_coordinates):
                 v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
                 mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
@@ -564,10 +596,13 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
                     new_coords = self.restore_points_to_domain_func(new_coords)
 
                 nswarm.data[...] = new_coords
+            '''
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):
                 nswarm.data[...] = coords[...]
+
+        # Sample the field at these locations
 
         with nswarm.access(nT1):
             nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)

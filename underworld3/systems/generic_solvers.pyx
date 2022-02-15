@@ -164,12 +164,14 @@ class SNES_Scalar:
 
         # We might choose to modify the definition of F0  / F1 
         # by changing this function in a sub-class
+        # For example, to simplify the user interface by pre-definining
+        # the form of the input. See the projector class for an example 
 
         # f0 residual term (weighted integration) - scalar RHS function
-        # self.F0 = # some_expression_f0(self._U, self._L)
+        self._f0 = self.F0 # some_expression_F0(self._U, self._L)
 
         # f1 residual term (integration by parts / gradients)
-        # self.F1 = # some_expresion_f1(self._U, self._L)
+        self._f1 = self.F1 # some_expresion_F1(self._U, self._L)
 
         return 
 
@@ -196,8 +198,8 @@ class SNES_Scalar:
         ## The jacobians are determined from the above (assuming we 
         ## do not concern ourselves with the zeros)
 
-        F0 = sympy.Array(self.F0).as_immutable()
-        F1 = sympy.Array(self.F1).as_immutable()
+        F0 = sympy.Array(self._f0).as_immutable()
+        F1 = sympy.Array(self._f1).as_immutable()
 
         fns_residual = [F0, F1] 
 
@@ -490,8 +492,10 @@ class SNES_SaddlePoint:
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
 
-        self.viscosity = 1.
-        self.bodyforce = (0.,0.)
+        self.UF0 = sympy.vector.Vector(self.mesh.dim)
+        self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
+        self.PF0 = 0.0
+
         self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
@@ -509,18 +513,18 @@ class SNES_SaddlePoint:
         self._G = sympy.derive_by_array(self._P, self._X)
 
         # deprecated
-        grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
-        grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
-        grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
-        grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        grad_p = gradient(self.p.fn).to_matrix(N)
+        # grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
+        # grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
+        # grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
+        # grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
+        # grad_p = gradient(self.p.fn).to_matrix(N)
         # deprecated
-        self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
-        self._L1 = grad_u 
-        self._G1 = grad_p
+        # self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
+        # self._L1 = grad_u 
+        # self._G1 = grad_p
         # deprecated (use self._E, self._Einv2 in SNES_Stokes)
-        self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
-        self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
+        # self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
+        # self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -634,13 +638,13 @@ class SNES_SaddlePoint:
         # writing your own version of this method
 
         # terms that become part of the weighted integral
-        # self.UF0 = # some_expression_u_f0(_V,_P. _L, _G)
+        self._u_f0 = self.UF0  # some_expression_u_f0(_V,_P. _L, _G)
 
         # Integration by parts into the stiffness matrix
-        # self.UF1 = # some_expression_u_f1(_V,_P, _L, _G)
+        self._u_f1 = self.UF1  # some_expression_u_f1(_V,_P, _L, _G)
 
         # rhs in the constraint (pressure) equations
-        # self.PF0 = # some_expression_p_f0(_V,_P, _L, _G)
+        self._p_f0 = self.PF0  # some_expression_p_f0(_V,_P, _L, _G)
 
         return 
 
@@ -653,9 +657,9 @@ class SNES_SaddlePoint:
         self._setup_problem_description()
 
         # Array form to work well with what is below
-        F0  = sympy.Array((self._UF0.to_matrix(self.mesh.N))[0:dim])
-        F1  = sympy.Array(self._UF1)
-        FP0 = sympy.Array(self._PF0).reshape(1)
+        F0  = sympy.Array((self._u_f0.to_matrix(self.mesh.N))[0:dim])
+        F1  = sympy.Array(self._u_f1)
+        FP0 = sympy.Array(self._p_f0).reshape(1)
 
         u_F0 = sympy.ImmutableDenseMatrix(F0)
         u_F1 = sympy.ImmutableDenseMatrix(F1)
