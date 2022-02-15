@@ -46,7 +46,8 @@ class SwarmPICLayout(Enum):
 class SwarmVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, name, swarm, num_components, 
-                 vtype=None, dtype=float, proxy_degree=2, _register=True, _proxy=True, _nn_proxy=False):
+                 vtype=None, dtype=float, proxy_degree=2, 
+                 _register=True, _proxy=True, _nn_proxy=False):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -72,7 +73,8 @@ class SwarmVariable(_api_tools.Stateful):
         # create proxy variable
         self._meshVar = None
         if _proxy:
-            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_degree)
+            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, 
+                                                 vtype, degree=proxy_degree)
 
         self._register = _register
         self._proxy = _proxy
@@ -216,8 +218,14 @@ class SwarmVariable(_api_tools.Stateful):
 
 #@typechecked
 class Swarm(_api_tools.Stateful):
+
+    instances = 0
+
     @timing.routine_timer_decorator
     def __init__(self, mesh):
+
+        Swarm.instances += 1
+
         self.mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
@@ -236,6 +244,10 @@ class Swarm(_api_tools.Stateful):
 
         # add variable to handle particle cell id
         self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)
+
+        # add variable to hold swarm coordinates during position updates
+        self._X0 = uw.swarm.SwarmVariable("DMSwarm_X0", self, self.cdim, dtype=float, _register=True, _proxy=False)
+        self._X0_uninitialised = True
 
         self._index = None
         self._nnmapdict = {}
@@ -439,3 +451,77 @@ class Swarm(_api_tools.Stateful):
             self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
         return self._nnmapdict[digest]
 
+
+    def advection(self, 
+                  V_fn, 
+                  delta_t, 
+                  order = 2,
+                  corrector=True,
+                  restore_points_to_domain_func = None
+                  ):
+
+        X0 = self._X0
+
+        # Use current velocity to estimate where the particles would have
+        # landed in an implicit step.
+
+        if corrector == True and not self._X0_uninitialised:
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                updated_current_coords = 0.5 * (X0.data + delta_t * v_at_Vpts + self.data)
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if restore_points_to_domain_func is not None:
+                    updated_current_coords = restore_points_to_domain_func(updated_current_coords)
+
+                self.data[...] = updated_current_coords
+
+        with self.access(X0):
+            X0.data[...] = self.data[...]
+            self._X0_uninitialised = False
+
+        # Mid point algorithm (2nd order)
+        if order==2:       
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+
+                if restore_points_to_domain_func is not None:
+                    mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
+
+                self.data[...] = mid_pt_coords
+
+                ## Let the swarm be updated, and then move the rest of the way
+
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                new_coords = X0.data[...] + delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if restore_points_to_domain_func is not None:
+                    new_coords = restore_points_to_domain_func(new_coords)
+
+                self.data[...] = new_coords
+
+        # Previous position algorithm (cf above) - we use the previous step as the
+        # launch point using the current velocity field. This gives a correction to the previous
+        # landing point. 
+
+        # assumes X0 is stored from the previous step ... midpoint is needed in the first step
+
+        # forward Euler (1st order)
+        else:
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                new_coords = self.data + delta_t * v_at_Vpts 
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+
+                if restore_points_to_domain_func is not None:
+                    new_coords = restore_points_to_domain_func(new_coords)
+
+                self.data[...] = new_coords
+
+        return

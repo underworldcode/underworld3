@@ -64,7 +64,7 @@ if mpi4py.MPI.COMM_WORLD.rank==0:
         meshio_mesh.remove_orphaned_nodes()
         geom.save_geometry("ignore_2D_sph_surf.msh")
         geom.save_geometry("ignore_2D_sph_surf.vtk")
-      
+
 
 cells = meshio_mesh.cells[0][1].astype(PETSc.IntType)
 coords = meshio_mesh.points
@@ -86,7 +86,7 @@ with swarm1.access():
 with surfmesh.access():
     scoords = surfmesh.data.copy()
     hcoords = hvar.coords.copy()
-    
+
 
 R_h = hcoords[:,0]**2 + hcoords[:,1]**2 + hcoords[:,2]**2
 R_s = scoords[:,0]**2 + scoords[:,1]**2 + scoords[:,2]**2

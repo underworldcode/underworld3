@@ -1,4 +1,4 @@
-# # Constant viscosity convection, Cartesian domain (benchmark)
+# # Temperature-independent viscosity convection, Cartesian domain (benchmark)
 #
 # This is a simple example in which we try to instantiate two solvers on the mesh and have them use a common set of variables.
 #
@@ -6,7 +6,6 @@
 #
 # The next step is to add particles at node points and sample back along the streamlines to find values of the T field at a previous time. 
 #
-# (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
 # +
 import petsc4py
@@ -19,9 +18,16 @@ from underworld3 import function
 import numpy as np
 import sympy
 
+# options = PETSc.Options()
+# options["help"] = None
+# options["pc_type"]  = "svd"
+# options["dm_plex_check_all"] = None
+# options.getAll()
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
+meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), 
+                                             maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, 
+                                             regular=True)
 meshbox.dm.view()   
 
 # +
@@ -81,7 +87,7 @@ stokes = Stokes(meshbox, velocityField=v_soln,
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.viscosity = 1.0
+stokes.viscosity = 1000.0 * sympy.exp(-6.907755*t_soln.fn)
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc( (0.0,), "Left" ,   (0,) )
@@ -259,11 +265,12 @@ def plot_T_mesh(filename):
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
                       return_img=False)
         # pl.show()
+        pl.close()
 
 # +
 # Convection model / update in time
 
-expt_name="output/Ra1e6"
+expt_name="output/Ra1e6_eta1e3"
 
 for step in range(0,250):
     
@@ -356,7 +363,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pl.show(cpos="xy")
 # -
-
+pl.close()
 
 
 
