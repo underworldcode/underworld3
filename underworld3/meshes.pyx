@@ -121,13 +121,13 @@ class MeshFromGmshFile(MeshClass):
                  refinements   :Optional[int]   = 0,
                  simplex       :Optional[bool] = True,  # Not sure if this will be useful
                  degree        :Optional[int]    =1,
-                 verbose        :Optional[bool]  =False
+                 verbose       :Optional[bool]  =False
                 ):
         """
         This is a generic mesh class for which users will provide 
         the mesh as a gmsh (.msh) file.
 
-            - dim, simplex not inferred from the file at this point 
+            - dim, simpformatlex not inferred from the file at this point 
 
             - the file pointed to by filename needs to be a .msh file 
             - labels are extracted from the gmsh file "physical labels"
@@ -221,6 +221,21 @@ class MeshFromGmshFile(MeshClass):
         if self.verbose:
             self.dm.view()
 
+        # The mesh may over-ride this ... 
+
+        import vtk
+
+        if simplex:
+            if dim==2:
+                self._elementType = vtk.VTK_TRIANGLE
+            else:
+                self._elementType = vtk.VTK_TETRA
+        else:
+            if dim==2:
+                self._elementType = vtk.VTK_QUAD
+            else:
+                self._elementType = vtk.VTK_HEXAHEDRON        
+
         super().__init__(simplex=simplex, degree=degree)
 
 
@@ -234,9 +249,8 @@ class MeshFromCellList(MeshClass):
                  cell_size   :Optional[float] = None,
                  refinements :Optional[int]   = 0,
                  simplex      :Optional[bool] = True,                
-                 degree       :Optional[int]  =1
-
-
+                 degree       :Optional[int]  = 1,
+                 cdim         :Optional[int]  = None
                 ):
         """
         This is a generic mesh class for which users will provide 
@@ -269,6 +283,7 @@ class MeshFromCellList(MeshClass):
 
         if cell_size and (refinements>0):
             raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
+
         self.cell_size = cell_size
         self.refinements = refinements
 
@@ -310,11 +325,9 @@ class MeshFromCellList(MeshClass):
             self.dm = self.dm.refine()
             self._min_radius = None
 
-        if MPI.COMM_WORLD.rank==0:
-            print(f"Generated mesh minimum cell size: {2.*self.get_min_radius():.3E}. Requested size: {cell_size:.3E}.")
 
         self.dm.view()
-        super().__init__(simplex=simplex, degree=degree)
+        super().__init__(simplex=simplex, degree=degree, cdim=cdim)
 
 class MeshFromMeshIO(MeshFromCellList):
     @timing.routine_timer_decorator
@@ -358,10 +371,10 @@ class MeshFromMeshIO(MeshFromCellList):
 
         cells = coords = None
         if MPI.COMM_WORLD.rank==0:
-            cells  = meshio.cells[0][1]
-            coords = meshio.points[:,0:dim]
+            cells  = meshio.cells[0][1].astype(PETSc.IntType)
+            coords = meshio.points
   
-        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex, degree=degree)
+        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex, degree=degree, cdim=coords.shape[1])
 
     def _get_local_cell_size(self,
                              dim        : int,
@@ -749,7 +762,8 @@ class SphericalShell(MeshFromGmshFile):
                  cell_size        :Optional[float] =0.05,
                  cell_size_upper  :Optional[float] =None,
                  cell_size_lower  :Optional[float] =None,
-                 degree           :Optional[int]   =2,
+                 degree           :Optional[int]   =1,
+                 centre_point     :Optional[bool]  =True,
                  verbose          :Optional[bool]  =False
         ):
 
@@ -800,15 +814,20 @@ class SphericalShell(MeshFromGmshFile):
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
                         geom.add_physical(domain.plane_surface, label="Elements")
                     else:
-                        centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                        
                         domain = geom.add_circle((0.0,0.0,0.0), radius_outer, mesh_size=cell_size_upper)
-                        geom.in_surface(centre, domain.plane_surface)
-                        geom.add_physical(centre, label="Centre")
+                        
+                        if centre_point:
+                            centre = geom.add_point((0.0,0.0,0.0), mesh_size=cell_size_lower)
+                            geom.in_surface(centre, domain.plane_surface)
+                            geom.add_physical(centre, label="Centre")
+                            centre_alias = self.physical_label_group("Center", ["Centre"])
+                            groups.append(centre_alias)
+
                         geom.add_physical(domain.curve_loop.curves, label="Upper")
                         geom.add_physical(domain.plane_surface, label="Elements")
 
-                        centre_alias = self.physical_label_group("Center", ["Centre"])
-                        groups.append(centre_alias)
+
 
                 else:
                     if radius_inner > 0.0:
@@ -878,7 +897,7 @@ class StructuredCubeSphericalCap(MeshFromMeshIO):
                 radius_outer   :Optional[float] =1.0,
                 radius_inner   :Optional[float] =0.5,
                 simplex        :Optional[bool] = False, 
-                degree         :Optional[int]  =2,
+                degree         :Optional[int]  =1,
                 cell_size      :Optional[float] =1.0
                 ):
 
@@ -1001,7 +1020,7 @@ class StructuredCubeSphereBallMesh(MeshFromGmshFile):
                 radius_outer   :Optional[float] = 1.0,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool]  = False, 
-                degree         :Optional[int]   = 2,
+                degree         :Optional[int]   = 1,
                 verbose        :Optional[bool]  = False
                 ):
 
@@ -1299,7 +1318,7 @@ class StructuredCubeSphereShellMesh(MeshFromMeshIO):
                 radius_inner   :Optional[float] = 0.5,
                 cell_size      :Optional[float] = 1e30,
                 simplex        :Optional[bool] = False, 
-                degree       :Optional[int]    =2
+                degree       :Optional[int]    = 1
                 ):
 
         """

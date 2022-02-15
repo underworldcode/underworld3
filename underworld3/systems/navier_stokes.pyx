@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 
 import sympy
 from sympy import sympify
@@ -29,7 +29,11 @@ class NavierStokes:
                  rho           : Optional[float]                         =0.0,
                  theta         : Optional[float]                         =0.5,
                  solver_name   : Optional[str]                           ="navier_stokes_",
-                 verbose       : Optional[str]                           =False
+                 verbose       : Optional[str]                           =False,
+                 _Ppre_fn      = None,
+                restore_points_func: Callable = None,
+
+
                   ):
         """
         This class provides functionality for a discrete representation
@@ -175,6 +179,8 @@ class NavierStokes:
         
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
+        self.restore_points_to_domain_func = restore_points_func
+
 
 
         # Some other setup 
@@ -217,6 +223,7 @@ class NavierStokes:
 
         self.viscosity = 1.
         self.bodyforce = (0.,0.)
+        self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
 
@@ -228,8 +235,15 @@ class NavierStokes:
         grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
         grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
         grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
+        grad_p = gradient(self.p.fn).to_matrix(N)
+
+        self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
+        self._L = grad_u 
+        self._G = grad_p
+
         self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
-        
+        self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
+
         grad_u_star_x = gradient(self.u_star.fn.dot(N.i)).to_matrix(N)
         grad_u_star_y = gradient(self.u_star.fn.dot(N.j)).to_matrix(N)
         grad_u_star_z = gradient(self.u_star.fn.dot(N.k)).to_matrix(N)
@@ -308,7 +322,7 @@ class NavierStokes:
         return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
     @property
     def stress_star(self):
-        return self.stress_deviator_star - sympy.eye(self.mesh.dim)*self.p.fn  # keep pressure term simple
+        return self.stress_deviator_star - sympy.eye(self.mesh.dim)*self.p.fn  
     @property
     def div_u(self):
         return divergence(self.u.fn)
@@ -322,7 +336,6 @@ class NavierStokes:
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
     @property
     def rho(self):
         return self._rho
@@ -337,7 +350,6 @@ class NavierStokes:
     def penalty(self, value):
         self.is_setup = False
         self._penalty = sympify(value)
-
     @property
     def theta(self):
         return self._theta
@@ -345,7 +357,6 @@ class NavierStokes:
     def theta(self, value):
         self.is_setup = False
         self._theta = sympify(value)
-
     @property
     def viscosity(self):
         return self._viscosity
@@ -405,9 +416,9 @@ class NavierStokes:
         fns_residual = []
         self._u_f0 = -self.bodyforce + self.rho * (self.u.fn - self._u_star.fn) / self.delta_t
         fns_residual.append(self._u_f0)
-        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta) + self.penalty * self._penalty_term
+        self._u_f1 = self.stress * self.theta + self.stress_star * (1.0-self.theta) 
         fns_residual.append(self._u_f1)
-        self._p_f0 = self.div_u * self.theta + self.div_u_star * (1.0-self.theta)
+        self._p_f0 = self.div_u * self.theta  + self.div_u_star * (1.0-self.theta)
         fns_residual.append(self._p_f0)
 
         ## jacobian terms
@@ -416,116 +427,107 @@ class NavierStokes:
         N = self.mesh.N
         fns_jacobian = []
 
-        strain_rate_ave_dt = self.theta*self.strainrate + (1.0-self.theta) * self.strainrate_star
-        # strain_rate_ave_dt = self.strainrate
+        # uu terms  
+        
+        ## J_uu_00 block - G0 which is d f_0_i / d u_j
 
-        ### uu terms
-
-        g0 = sympy.eye(dim)
+        g0 = sympy.Matrix.zeros(dim,dim)
         for i in range(dim):
             for j in range(dim):
-                g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
-
+                # g0[i,j] = diff_fn1_wrt_fn2(self._u_f0.dot(N.base_vectors()[i]),self.u.fn.dot(N.base_vectors()[j]))
+                g0[i,j] = sympy.diff(self._u_f0.dot(N.base_vectors()[i]), self._V[j])
+                
         self._uu_g0 = g0.as_immutable()
         fns_jacobian.append(self._uu_g0)
 
-        ##  linear part
+        ## J_uu_01 block - G1 which is d f_0_i / d L_kl
 
-        # note that g3 is effectively a block
-        # but it seems that petsc expects a version
-        # that is transposed (in the block sense) relative
-        # to what i'd expect. need to ask matt about this. JM.
+        g1 = sympy.Matrix.zeros(dim,dim**2)
+        ### This term is zero for stokes / navier-stokes
 
-        g3 = sympy.eye(dim**2)
-        for i in range(dim):
-            for j in range(i,dim):
-                row = i*dim+i
-                col = j*dim+j
-                g3[row,col] += 1
-                if row != col:
-                    g3[col,row] += 1
-        self._uu_g3 = (g3*self.viscosity).as_immutable()
-        # fns_jacobian.append(self._uu_g3) add this guy below
+        ## J_uu_10 block - G2 which is d f_1_ij / d u_k
 
-        ## velocity dependant part
-
-        # build derivatives with respect to velocities (v_x,v_y,v_z)
-        d_mu_d_u_x = dim*[None,]
-        for i in range(dim):
-            d_mu_d_u_x[i] = diff_fn1_wrt_fn2(self.viscosity,self.u.fn.dot(N.base_vectors()[i]))
-        # now construct required matrix. build submats first. 
-        # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
-        #       expected by PETSc
-        # TODO: This needs to be checked!
-        rows = []
-        for k in range(dim):
-            row = []
-            for i in range(dim):
-                # 2 * d_mu_d_u_x_{k} * \dot\eps * e_{i}  
-                row.append(2*d_mu_d_u_x[k]*strain_rate_ave_dt[:,i])
-            rows.append(row)
-        self._uu_g2 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
+        g2 = sympy.Matrix.zeros(dim**2,dim)
+        for k in range(0,dim):
+            for i in range(0,dim):
+                for j in range(0,dim):
+                    ii = i + 2*k 
+                    g2[ii,j] = sympy.diff(self._u_f1[i,j], self._V[k])
+ 
+        self._uu_g2 = g2.as_immutable()  # construct full matrix from sub matrices
         fns_jacobian.append(self._uu_g2)
 
+        ## J_uu_11 block - G2 which is d f_1_ij / d L_kl
 
         ## velocity gradient dependant part
         # build derivatives with respect to velocity gradients (u_x_dx,u_x_dy,u_x_dz,u_y_dx,u_y_dy,u_y_dz,u_z_dx,u_z_dy,u_z_dz)
-        d_mu_d_u_i_dk = dim*[None,]
-        for i in range(dim):
-            lst = dim*[None,]
-            grad_u_i = gradient(self.u.fn.dot(N.base_vectors()[i]))  # u_i_dx, u_i_dy, u_i_dz
-            for j in range(dim):
-                lst[j] = diff_fn1_wrt_fn2(self.viscosity,grad_u_i.dot(N.base_vectors()[j]))
-            d_mu_d_u_i_dk[i] = sympy.Matrix(lst) # generate Mat for future machination
-        # now construct required matrix. build submats first. 
-        # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
-        #       expected by PETSc
-        # TODO: This needs to be checked!
-        rows = []
-        for k in range(dim):
-            row = []
-            for i in range(dim):
-                # 2 * \dot\eps * e_{i} * d_mu_d_u_i_k   
-                row.append(2*strain_rate_ave_dt[:,i]*d_mu_d_u_i_dk[k].T)
-            rows.append(row)
-        self._uu_g3 += sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
+        # As long as we express everything in terms of _L terms, then sympy
+        # can construct the derivatives wrt _L correctly here
+
+        g3 = sympy.Matrix.zeros(dim**2,dim**2)
+
+        for k in range(0,dim):
+            for l in range(0,dim):
+                for i in range(0,dim):
+                    for j in range(0,dim):
+                        ii = i + dim*k 
+                        jj = j + dim*l
+                        g3[ii,jj] = sympy.diff(self._u_f1[i,j], self._L[k,l])
+
+        self._uu_g3 = g3.as_immutable()  
         fns_jacobian.append(self._uu_g3)
 
-        ## pressure dependant part
-        # get derivative with respect to pressure
-        d_mu_d_p = diff_fn1_wrt_fn2(self.viscosity,self.p.fn)
-        self._up_g2 = (2 * d_mu_d_p * strain_rate_ave_dt).as_immutable()
-        # add linear in pressure part
-        self._up_g2 += -sympy.eye(dim).as_immutable()
+
+        # pressure dependant part of velocity block  d f_0_i d_p 
+        # ZERO
+
+        # pressure-gradient dependant part of velocity block  d f_0_i d_grad p_j  
+        # ZERO
+
+        # pressure-dependent terms in f1  d f_1_ij, dp
+
+        g2 = sympy.Matrix.zeros(dim,dim)
+
+        for i in range(0,dim):
+            for j in range(0,dim):
+                g2[i,j] = sympy.diff(self._u_f1[i,j], self.p.fn) 
+
+        self._up_g2 = g2.as_immutable()
         fns_jacobian.append(self._up_g2)
+
+        # pressure-gradient dependent terms in f1  d f_1_ij, d grad p_k
+
+        g3 = sympy.Matrix.zeros(dim**2,dim)
+        for k in range(0,dim):
+            for i in range(0,dim):
+                for j in range(0,dim):
+                    ii = i + 2*k 
+                    g3[ii,j] = sympy.diff(self._u_f1[i,j], self._G[k])
+ 
+        self._up_g3 = g3.as_immutable()  # construct full matrix from sub matrices
+        fns_jacobian.append(self._up_g3)
 
         ## pressure gradient dependant part
         # build derivatives with respect to pressure gradients (p_dx, p_dy, p_dz)
-        grad_p = gradient(self.p.fn)
-        lst = dim*[None,]
-        for i in range(dim):
-            lst[i] = diff_fn1_wrt_fn2(self.viscosity,grad_p.dot(N.base_vectors()[i]))
-        d_mu_d_p_dx = sympy.Matrix(lst) # generate Mat for future machination
-        # now construct required matrix. build submats first. 
-        # NOTE: We're flipping the i/k ordering to obtain the blockwise transpose, as possibly 
-        #       expected by PETSc
-        # TODO: This needs to be checked!
-        rows = []
-        for k in range(dim):
-            row = []
-            for i in range(dim):
-                # 2 * \dot\eps * e_{i} * d_mu_d_p_dx   
-                row.append(2*self.strainrate[:,i]*d_mu_d_p_dx.T)
-            rows.append(row)
-        self._up_g3 = sympy.Matrix(rows).as_immutable()  # construct full matrix from sub matrices
-        fns_jacobian.append(self._up_g3) 
 
-        # pu terms
-        self._pu_g1 = sympy.eye(dim).as_immutable()
+        # pu terms  
+        # THE ONLY RHS term in the pressure is div_u  (i.e. pf_0 = div u)
+        # d pf_0 d_Lij = identity matrix
+
+        g1 = sympy.Matrix.zeros(dim,dim)
+        for i in range(0,dim):
+            for j in range(0,dim):
+                g1[i,j] = sympy.diff(self._p_f0, self._L[i,j])
+
+        self._pu_g1 = g1.as_immutable()
         fns_jacobian.append(self._pu_g1)
 
         # pp term
-        self._pp_g0 = 1/(self.viscosity) #  + self.rho / self.delta_t)
+        if self._Ppre_fn is None:
+            self._pp_g0 = 1/(self.viscosity + self.rho)
+        else:
+            self._pp_g0 = self._Ppre_fn
+
         fns_jacobian.append(self._pp_g0)
 
         # generate JIT code.
@@ -557,10 +559,9 @@ class NavierStokes:
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
-        # PetscDSSetJacobian(              ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_g0]],                                 NULL, ext.fns_jacobian[i_jac[self._uu_g2]], ext.fns_jacobian[i_jac[self._uu_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_g2]], ext.fns_jacobian[i_jac[self._up_g3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_g1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_g0]],                                 NULL,                                 NULL,                                 NULL)
@@ -654,40 +655,51 @@ class NavierStokes:
         # limitations of the swarm data structures make it difficult to use mid point 
         # integration, so instead we take several small steps ... 
 
-            numerical_dt = self.estimate_dt()
+#          numerical_dt = self.estimate_dt()
+#
+#          if delta_t > 0.25 * numerical_dt:
+#              substeps = int(np.floor(delta_t / (0.25*numerical_dt))) + 1
+#              if self.verbose and mpi4py.MPI.COMM_WORLD.rank==0:
+#                  print("substeps = {}".format(substeps))
+#          else:
+#              substeps = 1
+#         
+#          for substep in range(0, substeps):
+#              sub_delta_t = timestep / substeps
 
-            if delta_t > 0.25 * numerical_dt:
-                substeps = int(np.floor(delta_t / (0.25*numerical_dt))) + 1
-                if self.verbose and mpi4py.MPI.COMM_WORLD.rank==0:
-                    print("substeps = {}".format(substeps))
-            else:
-                substeps = 1
-           
-            for substep in range(0, substeps):
-                sub_delta_t = timestep / substeps
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
 
-                with nswarm.access(nswarm.particle_coordinates):
-                    v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-                    nswarm.data[...] -= sub_delta_t * v_at_Vpts
+               # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    mid_pt_coords = self.restore_points_to_domain_func(mid_pt_coords)
 
-                with nswarm.access():
-                    if nswarm.data.shape[0] > 1.05 * n_points: #  and self.verbose:
-                        print("Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
+                nswarm.data[...] = mid_pt_coords
 
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                new_coords = nX0.data[...] - delta_t * v_at_Vpts
 
-#               # May not work if points go outside the boundary ... 
-#               with nswarm.access(nswarm.particle_coordinates):
-#                   v_at_Vpts_half_dt = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-#                   nswarm.data[...] -= sub_delta_t * (v_at_Vpts_half_dt - 0.5 * v_at_Vpts )
-       
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    new_coords = self.restore_points_to_domain_func(new_coords)
+
+                nswarm.data[...] = new_coords
+
+#                with nswarm.access():
+#                    if nswarm.data.shape[0] > 1.05 * n_points: #  and self.verbose:
+#                         print("Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):
                 nswarm.data[...] = coords[...]
 
         with nswarm.access(nU1, nP1):
-            nU1.data[...] = uw.function.evaluate(u_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-            nP1.data[...] = uw.function.evaluate(p_soln.fn, nswarm.data).reshape(-1,1)
+            nU1.data[...] = uw.function.evaluate(self._u.fn, nswarm.data).reshape(-1,self.mesh.dim)
+            nP1.data[...] = uw.function.evaluate(self._p.fn, nswarm.data).reshape(-1,1)
+            print("uStar minmax, X (dt):", nU1.data[:,0].min(), nU1.data[:,1].max(), delta_t)
+            print("uStar minmax, Y (dt):", nU1.data[:,1].min(), nU1.data[:,1].max(), delta_t)
 
         # restore coords 
         with nswarm.access(nswarm.particle_coordinates):

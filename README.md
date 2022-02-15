@@ -25,11 +25,20 @@ For in place usage, you will need to set an appropriate PYTHONPATH.
 
 ## Development milestones
 
-- [ ] Spherical stokes
-- [x] Buoyancy drive stokes
-- [ ] Advection diffusion
-- [ ] High Ra, constant viscosity
-- [ ] Highly temp-dep viscosity
+Reproduce the existing UW2 examples and extend to spherical / cylindrical
+
+- [x] Spherical stokes
+- [x] Buoyancy driven stokes (various geometries)
+- [ ] Compositional Buoyancy (Rayleigh-Taylor) via swarms (benchmark)
+- [x] Advection/diffusion (slcn)
+- [ ] Advection/diffusion (swarm)
+- [x] Constant viscosity convection
+- [x] Convection, strongly temp-dep viscosity (stagnant lid)
+- [x] Non-linear viscosity convection 
+- [ ] Quantitative Convection benchmarks (various geometries)
+- [ ] Viscoelasticity (linear) benchmarks 
+- [ ] Inertial terms (Navier-Stokes benchmarks)
+- [ ] Anisotropic viscosity
 
 
 ### Checklist
@@ -44,21 +53,21 @@ Ingredients in achieving the above
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
 - [x] Cont Galerkin 
 - [ ] ~Disc Galerkin~
-- [ ] Semi-lagrangian
-- [ ] Free-slip BC on surface
+- [x] Semi-lagrangian
+- [x] Free-slip BC on surface
 
 [[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
 - [x] Stokes-Boussinesq
 - [x] Temp-dep rheology
-- [ ] Buoyancy driven convection
-- [ ] Non-linear viscosity (Jacobian ?) and yielding in particular
+- [x] Buoyancy driven convection
+- [x] Non-linear viscosity (Jacobian ?) and yielding in particular
 - [ ] Viscoelasticity
 - [ ] Energy equation, resolve bdry layers
 - [ ] kermit the 🐸 
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
-- [ ] Block Stokes solvers
-- [ ] Semi-lagrangian
+- [x] Block Stokes solvers
+- [x] Semi-lagrangian
 - [ ] ~TS~  (address this later)
 
 PIC for composition
@@ -67,8 +76,11 @@ PIC for composition
 - [x] 2D - L2 projection into FEM space (Petsc shall provide)
 - [ ] 3D - L2 projection into FEM space (Petsc shall provide but not in 3D)
 
+- [ ] Petsc Integrals
+- [ ] uw.fn evaluate (for Sympy functions)
+
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
-- [ ] HDF5 -> XDMF -> Paraview
+- [x] HDF5 -> XDMF -> Paraview
 - [ ] LavaVu  
 
 [[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
@@ -78,17 +90,3 @@ PIC for composition
   -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
 
-
-### Tasks
-
-  - [ ] Investigate cython for functions
-  - [ ] Petsc4py compatibility 
-  - [ ] alias .data and .array
-  - [ ] rejig a few models top down ... 
-  - [ ] audit the petsc / petsc4py features corresponding to uw ones
-  - [ ] Can we get early into TS (TS-lite)
-  - [ ] (Build a gLucifer equivalent for the DM - as generic as possible)
-  - [ ] Evaluate Julian's C-based prototype
-  - [ ] Documentation strategy
-  
-  

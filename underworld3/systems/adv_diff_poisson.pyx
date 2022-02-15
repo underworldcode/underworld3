@@ -11,6 +11,8 @@ import underworld3.timing as timing
 import numpy as np
 import mpi4py
 
+from typing import Callable
+
 include "../petsc_extras.pxi"
 
 
@@ -31,6 +33,7 @@ class AdvDiffusion:
                  degree     : int  = 2,
                  theta      : float = 0.5,
                  solver_name: str = "adv_diff_",
+                 restore_points_func: Callable = None,
                  verbose      = False):
 
 
@@ -71,6 +74,7 @@ class AdvDiffusion:
         self.f = 0.
         self.delta_t = 1.0
         self.theta = theta
+        self.restore_points_to_domain_func = restore_points_func
 
         self.bcs = []
 
@@ -335,33 +339,48 @@ class AdvDiffusion:
         with self.mesh.access():
             n_points = t_soln.data.shape[0]
 
-
         if coords is None: # Mid point method to find launch points (T*)
 
-            numerical_dt = self.estimate_dt()
+            # numerical_dt = self.estimate_dt()
 
-            if delta_t > 0.25*numerical_dt:
-                substeps = int(np.floor(delta_t / (0.25* numerical_dt))) + 1
-            else:
-                substeps = 1
+            # if delta_t > 0.25*numerical_dt:
+            #     substeps = int(np.floor(delta_t / (0.25* numerical_dt))) + 1
+            # else:
+            #    substeps = 1
            
-            for substep in range(0, substeps):
-                if self.verbose and mpi4py.MPI.COMM_WORLD.rank==0:
-                    print("substep {} of {}".format(substep, substeps), flush=True)
+            # with nswarm.access():
+            #    if self.verbose and nswarm.data.shape[0] > 1.05 * n_points:
+            #        print("1 - Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
 
-                sub_delta_t = timestep / substeps
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
 
-                with nswarm.access():
-                    if self.verbose and nswarm.data.shape[0] > 1.05 * n_points:
-                        print("1 - Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    mid_pt_coords = self.restore_points_to_domain_func(mid_pt_coords)
 
-                with nswarm.access(nswarm.particle_coordinates):
-                    v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-                    nswarm.data[...] -= sub_delta_t * v_at_Vpts
+                nswarm.data[...] = mid_pt_coords
 
-                with nswarm.access():
-                    if self.verbose and nswarm.data.shape[0] > 1.05 * n_points:
-                        print("2 - Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
+            ## Let the swarm be updated, and then move the rest of the way
+
+            with nswarm.access(nswarm.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
+                new_coords = nX0.data[...] - delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if self.restore_points_to_domain_func is not None:
+                    new_coords = self.restore_points_to_domain_func(new_coords)
+
+                nswarm.data[...] = new_coords
+
+
+
+
+
+#                with nswarm.access():
+#                    if self.verbose and nswarm.data.shape[0] > 1.05 * n_points:
+#                         print("2 - Swarm points {} = {} ({})".format(mpi4py.MPI.COMM_WORLD.rank,nswarm.data.shape[0], n_points), flush=True)
 
 #               # May not work if points go outside the boundary ... 
 #               with nswarm.access(nswarm.particle_coordinates):
