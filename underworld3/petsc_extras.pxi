@@ -41,7 +41,5 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
-    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
-    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
     # PetscErrorCode PetscViewerHDF5PushTimestepping(PetscViewer viewer)
     PetscErrorCode VecDestroy(PetscVec *v)

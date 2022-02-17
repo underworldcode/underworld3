@@ -83,12 +83,10 @@ class Integral:
                 deg = var.degree
                 var_base = var
 
-        cdef FE c_fe = var_base.petsc_fe
-        cdef PetscQuadrature quad_base
-        ierr = PetscFEGetQuadrature(c_fe.fe, &quad_base); CHKERRQ(ierr)
+        quad_base = var_base.petsc_fe.getQuadrature()
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            c_fe = fe
-            ierr = PetscFESetQuadrature(c_fe.fe,quad_base); CHKERRQ(ierr)        
+            fe.setQuadrature(quad_base)
+        
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
