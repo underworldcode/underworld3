@@ -668,7 +668,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         self._u_f0 = self.UF0 + self.u.fn - self.uw_function 
 
         # Integration by parts into the stiffness matrix
-        self._u_f1 = self.UF1  + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) 
+        self._u_f1 = self.UF1  + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) - self._constraint_field.fn * sympy.Matrix.eye(dim)
 
         # rhs in the constraint (pressure) equations
         self._p_f0 = self.PF0  + divergence(self.u.fn)

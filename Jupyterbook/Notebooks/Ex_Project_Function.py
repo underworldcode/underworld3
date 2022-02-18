@@ -76,10 +76,9 @@ vector_projection.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
 # +
 # try to enforce incompressibility
 
-incompressible_vector_projection = uw.systems.Vector_Projection(meshbox, iv_soln)
+incompressible_vector_projection = uw.systems.Solenoidal_Vector_Projection(meshbox, iv_soln)
 incompressible_vector_projection.uw_function =  v_soln.fn # + sv_fn
 incompressible_vector_projection.smoothing = 1.0e-2  # see how well it works !
-incompressible_vector_projection.penalty = 0.1
 
 # Velocity boundary conditions (compare left / right walls in the soln !)
 # incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Left" ,   (0,) )
