@@ -21,9 +21,21 @@ import sympy
 
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), 
-                                             maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
+meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, 
+                                             minCoords=(0.0,0.0,0.0), 
+                                             maxCoords=(1.0,1.0,1.0), 
+                                             cell_size=1.0/32.0, 
+                                             regular=True)
 meshbox.dm.view()   
+
+# +
+
+import sympy
+
+# Some useful coordinate stuff 
+
+x = meshbox.N.x
+y = meshbox.N.y
 
 # +
 # check the mesh if in a notebook / serial
@@ -62,10 +74,27 @@ t_0    = uw.mesh.MeshVariable("T0",   meshbox, 1, degree=3)
 
 
 swarm  = uw.swarm.Swarm(mesh=meshbox)
-T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
-X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
-swarm.populate(fill_param=3)
+T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1, proxy_degree=3)
+swarm.populate(fill_param=5)
 
+
+# +
+ad = uw.systems.AdvDiffusionSwarm(meshbox, t_soln, T1, 
+                                  degree=3, projection=True)
+
+ad._u_star_projector.smoothing = 0.0
+
+ad.add_dirichlet_bc(  1.0,  "Bottom" )
+ad.add_dirichlet_bc(  0.0,  "Top" )
+
+init_t = 0.01 * sympy.sin(5.0*x) * sympy.sin(np.pi*y) + (1.0-y)
+
+with meshbox.access(t_0, t_soln):
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
+    t_soln.data[...] = t_0.data[...]
+       
+with swarm.access(T1):
+    T1.data[...] = uw.function.evaluate(init_t, swarm.particle_coordinates.data).reshape(-1,1)
 
 # +
 # Create Stokes object
@@ -93,71 +122,19 @@ stokes.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
 
 
 # +
-# Create a density structure / buoyancy force
-# gravity will vary linearly from zero at the centre 
-# of the sphere to (say) 1 at the surface
-
-import sympy
-
-# Some useful coordinate stuff 
-
-x = meshbox.N.x
-y = meshbox.N.y
-
-
-# +
-# Create adv_diff object
-
-# Set some things
-k = 1.0
-h = 0.0 
-
-adv_diff = uw.systems.AdvDiffusionSLCN(meshbox, 
-                                   u_Field=t_soln, 
-                                   V_Field=v_soln,
-                                   solver_name="adv_diff", 
-                                   degree=3,
-                                   verbose=False)
-
-adv_diff.k = k
-adv_diff.theta = 0.5
-# adv_diff.f = t_soln.fn / delta_t - t_star.fn / delta_t
-
-
-# +
-# Define T boundary conditions via a sympy function
-
-import sympy
-init_t = 0.01 * sympy.sin(5.0*x) * sympy.sin(np.pi*y) + (1.0-y)
-
-adv_diff.add_dirichlet_bc(  1.0,  "Bottom" )
-adv_diff.add_dirichlet_bc(  0.0,  "Top" )
-
-with meshbox.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
-    t_soln.data[...] = t_0.data[...]
-
-
-# +
 buoyancy_force = 1.0e6 * t_soln.fn 
 stokes.bodyforce = meshbox.N.j * buoyancy_force  
 
 # check the stokes solve is set up and that it converges
 stokes.solve()
-# -
-
-# Check the diffusion part of the solve converges 
-adv_diff.solve(timestep=0.01*stokes.estimate_dt())
-
-
 
 
 # +
-# check the mesh if in a notebook / serial
+# check the projection
 
 import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if mpi4py.MPI.COMM_WORLD.size==1 and ad.projection:
 
     import numpy as np
     import pyvista as pv
@@ -176,8 +153,11 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     with meshbox.access():
         usol = stokes.u.data.copy()
   
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshbox.data)
- 
+    pvmesh.point_data["mT1"]  = uw.function.evaluate(ad._u_star_projected.fn, meshbox.data)
+    pvmesh.point_data["T1"]   = uw.function.evaluate(T1.fn, meshbox.data)
+    pvmesh.point_data["dT1"]   = uw.function.evaluate(T1.fn-ad._u_star_projected.fn, meshbox.data)
+
+
     arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
     arrow_loc[:,0:2] = stokes.u.coords[...]
     
@@ -188,19 +168,20 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT1",
                   use_transparency=False, opacity=0.5)
     
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-4, opacity=0.5)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-4, opacity=0.5)
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+
+
 # -
 
 
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"]= 5
 
 
 def plot_T_mesh(filename):
@@ -217,7 +198,7 @@ def plot_T_mesh(filename):
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.antialiasing = True
         pv.global_theme.jupyter_backend = 'pythreejs'
-        pv.global_theme.smooth_shading = True
+        pv.global_theme.smooth_shading = False
         pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
         pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
 
@@ -231,6 +212,16 @@ def plot_T_mesh(filename):
 
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
+               
+        with swarm.access():
+            points = np.zeros((swarm.data.shape[0],3))
+            points[:,0] = swarm.data[:,0]
+            points[:,1] = swarm.data[:,1]
+
+        swarm_point_cloud = pv.PolyData(points)
+
+        with swarm.access():
+            swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
         with meshbox.access():
             usol = stokes.u.data.copy()
@@ -247,18 +238,27 @@ def plot_T_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", 
-                      render_points_as_spheres=False,
-                      point_size=10, opacity=0.66
-                    )
-        
+        pl.add_points(swarm_point_cloud, # cmap="RdYlBu_r", scalars="T1",
+                      color="Black",
+                      render_points_as_spheres=True, clim=[0.0,1.0],
+                      point_size=1.0, opacity=0.5
+        )
 
-        pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+        pl.add_points(point_cloud, cmap="coolwarm", scalars="T",
+                      render_points_as_spheres=False, clim=[0.0,1.0],
+                      point_size=10.0, opacity=0.66
+        )
+
+
+        # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", 
+        #             show_edges=True, scalars="T",clim=[0.0,1.0],
+        #               use_transparency=False, opacity=0.5)
+
 
         pl.remove_scalar_bar("T")
-        pl.remove_scalar_bar("mag")
+        # pl.remove_scalar_bar("T1")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
+        pl.screenshot(filename="{}.png".format(filename), window_size=(1250,1250), 
                       return_img=False)
         # pl.show()
         pl.close()
@@ -266,21 +266,34 @@ def plot_T_mesh(filename):
 # +
 # Convection model / update in time
 
-expt_name="output/Ra1e6"
+expt_name="output/Ra1e6_swarm_pnots"
+
+ad_delta_t = 0.000033     # target
 
 for step in range(0,250):
     
     stokes.solve(zero_init_guess=False)
-    delta_t = 5.0*stokes.estimate_dt() 
-    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
+    stokes_delta_t = 5.0*stokes.estimate_dt() 
+    delta_t = stokes_delta_t
     
-    # stats then loop
+    ad.solve(timestep=delta_t, zero_init_guess=True)
+    
+    # update swarm / swarm variables
+    
+    with swarm.access(T1):
+        T1.data[:,0] = uw.function.evaluate(t_soln.fn, swarm.particle_coordinates.data)
+     
+    # advect swarm
+    swarm.advection(v_soln.fn, delta_t)
+
     tstats = t_soln.stats()
-    
+    tstarstats = T1._meshVar.stats()
     
     if mpi4py.MPI.COMM_WORLD.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
-#         print(tstats)
+        print(tstats[2], tstats[3])
+        print(tstarstats[2], tstarstats[3])
+
         
     plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
 
@@ -326,10 +339,19 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     points[:,1] = t_soln.coords[:,1]
 
     point_cloud = pv.PolyData(points)
+    
+    with swarm.access():
+        points = np.zeros((swarm.data.shape[0],3))
+        points[:,0] = swarm.data[:,0]
+        points[:,1] = swarm.data[:,1]
+
+    swarm_point_cloud = pv.PolyData(points)
+
+    with swarm.access():
+        swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
     with meshbox.access():
         point_cloud.point_data["T"] = t_soln.data.copy()
-
 
     with meshbox.access():
         usol = stokes.u.data.copy()
@@ -348,13 +370,19 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
     
     
-    pl.add_points(point_cloud, cmap="coolwarm", 
-                  render_points_as_spheres=True,
-                  point_size=7.5, opacity=0.25
-                )
+    # pl.add_points(point_cloud, cmap="coolwarm", 
+    #               render_points_as_spheres=True,
+    #               point_size=7.5, opacity=0.25
+    #             )
+
+    pl.add_points(swarm_point_cloud, cmap="coolwarm",
+          render_points_as_spheres=True,
+          point_size=2.5, opacity=0.5, clim=[0.0,1.0]
+        )
+
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+                  use_transparency=False, opacity=0.5, clim=[0.0,1.0])
     
-    
-    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
 
     pl.show(cpos="xy")
