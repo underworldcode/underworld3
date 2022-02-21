@@ -829,7 +829,7 @@ class SNES_SaddlePoint:
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
 
-        self.UF0 = sympy.vector.Vector(self.mesh.dim)
+        self.UF0 = 0.0 * self.mesh.N.i 
         self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.PF0 = 0.0
 
@@ -1034,13 +1034,14 @@ class SNES_SaddlePoint:
 
         # P/U block (check permutations - they don't seem to be necessary here)
 
-        # self._pu_G0 =  sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._U).reshape(dim))
+        self._pu_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._U).reshape(dim))
         self._pu_G1 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._L).reshape(dim,dim))
         # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._P).reshape(dim,dim))
         # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
 
-        # fns.jacobians.append([self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3])
-        fns_jacobian.append(self._pu_G1)
+        # fns_jacobian += [self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
+        fns_jacobian += [self._pu_G0, self._pu_G1]
+        # fns_jacobian.append(self._pu_G1)
 
         ## PP block is a preconditioner term, not auto-constructed
 
