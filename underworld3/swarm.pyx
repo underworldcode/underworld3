@@ -471,7 +471,11 @@ class Swarm(_api_tools.Stateful):
             with self.access(self.particle_coordinates):
                 v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
 
-                updated_current_coords = 0.5 * (X0.data + delta_t * v_at_Vpts + self.data)
+                corrected_position = X0.data + delta_t * v_at_Vpts
+                if restore_points_to_domain_func is not None:
+                    corrected_position = restore_points_to_domain_func(corrected_position)
+
+                updated_current_coords = 0.5 * (corrected_position + self.data)
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
                 
