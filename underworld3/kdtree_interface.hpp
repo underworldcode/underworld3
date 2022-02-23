@@ -93,7 +93,15 @@ class KDTree_Interface
                 if (out_dist_sqr!=NULL) out_dist_sqr[item] = dist; 
                 if (       found!=NULL)        found[item] = founditem; 
             }
+        }; 
+
+        size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr ) {
+          if( dim == 2 )
+           return index2d->knnSearch( query_point, num_closest, indices, out_dist_sqr ); 
+          else
+           return index3d->knnSearch( query_point, num_closest, indices, out_dist_sqr ); 
         };
+ 
 };
 
 

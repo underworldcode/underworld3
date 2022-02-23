@@ -11,6 +11,7 @@ cdef extern from "kdtree_interface.hpp" nogil:
         KDTree_Interface( const double* points, int numpoints, int dim )
         void build_index()
         void find_closest_point( size_t  num_coords, const double* coords, long unsigned int* indices, double* out_dist_sqr, bool* found )
+        size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr )
 
 cdef class KDTree:
     """
@@ -116,3 +117,53 @@ cdef class KDTree:
                                     <           double*> &c_dist_sqr[0], 
                                     <             bool*> &c_found[0] )
         return indices, dist_sqr, found
+
+    @timing.routine_timer_decorator
+    def knnSearch(self, 
+                  const int nCount                    :   numpy.int,
+                  const double[: ,::1] coords not None:   numpy.ndarray):
+        """
+        Find the n points closest to the provided coordinates. 
+
+        Parameters
+        ----------
+        coords:
+            An array of coordinates for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
+        nCount:
+            The number of nearest neighbour points to find for each `coords`.
+
+        Returns
+        -------
+        indices:
+            An integer array of indices into the `points` array (passed into the constructor) corresponding to
+            the nearest neighbour for the search coordinates. It will be of size (n_coords).
+        dist_sqr:
+            A float array of squred distances between the provided coords and the nearest neighbouring
+            points. It will be of size (n_coords).
+        found:
+            A bool array of flags which signals whether a nearest neighbour has been found for a given
+            coordinate. It will be of size (n_coords).
+
+
+
+        """
+        if coords.shape[1] != self.points.shape[1]:
+            raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
+        nInput = coords.shape[0]
+
+        # allocate numpy arrays
+        indices  = np.empty(nCount, dtype=np.uint64,  order='C')
+        dist_sqr = np.empty(nCount, dtype=np.float64, order='C')
+        # allocate memoryviews in C contiguous layout
+        cdef long unsigned int[::1] c_indices  = indices 
+        cdef            double[::1] c_dist_sqr = dist_sqr
+
+        # invoke cpp function
+        self.index.knnSearch( <const double *> &coords[0][0], 
+                              nCount,
+                              <long unsigned int*> &c_indices[0], 
+                              <           double*> &c_dist_sqr[0]) 
+
+        # return numpy data
+        return indices, dist_sqr
