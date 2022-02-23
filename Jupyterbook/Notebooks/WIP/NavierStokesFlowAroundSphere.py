@@ -28,9 +28,9 @@ csize = 0.1
 csize_circle = 0.05
 res = csize_circle
 
-width = 3.0
+width = 5.0
 height = 1.0
-radius = 0.25
+radius = 0.2
 
 
 import mpi4py
@@ -135,9 +135,10 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 # -
 
-v_soln   = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=2 )
-v_stokes = uw.mesh.MeshVariable('U0',   pipemesh, pipemesh.dim, degree=2 )
-p_soln   = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=1 )
+v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
+v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
+p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
+vorticity = uw.mesh.MeshVariable('\omega', pipemesh, 1, degree=1 )
 
 
 swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -168,7 +169,13 @@ navier_stokes = NavierStokesSwarm(pipemesh,
 
 navier_stokes.petsc_options.delValue("ksp_monitor")
 navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
+navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-3
+# -
 
+
+nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
+nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(pipemesh.N.k)
+nodal_vorticity_from_v.smoothing = 1.0e-3
 
 # +
 # Set solve options here (or remove default values
@@ -182,9 +189,9 @@ navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
-Vb = 250.0
+Vb = 2500.0
 Free_Slip = False
-expt_name = "pipe_flow_cylinder_R025_v250_rho1_dt0.0005"
+expt_name = "pipe_flow_cylinder_R02_v2500_rho1_dt0.00005"
 
 if Free_Slip:
     hw = 1000.0 / res 
@@ -193,13 +200,10 @@ if Free_Slip:
     navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t + 1.0e5 * Vb * surface_fn)
     # navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity )
 
-
 else:
     surface_fn =  1.0e-32 * r
     navier_stokes.add_dirichlet_bc( (0.0,0.0), "inclusion" , (0,1) )  
     
-    
-
 # Velocity boundary conditions
 
 navier_stokes.add_dirichlet_bc( (Vb,0.0),  "top" ,    (0,1) )
@@ -209,10 +213,17 @@ navier_stokes.add_dirichlet_bc( (Vb,0.0),  "right" ,  (0,1) )
 # -
 
 
-navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
+navier_stokes.solve(timestep=1.0)  # Stokes-like initial flow
+nodal_vorticity_from_v.solve()
 
-with pipemesh.access(v_stokes):
-    v_stokes.data[...] = v_soln.data[...]
+# +
+with pipemesh.access(v_stokes, v_soln):
+    v_stokes.data[...] = v_soln.data[...] 
+    v_soln.data[...] += Vb / 100 * np.random.random(size=v_soln.data.shape) 
+    v_soln.data[...] *= 1.0 + 0.1 * np.cos(v_soln.coords[:,1].reshape(-1,1) * np.pi)
+    
+with swarm.access(v_star):
+        v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
 
 # +
 # check the mesh if in a notebook / serial
@@ -338,6 +349,8 @@ def plot_V_mesh(filename):
         with pipemesh.access():
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
             pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+            pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
+
 
 
         with pipemesh.access():
@@ -366,7 +379,7 @@ def plot_V_mesh(filename):
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
         
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="dVy",
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="Omega",
                   use_transparency=False, opacity=0.5)
 
         pl.add_mesh(pvstream)
@@ -376,7 +389,7 @@ def plot_V_mesh(filename):
                       point_size=2, opacity=0.66
                     )
 
-        pl.remove_scalar_bar("dVy")
+        pl.remove_scalar_bar("Omega")
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
 
@@ -384,21 +397,24 @@ def plot_V_mesh(filename):
                       return_img=False)
         
         pl.close()
+        
+        del(pl)
 
        # pl.show()
 
+
+
 ts = 0
-dt_ns = 0.0005
+dt_ns = 0.00005
 navier_stokes.estimate_dt()
 
-
-
-for step in range(0,25):
+for step in range(0,500):
     delta_t_swarm = 5.0 * navier_stokes.estimate_dt()
     delta_t = min(delta_t_swarm, dt_ns)
     
     navier_stokes.solve(timestep=dt_ns, 
                         zero_init_guess=False)
+    nodal_vorticity_from_v.solve()
     
     phi = delta_t / dt_ns 
     
@@ -462,6 +478,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
         pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
+
 
     v_vectors = np.zeros((pipemesh.data.shape[0],3))
     v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -497,7 +515,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     
     pl = pv.Plotter()
  
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.033/Vb, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.033/Vb, opacity=0.75)
 
     
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="dVy",

@@ -9,7 +9,6 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3.systems import NavierStokesSwarm
-from underworld3.systems import Navier_Stokes_SLCN
 
 from underworld3 import function
 
@@ -20,6 +19,9 @@ options = PETSc.Options()
 # options["pc_type"]  = "svd"
 # options["dm_plex_check_all"] = None
 # options.getAll()
+
+# -
+
 
 
 
@@ -52,8 +54,8 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 # Rigid body rotation v_theta = constant, v_r = 0.0
 
 theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
-v_x = -1.0 *  r * theta_dot * sympy.sin(th) * y
-v_y =         r * theta_dot * sympy.cos(th) * y
+v_x = -1.0 *  r * theta_dot * sympy.sin(th) # * y # to make a convergent / divergent bc 
+v_y =         r * theta_dot * sympy.cos(th) # * y
 # -
 
 swarm = uw.swarm.Swarm(mesh=meshball)
@@ -63,6 +65,7 @@ swarm.populate(fill_param=3)
 
 v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
+vorticity = uw.mesh.MeshVariable('\omega', meshball, 1, degree=1 )
 
 
 # +
@@ -84,7 +87,7 @@ navier_stokes = NavierStokesSwarm(meshball,
                 velocityStar=v_star,
                 u_degree=2, 
                 p_degree=1, 
-                rho=1.0,
+                rho=10.0,
                 theta=0.9,
                 solver_name="navier_stokes",
                 projection=True,
@@ -92,10 +95,18 @@ navier_stokes = NavierStokesSwarm(meshball,
             )
 
 
+navier_stokes.petsc_options.delValue("ksp_monitor")
+navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
+navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-3
+
+nodal_vorticity_from_v = uw.systems.Projection(meshball, vorticity)
+nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(meshball.N.k)
+nodal_vorticity_from_v.smoothing = 1.0e-3
+
 # +
 # Constant visc
 
-expt_name = "Cylinder_NS_rho1"
+expt_name = "Cylinder_NS_rho10"
 
 navier_stokes.viscosity = 1.0
 navier_stokes.penalty=0.0
@@ -105,7 +116,7 @@ navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
 # Velocity boundary conditions
 navier_stokes.add_dirichlet_bc( (v_x,v_y), "Upper" , (0,1) )
-navier_stokes.add_dirichlet_bc( (0.0,0.0), "Lower" , (0,1) )
+navier_stokes.add_dirichlet_bc( (-v_x,-v_y), "Lower" , (0,1) )
 
 # +
 with meshball.access(v_soln):
@@ -117,6 +128,8 @@ with swarm.access(v_star):
 
 navier_stokes.solve(timestep=0.01)
 navier_stokes.estimate_dt()
+
+nodal_vorticity_from_v.solve()
 
 
 
@@ -145,9 +158,29 @@ if mpi4py.MPI.COMM_WORLD.size==1:
             points = np.zeros((swarm.data.shape[0],3))
             points[:,0] = swarm.data[:,0]
             points[:,1] = swarm.data[:,1]
-
+            
     point_cloud = pv.PolyData(points)
+    
+    # point sources at cell centres
+    
+    points = np.zeros((meshball._centroids.shape[0],3))
+    points[:,0] = meshball._centroids[:,0]
+    points[:,1] = meshball._centroids[:,1]
+    centroid_cloud = pv.PolyData(points)
 
+        
+    with meshball.access():
+        pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, meshball.data)
+        
+    v_vectors = np.zeros((meshball.data.shape[0],3))
+    v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, meshball.data)
+    pvmesh.point_data["V"] = v_vectors 
+    
+    pvstream = pvmesh.streamlines_from_source(centroid_cloud, vectors="V", 
+                                      integration_direction="both",
+                                      surface_streamlines=True, 
+                                      max_time=0.25,
+                                     )
 
     with meshball.access():
         usol = v_soln.data.copy()
@@ -159,17 +192,15 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     arrow_length[:,0:2] = usol[...] 
 
     pl = pv.Plotter()
-
- 
-    pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-2, opacity=0.75)
-
+    
+    pl.add_mesh(pvmesh,cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0,20.0])
+    pl.add_mesh(pvstream)
+    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-2, opacity=0.75)
     pl.add_points(point_cloud, color="Black",
                       render_points_as_spheres=True,
-                      point_size=2, opacity=0.66
+                      point_size=0.5, opacity=0.33
                     )
  
-
-    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
     # pl.remove_scalar_bar("T")
     pl.remove_scalar_bar("mag")
@@ -204,9 +235,18 @@ def plot_V_mesh(filename):
             points[:,1] = swarm.data[:,1]
 
         point_cloud = pv.PolyData(points)
+        
+            # point sources at cell centres
+    
+        points = np.zeros((meshball._centroids.shape[0],3))
+        points[:,0] = meshball._centroids[:,0]
+        points[:,1] = meshball._centroids[:,1]
+        centroid_cloud = pv.PolyData(points)
 
         with meshball.access():
-             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
+            pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
+            pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, meshball.data)
+
 
         with meshball.access():
             usol = v_soln.data.copy()
@@ -217,11 +257,20 @@ def plot_V_mesh(filename):
         arrow_length = np.zeros((v_soln.coords.shape[0],3))
         arrow_length[:,0:2] = usol[...] 
         
+        v_vectors = np.zeros((meshball.data.shape[0],3))
+        v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, meshball.data)
+        pvmesh.point_data["V"] = v_vectors 
+    
+        pvstream = pvmesh.streamlines_from_source(centroid_cloud, vectors="V", 
+                                      integration_direction="both",
+                                      surface_streamlines=True, 
+                                      max_time=0.25,
+                                     )
+        
+        
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.033, opacity=0.75)
-
-        
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
 
         pl.add_points(point_cloud, color="Black",
                       render_points_as_spheres=True,
@@ -230,48 +279,49 @@ def plot_V_mesh(filename):
         
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="P",
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="Omega",
                   use_transparency=False, opacity=0.5)
-
-
-
-        pl.remove_scalar_bar("P")
-        pl.remove_scalar_bar("mag")
+        
+        pl.add_mesh(pvmesh,cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0,20.0])
+ 
+        scale_bar_items = list(pl.scalar_bars.keys())
+        
+        for scalar in scale_bar_items:
+            pl.remove_scalar_bar(scalar)
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
                       return_img=False)
 
-       # pl.show()
+        # pl.show()
 
-
+ts=0
 
 # +
-# Convection model / update in time
+# Time evolution model / update in time
 
 
 for step in range(0,20):
         
-    delta_t = 0.01 # 5.0*navier_stokes.estimate_dt() 
+    delta_t = 5.0*navier_stokes.estimate_dt() 
     navier_stokes.solve(timestep=delta_t)
+    
+    nodal_vorticity_from_v.solve()
     
     with swarm.access(v_star):
         v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
      
     # advect swarm
-    print("Swarm advection")
     swarm.advection(v_soln.fn, delta_t)
-    print("Swarm advection, complete")
-
-
 
     if mpi4py.MPI.COMM_WORLD.rank==0:
-        print("Timestep {}, dt {}".format(step, delta_t))
+        print("Timestep {}, dt {}".format(ts, delta_t))
 
-    if step%1 == 0:
-        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,step))
-
+    if ts%1 == 0:
+        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,ts))
+        
+    ts += 1
+        
 # -
-
 
 
 
