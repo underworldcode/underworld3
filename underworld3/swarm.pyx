@@ -473,7 +473,7 @@ class Swarm(_api_tools.Stateful):
 
                 corrected_position = X0.data + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
-                    corrected_position = restore_points_to_domain_func(corrected_position)
+                    corrected_position = restore_points_to_domain_func(corrected_position) 
 
                 updated_current_coords = 0.5 * (corrected_position + self.data)
 
