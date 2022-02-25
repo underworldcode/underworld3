@@ -1,31 +1,16 @@
 # %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.systems import Poisson
 import numpy as np
 
-options = PETSc.Options()
-# options["pc_type"]  = "svd"
-
-# options["ksp_rtol"] = 1.0e-7
-# # options["ksp_monitor_short"] = None
-
-# # options["snes_type"]  = "fas"
-# options["snes_converged_reason"] = None
-# options["snes_monitor_short"] = None
-# # options["snes_view"]=None
-# options["snes_rtol"] = 1.0e-7
 
 # %%
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), maxCoords=(1.0,1,0), cell_size=0.05) 
-mesh.dm.view()
+mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), maxCoords=(1.0,1,0), cell_size=1.0/16) 
 
 # %%
 # Create Poisson object
-poisson = Poisson(mesh)
+poisson = uw.systems.Poisson(mesh)
 
 # %%
 import sympy

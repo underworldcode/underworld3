@@ -183,15 +183,15 @@ nodal_vorticity_from_v.smoothing = 1.0e-3
 
 # Constant visc
 
-navier_stokes.rho=1.0
-navier_stokes.theta=0.6
+navier_stokes.rho=10.0
+navier_stokes.theta=0.5
 navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
-Vb = 2500.0
+Vb = 1000.0
 Free_Slip = False
-expt_name = "pipe_flow_cylinder_R02_v2500_rho1_dt0.00005"
+expt_name = "pipe_flow_cylinder_R02_v1000_rho10_dt0.00005"
 
 if Free_Slip:
     hw = 1000.0 / res 
@@ -224,6 +224,14 @@ with pipemesh.access(v_stokes, v_soln):
     
 with swarm.access(v_star):
         v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
+# -
+
+swarm.dm.addPoint()
+
+with swarm.access():
+    print(swarm.data[-2,:])
+
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -260,8 +268,6 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
         pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
 
-
-
     v_vectors = np.zeros((pipemesh.data.shape[0],3))
     v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
     pvmesh.point_data["V"] = v_vectors 
@@ -295,13 +301,13 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     #               point_size=10, opacity=0.66
     #             )
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dVy",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=1.0)
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)
 
-    pl.remove_scalar_bar("mag")
+    # pl.remove_scalar_bar("mag")
 
     pl.show()
 

@@ -1,4 +1,4 @@
-# PETSc pointwise functions and UW3 functions
+# PETSc pointwise functions and solvers
 
 As we saw in [the Finite Element Pages], the finite element method provides a very general way to approach the numerical solution of a very wide variety of problems in continuum mechanics using a standardised, matrix-based formulation and with considerable flexibility in the choice of discretisation, mesh geometry, and the ability to deal very naturally with jumps in material properties. 
 
@@ -89,16 +89,138 @@ to PETSc data structures in the compiled code.
 
 ## Underworld Solver Classes
 
+We provide 3 base classes to build solvers. These are a scalar SNES solver, 
+a vector SNES solver and a Vector SNES saddle point solver (constrained vector problem).
+These are bare-bones classes that implement the pointwise function / sympy approach that
+can then be used to build solvers for many common situations. 
 
+A blank slate is a very scary thing and so we provide templates for some common equations
+and examples to show how these can be extended. 
 
 ## Example 1 - The Poisson Equation
 
-## Example 2 - The Scalar Advection-diffusion Equation
+The classical form of the scalar Poisson Equation is 
 
-## Example 3 - The Stokes Equation
+$$ \alpha \nabla^2 \psi = f $$ 
 
-## Example 3a - Navier-Stokes
+Where $\psi$ is an unknown scalar quantity, $\alpha$ is 
+a constitutive parameter that relates gradients to fluxes, and $f$ 
+is a source term.
 
-## Example 4 - Non-linear Constraints
+This equation is obtained by considering the divergence of fluxes needed to 
+balance the sources. For example, in thermal diffusion we identify
+$\psi$ with the temperature, $T$, and the constitutive parameter, $k$,
+is a thermal conductivity. 
 
+$$ \nabla \cdot k \nabla T = h $$
+
+In this form, $\mathbf{q} = k \nabla T$ is Fourier's expression of the 
+heat flux in terms of temperature gradients.
+
+This form matches the template above if we identify:
+
+$$ f_0 = -h \quad \textrm{and} \quad f_1 = k\nabla T$$ 
+
+and, in fact, this is exactly what we need to specify in the underworld equation
+system. 
+
+```python 
+        solver._L= sympy.derive_by_array(solver._U, solver._X).transpose()
+
+        # f0 residual term (weighted integration) - scalar function
+        solver.F0 = -h
+
+        # f1 residual term (integration by parts / gradients)
+        solver.F1 = k * solver._L
+```
+
+which means the user only needs to supply a mesh, a mesh variable to 
+hold the solution and sympy expressions for $k$ and $h$ in order
+to solve a Poisson equation. 
+
+The `SNES_Poisson` class is a very lightweight wrapper on
+the `SNES_Scalar` class which provides a template for the flux
+term and very little else. 
+$F_0$ and $F_1$ are inherited as an empty scalar and vector respectively. 
+These are available in the template for the user to extend the equation as needed.
+
+[This notebook](../Notebooks/Ex_Poisson_Cartesian_Generic) compares 
+the generic class and the one with the flux templated. 
+
+## Example 2 - Projections and Evaluations
+
+PETSc has a very general concept of discretisation spaces that do not 
+necessarily admit to continuous interpolation to or from arbitrary points.
+For this reason, a more general concept is to create projections that map
+between representations of the data. For example, in Finite Elements, 
+fluxes are generally not available at nodal points because shape functions
+have discontinuous gradients there. To compute fluxes at nodal points, we 
+would establish a projection problem to form a best fitting continous function
+to the values at points where we can evaluate the fluxes. In addition, 
+sympy functions (including those for fluxes) that contain derivatives of finite element variables 
+can not be evaluated numerically by sympy but can be evaluated as compiled
+functions in the context of a solver. 
+
+We write these evaluations using the `Projection` solver classes. This is
+the simplest of the solvers and we are only discussing it second because it
+is almost too simple to be instructive (and because the weak form of this
+equation is the natural one to work with).
+
+We would like to solve for a continuous, nodal point solution $u$ that 
+satisfies as best possible,
+
+$$ \int_\Omega \phi u d\Omega = \int_\Omega \phi \tilde{u} d\Omega $$
+
+where $\tilde{u}$ is a function with unknown continuity that we
+are able to evaluate at integration points in the mesh. 
+
+The generic solver specification in underworld looks like this
+
+```python 
+=
+        # f0 residual term (weighted integration) - scalar function
+        solver.F0 = solver.u.fn - user_uw_function
+
+        # f1 residual term (integration by parts / gradients)
+        solver.F1 = 0.0
+```
+where `user_uw_function` is some sympy expression in terms of spatial 
+coordinates that can include mesh or swarm variables. `solver.u.fn` is the
+mesh variable (in function form) where the solution will reside.
+
+In principle we could add a smoothing term via `solver.F1` and, importantly,
+we can also add boundary conditions or constraints that need to be satisfied in 
+addition to fitting the integration point values. 
+
+We provide projection operators for scalar fields, vector fields and 
+solenoidal vector fields (ensuring that the projection remains divergence free). These
+provide templates for the $F_0$ and $F_1$ terms with generic smoothing 
+
+[This notebook](../Notebooks/Ex_Project_Function.md) has an example of 
+each of these cases. 
+
+## Example 3 - Incompressible Stokes Equation
+
+A saddle point system in which we solve for a constraint parameter
+as well as the primary unknown. We have to tweak the template a little
+bit for this one.
+
+
+## Example 4 - Advection without diffusion
+
+The pure transport equation 
+
+$$ \frac{D \psi}{D t} = H $$
+
+(This is not especially well suited to the pointwise formulation )
+
+## Example 4 - The Scalar Advection-diffusion Equation
+
+The situation where advection and diffusion are in balance 
+
+ - this means that grid methods / particle methods both have issues.
+ 
+## Example 5 - Navier-Stokes
+
+All the issues from example 4 but with even more non-linearity.
 

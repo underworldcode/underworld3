@@ -22,11 +22,13 @@ parts:
 
 
 
-
-  # - caption: Notebooks
-  #   chapters:
-  #   - file: Notebooks/Index
-  #     sections:
+  - caption: Notebooks
+    chapters:
+    - file: Notebooks/Index
+      sections:
+      - file: Notebooks/Ex_Poisson_Cartesian_Generic
+      - file: Notebooks/Ex_Project_Function
+      
   #     - file: Notebooks/Ex_Evaluate.py
   #     - file: Notebooks/Ex_Poisson_Cartesian.py
   #     - file: Notebooks/Ex_Poisson_Spherical.py

@@ -4,8 +4,6 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.systems import Poisson
-from underworld3.systems import Projection
 
 import numpy as np
 import sympy
@@ -14,12 +12,14 @@ import sympy
 mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0),
                                           maxCoords=(1.0,1,0), 
                                           cell_size=0.05,regular=False) 
-mesh.dm.view()
+
+
+# %%
 
 # %%
 # Create Poisson object
-poisson = Poisson(mesh, degree=3)
-gradient = Projection(mesh, degree=2)
+poisson = uw.systems.Poisson(mesh, degree=3)
+gradient = uw.systems.Projection(mesh, degree=2)
 
 # %%
 # Set some things
