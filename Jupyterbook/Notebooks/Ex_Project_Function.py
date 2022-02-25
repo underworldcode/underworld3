@@ -1,42 +1,38 @@
----
-jupytext:
-  formats: md:myst
-  text_representation:
-    extension: .md
-    format_name: myst
-    format_version: 0.13
-    jupytext_version: 1.11.5
-kernelspec:
-  display_name: Python 3 (ipykernel)
-  language: python
-  name: python3
----
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.11.5
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
 
-# SNES-based function evaluation
+# # SNES-based function evaluation
+#
+# Here we Use SNES solvers to project sympy / mesh variable functions and derivatives to nodes. Pointwise / symbolic functions cannot always be evaluated using `uw.function.evaluate` because they contain a mix of mesh variables, derivatives and symbols which may not be defined everywhere. 
+#
+# Our solution is to use a projection of the function to a continuous mesh variable with the SNES machinery performing all of the background operations to determine the values and the optimal fitting. 
+#
+# This approach also allows us to include boundary conditions, smoothing, and constraint terms (e.g. remove a null space) in cases (like piecewise continuous swarm variables) where this is difficult in the original form.
+#
+# We'll demonstrate this using a swarm variable (scalar / vector), but the same approach is useful for gradient recovery.
 
-Here we Use SNES solvers to project sympy / mesh variable functions and derivatives to nodes. Pointwise / symbolic functions cannot always be evaluated using `uw.function.evaluate` because they contain a mix of mesh variables, derivatives and symbols which may not be defined everywhere. 
-
-Our solution is to use a projection of the function to a continuous mesh variable with the SNES machinery performing all of the background operations to determine the values and the optimal fitting. 
-
-This approach also allows us to include boundary conditions, smoothing, and constraint terms (e.g. remove a null space) in cases (like piecewise continuous swarm variables) where this is difficult in the original form.
-
-We'll demonstrate this using a swarm variable (scalar / vector), but the same approach is useful for gradient recovery.
-
-```{code-cell} ipython3
 import underworld3 as uw
 import numpy as np
 import sympy
-```
 
-```{code-cell} ipython3
 meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, 
                                              minCoords=(0.0,0.0,0.0), 
                                              maxCoords=(1.0,1.0,1.0), 
                                              cell_size=1.0/32.0, 
                                              regular=True)
-```
 
-```{code-cell} ipython3
+# +
 import sympy
 
 # Some useful coordinate stuff 
@@ -44,39 +40,31 @@ import sympy
 x = meshbox.N.x
 y = meshbox.N.y
 z = meshbox.N.z
-```
+# -
 
-```{code-cell} ipython3
 s_soln  = uw.mesh.MeshVariable("T",    meshbox,  1,            degree=2 )
 v_soln  = uw.mesh.MeshVariable('U',    meshbox,  meshbox.dim,  degree=2 )
 iv_soln = uw.mesh.MeshVariable('IU',   meshbox,  meshbox.dim,  degree=2 )
-```
 
-```{code-cell} ipython3
 s_fn = sympy.cos(5.0*sympy.pi * x) * sympy.cos(5.0*sympy.pi * y)
 sv_fn = sympy.vector.curl(v_soln.fn)
-```
 
-```{code-cell} ipython3
 
-```
 
-```{code-cell} ipython3
+# +
 swarm  = uw.swarm.Swarm(mesh=meshbox)
 s_values  = uw.swarm.SwarmVariable("Ss", swarm, 1,           proxy_degree=3)
 v_values  = uw.swarm.SwarmVariable("Vs", swarm, meshbox.dim, proxy_degree=3)
 iv_values = uw.swarm.SwarmVariable("Vi", swarm, meshbox.dim, proxy_degree=3)
 
 swarm.populate(fill_param=3)
-```
+# -
 
-```{code-cell} ipython3
 scalar_projection = uw.systems.Projection(meshbox, s_soln)
 scalar_projection.uw_function = s_values.fn
 scalar_projection.smoothing = 1.0e-6
-```
 
-```{code-cell} ipython3
+# +
 vector_projection = uw.systems.Vector_Projection(meshbox, v_soln)
 vector_projection.uw_function = v_values.fn
 vector_projection.smoothing = 1.0e-3  # see how well it works !
@@ -87,9 +75,8 @@ vector_projection.smoothing = 1.0e-3  # see how well it works !
 vector_projection.add_dirichlet_bc( (0.0,), "Right" ,  (0,) )
 vector_projection.add_dirichlet_bc( (0.0,), "Top" ,    (1,) )
 vector_projection.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
-```
 
-```{code-cell} ipython3
+# +
 # try to enforce incompressibility
 
 incompressible_vector_projection = uw.systems.Solenoidal_Vector_Projection(meshbox, iv_soln)
@@ -101,39 +88,27 @@ incompressible_vector_projection.smoothing = 1.0e-2  # see how well it works !
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Right" ,  (0,) )
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Top" ,    (1,) )
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
-```
+# -
 
-```{code-cell} ipython3
 with swarm.access(s_values, v_values, iv_values):
     s_values.data[:,0]  = uw.function.evaluate(s_fn, swarm.data)    
     v_values.data[:,0]  = uw.function.evaluate(sympy.cos(5.0*sympy.pi * x) * sympy.cos(5.0*sympy.pi * y), swarm.data)    
     v_values.data[:,1]  = uw.function.evaluate(sympy.sin(5.0*sympy.pi * x) * sympy.sin(5.0*sympy.pi * y), swarm.data)
     iv_values.data[:,0] = uw.function.evaluate(sympy.vector.curl(v_soln.fn).dot(meshbox.N.i), swarm.data)    
     iv_values.data[:,1] = uw.function.evaluate(sympy.vector.curl(v_soln.fn).dot(meshbox.N.j), swarm.data)    
-```
 
-```{code-cell} ipython3
 scalar_projection.solve()
-```
 
-```{code-cell} ipython3
 vector_projection.solve()
-```
 
-```{code-cell} ipython3
 incompressible_vector_projection.solve()
-```
 
-```{code-cell} ipython3
 scalar_projection.uw_function = sympy.vector.divergence(iv_soln.fn)
 scalar_projection.solve()
-```
 
-```{code-cell} ipython3
 s_soln.stats()
-```
 
-```{code-cell} ipython3
+# +
 # check the projection
 
 import mpi4py
@@ -178,18 +153,14 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-```
+# -
 
-```{code-cell} ipython3
 scalar_projection.uw_function = sympy.vector.divergence(v_soln.fn)
 scalar_projection.solve()
-```
 
-```{code-cell} ipython3
 s_soln.stats()
-```
 
-```{code-cell} ipython3
+# +
 # check the projection
 
 import mpi4py
@@ -235,4 +206,3 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-```

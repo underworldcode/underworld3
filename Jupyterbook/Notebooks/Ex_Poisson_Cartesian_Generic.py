@@ -1,73 +1,59 @@
----
-jupytext:
-  formats: md:myst
-  text_representation:
-    extension: .md
-    format_name: myst
-    format_version: 0.13
-    jupytext_version: 1.11.5
-kernelspec:
-  display_name: Python 3 (ipykernel)
-  language: python
-  name: python3
----
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.11.5
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
 
-# Poisson Equation
+# # Poisson Equation
+#
+# First we show how this works using the generic class and then the minor differences for
+# the `Poisson` class
+#
+# ## Generic scalar solver class
 
-First we show how this works using the generic class and then the minor differences for
-the `Poisson` class
-
-## Generic scalar solver class
-
-```{code-cell} ipython3
 import underworld3 as uw
 import numpy as np
 import sympy
-```
 
-```{code-cell} ipython3
 mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), 
                                           maxCoords=(1.0,1,0), regular=True,
                                           cell_size=1.0/32) 
-```
 
-```{code-cell} ipython3
 t_soln   = uw.mesh.MeshVariable("T", mesh, 1, degree=1 )
 t_soln0  = uw.mesh.MeshVariable("T0", mesh, 1, degree=1 )
-```
 
-```{code-cell} ipython3
 poisson0 = uw.systems.SNES_Scalar(mesh, u_Field=t_soln0)
 poisson0.F0 = 0.0
 poisson0.F1 = 1.0 * poisson0._L
 poisson0.add_dirichlet_bc( 1., "Bottom" )  
 poisson0.add_dirichlet_bc( 0., "Top" )  
-```
 
-```{code-cell} ipython3
 poisson0.solve()
-```
 
-## `Poisson` Class
+# ## `Poisson` Class
+#
+# Here is the other way to solve this, using the `Poisson` class which does not much 
+# more than add a template for the flux term.
 
-Here is the other way to solve this, using the `Poisson` class which does not much 
-more than add a template for the flux term.
-
-```{code-cell} ipython3
 # Create Poisson object
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 poisson.k = 1.0
 poisson.f = 0.0
 poisson.add_dirichlet_bc( 1., "Bottom" )  
 poisson.add_dirichlet_bc( 0., "Top" )  
-```
 
-```{code-cell} ipython3
 # Solve time
 poisson.solve()
-```
 
-```{code-cell} ipython3
+# +
 # Check the flux term
 
 display(poisson._X)
@@ -75,11 +61,11 @@ display(poisson._L)
 
 # This is the internal build of the flux term
 display(poisson._f1)
-```
+# -
 
-## Validation
+# ## Validation
 
-```{code-cell} ipython3
+# +
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 
@@ -90,9 +76,8 @@ with mesh.access():
     
     if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.001, atol=0.01):
         raise RuntimeError("Unexpected values encountered.")
-```
 
-```{code-cell} ipython3
+# +
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size==1:
@@ -124,4 +109,3 @@ if MPI.COMM_WORLD.size==1:
     pl.show(cpos="xy")
     
     
-```

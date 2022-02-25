@@ -35,6 +35,11 @@ sphinx:
     - smartquotes
     - substitution
 
+    nb_custom_formats:
+        .py:
+            - jupytext.reads
+            - fmt: py
+
 repository:
   url    : https://github.com/underworldcode/underworld3  # Online location of this book
   branch : master  # Which branch of the repository should be used when creating links (optional)
