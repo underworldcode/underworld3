@@ -8,7 +8,7 @@ from typing import Optional, Callable
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_SaddlePoint
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_SaddlePoint
 from .._jitextension import getext, diff_fn1_wrt_fn2
 import underworld3.timing as timing
 
@@ -68,11 +68,11 @@ class SNES_Poisson(SNES_Scalar):
         N   = self.mesh.N
 
         # f1 residual term (weighted integration) - scalar function
-        self.F0  = -self.f
+        self._f0 = self.F0 - self.f
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self.F1  = self.k * (self._L)
+        self._f1 = self.F1 + self.k * (self._L)
 
         return 
 
@@ -93,6 +93,94 @@ class SNES_Poisson(SNES_Scalar):
         self._k = sympify(value)
    
 
+######### 
+
+
+class SNES_Darcy(SNES_Scalar):
+
+    instances = 0
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh     : uw.mesh.MeshClass, 
+                 u_Field  : uw.mesh.MeshVariable = None, 
+                 degree     = 2,
+                 solver_name: str = "",
+                 verbose    = False):
+
+        ## Keep track
+
+        SNES_Darcy.instances += 1
+
+        if solver_name == "":
+            solver_name = "Darcy_{}_".format(self.instances)
+
+        ## Parent class will set up default values etc
+        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+
+        # Here we can set some defaults for this set of KSP / SNES solvers
+        #self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+        #self.petsc_options["snes_type"] = "newtonls"
+        #self.petsc_options["ksp_rtol"] = 1.0e-3
+        #self.petsc_options["ksp_monitor"] = None
+        #self.petsc_options["ksp_type"] = "fgmres"
+        #self.petsc_options["pre_type"] = "gamg"
+        #self.petsc_options["snes_converged_reason"] = None
+        #self.petsc_options["snes_monitor_short"] = None
+        #self.petsc_options["snes_view"] = None
+        #self.petsc_options["snes_rtol"] = 1.0e-3
+
+        # Register the problem setup function
+        self._setup_problem_description = self.poisson_problem_description
+
+        # default values for properties
+        self.f = 0.0
+        self.k = 1.0
+        self.s = self.mesh.N.j  # template !
+
+
+    ## This function is the one we will typically over-ride to build specific solvers. 
+    ## This example is a poisson-like problem with isotropic coefficients
+
+    @timing.routine_timer_decorator
+    def poisson_problem_description(self):
+
+        dim = self.mesh.dim
+        N   = self.mesh.N
+
+        # f1 residual term (weighted integration) - scalar function
+        self._f0 = self.F0 - self.f
+
+        # f1 residual term (integration by parts / gradients)
+        # isotropic
+        self._f1 = self.F1 + self.k * (self._L) - sympy.Array(self.s.to_matrix(self.mesh.N)[0:self.mesh.dim])
+
+        return 
+
+    @property
+    def f(self):
+        return self._f
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympify(value)
+    
+    @property
+    def k(self):
+        return self._k
+    @k.setter
+    def k(self, value):
+        self.is_setup = False
+        self._k = sympify(value)
+   
+    @property
+    def s(self):
+        return self._s
+    @s.setter
+    def s(self, value):
+        self.is_setup = False
+        self._s = sympify(value)
+   
 
 ## --------------------------------
 ## Stokes saddle point solver plus
@@ -197,6 +285,7 @@ class SNES_Stokes(SNES_SaddlePoint):
                          solver_name,verbose, _Ppre_fn )
 
         self.penalty = 0.0
+        self.viscosity=1.0
 
         # User-facing operations are matrices / vectors by preference
         self._E = self._L + self._L.transpose()/2
@@ -354,14 +443,14 @@ class SNES_Projection(SNES_Scalar):
     def __init__(self, 
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable = None, 
-                 solver_name: str = "projection_",
+                 solver_name: str = "",
                  verbose    = False):
 
 
         SNES_Projection.instances += 1
 
         if solver_name == "":
-            solver_name = "Projection_{}_".format(self.instances)
+            solver_name = "SProj{}_".format(self.instances)
 
         super().__init__(mesh, 
                          u_Field,
@@ -411,7 +500,199 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
-    
+
+
+## --------------------------------
+## Project from pointwise vector 
+## functions to nodal point unknowns 
+##
+## We can add boundary constraints in the usual way (parent class handles this)
+## We can add smoothing (which takes the form of a viscosity term)
+## We could consider an incompressibility constraint ... or remove null spaces
+## --------------------------------
+
+class SNES_Vector_Projection(SNES_Vector):
+    """
+    Map underworld (pointwise) function to continuous
+    nodal point values in least-squares sense.
+
+    Solver can be given boundary conditions that
+    the continuous function needs to satisfy and 
+    non-linear constraints will be handled by SNES
+    """
+
+    instances = 0
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh     : uw.mesh.MeshClass, 
+                 u_Field  : uw.mesh.MeshVariable = None, 
+                 solver_name: str = "",
+                 verbose    = False):
+
+
+        SNES_Vector_Projection.instances += 1
+
+        if solver_name == "":
+            solver_name = "VProj{}_".format(self.instances)
+
+        super().__init__(mesh, 
+                         u_Field,
+                         u_Field.degree, 
+                         solver_name, verbose )
+
+        self._setup_problem_description = self.projection_problem_description
+        self.is_setup = False
+        self._smoothing = 0.0
+        self._penalty = 0.0
+
+        return
+
+
+    @timing.routine_timer_decorator
+    def projection_problem_description(self):
+
+        dim = self.mesh.dim
+        N = self.mesh.N
+
+        # residual terms - defines the problem:
+        # solve for a best fit to the continuous mesh
+        # variable given the values in self.function 
+        # F0 is left in place for the user to inject 
+        # non-linear constraints if required
+        
+        self._f0 = self.F0 + self.u.fn - self.uw_function
+
+        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+
+        E = 0.5 * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) # ??
+        self._f1 = self.F1 + self.smoothing * E + self.penalty * sympy.vector.divergence(self.u.fn) * sympy.eye(self.mesh.dim)
+        
+        return 
+
+    @property
+    def uw_function(self):
+        return self._uw_function
+    @uw_function.setter
+    def uw_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_function = user_uw_function
+
+    @property
+    def smoothing(self):
+        return self._smoothing
+    @smoothing.setter
+    def smoothing(self, smoothing_factor):
+        self.is_setup = False
+        self._smoothing = sympify(smoothing_factor)
+
+    @property
+    def penalty(self):
+        return self._penalty
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._penalty = symval
+
+
+
+
+## --------------------------------
+## Project from pointwise vector 
+## functions to nodal point unknowns 
+##
+## We can add boundary constraints in the usual way (parent class handles this)
+## We can add smoothing (which takes the form of a viscosity term)
+## Here we add an incompressibility constraint 
+## --------------------------------
+
+
+## Does not seem to be a well posed problem as currently written ... 
+## We will fall back to penalising the standard SNES_Vector
+class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
+    """
+    Map underworld (pointwise) function to continuous
+    nodal point values in least-squares sense.
+
+    Solver can be given boundary conditions that
+    the continuous function needs to satisfy and 
+    non-linear constraints will be handled by SNES
+    """
+
+    instances = 0
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh     : uw.mesh.MeshClass, 
+                 u_Field  : uw.mesh.MeshVariable = None, 
+                 solver_name: str = "",
+                 verbose    = False):
+
+
+        SNES_Solenoidal_Vector_Projection.instances += 1
+
+        if solver_name == "":
+            solver_name = "iVProj{}_".format(self.instances)
+
+        self._constraint_field = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="VSP_p{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=u_Field.degree-1 )
+
+        super().__init__(mesh, 
+                         u_Field,
+                         self._constraint_field, 
+                         u_Field.degree, 
+                         self._constraint_field.degree,
+                         solver_name, verbose,
+                        _Ppre_fn      = 1.0  # The saddle point solver assumes a "viscosity" term by default in the preconditioner - please move this to Stokes !! 
+                        )
+
+        self._setup_problem_description = self.constrained_projection_problem_description
+        self.is_setup = False
+        self._smoothing = 0.0
+
+        return
+
+
+    @timing.routine_timer_decorator
+    def constrained_projection_problem_description(self):
+
+        dim = self.mesh.dim
+        N = self.mesh.N
+
+        # residual terms - defines the problem:
+        # solve for a best fit to the continuous mesh
+        # variable given the values in self.function 
+        # F0 is left in place for the user to inject 
+        # non-linear constraints if required
+
+        self._u_f0 = self.UF0 + self.u.fn - self.uw_function 
+
+        # Integration by parts into the stiffness matrix
+        self._u_f1 = self.UF1  + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) - self._constraint_field.fn * sympy.Matrix.eye(dim)
+
+        # rhs in the constraint (pressure) equations
+        self._p_f0 = self.PF0  + divergence(self.u.fn)
+
+        
+        return 
+
+    @property
+    def uw_function(self):
+        return self._uw_function
+    @uw_function.setter
+    def uw_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_function = user_uw_function
+
+    @property
+    def smoothing(self):
+        return self._smoothing
+    @smoothing.setter
+    def smoothing(self, smoothing_factor):
+        self.is_setup = False
+        self._smoothing = sympify(smoothing_factor)
+
+
 
 #################################################
 # Characteristics-based advection-diffusion 
@@ -495,7 +776,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # a projection-mesh variable but it should be ok given these points
         # are designed to land on the mesh
 
-        self._Lstar =  sympy.derive_by_array(self._u_star, self._X).reshape(self.mesh.dim)
+        self._Lstar =  sympy.derive_by_array(self._u_star.fn, self._X).reshape(self.mesh.dim)
 
         return
 
@@ -535,7 +816,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
-              timestep       : float = 1.0,
+              timestep       : float = None,
               coords         : np.ndarray = None,
               _force_setup   : bool =False ):
         """
@@ -548,7 +829,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             system solution. Otherwise, the current values of `self.u` will be used.
         """
 
-        if timestep != self.delta_t:
+        if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
 
         if (not self.is_setup) or _force_setup:
@@ -572,7 +853,8 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # and note the negative timestep
 
         if coords is None: # Mid point method to find launch points (T*)
-            nswarm.advection(self._v, -timestep, order=2, corrector=False, restore_points_to_domain_func=self.restore_points_to_domain_func)
+            nswarm.advection(self._V.fn, -timestep, order=2, corrector=False, 
+                              restore_points_to_domain_func=self.restore_points_to_domain_func)
 
             '''    
             with nswarm.access(nswarm.particle_coordinates):
@@ -616,3 +898,331 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         super().solve(zero_init_guess, _force_setup )
 
         return
+
+
+
+#################################################
+# Swarm-based advection-diffusion 
+# solver based on SNES_Poisson and swarm-variable
+# projection
+#
+#################################################
+
+class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
+
+    """ Characteristics-based advection diffusion solver:
+
+    Uses a theta timestepping approach with semi-Lagrange sample backwards in time using 
+    a mid-point advection scheme (based on our particle swarm implementation)
+    """
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh       : uw.mesh.MeshClass, 
+                 u_Field    : uw.mesh.MeshVariable = None, 
+                 u_Star     : uw.swarm.SwarmVariable = None, 
+                 degree     : int  = 2,
+                 theta      : float = 0.5,
+                 solver_name: str = "",
+                 restore_points_func: Callable = None,
+                 projection : bool = True,
+                 verbose    : bool = False):
+
+        SNES_AdvectionDiffusion_Swarm.instances += 1
+
+        if solver_name == "":
+            solver_name = "AdvDiff_swarm_{}_".format(self.instances)
+
+        ## Parent class will set up default values etc
+        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+
+        self.delta_t = 1.0
+        self.theta = theta
+        self.projection = projection
+        self._u_star_raw = u_Star
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.adv_diff_swarm_problem_description
+
+        self.is_setup = False
+
+        if projection:
+            # set up a projection solver 
+
+            self._u_star_projected = uw.mesh.MeshVariable("uStar{}".format(self.instances), self.mesh, 1, degree=degree)
+            self._u_star_projector = uw.systems.solvers.SNES_Projection(self.mesh, self._u_star_projected )
+
+            # If we add smoothing, it should be small relative to actual diffusion (self.k)
+            self._u_star_projector.smoothing = 0.0
+            self._u_star_projector.uw_function = self._u_star_raw.fn
+
+
+        # if we want u_star to satisfy the bcs then this will need to be 
+        # a projection-mesh variable but it should be ok given these points
+        # are designed to land on the mesh
+
+        self._Lstar =  sympy.derive_by_array(self.u_star.fn, self._X).reshape(self.mesh.dim)
+
+        return
+
+
+    def adv_diff_swarm_problem_description(self):
+
+        N = self.mesh.N
+
+        # f0 residual term
+        self._f0 = self.F0 - self.f + (self.u.fn - self.u_star.fn) / self.delta_t
+
+        # f1 residual term
+        self._f1 = self.F1 + (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
+        
+        return
+
+    @property
+    def u(self):
+        return self._u
+
+    @property
+    def u_star(self):
+        if self.projection:
+            return self._u_star_projected
+        else:
+            return self._u_star_raw
+    @u_star.setter
+    def u_star(self, u_star_var):
+        self.is_setup = False
+        self._u_star_raw = u_star_var
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t = sympify(value)
+
+    @property
+    def theta(self):
+        return self._theta
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
+
+    @timing.routine_timer_decorator
+    def solve(self, 
+              zero_init_guess: bool = True, 
+              timestep       : float = None,
+              _force_setup   : bool = False ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the 
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
+
+        if (not self.is_setup) or _force_setup:
+            self._setup_terms()
+
+        # Make sure we update the projection of the swarm variable if requested
+
+        if self.projection:
+            self._u_star_projector.solve(zero_init_guess)
+
+        # Over to you Poisson Solver
+
+        super().solve(zero_init_guess, _force_setup )
+
+        return
+
+    @timing.routine_timer_decorator
+    def _setup_terms(self):
+
+        if self.projection:
+            self._u_star_projector.bcs = self.bcs
+            self._u_star_projector._setup_terms()
+
+        super()._setup_terms()
+
+
+## WIP 
+
+#################################################
+# Swarm-based advection-diffusion 
+# solver based on SNES_Poisson and swarm-variable
+# projection
+#
+#################################################
+
+class SNES_NavierStokes_Swarm(SNES_Stokes):
+
+    """ Swarm-based Navier Stokes:
+
+    Uses a theta timestepping approach with semi-Lagrange sample backwards in time using 
+    a mid-point advection scheme (based on our particle swarm implementation)
+    """
+
+    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                 mesh          : uw.mesh.MeshClass, 
+                 velocityField : uw.mesh.MeshVariable =None,
+                 pressureField : uw.mesh.MeshVariable =None,
+                 velocityStar  : uw.swarm.SwarmVariable = None,
+                 u_degree      : Optional[int]                           = 2, 
+                 p_degree      : Optional[int]                           = None,
+                 rho           : Optional[float]                         = 0.0,
+                 theta         : Optional[float]                         = 0.5,
+                 penalty       : Optional[float]                         = 0.0,
+                 solver_name   : Optional[str]                           = "",
+                 verbose       : Optional[bool]                          = False,
+                 projection    : Optional[bool]                          = False,   
+                 _Ppre_fn      = None,
+                 restore_points_func: Callable = None
+                  ):
+        SNES_NavierStokes_Swarm.instances += 1
+
+        if solver_name == "":
+            solver_name = "NStokes_swarm_{}_".format(self.instances)
+
+        ## Parent class will set up default values etc
+        super().__init__(  
+                 mesh, velocityField, pressureField,
+                 u_degree, p_degree, solver_name,  
+                 verbose, penalty, _Ppre_fn  )
+
+        self.delta_t = 1.0
+        self.theta = theta
+        self.projection = projection
+        self._u_star_raw = velocityStar
+        self.rho = rho
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.navier_stokes_swarm_problem_description
+
+        self.is_setup = False
+
+        if projection:
+            # set up a projection solver 
+            self._u_star_projected = uw.mesh.MeshVariable("uStar{}".format(self.instances), self.mesh, self.mesh.dim, degree=u_degree)
+            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(self.mesh, self._u_star_projected )
+
+            # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
+            self._u_star_projector.smoothing = 0.0
+            self._u_star_projector.uw_function = self._u_star_raw.fn
+
+
+        # if we want u_star to satisfy the bcs then this will need to be 
+        # a projection-mesh variable but it should be ok given these points
+        # are designed to land on the mesh
+
+        self._Ustar = sympy.Array((self.u_star.fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
+        self._Lstar = sympy.derive_by_array(self._Ustar, self._X).transpose()
+
+        # User-facing operations are matrices / vectors by preference but
+        # self._L / _Lstar is a sympy.Array object 
+
+        self._Estar = (sympy.Matrix(self._Lstar) + sympy.Matrix(self._Lstar).T)/2
+        self._Stress_star = 2 * self.viscosity * self._Estar - sympy.eye(self.mesh.dim) * self.p.fn
+
+        return
+
+    def navier_stokes_swarm_problem_description(self):
+
+        N = self.mesh.N
+        dim = self.mesh.dim
+
+        # terms that become part of the weighted integral
+        self._u_f0 = self.UF0 -self.bodyforce + self.rho * (self.u.fn - self.u_star.fn) / self.delta_t
+
+        # Integration by parts into the stiffness matrix
+        self._u_f1 = self.UF1 + self.stress * self.theta + self._Stress_star * (1.0-self.theta) + self.penalty * self.div_u * sympy.eye(dim)
+
+        # forces in the constraint (pressure) equations
+        self._p_f0 = self.PF0 + self.div_u # * self.theta  + divergence(self.u_star.fn) * (1.0-self.theta)
+
+        return
+
+    @property
+    def u(self):
+        return self._u
+
+    @property
+    def u_star(self):
+        if self.projection:
+            return self._u_star_projected
+        else:
+            return self._u_star_raw
+    @u_star.setter
+    def u_star(self, u_star_var):
+        self.is_setup = False
+        self._u_star_raw = u_star_var
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t = sympify(value)
+
+    @property
+    def theta(self):
+        return self._theta
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
+
+    @timing.routine_timer_decorator
+    def solve(self, 
+              zero_init_guess: bool = True, 
+              timestep       : float = None,
+              _force_setup   : bool = False ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the 
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep    # this will force an initialisation because the functions need to be updated
+
+        if (not self.is_setup) or _force_setup:
+            self._setup_terms()
+
+        # Make sure we update the projection of the swarm variable if requested
+
+        if self.projection:
+            # We can break this up by components and U,P with one projection
+            # if the bc's can be managed properly
+
+            self._u_star_projector.solve(zero_init_guess)
+
+        # Over to you Poisson Solver
+
+        super().solve(zero_init_guess, _force_setup )
+
+        return
+
+    @timing.routine_timer_decorator
+    def _setup_terms(self):
+
+        if self.projection:
+            self._u_star_projector.bcs = self.bcs
+            self._u_star_projector._setup_terms()
+
+        super()._setup_terms()
