@@ -635,9 +635,12 @@ class SNES_Vector:
         else:
             gvec.array[:] = 0.
 
-        u_quad = self.petsc_fe_u.getQuadrature()
+        cdef PetscQuadrature quad
+        cdef FE c_fe = self.petsc_fe_u
+        ierr = PetscFEGetQuadrature(c_fe.fe, &quad); CHKERRQ(ierr)
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)
+            c_fe = fe
+            ierr = PetscFESetQuadrature(c_fe.fe,quad); CHKERRQ(ierr)        # set to vel quad
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
@@ -970,9 +973,12 @@ class SNES_Vector:
         else:
             gvec.array[:] = 0.
 
-        u_quad = self.petsc_fe_u.getQuadrature()
+        cdef PetscQuadrature quad
+        cdef FE c_fe = self.petsc_fe_u
+        ierr = PetscFEGetQuadrature(c_fe.fe, &quad); CHKERRQ(ierr)
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)
+            c_fe = fe
+            ierr = PetscFESetQuadrature(c_fe.fe,quad); CHKERRQ(ierr)        # set to vel quad
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
