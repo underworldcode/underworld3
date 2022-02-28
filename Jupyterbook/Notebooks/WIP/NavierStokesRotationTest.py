@@ -8,9 +8,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
-from underworld3.systems import NavierStokesSwarm
-from underworld3.systems import Navier_Stokes_SLCN
-
+from underworld3.systems import NavierStokes
 from underworld3 import function
 
 import numpy as np
@@ -21,7 +19,7 @@ options = PETSc.Options()
 # options["dm_plex_check_all"] = None
 # options.getAll()
 
-
+expt_name = "Cylinder_NS_rho10"
 
 # +
 import meshio
@@ -52,13 +50,21 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 # Rigid body rotation v_theta = constant, v_r = 0.0
 
 theta_dot = 2.0 * np.pi # i.e one revolution in time 1.0
-v_x = -1.0 *  r * theta_dot * sympy.sin(th) * y
-v_y =         r * theta_dot * sympy.cos(th) * y
-# -
+v_x = -1.0 *  r * theta_dot * sympy.sin(th)
+v_y =         r * theta_dot * sympy.cos(th)
 
-swarm = uw.swarm.Swarm(mesh=meshball)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, meshball.dim, proxy_degree=3)
-swarm.populate(fill_param=3)
+# +
+# coord_vec = meshball.dm.getCoordinates()
+
+# coords = coord_vec.array.reshape(-1,2)
+# mesh_th = np.arctan2(coords[:,1], coords[:,0]).reshape(-1,1)
+# mesh_r  = np.hypot(coords[:,0], coords[:,1]).reshape(-1,1)
+# coords *= 1.0 + 0.5 * (1.0-mesh_r) * np.cos(mesh_th*5.0)
+# meshball.dm.setCoordinates(coord_vec)
+
+# meshball.meshio.points[:,0] = coords[:,0]
+# meshball.meshio.points[:,1] = coords[:,1]
+# -
 
 
 v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
@@ -76,30 +82,36 @@ def points_in_disc(coords):
     return coords
 
 
-# -
+# +
+# Create Stokes object (switch out for NS in a minute)
 
-navier_stokes = NavierStokesSwarm(meshball, 
+navier_stokes = NavierStokes(meshball, 
                 velocityField=v_soln, 
                 pressureField=p_soln, 
-                velocityStar=v_star,
                 u_degree=2, 
                 p_degree=1, 
-                rho=1.0,
-                theta=0.9,
+                rho=10.0,
+                theta=1.0,
                 solver_name="navier_stokes",
-                projection=True,
                 restore_points_func=points_in_disc
-            )
+                        )
+
+# Set solve options here (or remove default values
+# stokes.petsc_options.getAll()
+navier_stokes.petsc_options.delValue("ksp_monitor")
+navier_stokes.petsc_options["ksp_rtol"]=3.0e-4
+navier_stokes.petsc_options["snes_type"]="newtonls"
+navier_stokes.petsc_options["snes_max_it"]=150
+navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
+navier_stokes.petsc_options["fieldsplit_velocity_pc_type"] = "lu"
+# navier_stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# navier_stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
 
-# +
+
 # Constant visc
-
-expt_name = "Cylinder_NS_rho1"
-
 navier_stokes.viscosity = 1.0
 navier_stokes.penalty=0.0
-navier_stokes.rho = 1.0
 
 navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
@@ -108,17 +120,16 @@ navier_stokes.add_dirichlet_bc( (v_x,v_y), "Upper" , (0,1) )
 navier_stokes.add_dirichlet_bc( (0.0,0.0), "Lower" , (0,1) )
 
 # +
+# navier_stokes.petsc_options.getAll()
+# -
+
 with meshball.access(v_soln):
     v_soln.data[...] = 0.0
-
-with swarm.access(v_star):
-    v_star.data[...] = 0.0
-# -
 
 navier_stokes.solve(timestep=0.01)
 navier_stokes.estimate_dt()
 
-
+navier_stokes.estimate_dt()
 
 # +
 # check the mesh if in a notebook / serial
@@ -141,13 +152,11 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
-    with swarm.access():
-            points = np.zeros((swarm.data.shape[0],3))
-            points[:,0] = swarm.data[:,0]
-            points[:,1] = swarm.data[:,1]
+#     points = np.zeros((t_soln.coords.shape[0],3))
+#     points[:,0] = t_soln.coords[:,0]
+#     points[:,1] = t_soln.coords[:,1]
 
-    point_cloud = pv.PolyData(points)
-
+#     point_cloud = pv.PolyData(points)
 
     with meshball.access():
         usol = v_soln.data.copy()
@@ -163,11 +172,11 @@ if mpi4py.MPI.COMM_WORLD.size==1:
  
     pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-2, opacity=0.75)
 
-    pl.add_points(point_cloud, color="Black",
-                      render_points_as_spheres=True,
-                      point_size=2, opacity=0.66
-                    )
- 
+    # pl.add_points(point_cloud, cmap="coolwarm", 
+    #               render_points_as_spheres=False,
+    #               point_size=10, opacity=0.66
+    #             )
+
 
     pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
 
@@ -175,9 +184,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pl.remove_scalar_bar("mag")
 
     pl.show()
-
-
-# -
+# +
 def plot_V_mesh(filename):
 
     import mpi4py
@@ -198,12 +205,11 @@ def plot_V_mesh(filename):
 
         pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0],3))
-            points[:,0] = swarm.data[:,0]
-            points[:,1] = swarm.data[:,1]
+        # points = np.zeros((p_soln.coords.shape[0],3))
+        # points[:,0] = p_soln.coords[:,0]
+        # points[:,1] = p_soln.coords[:,1]
 
-        point_cloud = pv.PolyData(points)
+        # point_cloud = pv.PolyData(points)
 
         with meshball.access():
              pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
@@ -219,18 +225,18 @@ def plot_V_mesh(filename):
         
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.033, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.01/Vb, opacity=0.75)
 
         
 
-        pl.add_points(point_cloud, color="Black",
-                      render_points_as_spheres=True,
-                      point_size=2, opacity=0.66
-                    )
+#         pl.add_points(point_cloud, cmap="coolwarm", 
+#                       render_points_as_spheres=False,
+#                       point_size=10, opacity=0.66
+#                     )
         
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="P",
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=0.5)
 
 
@@ -242,36 +248,31 @@ def plot_V_mesh(filename):
                       return_img=False)
 
        # pl.show()
+# -
 
-
+navier_stokes._uu_g0
+navier_stokes.theta=1.0
 
 # +
 # Convection model / update in time
 
 
-for step in range(0,20):
+for step in range(0,1000):
         
-    delta_t = 0.01 # 5.0*navier_stokes.estimate_dt() 
+    delta_t = 0.001 # 5.0*navier_stokes.estimate_dt() 
     navier_stokes.solve(timestep=delta_t)
-    
-    with swarm.access(v_star):
-        v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-     
-    # advect swarm
-    print("Swarm advection")
-    swarm.advection(v_soln.fn, delta_t)
-    print("Swarm advection, complete")
-
-
-
+        
     if mpi4py.MPI.COMM_WORLD.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
 
-    if step%1 == 0:
+    if step%10 == 0:
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name,step))
 
+
+
+# + language="sh"
+#
+# ls -tr output
 # -
-
-
 
 

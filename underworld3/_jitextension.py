@@ -210,7 +210,7 @@ def _createext(name:               str,
 
     eqns = []
     for index, fn in enumerate(fns):
-        ## print("Processing JIT {} / {}".format(index, fn))
+        # print("Processing JIT {} / {}".format(index, fn))
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0:mesh.dim,0]
         elif isinstance(fn, sympy.vector.Dyadic):
