@@ -138,12 +138,14 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
 v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
 p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('\omega', pipemesh, 1, degree=1 )
+vorticity = uw.mesh.MeshVariable('omega', pipemesh, 1, degree=1 )
 
 
 swarm = uw.swarm.Swarm(mesh=pipemesh)
 v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
 swarm.populate(fill_param=5)
+
+v_star._meshVar.fn
 
 
 def points_fell_out(coords): 
@@ -157,7 +159,7 @@ def points_fell_out(coords):
 navier_stokes = NavierStokesSwarm(pipemesh, 
                 velocityField=v_soln, 
                 pressureField=p_soln, 
-                velocityStar_fn=v_star,
+                velocityStar_fn=v_star.fn,
                 u_degree=v_soln.degree, 
                 p_degree=p_soln.degree, 
                 rho=1.0,
