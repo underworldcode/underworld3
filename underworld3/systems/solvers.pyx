@@ -1106,7 +1106,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                  mesh            : uw.mesh.MeshClass, 
                  velocityField   : uw.mesh.MeshVariable = None,
                  pressureField   : uw.mesh.MeshVariable = None,
-                 velocityStar_fn : Optional[uw.function.UnderworldFunction] = None,
+                 velocityStar_fn = None, # uw.function.UnderworldFunction = None,
                  u_degree        : Optional[int]                           = 2, 
                  p_degree        : Optional[int]                           = None,
                  rho             : Optional[float]                         = 0.0,
