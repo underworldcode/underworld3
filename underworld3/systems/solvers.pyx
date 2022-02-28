@@ -460,6 +460,7 @@ class SNES_Projection(SNES_Scalar):
         self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
+        self._uw_weighting_function = 1.0
 
         return
 
@@ -476,7 +477,7 @@ class SNES_Projection(SNES_Scalar):
         # F0 is left in place for the user to inject 
         # non-linear constraints if required
         
-        self._f0 = self.F0 + self.u.fn - self.uw_function
+        self._f0 = self.F0 + (self.u.fn - self.uw_function) * self.uw_weighting_function
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
@@ -500,6 +501,13 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
+    @property
+    def uw_weighting_function(self):
+        return self._uw_weighting_function
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_weighting_function = user_uw_function
 
 
 ## --------------------------------
@@ -545,6 +553,7 @@ class SNES_Vector_Projection(SNES_Vector):
         self.is_setup = False
         self._smoothing = 0.0
         self._penalty = 0.0
+        self._uw_weighting_function = 1.0
 
         return
 
@@ -561,7 +570,7 @@ class SNES_Vector_Projection(SNES_Vector):
         # F0 is left in place for the user to inject 
         # non-linear constraints if required
         
-        self._f0 = self.F0 + self.u.fn - self.uw_function
+        self._f0 = self.F0 + (self.u.fn - self.uw_function) * self.uw_weighting_function
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
@@ -594,6 +603,14 @@ class SNES_Vector_Projection(SNES_Vector):
         self.is_setup = False
         symval = sympify(value)
         self._penalty = symval
+
+    @property
+    def uw_weighting_function(self):
+        return self._uw_weighting_function
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_weighting_function = user_uw_function
 
 
 
@@ -649,6 +666,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         self._setup_problem_description = self.constrained_projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
+        self._uw_weighting_function = 1.0
 
         return
 
@@ -665,7 +683,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         # F0 is left in place for the user to inject 
         # non-linear constraints if required
 
-        self._u_f0 = self.UF0 + self.u.fn - self.uw_function 
+        self._u_f0 = self.UF0 + (self.u.fn - self.uw_function) * self.uw_weighting_function
 
         # Integration by parts into the stiffness matrix
         self._u_f1 = self.UF1  + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) - self._constraint_field.fn * sympy.Matrix.eye(dim)
@@ -683,6 +701,14 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
     def uw_function(self, user_uw_function):
         self.is_setup = False
         self._uw_function = user_uw_function
+
+    @property
+    def uw_weighting_function(self):
+        return self._uw_weighting_function
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_weighting_function = user_uw_function
 
     @property
     def smoothing(self):
@@ -922,7 +948,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def __init__(self, 
                  mesh       : uw.mesh.MeshClass, 
                  u_Field    : uw.mesh.MeshVariable = None, 
-                 u_Star     : uw.swarm.SwarmVariable = None, 
+                 u_Star_fn  = None, # uw.function.UnderworldFunction = None,
                  degree     : int  = 2,
                  theta      : float = 0.5,
                  solver_name: str = "",
@@ -941,7 +967,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.delta_t = 1.0
         self.theta = theta
         self.projection = projection
-        self._u_star_raw = u_Star
+        self._u_star_raw_fn = u_Star_fn
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_swarm_problem_description
@@ -956,14 +982,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
             # If we add smoothing, it should be small relative to actual diffusion (self.k)
             self._u_star_projector.smoothing = 0.0
-            self._u_star_projector.uw_function = self._u_star_raw.fn
+            self._u_star_projector.uw_function = self._u_star_raw_fn
 
 
         # if we want u_star to satisfy the bcs then this will need to be 
         # a projection-mesh variable but it should be ok given these points
         # are designed to land on the mesh
 
-        self._Lstar =  sympy.derive_by_array(self.u_star.fn, self._X).reshape(self.mesh.dim)
+        self._Lstar =  sympy.derive_by_array(self.u_star_fn, self._X).reshape(self.mesh.dim)
 
         return
 
@@ -973,7 +999,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = self.F0 - self.f + (self.u.fn - self.u_star.fn) / self.delta_t
+        self._f0 = self.F0 - self.f + (self.u.fn - self.u_star_fn) / self.delta_t
 
         # f1 residual term
         self._f1 = self.F1 + (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
@@ -985,15 +1011,19 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         return self._u
 
     @property
-    def u_star(self):
+    def u_star_fn(self):
         if self.projection:
-            return self._u_star_projected
+            return self._u_star_projected.fn
         else:
-            return self._u_star_raw
-    @u_star.setter
-    def u_star(self, u_star_var):
+            return self._u_star_raw_fn
+    @u_star_fn.setter
+    def u_star_fn(self, u_star_fn):
         self.is_setup = False
-        self._u_star_raw = u_star_var
+        if self.projection:
+            self._u_star_projector.is_setup = False
+            self._u_star_projector.uw_function = u_star_fn
+
+        self._u_star_raw_fn = u_star_fn
 
     @property
     def delta_t(self):
@@ -1053,7 +1083,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         super()._setup_terms()
 
 
-## WIP 
 
 #################################################
 # Swarm-based advection-diffusion 
@@ -1074,18 +1103,18 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh          : uw.mesh.MeshClass, 
-                 velocityField : uw.mesh.MeshVariable =None,
-                 pressureField : uw.mesh.MeshVariable =None,
-                 velocityStar  : uw.swarm.SwarmVariable = None,
-                 u_degree      : Optional[int]                           = 2, 
-                 p_degree      : Optional[int]                           = None,
-                 rho           : Optional[float]                         = 0.0,
-                 theta         : Optional[float]                         = 0.5,
-                 penalty       : Optional[float]                         = 0.0,
-                 solver_name   : Optional[str]                           = "",
-                 verbose       : Optional[bool]                          = False,
-                 projection    : Optional[bool]                          = False,   
+                 mesh            : uw.mesh.MeshClass, 
+                 velocityField   : uw.mesh.MeshVariable = None,
+                 pressureField   : uw.mesh.MeshVariable = None,
+                 velocityStar_fn = None, # uw.function.UnderworldFunction = None,
+                 u_degree        : Optional[int]                           = 2, 
+                 p_degree        : Optional[int]                           = None,
+                 rho             : Optional[float]                         = 0.0,
+                 theta           : Optional[float]                         = 0.5,
+                 penalty         : Optional[float]                         = 0.0,
+                 solver_name     : Optional[str]                           = "",
+                 verbose         : Optional[bool]                          = False,
+                 projection      : Optional[bool]                          = False,   
                  _Ppre_fn      = None,
                  restore_points_func: Callable = None
                   ):
@@ -1103,7 +1132,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self.delta_t = 1.0
         self.theta = theta
         self.projection = projection
-        self._u_star_raw = velocityStar
+        self._u_star_raw_fn = velocityStar_fn
         self.rho = rho
 
         self.restore_points_to_domain_func = restore_points_func
@@ -1118,14 +1147,14 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
             # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
             self._u_star_projector.smoothing = 0.0
-            self._u_star_projector.uw_function = self._u_star_raw.fn
+            self._u_star_projector.uw_function = self._u_star_raw_fn
 
 
         # if we want u_star to satisfy the bcs then this will need to be 
         # a projection-mesh variable but it should be ok given these points
         # are designed to land on the mesh
 
-        self._Ustar = sympy.Array((self.u_star.fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
+        self._Ustar = sympy.Array((self.u_star_fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
         self._Lstar = sympy.derive_by_array(self._Ustar, self._X).transpose()
 
         # User-facing operations are matrices / vectors by preference but
@@ -1142,7 +1171,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         dim = self.mesh.dim
 
         # terms that become part of the weighted integral
-        self._u_f0 = self.UF0 -self.bodyforce + self.rho * (self.u.fn - self.u_star.fn) / self.delta_t
+        self._u_f0 = self.UF0 -self.bodyforce + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
 
         # Integration by parts into the stiffness matrix
         self._u_f1 = self.UF1 + self.stress * self.theta + self._Stress_star * (1.0-self.theta) + self.penalty * self.div_u * sympy.eye(dim)
@@ -1157,15 +1186,19 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         return self._u
 
     @property
-    def u_star(self):
+    def u_star_fn(self):
         if self.projection:
-            return self._u_star_projected
+            return self._u_star_projected.fn
         else:
-            return self._u_star_raw
-    @u_star.setter
-    def u_star(self, u_star_var):
+            return self._u_star_raw_fn
+    @u_star_fn.setter
+    def u_star_fn(self, u_star_fn):
         self.is_setup = False
-        self._u_star_raw = u_star_var
+        if self.projection:
+            self._u_star_projector.is_setup = False
+            self._u_star_projector.uw_function = u_star_fn
+
+        self._u_star_raw_fn = u_star_fn
 
     @property
     def delta_t(self):

@@ -115,9 +115,7 @@ is a thermal conductivity.
 $$ \nabla \cdot k \nabla T = h $$
 
 In this form, $\mathbf{q} = k \nabla T$ is Fourier's expression of the 
-heat flux in terms of temperature gradients.
-
-This form matches the template above if we identify:
+heat flux in terms of temperature gradients.This form matches the template above if we identify:
 
 $$ f_0 = -h \quad \textrm{and} \quad f_1 = k\nabla T$$ 
 

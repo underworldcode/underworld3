@@ -79,7 +79,7 @@ swarm.populate(fill_param=5)
 
 
 # +
-ad = uw.systems.AdvDiffusionSwarm(meshbox, t_soln, T1, 
+ad = uw.systems.AdvDiffusionSwarm(meshbox, t_soln, T1.fn, 
                                   degree=3, projection=True)
 
 ad._u_star_projector.smoothing = 0.0
