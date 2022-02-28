@@ -371,7 +371,5 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
 # -
-adv_diff._f0
-
 
 

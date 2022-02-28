@@ -8,7 +8,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
-from underworld3.systems import NavierStokesSwarm
+from underworld3.systems import NavierStokes
 from underworld3 import function
 
 import numpy as np
@@ -24,11 +24,11 @@ import meshio, pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.1
-csize_circle = 0.05
+csize = 0.05
+csize_circle = 0.025
 res = csize_circle
 
-width = 3.0
+width = 5.0
 height = 1.0
 radius = 0.25
 
@@ -62,7 +62,7 @@ if mpi4py.MPI.COMM_WORLD.rank==0:
 
         geom.add_physical(domain.surface, label="Elements")    
         
-        geom.generate_mesh(dim=2, verbose=False)
+        geom.generate_mesh(dim=2, verbose=True)
         geom.save_geometry("ns_pipe_flow.msh")
         geom.save_geometry("ns_pipe_flow.vtk")
 
@@ -139,30 +139,17 @@ v_soln = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=1 )
 
 
-swarm = uw.swarm.Swarm(mesh=pipemesh)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
-swarm.populate(fill_param=5)
-
-
-def points_fell_out(coords): 
-    coords[:,1] = coords[:,1] % width
-    return coords
-
-
 # +
 # Create NS object
 
-navier_stokes = NavierStokesSwarm(pipemesh, 
+navier_stokes = NavierStokes(pipemesh, 
                 velocityField=v_soln, 
                 pressureField=p_soln, 
-                velocityStar=v_star,
                 u_degree=v_soln.degree, 
                 p_degree=p_soln.degree, 
                 rho=1.0,
                 theta=1.0,
-                verbose=False,
-                projection=True,
-                restore_points_func=points_fell_out,
+                verbose=True,
                 solver_name="navier_stokes")
 
 
@@ -173,15 +160,15 @@ navier_stokes = NavierStokesSwarm(pipemesh,
 
 # Constant visc
 
-navier_stokes.rho=1.0
-navier_stokes.theta=0.66
+navier_stokes.rho=10.0
+navier_stokes.theta=0.75
 navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
-Vb = 10.0
-Free_Slip = False
-expt_name = "pipe_flow_cylinder_R025_10_rho1"
+Vb = 50.0
+Free_Slip = True
+expt_name = "pipe_flow_cylinder_R025_50_rho10"
 
 if Free_Slip:
     hw = 1000.0 / res 
@@ -203,14 +190,28 @@ navier_stokes.add_dirichlet_bc( (Vb,0.0),  "top" ,    (0,1) )
 navier_stokes.add_dirichlet_bc( (Vb,0.0),  "bottom" , (0,1) )
 navier_stokes.add_dirichlet_bc( (Vb,0.0),  "left" ,  (0,1) )
 navier_stokes.add_dirichlet_bc( (Vb,0.0),  "right" ,  (0,1) )
+
+
+# +
+# navier_stokes.bodyforce
 # -
-
-
-navier_stokes.solve(timestep=1.0)  # Stokes-like initial flow
 
 with pipemesh.access(v_soln):
     v_soln.data[:,0] = 0.0
 
+# +
+# different options for NS solve cf to Stokes-like solve
+
+navier_stokes.verbose=False
+navier_stokes.petsc_options["snes_type"]="newtonls"
+navier_stokes.petsc_options["snes_rtol"]=1.0e-4
+navier_stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 3.0e-4
+navier_stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 7.0e-4
+navier_stokes.petsc_options["snes_max_it"]=250
+# navier_stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# navier_stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+# -
 
 def plot_V_mesh(filename):
 
@@ -232,17 +233,11 @@ def plot_V_mesh(filename):
 
         pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
-        
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0],3))
-            points[:,0] = swarm.data[:,0]
-            points[:,1] = swarm.data[:,1]
+        points = np.zeros((p_soln.coords.shape[0],3))
+        points[:,0] = p_soln.coords[:,0]
+        points[:,1] = p_soln.coords[:,1]
 
         point_cloud = pv.PolyData(points)
-        
-        
-        # POINT CLOUD from centroids for streamlines
-
 
         with pipemesh.access():
              pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
@@ -263,50 +258,34 @@ def plot_V_mesh(filename):
         
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.1/Vb, opacity=0.75)
+        # pl.add_arrows(arrow_loc, arrow_length, mag=0.1/Vb, opacity=0.75)
 
-        # pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
-        #                                       integration_direction="both",
-        #                                       max_steps=250
-        #                                      )
+        pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
+                                              integration_direction="both",
+                                              max_steps=250
+                                             )
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
         pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=0.5)
 
 
-        # pl.add_mesh(pvstream)
-        
-        
-        pl.add_points(point_cloud, color="Black",
-                      render_points_as_spheres=True,
-                      point_size=2, opacity=0.66
-                    )
+        pl.add_mesh(pvstream)
 
         pl.remove_scalar_bar("P")
        # pl.remove_scalar_bar("mag")
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(2560,1280), 
                       return_img=False)
-        
-        pl.close()
 
        # pl.show()
 
 ts = 0
 
-for step in range(0,50):
-    delta_t = 2.0 * navier_stokes.estimate_dt()
-    navier_stokes.solve(timestep=delta_t, zero_init_guess=False)
+for step in range(0,500):
+    delta_t = min(0.01, 5.0*navier_stokes.estimate_dt())
+    navier_stokes.solve(timestep=delta_t, zero_init_guess=True)
     
-    with swarm.access(v_star):
-        v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-     
-    # advect swarm
-    print("Swarm advection")
-    swarm.advection(v_soln.fn, delta_t)
-    print("Swarm advection, complete")
-
     if mpi4py.MPI.COMM_WORLD.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
                 

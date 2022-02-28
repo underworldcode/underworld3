@@ -21,8 +21,7 @@ import sympy
 
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), 
-                                             maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
+meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
 meshbox.dm.view()   
 
 # +
@@ -112,7 +111,7 @@ y = meshbox.N.y
 k = 1.0
 h = 0.0 
 
-adv_diff = uw.systems.AdvDiffusionSLCN(meshbox, 
+adv_diff = uw.systems.AdvDiffusion(meshbox, 
                                    u_Field=t_soln, 
                                    V_Field=v_soln,
                                    solver_name="adv_diff", 
@@ -148,8 +147,6 @@ stokes.solve()
 
 # Check the diffusion part of the solve converges 
 adv_diff.solve(timestep=0.01*stokes.estimate_dt())
-
-
 
 
 # +
@@ -245,7 +242,8 @@ def plot_T_mesh(filename):
 
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
+
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
 
         pl.add_points(point_cloud, cmap="coolwarm", 
                       render_points_as_spheres=False,
@@ -261,7 +259,6 @@ def plot_T_mesh(filename):
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
                       return_img=False)
         # pl.show()
-        pl.close()
 
 # +
 # Convection model / update in time
