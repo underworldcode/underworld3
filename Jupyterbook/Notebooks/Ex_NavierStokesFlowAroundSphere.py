@@ -157,7 +157,7 @@ def points_fell_out(coords):
 navier_stokes = NavierStokesSwarm(pipemesh, 
                 velocityField=v_soln, 
                 pressureField=p_soln, 
-                velocityStar=v_star,
+                velocityStar_fn=v_star,
                 u_degree=v_soln.degree, 
                 p_degree=p_soln.degree, 
                 rho=1.0,
