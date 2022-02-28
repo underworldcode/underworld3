@@ -135,19 +135,8 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 # -
 
-v_soln   = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=2 )
-v_stokes = uw.mesh.MeshVariable('U0',   pipemesh, pipemesh.dim, degree=2 )
-p_soln   = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=1 )
-
-
-swarm = uw.swarm.Swarm(mesh=pipemesh)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
-swarm.populate(fill_param=5)
-
-
-def points_fell_out(coords): 
-    coords[:,0] = coords[:,0] % (width*0.98)
-    return coords
+v_soln = uw.mesh.MeshVariable('U',    pipemesh, pipemesh.dim, degree=2 )
+p_soln = uw.mesh.MeshVariable('P',    pipemesh, 1, degree=1 )
 
 
 swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -170,14 +159,12 @@ navier_stokes = NavierStokesSwarm(pipemesh,
                 u_degree=v_soln.degree, 
                 p_degree=p_soln.degree, 
                 rho=1.0,
-                theta=0.5,
+                theta=1.0,
                 verbose=False,
                 projection=True,
+                restore_points_func=points_fell_out,
                 solver_name="navier_stokes")
 
-
-navier_stokes.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 
 
 # +
@@ -187,15 +174,14 @@ navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 # Constant visc
 
 navier_stokes.rho=1.0
-navier_stokes.theta=0.6
+navier_stokes.theta=0.66
 navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
-Vb = 250.0
+Vb = 10.0
 Free_Slip = False
-expt_name = "pipe_flow_cylinder_R025_v250_rho1_dt0.0005"
-
+expt_name = "pipe_flow_cylinder_R025_10_rho1"
 
 if Free_Slip:
     hw = 1000.0 / res 
@@ -220,96 +206,10 @@ navier_stokes.add_dirichlet_bc( (Vb,0.0),  "right" ,  (0,1) )
 # -
 
 
-navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
+navier_stokes.solve(timestep=1.0)  # Stokes-like initial flow
 
-
-with pipemesh.access(v_stokes):
-    v_stokes.data[...] = v_soln.data[...]
-
-# +
-# check the mesh if in a notebook / serial
-
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
-    pv.global_theme.smooth_shading = True
-    # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-    # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
-
-    pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-#     points = np.zeros((t_soln.coords.shape[0],3))
-#     points[:,0] = t_soln.coords[:,0]
-#     points[:,1] = t_soln.coords[:,1]
-
-#     point_cloud = pv.PolyData(points)
-
-    with pipemesh.access():
-        usol = v_soln.data.copy()
-        
-    with pipemesh.access():
-        pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
-
-
-
-    v_vectors = np.zeros((pipemesh.data.shape[0],3))
-    v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
-    pvmesh.point_data["V"] = v_vectors 
-    
-    arrow_loc = np.zeros((v_soln.coords.shape[0],3))
-    arrow_loc[:,0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0],3))
-    arrow_length[:,0:2] = usol[...] 
-    
-    # point sources at cell centres
-    
-    points = np.zeros((pipemesh._centroids.shape[0],3))
-    points[:,0] = pipemesh._centroids[:,0]
-    points[:,1] = pipemesh._centroids[:,1]
-    point_cloud = pv.PolyData(points)
-    
-    pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
-                                              integration_direction="both",
-                                              max_steps=100
-                                             )
-    
-    
-    pl = pv.Plotter()
-
- 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.05/Vb, opacity=0.75)
-
-    # pl.add_points(point_cloud, cmap="coolwarm", 
-    #               render_points_as_spheres=False,
-    #               point_size=10, opacity=0.66
-    #             )
-    
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dVy",
-                  use_transparency=False, opacity=1.0)
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    pl.add_mesh(pvstream)
-
-    pl.remove_scalar_bar("mag")
-
-    pl.show()
-
-# +
-# with pipemesh.access(v_soln):
-#     v_soln.data[:,0] = 0.0
-# -
+with pipemesh.access(v_soln):
+    v_soln.data[:,0] = 0.0
 
 
 def plot_V_mesh(filename):
@@ -327,8 +227,8 @@ def plot_V_mesh(filename):
         pv.global_theme.antialiasing = True
         pv.global_theme.jupyter_backend = 'pythreejs'
         pv.global_theme.smooth_shading = True
-        # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-        # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0] 
+        pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
+        pv.global_theme.camera['position'] = [0.0, 0.0, 2.0] 
 
         pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
@@ -340,16 +240,12 @@ def plot_V_mesh(filename):
 
         point_cloud = pv.PolyData(points)
         
-        points = np.zeros((pipemesh._centroids.shape[0],3))
-        points[:,0] = pipemesh._centroids[:,0]
-        points[:,1] = pipemesh._centroids[:,1]
+        
+        # POINT CLOUD from centroids for streamlines
 
-        c_point_cloud = pv.PolyData(points)
 
         with pipemesh.access():
-            pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-            pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
-
+             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
 
         with pipemesh.access():
             usol = v_soln.data.copy()
@@ -367,31 +263,30 @@ def plot_V_mesh(filename):
         
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.033/Vb, opacity=0.5)
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.1/Vb, opacity=0.75)
 
-        pvstream = pvmesh.streamlines_from_source(c_point_cloud, vectors="V", 
-                                              integration_direction="both",
-                                              max_time=0.25
-                                             )
-               
+        # pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
+        #                                       integration_direction="both",
+        #                                       max_steps=250
+        #                                      )
+
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="dVy",
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=0.5)
 
-        pl.add_mesh(pvstream)
 
+        # pl.add_mesh(pvstream)
+        
         
         pl.add_points(point_cloud, color="Black",
                       render_points_as_spheres=True,
                       point_size=2, opacity=0.66
                     )
 
-        pl.remove_scalar_bar("dVy")
-        pl.remove_scalar_bar("mag")
-        pl.remove_scalar_bar("V")
+        pl.remove_scalar_bar("P")
+       # pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560,2560), 
+        pl.screenshot(filename="{}.png".format(filename), window_size=(2560,1280), 
                       return_img=False)
         
         pl.close()
@@ -399,37 +294,24 @@ def plot_V_mesh(filename):
        # pl.show()
 
 ts = 0
-dt_ns = 0.0005
-navier_stokes.estimate_dt()
 
-
-for step in range(0,25):
-    delta_t_swarm = 5.0 * navier_stokes.estimate_dt()
-    delta_t = min(delta_t_swarm, dt_ns)
-    
-    navier_stokes.solve(timestep=dt_ns, 
-                        zero_init_guess=False)
-    
-    phi = delta_t / dt_ns 
+for step in range(0,50):
+    delta_t = 2.0 * navier_stokes.estimate_dt()
+    navier_stokes.solve(timestep=delta_t, zero_init_guess=False)
     
     with swarm.access(v_star):
-        v_star.data[...] = phi * uw.function.evaluate(v_soln.fn, swarm.data) + \
-                           (1.0-phi) * v_star.data
-        
+        v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
+     
     # advect swarm
     print("Swarm advection")
-    swarm.advection(v_soln.fn, 
-                    delta_t,
-                    corrector=False,
-                    restore_points_to_domain_func=points_fell_out)
-
+    swarm.advection(v_soln.fn, delta_t)
     print("Swarm advection, complete")
 
     if mpi4py.MPI.COMM_WORLD.rank==0:
-        print("Timestep {}, dt {}, phi {}".format(ts, delta_t, phi))
+        print("Timestep {}, dt {}".format(step, delta_t))
                 
     if ts%1 == 0:
-        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,ts))
+        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,step))
 
     ts += 1
 
@@ -438,6 +320,31 @@ for step in range(0,25):
     # v_soln.save(savefile)
     # p_soln.save(savefile)
     # pipemesh.generate_xdmf(savefile)
+
+
+
+# +
+# display(navier_stokes._uu_g0)
+# display(navier_stokes._uu_g3)
+# display(navier_stokes._uu_g2)
+
+# display(navier_stokes._up_g2)
+# display(navier_stokes._up_g3)
+# display(navier_stokes._pu_g1)
+
+
+# +
+# navier_stokes.petsc_options.getAll()
+
+# +
+# Solves a Stokes initial condition for this problem to avoid a crash-start 
+# We could also just leave everything to V = (Vb,0)
+
+# navier_stokes.petsc_options["snes_type"]="newtonls"
+# navier_stokes.petsc_options["snes_rtol"]=1.0e-3
+# navier_stokes.rho =0.01  # will trigger a rebuild and options are all re-read
+# navier_stokes.solve(timestep=pipemesh.get_min_radius()/Vb)
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -455,8 +362,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
-    # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
-    # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
+    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
+    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
 
     pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
@@ -472,7 +379,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     with pipemesh.access():
         pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+
 
     v_vectors = np.zeros((pipemesh.data.shape[0],3))
     v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -484,42 +391,30 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     arrow_length = np.zeros((v_soln.coords.shape[0],3))
     arrow_length[:,0:2] = usol[...] 
     
-    # swarm points
-    
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-
-        swarm_point_cloud = pv.PolyData(points)
- 
     # point sources at cell centres
     
-    points = np.zeros((pipemesh._centroids.shape[0],3))
-    points[:,0] = pipemesh._centroids[:,0]
-    points[:,1] = pipemesh._centroids[:,1]
-    point_cloud = pv.PolyData(points)
+    # points = np.zeros((pipemesh._centroids.shape[0],3))
+    # points[:,0] = pipemesh._centroids[:,0]
+    # points[:,1] = pipemesh._centroids[:,1]
+    # point_cloud = pv.PolyData(points)
     
     pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
                                               integration_direction="both",
-                                              surface_streamlines=True, 
-                                              max_time=0.5,
+                                              max_steps=100
                                              )
+    
     
     pl = pv.Plotter()
  
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.033/Vb, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.01/Vb, opacity=0.75)
 
+    # pl.add_points(point_cloud, cmap="coolwarm", 
+    #               render_points_as_spheres=False,
+    #               point_size=10, opacity=0.66
+    #             )
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="dVy",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=1.0)
-
-    
-    pl.add_points(swarm_point_cloud, color="Black",
-                  render_points_as_spheres=True,
-                  point_size=0.5, opacity=0.66
-                )
-
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)
@@ -528,7 +423,69 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+# + active=""
+#
 # -
 
+0/0
 
 
+
+def plot_T_mesh(filename):
+
+    import mpi4py
+
+    if mpi4py.MPI.COMM_WORLD.size==1:
+
+        import numpy as np
+        import pyvista as pv
+        import vtk
+
+        pv.global_theme.background = 'white'
+        pv.global_theme.window_size = [750, 750]
+        pv.global_theme.antialiasing = True
+        pv.global_theme.jupyter_backend = 'pythreejs'
+        pv.global_theme.smooth_shading = True
+        pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
+        pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
+
+        pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+        
+        points = np.zeros((t_soln.coords.shape[0],3))
+        points[:,0] = t_soln.coords[:,0]
+        points[:,1] = t_soln.coords[:,1]
+
+        point_cloud = pv.PolyData(points)
+
+        with pipemesh.access():
+            point_cloud.point_data["T"] = t_soln.data.copy()
+
+        with pipemesh.access():
+            usol = v_soln.data.copy()
+
+
+        arrow_loc = np.zeros((v_soln.coords.shape[0],3))
+        arrow_loc[:,0:2] = v_soln.coords[...]
+
+        arrow_length = np.zeros((v_soln.coords.shape[0],3))
+        arrow_length[:,0:2] = usol[...] 
+        
+        pl = pv.Plotter()
+
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+
+        pl.add_points(point_cloud, cmap="coolwarm", 
+                      render_points_as_spheres=False,
+                      point_size=10, opacity=0.66
+                    )
+        
+
+        pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+
+        pl.remove_scalar_bar("T")
+        pl.remove_scalar_bar("mag")
+
+        pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
+                      return_img=False)
+
+       # pl.show()
