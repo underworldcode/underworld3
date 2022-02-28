@@ -1,6 +1,5 @@
 # This one is not much good ... needs to be
 # swarm based
-from .navier_stokes import NavierStokes as Navier_Stokes_SLCN
 
 from .generic_solvers import SNES_Scalar, SNES_Vector, SNES_SaddlePoint 
 

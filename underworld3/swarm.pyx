@@ -456,7 +456,7 @@ class Swarm(_api_tools.Stateful):
                   V_fn, 
                   delta_t, 
                   order = 2,
-                  corrector=True,
+                  corrector=False,
                   restore_points_to_domain_func = None
                   ):
 
@@ -465,12 +465,16 @@ class Swarm(_api_tools.Stateful):
         # Use current velocity to estimate where the particles would have
         # landed in an implicit step.
 
+        # ? how does this interact with the particle restoration function ?
+
         if corrector == True and not self._X0_uninitialised:
             with self.access(self.particle_coordinates):
                 v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+
                 updated_current_coords = 0.5 * (X0.data + delta_t * v_at_Vpts + self.data)
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
+                
                 if restore_points_to_domain_func is not None:
                     updated_current_coords = restore_points_to_domain_func(updated_current_coords)
 
