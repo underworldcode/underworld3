@@ -304,7 +304,7 @@ class Swarm(_api_tools.Stateful):
 
         
         if layout==None:
-            if self.mesh.isSimplex==True and self.dim == 2:
+            if self.mesh.isSimplex==True and self.dim == 2 and fill_param > 1:
                 layout=SwarmPICLayout.REGULAR
             else:
                 layout=SwarmPICLayout.GAUSS

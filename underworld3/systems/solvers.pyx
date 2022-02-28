@@ -1171,7 +1171,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         dim = self.mesh.dim
 
         # terms that become part of the weighted integral
-        self._u_f0 = self.UF0 -self.bodyforce + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
+        self._u_f0 = self.UF0 - 1.0 * self.bodyforce + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
 
         # Integration by parts into the stiffness matrix
         self._u_f1 = self.UF1 + self.stress * self.theta + self._Stress_star * (1.0-self.theta) + self.penalty * self.div_u * sympy.eye(dim)

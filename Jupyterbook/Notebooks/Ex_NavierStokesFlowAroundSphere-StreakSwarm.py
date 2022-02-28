@@ -138,7 +138,7 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
 v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
 p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('\omega', pipemesh, 1, degree=1 )
+vorticity = uw.mesh.MeshVariable('omega', pipemesh, 1, degree=1 )
 
 
 # +
@@ -148,13 +148,14 @@ remeshed   = uw.swarm.SwarmVariable("Vw", swarm, 1, proxy_degree=3, dtype='int')
 X_0        = uw.swarm.SwarmVariable("X0", swarm, pipemesh.dim, _proxy=False)
 
 swarm.populate(fill_param=5)
-# -
 
+# +
+passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
+passive_swarm.populate(fill_param=1, )
 
-
-def points_fell_out(coords): 
-    coords[:,0] = coords[:,0] % (width*0.98)
-    return coords
+with passive_swarm.access(passive_swarm.particle_coordinates):
+    passive_swarm.particle_coordinates.data[:,0] /= width
+    passive_swarm.particle_coordinates.data[:,1] = 0.5
 
 
 # +
@@ -232,9 +233,6 @@ with swarm.access(v_star, remeshed, X_0):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
     X_0.data[...] = swarm.data[...] 
     remeshed.data[...] = 0
-# -
-
-
 
 # +
 # check the mesh if in a notebook / serial
@@ -341,11 +339,10 @@ def plot_V_mesh(filename):
 
         pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
         
-        
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0],3))
-            points[:,0] = swarm.data[:,0]
-            points[:,1] = swarm.data[:,1]
+        with passive_swarm.access():
+            points = np.zeros((passive_swarm.data.shape[0],3))
+            points[:,0] = passive_swarm.data[:,0]
+            points[:,1] = passive_swarm.data[:,1]
 
         point_cloud = pv.PolyData(points)
         
@@ -395,7 +392,7 @@ def plot_V_mesh(filename):
         
         pl.add_points(point_cloud, color="Black",
                       render_points_as_spheres=True,
-                      point_size=2, opacity=0.66
+                      point_size=5, opacity=0.5
                     )
 
         pl.remove_scalar_bar("Omega")
@@ -432,11 +429,24 @@ for step in range(0,250):
         v_star.data[...] = phi * uw.function.evaluate(v_soln.fn, swarm.data) + \
                            (1.0-phi) * v_star.data
         
-    # advect swarm
-    print("Swarm advection")
+    # update passive swarm
+    
+    passive_swarm.advection(v_soln.fn, 
+                            delta_t,
+                            corrector=False)
+
+    npoints = 50
+    passive_swarm.dm.addNPoints(npoints)
+    with passive_swarm.access(passive_swarm.particle_coordinates):
+        for i in range(npoints):
+            passive_swarm.particle_coordinates.data[-1:-(npoints+1):-1,:] = np.array([0.0, 0.475] + 0.05 * np.random.random((npoints,2)))
+        
+    # update integration swarm 
+     
     swarm.advection(v_soln.fn, 
                     delta_t,
                     corrector=False)
+    
     
     # Restore a subset of points to start
     offset_idx = step%swarm_loop
@@ -472,10 +482,6 @@ for step in range(0,250):
     # p_soln.save(savefile)
     # pipemesh.generate_xdmf(savefile)
 
-navier_stokes._u_f0
-
-navier_stokes.u_star_fn
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -490,7 +496,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [1250, 1250]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
