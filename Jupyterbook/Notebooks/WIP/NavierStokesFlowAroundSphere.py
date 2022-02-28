@@ -150,6 +150,16 @@ def points_fell_out(coords):
     return coords
 
 
+swarm = uw.swarm.Swarm(mesh=pipemesh)
+v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
+swarm.populate(fill_param=5)
+
+
+def points_fell_out(coords): 
+    coords[:,1] = coords[:,1] % width
+    return coords
+
+
 # +
 # Create NS object
 
@@ -186,6 +196,7 @@ Vb = 250.0
 Free_Slip = False
 expt_name = "pipe_flow_cylinder_R025_v250_rho1_dt0.0005"
 
+
 if Free_Slip:
     hw = 1000.0 / res 
     surface_fn = sympy.exp(-((r - radius) / radius)**2 * hw)
@@ -210,6 +221,7 @@ navier_stokes.add_dirichlet_bc( (Vb,0.0),  "right" ,  (0,1) )
 
 
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
+
 
 with pipemesh.access(v_stokes):
     v_stokes.data[...] = v_soln.data[...]
@@ -300,7 +312,6 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 # -
 
 
-
 def plot_V_mesh(filename):
 
     import mpi4py
@@ -363,13 +374,13 @@ def plot_V_mesh(filename):
                                               max_time=0.25
                                              )
                
-
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
         
         pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="dVy",
                   use_transparency=False, opacity=0.5)
 
         pl.add_mesh(pvstream)
+
         
         pl.add_points(point_cloud, color="Black",
                       render_points_as_spheres=True,
@@ -392,7 +403,6 @@ dt_ns = 0.0005
 navier_stokes.estimate_dt()
 
 
-
 for step in range(0,25):
     delta_t_swarm = 5.0 * navier_stokes.estimate_dt()
     delta_t = min(delta_t_swarm, dt_ns)
@@ -412,6 +422,7 @@ for step in range(0,25):
                     delta_t,
                     corrector=False,
                     restore_points_to_domain_func=points_fell_out)
+
     print("Swarm advection, complete")
 
     if mpi4py.MPI.COMM_WORLD.rank==0:

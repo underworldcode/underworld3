@@ -282,12 +282,9 @@ class NavierStokes:
         # Set pressure to use velocity's quadrature object.
         # I'm not sure if this is necessary actually as we 
         # set them to have the same degree quadrature above. 
-        cdef PetscQuadrature u_quad
-        cdef FE c_fe = self.petsc_fe_u
-        ierr = PetscFEGetQuadrature(c_fe.fe, &u_quad); CHKERRQ(ierr)
+        u_quad = self.petsc_fe_u.getQuadrature()
         # set pressure quad here
-        c_fe = self.petsc_fe_p
-        ierr = PetscFESetQuadrature(c_fe.fe,u_quad); CHKERRQ(ierr)
+        self.petsc_fe_p.setQuadrature(u_quad)
 
         self.is_setup = False
 
@@ -717,12 +714,9 @@ class NavierStokes:
             gvec.array[:] = 0.
 
         # Set all quadratures to velocity quadrature.
-        cdef PetscQuadrature u_quad
-        cdef FE c_fe = self.petsc_fe_u
-        ierr = PetscFEGetQuadrature(c_fe.fe, &u_quad); CHKERRQ(ierr)
+        u_quad = self.petsc_fe_u.getQuadrature()
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            c_fe = fe
-            ierr = PetscFESetQuadrature(c_fe.fe,u_quad); CHKERRQ(ierr)        
+            fe.setQuadrature(u_quad)
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
