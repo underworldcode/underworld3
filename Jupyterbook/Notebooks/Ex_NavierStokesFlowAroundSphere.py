@@ -145,6 +145,8 @@ swarm = uw.swarm.Swarm(mesh=pipemesh)
 v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
 swarm.populate(fill_param=5)
 
+v_star._meshVar.fn
+
 
 def points_fell_out(coords): 
     coords[:,0] = coords[:,0] % (width*0.98)
