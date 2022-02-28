@@ -288,7 +288,7 @@ class SNES_Stokes(SNES_SaddlePoint):
         self.viscosity=1.0
 
         # User-facing operations are matrices / vectors by preference
-        self._E = (self._L + self._L.transpose())/2
+        self._E = self._L + self._L.transpose()/2
         self._Einv2 = sympy.sqrt((sympy.Matrix(self._E)**2).trace()) # scalar 2nd invariant
 
 
@@ -1114,7 +1114,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         if projection:
             # set up a projection solver 
             self._u_star_projected = uw.mesh.MeshVariable("uStar{}".format(self.instances), self.mesh, self.mesh.dim, degree=u_degree)
-            self._u_star_projector = uw.systems.solvers.SNES_Solenoidal_Vector_Projection(self.mesh, self._u_star_projected )
+            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(self.mesh, self._u_star_projected )
 
             # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
             self._u_star_projector.smoothing = 0.0
@@ -1207,6 +1207,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         # Make sure we update the projection of the swarm variable if requested
 
         if self.projection:
+            # We can break this up by components and U,P with one projection
+            # if the bc's can be managed properly
+
             self._u_star_projector.solve(zero_init_guess)
 
         # Over to you Poisson Solver
