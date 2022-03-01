@@ -664,7 +664,7 @@ class SNES_Vector:
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        with self.mesh.access(self.u,):
+        with self.mesh.access(self.u):
             self.dm.globalToLocal(gvec, lvec)
             # add back boundaries.
             # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
@@ -849,20 +849,6 @@ class SNES_SaddlePoint:
         self._L = sympy.derive_by_array(self._U, self._X).transpose()
         self._G = sympy.derive_by_array(self._P, self._X)
 
-        # deprecated
-        # grad_u_x = gradient(self.u.fn.dot(N.i)).to_matrix(N)
-        # grad_u_y = gradient(self.u.fn.dot(N.j)).to_matrix(N)
-        # grad_u_z = gradient(self.u.fn.dot(N.k)).to_matrix(N)
-        # grad_u = sympy.Matrix((grad_u_x.T,grad_u_y.T,grad_u_z.T))
-        # grad_p = gradient(self.p.fn).to_matrix(N)
-        # deprecated
-        # self._V = sympy.Matrix([self.u.fn.dot(N.i), self.u.fn.dot(N.j), self.u.fn.dot(N.k)])
-        # self._L1 = grad_u 
-        # self._G1 = grad_p
-        # deprecated (use self._E, self._Einv2 in SNES_Stokes)
-        # self._strainrate = 1/2 * (grad_u + grad_u.T)[0:mesh.dim,0:mesh.dim].as_immutable()  # needs to be made immutable so it can be hashed later
-        # self._strainrate_inv2 = sympy.sqrt((self._strainrate**2).trace())
-
         # this attrib records if we need to re-setup
         self.is_setup = False
         super().__init__()
@@ -880,15 +866,19 @@ class SNES_SaddlePoint:
 
         self.dm   = mesh.dm.clone()
 
+        # In the following, I'm not sure if we should make this self.instances or go all the way up to the SNES_SADDLE class 
+        # to make sure there is no namespace clash ... I haven't seen any manifestations of these clashing but
+        # I wonder if that is only because we use the same degree variables most of the time in one problem ... LM
+
         options = PETSc.Options()
-        options.setValue("uprivate_petscspace_degree", u_degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_", PETSc.COMM_WORLD)
+        options.setValue("uprivate_{}_petscspace_degree".format(self.instances), u_degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
         self.petsc_fe_u.setName("velocity")
         self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        options.setValue("pprivate_petscspace_degree", p_degree)
-        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,        1, mesh.isSimplex, u_degree,"pprivate_", PETSc.COMM_WORLD)
+        options.setValue("pprivate_{}_petscspace_degree".format(self.instances), p_degree)
+        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,        1, mesh.isSimplex, u_degree,"pprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
@@ -1181,12 +1171,12 @@ class SNES_SaddlePoint:
         ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
-        self.snes.solve(None,gvec)
+        self.snes.solve(None, gvec)
 
         cdef Vec clvec
         cdef DM csdm
         # Copy solution back into user facing variables
-        with self.mesh.access(self.p,self.u):
+        with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
@@ -1204,4 +1194,3 @@ class SNES_SaddlePoint:
                 sdm.restoreLocalVec(lvec)
 
         self.dm.restoreGlobalVec(gvec)
-
