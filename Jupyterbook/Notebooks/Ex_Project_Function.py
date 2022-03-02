@@ -49,8 +49,6 @@ iv_soln = uw.mesh.MeshVariable('IU',   meshbox,  meshbox.dim,  degree=2 )
 s_fn = sympy.cos(5.0*sympy.pi * x) * sympy.cos(5.0*sympy.pi * y)
 sv_fn = sympy.vector.curl(v_soln.fn)
 
-
-
 # +
 swarm  = uw.swarm.Swarm(mesh=meshbox)
 s_values  = uw.swarm.SwarmVariable("Ss", swarm, 1,           proxy_degree=3)

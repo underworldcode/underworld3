@@ -2,22 +2,10 @@
 #
 # Should be able to reproduce vortex shedding if free slip bc on the inner circle.
 
-# +
 import petsc4py
-from petsc4py import PETSc
-
 import underworld3 as uw
-from underworld3.systems import Stokes
-from underworld3.systems import NavierStokesSwarm
-from underworld3 import function
-
 import numpy as np
 
-options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-# options.getAll()
 
 # +
 import meshio, pygmsh
@@ -31,7 +19,6 @@ res = csize_circle
 width = 5.0
 height = 1.0
 radius = 0.2
-
 
 import mpi4py
 
@@ -85,7 +72,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [1050, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]     
@@ -136,9 +123,12 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 # -
 
 v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
+vs_soln   = uw.mesh.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
 v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
 p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('omega', pipemesh, 1, degree=1 )
+vorticity = uw.mesh.MeshVariable('omega',  pipemesh, 1, degree=1 )
+r_inc     = uw.mesh.MeshVariable('R',      pipemesh, 1, degree=1 )
+surf      = uw.mesh.MeshVariable('S',      pipemesh, 1, degree=2 )
 
 
 # +
@@ -161,7 +151,7 @@ with passive_swarm.access(passive_swarm.particle_coordinates):
 # +
 # Create NS object
 
-navier_stokes = NavierStokesSwarm(pipemesh, 
+navier_stokes = uw.systems.NavierStokesSwarm(pipemesh, 
                 velocityField=v_soln, 
                 pressureField=p_soln, 
                 velocityStar_fn=v_star.fn,
@@ -175,14 +165,20 @@ navier_stokes = NavierStokesSwarm(pipemesh,
 
 
 navier_stokes.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
+# navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-3
+navier_stokes._u_star_projector.smoothing = 0.0
 # -
 
 
 nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
 nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(pipemesh.N.k)
 nodal_vorticity_from_v.smoothing = 1.0e-3
+
+# nodal_v_star_from_v = uw.systems.Vector_Projection(pipemesh, vs_soln, verbose=True)
+# nodal_v_star_from_v.uw_function = v_star.fn
+# nodal_v_star_from_v.smoothing = 1.0e-6
+
 
 # +
 # Set solve options here (or remove default values
@@ -197,18 +193,27 @@ navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-16*pipemesh.N.i
 
 Vb = 500.0
-Free_Slip = False
-expt_name = "pipe_flow_cylinder_R02_v500_rho1"
+Free_Slip = True
+expt_name = "pipe_flow_cylinder_R02_v500_rho1_Fi"
+
+hw = 1000.0 / res 
+with pipemesh.access(r_inc):
+    r_inc.data[:,0] = uw.function.evaluate(r, pipemesh.data)
+    
+surface_defn = sympy.exp(-((r_inc.fn - radius) / radius)**2 * hw)
+
+with pipemesh.access(surf):
+    surf.data[:,0] = uw.function.evaluate(surface_defn, surf.coords)
+    
+surface_fn = surface_defn
 
 if Free_Slip:
-    hw = 1000.0 / res 
-    surface_fn = sympy.exp(-((r - radius) / radius)**2 * hw)
     navier_stokes.bodyforce -= 1.0e5 * Vb * navier_stokes.rho * v_soln.fn.dot(inclusion_unit_rvec) * surface_fn * inclusion_unit_rvec
     navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t + 1.0e5 * Vb * surface_fn)
     # navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity )
-
+    navier_stokes._u_star_projector.UF0 = surf.fn * (navier_stokes._u_star_projector.u.fn-v_soln.fn)
+    
 else:
-    surface_fn =  1.0e-32 * r
     navier_stokes.add_dirichlet_bc( (0.0,0.0), "inclusion" , (0,1) )  
     
 # Velocity boundary conditions
@@ -220,19 +225,22 @@ navier_stokes.add_dirichlet_bc( (Vb,0.0),  "right" ,  (0,1) )
 # -
 
 
-navier_stokes.solve(timestep=1.0)  # Stokes-like initial flow
+navier_stokes.solve(timestep=100)  # Stokes-like initial flow
 nodal_vorticity_from_v.solve()
 
 # +
+
 with pipemesh.access(v_stokes, v_soln):
     v_stokes.data[...] = v_soln.data[...] 
     v_soln.data[...] += Vb / 100 * np.random.random(size=v_soln.data.shape) 
-    v_soln.data[...] *= 1.0 + 0.1 * np.cos(v_soln.coords[:,1].reshape(-1,1) * np.pi)
+    v_soln.data[...] *= 1.0 + 0.1 * np.cos(v_soln.coords[:,1].reshape(-1,1) * np.pi) * (1.0-uw.function.evaluate(surface_fn, v_soln.coords).reshape(-1,1))
+
     
 with swarm.access(v_star, remeshed, X_0):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
     X_0.data[...] = swarm.data[...] 
     remeshed.data[...] = 0
+  
 
 # +
 # check the mesh if in a notebook / serial
@@ -248,7 +256,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [1250, 1250]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
@@ -262,7 +270,11 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 #     point_cloud = pv.PolyData(points)
 
     with pipemesh.access():
+        usol = navier_stokes._u_star_projector.u.data.copy()
         usol = v_soln.data.copy()
+        usol = vs_soln.data.copy()
+
+
         
     with pipemesh.access():
         pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
@@ -311,10 +323,6 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
-
-# +
-# with pipemesh.access(v_soln):
-#     v_soln.data[:,0] = 0.0
 # -
 
 
@@ -332,7 +340,7 @@ def plot_V_mesh(filename):
         pv.global_theme.background = 'white'
         pv.global_theme.window_size = [1250, 1000]
         pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = 'pythreejs'
+        pv.global_theme.jupyter_backend = 'panel'
         pv.global_theme.smooth_shading = True
         # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
         # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0] 
@@ -356,8 +364,6 @@ def plot_V_mesh(filename):
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
             pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
             pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
-
-
 
         with pipemesh.access():
             usol = v_soln.data.copy()
@@ -407,8 +413,6 @@ def plot_V_mesh(filename):
         del(pl)
 
        # pl.show()
-
-
 
 ts = 0
 dt_ns = 1.0e-4
@@ -464,10 +468,6 @@ for step in range(0,250):
         idx = np.where(remeshed.data == 1)[0]
         v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx]) 
 
-
-    
-    print("Swarm advection, complete")
-
     if mpi4py.MPI.COMM_WORLD.rank==0:
         print("Timestep {}, dt {}, phi {}".format(ts, delta_t, phi))
                 
@@ -513,7 +513,6 @@ if mpi4py.MPI.COMM_WORLD.size==1:
         usol = v_soln.data.copy()
         
     with pipemesh.access():
-        pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
         pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
         pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
