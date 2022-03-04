@@ -9,8 +9,6 @@ import math
 import  numpy
 import  numpy as np
 cimport numpy as np
-# import  sympy
-# import  sympy.vector
 
 from mpi4py import MPI
 from petsc4py import PETSc
@@ -26,20 +24,14 @@ from   underworld3.mesh import MeshClass
 import underworld3.timing as timing
 
 
-
-
-
-## NOTE this Box mesh class uses the petsc meshing routines which assume triangle or tetgen
-## and so are not automatically compatible with our recommended installation
-
 class Box(MeshClass):
     @timing.routine_timer_decorator
     def __init__(self, 
-                elementRes   :Optional[Tuple[  int,  int,  int]] =(16, 16), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                simplex      :Optional[bool]                     =False,
-                degree       :Optional[int]                      =1
+                elementRes   :Optional[Tuple[  int,  int,  int]] = (16, 16), 
+                minCoords    :Optional[Tuple[float,float,float]] = None,
+                maxCoords    :Optional[Tuple[float,float,float]] = None,
+                simplex      :Optional[bool]                     = False,
+                degree       :Optional[int]                      = 1
                 ):
         """
         Generates a 2 or 3-dimensional box mesh.
@@ -64,47 +56,171 @@ class Box(MeshClass):
         self.minCoords = minCoords
         if maxCoords==None : maxCoords=len(elementRes)*(1.,)
         self.maxCoords = maxCoords
-        self.dm = PETSc.DMPlex().createBoxMesh(
-            elementRes, 
-            lower=minCoords, 
-            upper=maxCoords,
-            simplex=simplex)
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        # bcs
-        from enum import Enum        
-        if len(elementRes) == 2:
-            class Boundary2D(Enum):
-                BOTTOM = 1
-                RIGHT  = 2
-                TOP    = 3
-                LEFT   = 4
-            self.boundary = Boundary2D
-        else:
-            class Boundary3D(Enum):
-                BOTTOM = 1
-                TOP    = 2
-                FRONT  = 3
-                BACK   = 4
-                RIGHT  = 5
-                LEFT   = 6
-            self.boundary = Boundary3D
-
-        # self.dm.view()
-        # create boundary sets
-        for val in self.boundary:
-            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
-            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
-            boundary_label = self.dm.getLabel(str(val).encode('utf8'))     # get label
-            # Without this check, we have failures at this point in parallel. 
-            # Further investigation required. JM.
-            if boundary_set:
-                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
+        
+        # self.dm = PETSc.DMPlex().createBoxMesh(
+        #     elementRes, 
+        #     lower=minCoords, 
+        #     upper=maxCoords,
+        #     simplex=simplex)
+        # part = self.dm.getPartitioner()
+        # part.setFromOptions()
+        # self.dm.distribute()
+        # self.dm.setFromOptions()
 
         super().__init__(simplex=simplex, degree=degree)
+
+    def create_box_mesh(elementRes=(16, 16), minCoords=(0., 0.), maxCoords=(1., 1.), simplex=False):
+    
+        import gmsh
+        
+        lc = 0.1
+        
+        gmsh.initialize()
+        gmsh.option.setNumber("Mesh.SaveAll", 1)
+        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.model.add("Box")
+        
+        # Create Box Geometry
+        dim = len(minCoords)
+
+        if dim == 2:
+            
+            xmin, ymin = minCoords
+            xmax, ymax = maxCoords
+            
+            p1 = gmsh.model.geo.add_point(xmin,ymin,0., meshSize=lc, tag=1)
+            p2 = gmsh.model.geo.add_point(xmax,ymin,0., meshSize=lc, tag=2)
+            p3 = gmsh.model.geo.add_point(xmin,ymax,0., meshSize=lc, tag=3)
+            p4 = gmsh.model.geo.add_point(xmax,ymax,0., meshSize=lc, tag=4)
+
+            l1 = gmsh.model.geo.add_line(p1, p2, tag=1)
+            l2 = gmsh.model.geo.add_line(p2, p4, tag=2)
+            l3 = gmsh.model.geo.add_line(p4, p3, tag=3)
+            l4 = gmsh.model.geo.add_line(p3, p1, tag=4)
+
+            cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
+            surface = gmsh.model.geo.add_plane_surface([cl])
+
+            gmsh.model.geo.synchronize()
+
+            # Add Physical groups
+            gmsh.model.add_physical_group(1, [l1] , l1)
+            gmsh.model.set_physical_name(1, l1, "Bottom")
+            gmsh.model.add_physical_group(1, [l2] , l2)
+            gmsh.model.set_physical_name(1, l2, "Right")
+            gmsh.model.add_physical_group(1, [l3] , l3)
+            gmsh.model.set_physical_name(1, l3, "Top")
+            gmsh.model.add_physical_group(1, [l4] , l4)
+            gmsh.model.set_physical_name(1, l4, "Left")
+
+            if not simplex:
+                
+                nx, ny = elementRes
+
+                gmsh.model.mesh.set_transfinite_curve(tag=l1, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(tag=l2, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(tag=l3, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(tag=l4, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_surface(tag=surface, arrangement="Left", cornerTags=[p1,p2,p3,p4])
+                gmsh.model.mesh.set_recombine(2, surface) 
+                
+        if dim == 3:
+            
+            xmin, ymin, zmin = minCoords
+            xmax, ymax, zmax = maxCoords
+            
+            p1 = gmsh.model.geo.add_point(xmin,ymin,zmin, meshSize=lc)
+            p2 = gmsh.model.geo.add_point(xmax,ymin,zmin, meshSize=lc)
+            p3 = gmsh.model.geo.add_point(xmin,ymax,zmin, meshSize=lc)
+            p4 = gmsh.model.geo.add_point(xmax,ymax,zmin, meshSize=lc)
+            p5 = gmsh.model.geo.add_point(xmin,ymin,zmax, meshSize=lc)
+            p6 = gmsh.model.geo.add_point(xmax,ymin,zmax, meshSize=lc)
+            p7 = gmsh.model.geo.add_point(xmin,ymax,zmax, meshSize=lc)
+            p8 = gmsh.model.geo.add_point(xmax,ymax,zmax, meshSize=lc)    
+
+            l1 = gmsh.model.geo.add_line(p1, p2)
+            l2 = gmsh.model.geo.add_line(p2, p4)
+            l3 = gmsh.model.geo.add_line(p4, p3)
+            l4 = gmsh.model.geo.add_line(p3, p1)
+            l5 = gmsh.model.geo.add_line(p5, p6)
+            l6 = gmsh.model.geo.add_line(p6, p8)
+            l7 = gmsh.model.geo.add_line(p8, p7)
+            l8 = gmsh.model.geo.add_line(p7, p5)    
+            l9 = gmsh.model.geo.add_line(p5, p1)
+            l10 = gmsh.model.geo.add_line(p2, p6)
+            l11 = gmsh.model.geo.add_line(p7, p3)
+            l12 = gmsh.model.geo.add_line(p4, p8) 
+        
+            
+            cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
+            front = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5, l6, l7, l8))
+            back = gmsh.model.geo.add_plane_surface([cl]) 
+            cl = gmsh.model.geo.add_curve_loop((l1, l10, -l5, l9))
+            bottom = gmsh.model.geo.add_plane_surface([cl])  
+            cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
+            top = gmsh.model.geo.add_plane_surface([cl]) 
+            cl = gmsh.model.geo.add_curve_loop((l10, l6, -l12, -l2))
+            right = gmsh.model.geo.add_plane_surface([cl]) 
+            cl = gmsh.model.geo.add_curve_loop((l9, -l4, -l11, l8))
+            left = gmsh.model.geo.add_plane_surface([cl]) 
+                
+            sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
+            volume = gmsh.model.geo.add_volume([sloop])
+            
+            gmsh.model.geo.synchronize()
+            
+            # Add Physical groups
+            gmsh.model.add_physical_group(2, [front] , front)
+            gmsh.model.set_physical_name(2, front, "Front")
+            gmsh.model.add_physical_group(2, [back] , back)
+            gmsh.model.set_physical_name(2, back, "Back")
+            gmsh.model.add_physical_group(2, [bottom] , bottom)
+            gmsh.model.set_physical_name(2, bottom, "Bottom")
+            gmsh.model.add_physical_group(2, [top] , top)
+            gmsh.model.set_physical_name(2, top, "Top")
+            gmsh.model.add_physical_group(2, [right] , right)
+            gmsh.model.set_physical_name(2, right, "Right")
+            gmsh.model.add_physical_group(2, [left] , left)
+            gmsh.model.set_physical_name(2, left, "Left")
+            
+            if not simplex:
+                
+                nx, ny, nz = elementRes
+
+                gmsh.model.mesh.set_transfinite_curve(l1, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l5, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l6, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l7, numNodes=nx+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l8, numNodes=ny+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l9, numNodes=nz+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l10, numNodes=nz+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l11, numNodes=nz+1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l12, numNodes=nz+1, meshType="Progression", coef=1.0)
+
+                gmsh.model.mesh.set_transfinite_surface(tag=front, arrangement="Left", cornerTags=[p1,p2,p4,p3])
+                gmsh.model.mesh.set_transfinite_surface(tag=back, arrangement="Left", cornerTags=[p5,p6,p8,p7])
+                gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1,p2,p6,p5])
+                gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p3,p4,p8,p7])
+                gmsh.model.mesh.set_transfinite_surface(tag=right, arrangement="Left", cornerTags=[p2,p6,p8,p4])
+                gmsh.model.mesh.set_transfinite_surface(tag=left, arrangement="Left", cornerTags=[p5,p1,p3,p7])
+
+                gmsh.model.mesh.set_recombine(2, front)
+                gmsh.model.mesh.set_recombine(2, back)
+                gmsh.model.mesh.set_recombine(2, bottom)
+                gmsh.model.mesh.set_recombine(2, top)
+                gmsh.model.mesh.set_recombine(2, right)
+                gmsh.model.mesh.set_recombine(2, left)
+
+                gmsh.model.mesh.set_transfinite_volume(volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7])        
+                
+        # Generate Mesh
+        gmsh.model.mesh.generate(dim) 
+        gmsh.write("test.vtk")
+        gmsh.finalize()
 
 
 class MeshFromGmshFile(MeshClass):
@@ -239,519 +355,6 @@ class MeshFromGmshFile(MeshClass):
                 self._elementType = vtk.VTK_HEXAHEDRON        
 
         super().__init__(simplex=simplex, degree=degree)
-
-
-
-class MeshFromCellList(MeshClass):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim         :int,
-                 cells       :numpy.ndarray,
-                 coords      :numpy.ndarray,
-                 cell_size   :Optional[float] = None,
-                 refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True,                
-                 degree       :Optional[int]  = 1,
-                 cdim         :Optional[int]  = None
-                ):
-        """
-        This is a generic mesh class for which users will provide 
-        the specifying mesh cells and coordinates.
-
-        This method wraps to the PETSc `DMPlexCreateFromCellListPetsc` routine.
-
-        Only the root process needs to provide the `cells` and `coords` arrays. It
-        will then be distributed to other processes in the communication group.
-
-        ?? Should we try to add mesh labels in here - LM ??
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        cells :
-            An array of integers of size [numCells,numCorners] specifying the vertices for each cell.
-        coords :
-            An array of floats of size [numVertices,dim] specifying the coordinates of each vertex.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        refinements :
-            The number of mesh refinements that should be performed. If this is specified, `cell_size` 
-            should not be specified. 
-        simplex:
-            If `True`, simplex elements are assumed (default is True)
-        """
-
-        if cell_size and (refinements>0):
-            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
-
-        self.cell_size = cell_size
-        self.refinements = refinements
-
-        options = PETSc.Options()
-        # options.setValue("dm_refine", self.refinements)
-        from . import mesh_utils
-        from mpi4py import MPI
-        cdef DM dm  = mesh_utils._from_cell_list(dim, cells, coords, MPI.COMM_WORLD)
-        self.dm = dm
-
-        from enum import Enum
-        class Boundary(Enum):
-            ALL_BOUNDARIES = 1
-        self.boundary = Boundary
-
-        bound = self.boundary.ALL_BOUNDARIES
-        self.dm.markBoundaryFaces(str(bound).encode('utf8'),bound.value)
-
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        if cell_size:
-            while True:
-                # Use a factor of 2 here as PETSc returns distance from centroid to edge
-                min_rad = 2.*self.get_min_radius()
-                if min_rad > 1.5*cell_size:
-                    if MPI.COMM_WORLD.rank==0:
-                        print(f"Mesh cell size ({min_rad:.3E}) larger than requested ({cell_size:.3E}). Refining.")
-                    self.dm = self.dm.refine()
-                    self._min_radius = None
-                else:
-                    break
-
-        for val in range(refinements):
-            if MPI.COMM_WORLD.rank==0:
-                print(f"Mesh refinement {val+1} of {refinements}.")
-            self.dm = self.dm.refine()
-            self._min_radius = None
-
-
-        self.dm.view()
-        super().__init__(simplex=simplex, degree=degree, cdim=cdim)
-
-class MeshFromMeshIO(MeshFromCellList):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim         :int,
-                 meshio      :"MeshIO",
-                 cell_size   :Optional[float] =None,
-                 refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True,
-                 degree       :Optional[int]                      =1
-
-                 ):
-        """
-        This is a generic mesh class for which users will provide 
-        the specifying mesh data as a `MeshIO` object.
-
-        Only the root process needs to provide the MeshIO object. It
-        will then be distributed to other processes in the communication group.
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        meshio :
-            The MeshIO object specifying the mesh.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        refinements :
-            The number of mesh refinements that should be performed. If this is specified, `cell_size` 
-            should not be specified. 
-        simplex:
-            If `True`, simplex elements are assumed (default is True)
-        """
-
-        if dim not in (2,3):
-            raise ValueError(f"`dim` must be 2 or 3. You have passed in dim={dim}.")
-
-        # if remove_lower_dimensional_cells is called on the mesh, then the cell list 
-        # for our regular meshes should be of length 1 (all hexes, all tets, all quads and so on)
-
-        cells = coords = None
-        if MPI.COMM_WORLD.rank==0:
-            cells  = meshio.cells[0][1].astype(PETSc.IntType)
-            coords = meshio.points
-  
-        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex, degree=degree, cdim=coords.shape[1])
-
-    def _get_local_cell_size(self,
-                             dim        : int,
-                             domain_vol : float,
-                             cell_size  : float) -> int:
-        """
-        This method attempts to determine an appropriate resolution for
-        the generated *local* gmsh object.
-
-        This will consequently be refined in parallel to achieve the user's 
-        requested cell_size.
-
-        Parameters
-        ----------
-        dim :
-            Mesh dimensionality.
-        domain_vol : 
-            The expected domain volume (or area) for the generated
-            mesh.
-        cell_size :
-            Typical cell characteristic length.
-
-        Returns
-        -------
-        The suggested local cell size.
-
-        """
-        def cell_count(cell_size):
-            # approx size of tri/tet
-            cell_area  = 0.5 if (dim==2) else 1/(6.*math.sqrt(2.))
-            cell_area *= cell_size**dim
-            return int(domain_vol/cell_area)
-        # Set max local at some nominal number.
-        # This may well need to be different in 2 or 3-d.
-        max_local_cells = 48**3  
-        csize_local = cell_size
-        #Keep doubling cell size until we can generate reasonably sized local mesh.
-        while cell_count(csize_local)>max_local_cells:
-            csize_local *= 1.1
-        return csize_local 
-
-
-# pygmesh generator for Hex (/ Quad)-based structured, box mesh
-
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Hex_Box(MeshFromMeshIO):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05,
-                degree       :Optional[int]                      =1
-
-                ):
-        """
-        This class generates a Cartesian box of regular hexahedral (3D) or quadrilateral (2D) 
-        elements. 
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        elementRes:
-            Tuple specifying number of elements in each axis direction.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location.
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        """
-
-        if minCoords==None: 
-            minCoords=len(elementRes)*(0.,)
-
-        if maxCoords==None: 
-            maxCoords=len(elementRes)*(1.,)
-
-        self.pygmesh = None
-        # Only root proc generates pygmesh, then it's distributed.
-
-        if MPI.COMM_WORLD.rank==0:
-            mesh = Hex_Box.build_pygmsh( dim, elementRes, minCoords, maxCoords )
-
-        super().__init__(dim, mesh, cell_size, simplex=False, degree=degree)
-
-        self.pygmesh = mesh
-        self.elementRes = elementRes
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_QUAD
-        else:
-            self._elementType = vtk.VTK_HEXAHEDRON
-
-        return
-
-    def build_pygmsh(
-                dim          :Optional[  int] = 2,
-                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None 
-            ):
-
-        x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
-
-        import pygmsh
-        with pygmsh.geo.Geometry() as geom:
-            points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
-            line = geom.add_line(*points)
-
-            _, rectangle, _ = geom.extrude(
-                line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], num_layers=elementRes[1], recombine=True
-            )
-
-            # It would make sense to validate that elementRes[2] > 0 if dim==3
-
-            if dim == 3:
-                geom.extrude(
-                    rectangle,
-                    translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
-                    num_layers=elementRes[2],
-                    recombine=True,
-                )
-                
-            quad_hex_box = geom.generate_mesh()
-            quad_hex_box.remove_lower_dimensional_cells()
-
-        return quad_hex_box
-
-
-
-# pygmesh generator for Tet/Tri-based structured, box mesh
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Simplex_Box(MeshFromMeshIO):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05,
-                degree       :Optional[int]  =1
-                ):
-        """
-        This class generates a box with gmsh
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        elementRes:
-            Tuple specifying number of elements in each axis direction.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location.
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.   
-        """
-
-        if minCoords==None: 
-            minCoords=len(elementRes)*(0.,)
-
-        if maxCoords==None: 
-            maxCoords=len(elementRes)*(1.,)
-
-        self.pygmesh = None
-
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:
-            mesh = Simplex_Box.build_pygmsh(dim, elementRes, minCoords, maxCoords)
-    
-        super().__init__(dim, mesh, cell_size, degree=degree, simplex=True)
-
-        self.elementRes = elementRes
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
-        self.pygmesh = mesh
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_TRIANGLE
-        else:
-            self._elementType = vtk.VTK_TETRA
-
-        return
-
-
-    def build_pygmsh(
-                dim          :Optional[  int] = 2,
-                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =1.0):
-
-        xx = maxCoords[0]-minCoords[0]
-        yy = maxCoords[1]-minCoords[1]
-        zz = maxCoords[2]-minCoords[2]
-
-        import pygmsh
-        with pygmsh.occ.Geometry() as geom:
-            p = geom.add_point(minCoords, 1)
-            _, l, _ = geom.extrude(p, [xx, 0, 0], num_layers=elementRes[0])
-            _, s, _ = geom.extrude(l, [0, yy, 0], num_layers=elementRes[1])
-            if elementRes[2] > 0:
-                geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
-                
-            structured_tri_rect = geom.generate_mesh()   
-            structured_tri_rect.remove_lower_dimensional_cells()
-
-        return structured_tri_rect
-
-
-# pygmesh generator for Tet/Tri-based structured, box mesh
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Unstructured_Simplex_Box(MeshFromGmshFile):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float]=0.1, 
-                degree       :Optional[int]   =1,
-                regular      :Optional[bool]  = True,
-                verbose      :Optional[bool] = False
-                ):
-        """
-        This class generates a box
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location. 
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        cell_size:
-            Optional. Float specifying size to gmsh 
-        regular:
-            Optional. Whether to ask gmsh for a regular layout of nodes
-        verbose:
-            Optional. Ask gmsh to report the building process  
-
-        """
-
-        if minCoords==None: 
-            minCoords=(0.0,0.0,0.0)
-
-        if len(minCoords) == 2:
-            minCoords = (minCoords[0], minCoords[1], 0.0)
-
-        if maxCoords==None: 
-            maxCoords=(1.0,1.0,1.0) 
-
-        if len(maxCoords) == 2:
-            maxCoords = (maxCoords[0], maxCoords[1], 0.0)
-
-        self.pygmesh = None
-
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:
-            Unstructured_Simplex_Box.build_pygmsh_file(dim, "ignore_UnstructuredSimplexBox.msh", 
-                            minCoords, maxCoords, cell_size, regular, verbose)
-
-        # Top / Bottom are aliased to Upper and Lower for consistency with the Cylinder / Sphere
-
-        top_alias = self.physical_label_group("Upper",["Top"])
-        bottom_alias = self.physical_label_group("Lower",["Bottom"])
-        
-        super().__init__(dim, filename="ignore_UnstructuredSimplexBox.msh", label_groups=[top_alias, bottom_alias], 
-                              cell_size=cell_size, simplex=True, degree=degree, 
-                              verbose=verbose)
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_TRIANGLE
-        else:
-            self._elementType = vtk.VTK_TETRA
-
-        return
-
-    def build_pygmsh_file(dim,
-                          filename,
-                            minCoords, maxCoords, 
-                            cell_size,
-                            regular,
-                            verbose ):
-
-        import pygmsh
-        # with pygmsh.occ.Geometry() as geom:
-        #     if dim == 2:
-        #         # args: corner point (3-tuple), width, height, corner-roundness ... 
-        #         box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
-        #     else:
-        #         # args: corner point (3-tuple), size (3-tuple) ... 
-        #         box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
-
-        #     unstructured_simplex_box = geom.generate_mesh()  
-        #     unstructured_simplex_box.remove_lower_dimensional_cells()
-
-
-        if dim == 2:
-            with pygmsh.geo.Geometry() as geom:
-
-                geom.characteristic_length_max = cell_size
-                
-                domain = geom.add_rectangle(xmin=minCoords[0],ymin=minCoords[1], 
-                                            xmax=maxCoords[0],ymax=maxCoords[1], 
-                                            z=0, mesh_size=cell_size)
-                
-                if regular:
-                    geom.set_transfinite_surface(domain.surface, arrangement="Alternate", corner_pts=[])
-                
-                geom.add_physical(domain.surface.curve_loop.curves[0], label="Bottom")
-                geom.add_physical(domain.surface.curve_loop.curves[1], label="Right")
-                geom.add_physical(domain.surface.curve_loop.curves[2], label="Top")
-                geom.add_physical(domain.surface.curve_loop.curves[3], label="Left")
-            
-                geom.add_physical(domain.surface, label="Elements")    
-                
-                geom.generate_mesh(dim=2, verbose=verbose)
-                geom.save_geometry(filename)
-
-        else:
-
-            with pygmsh.geo.Geometry() as geom:
-
-                geom.characteristic_length_max = cell_size
-                
-                domain = geom.add_box(  x0=minCoords[0],
-                                        y0=minCoords[1],
-                                        z0=minCoords[2],
-                                        x1=maxCoords[0],
-                                        y1=maxCoords[1],
-                                        z1=maxCoords[2],
-                                        mesh_size=cell_size)
-                
-                faces = domain.surface_loop.surfaces
-                
-                for face in faces:
-                    geom.set_transfinite_surface(face, arrangement="", corner_pts=[])
-                    
-                geom.set_transfinite_volume(domain.volume, corner_pts=[])
-                
-                geom.add_physical(faces[0], label="Right")
-                geom.add_physical(faces[1], label="Back")
-                geom.add_physical(faces[2], label="Top")
-                geom.add_physical(faces[3], label="Bottom")
-                geom.add_physical(faces[4], label="Front")
-                geom.add_physical(faces[5], label="Left")
-
-                geom.add_physical(domain.volume, label="Elements")    
-                
-                geom.generate_mesh(dim=3, verbose=verbose)
-                geom.save_geometry(filename)
-
-            return 
-
-
-
-####
 
 
 class SphericalShell(MeshFromGmshFile):
