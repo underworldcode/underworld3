@@ -1,4 +1,4 @@
-# PETSc pointwise functions and solvers
+# PETSc pointwise functions and PDE solvers
 
 As we saw in [the Finite Element Pages], the finite element method provides a very general way to approach the numerical solution of a very wide variety of problems in continuum mechanics using a standardised, matrix-based formulation and with considerable flexibility in the choice of discretisation, mesh geometry, and the ability to deal very naturally with jumps in material properties. 
 
@@ -123,13 +123,13 @@ and, in fact, this is exactly what we need to specify in the underworld equation
 system. 
 
 ```python 
-        solver._L= sympy.derive_by_array(solver._U, solver._X).transpose()
+        solver.L= sympy.derive_by_array(solver.U, solver.X).transpose()
 
         # f0 residual term (weighted integration) - scalar function
         solver.F0 = -h
 
         # f1 residual term (integration by parts / gradients)
-        solver.F1 = k * solver._L
+        solver.F1 = k * solver.L
 ```
 
 which means the user only needs to supply a mesh, a mesh variable to 
@@ -175,7 +175,7 @@ are able to evaluate at integration points in the mesh.
 The generic solver specification in underworld looks like this
 
 ```python 
-=
+
         # f0 residual term (weighted integration) - scalar function
         solver.F0 = solver.u.fn - user_uw_function
 
@@ -192,33 +192,216 @@ addition to fitting the integration point values.
 
 We provide projection operators for scalar fields, vector fields and 
 solenoidal vector fields (ensuring that the projection remains divergence free). These
-provide templates for the $F_0$ and $F_1$ terms with generic smoothing 
+provide templates for the $F_0$ and $F_1$ terms with generic smoothing.
+For an explanation of the divergence free projection methodology, see the next 
+example on the incompressible Stokes problem.
 
 [This notebook](../Notebooks/Ex_Project_Function.md) has an example of 
 each of these cases. 
 
 ## Example 3 - Incompressible Stokes Equation
 
-A saddle point system in which we solve for a constraint parameter
-as well as the primary unknown. We have to tweak the template a little
-bit for this one.
+The incompressible Stokes Equation is an example of a problem with an
+additional constraint equation that must be satisfied by the solution.
+Variational formulations (the weak form of
+classical finite elements is one) naturally lend themselves 
+to the addition of multiple constraints into the functional to be minimised. 
 
+Unfortunately, the incompressiblity constraint needs to be enforced very strongly
+to obtain reasonable solutions and this can lead to unacceptably 
+ill conditioned systems that are slow or impossible to solve.
 
-## Example 4 - Advection without diffusion
+Alternatively, we solve a coupled problem in which additional, kinematic, 
+parameters of the constraint term are introduced. This forms a new block system of
+equations that is a general expression for a large range of constrained problems. 
 
-The pure transport equation 
+These are often known as *saddle point problems* which represents the trade-off
+between satisfying the original equations and the constraint equations. 
+(Saddle point here refers to the curvature of the functional we are 
+optimising) See: M. Benzi, G. Golub and J. Liesen, 
+Numerical solution of saddle point problems, Acta Numerica 14 (2005),
+pp. 1–137. for a general discussion. 
 
-$$ \frac{D \psi}{D t} = H $$
+The coupled equation system we want to solve is
 
-(This is not especially well suited to the pointwise formulation )
+$$ \nabla \cdot \mathbf{\tau} - \nabla p = f_\textrm{buoy} $$
+
+with the constraint 
+
+$$ \nabla cdot \mathbf{u} = 0 $$
+
+The saddle-point solver requires us to specify both of these equations and 
+to provide two solution vectors $\mathbf{u}$ and $\mathbf{p}$. In this 
+system, $\mathbf{p}$ is the parameter that enforces the incompressiblity
+constraint equation and is physically identifiable as a pressure. 
+
+```python 
+
+        # definitions 
+
+        U_grad = sympy.derive_by_array(solver.U, solver.X)
+
+        strainrate = (sympy.Matrix(U_grad) + sympy.Matrix(U_grad).T)/2
+        stress     = 2*self.viscosity*solver.strainrate
+
+        # set up equation terms
+
+        # u f0 residual term (weighted integration) - vector function
+        solver.UF0 = - solver.bodyforce
+
+        # u f1 residual term (integration by parts / gradients) - tensor (sympy.array) term
+        solver.UF1 = stress
+
+        # p f0 residual term (these are the constraints) - vector function
+
+        solver.PF0 = sympy.vector.divergence(solver.U)
+```
+
+In `underworld`, the `SNES_Stokes` solver class is responsible for managing the 
+user interface to the saddle point system for incompressible Stokes flow.
+
+## Example 4 - Advection in the absence of diffusion
+
+The pure transport equation can be written in Lagrangian
+
+$$ \frac{D \psi}{D t} = 0 $$ 
+
+or in Eulerian form
+
+$$ \frac{\partial \psi}{\partial t} + \mathbf{u} \cdot \nabla \psi = 0 $$ 
+
+In the Lagrangian form, there is nothing to solve, provided the fluid-transported reference frame is available. In the Eulerian form, the non-linear *advection* term 
+$\mathbf{u} \cdot \nabla \psi$ is reknowned for being difficult to solve, especially in the pure-transport form. 
+
+Underworld provides discrete Lagrangian `swarm` variables [ CROSSREF ] that make it straightforward to work with transported quantities
+on a collection of moving sample points that we normally refer to as *particles*. 
+Behind the scenes, there is complexity in 1) following the Lagrangian reference frame accurately, 
+2) mapping the fluid-deformed reference frame to the stationary mesh, and 3) for
+parallel meshes, migrating particles (and their data) across the decomposed domain.
+
+The `swarm` that manages the variables is able to update the locations of the particles
+when provided with a velocity vector field and a time increment and will handle the
+particle re-distribution in the process. 
+
+Each variable on a swarm has a corresponding mesh variable (a *proxy* variable) that 
+is automatically updated when the particle locations change. The proxy variable is
+computed through a projection (see above). 
+
+*Note:* If specific boundary conditions need to be applied, it is necessary for the user
+to define their own projection operator, apply the boundary conditions, and solve when needed.
+(*Feature request: allow user control over the projection, including
+boundary conditions / constraints, so that this is not part of the user's responsibility*)
 
 ## Example 4 - The Scalar Advection-diffusion Equation
 
-The situation where advection and diffusion are in balance 
+The situation where a quantity is diffusing through a moving fluid. 
 
- - this means that grid methods / particle methods both have issues.
+$$ \frac{\partial \psi}{\partial t} + \mathbf{u}\cdot\nabla\psi = \nabla \cdot \alpha \nabla \psi $$ 
+
+where $\mathbf{u}$ is a (velocity) vector that transports $\psi$ and $\alpha$ is a
+diffusivity. In Lagrangian form (following $\mathbf{u}$),
+
+$$ \frac{D \psi}{D t} = \nabla \cdot \alpha \nabla \psi $$ 
+
+As before, the advection terms are greatly simplified in a Lagrangian reference
+frame but now we also have diffusion terms and boundary conditions that are easy
+to solve accurately in an Eulerian mesh but which must also be applied to variables
+that derive from a Lagrangian swarm (which has no boundary conditions of its own).
+
+Advection-diffusion equations are often dominated by the presence of boundary layers where
+advection of a quantity (along the direction of flow) is balanced by a diffusive flux
+in the cross-stream direction. Under these conditions, there is some work to be done to
+ensure that these two terms are calculated consistently and this is particularly important
+close to regions where boundary conditions need to be applied.
+
+The approach in `underworld` is to provide a solver structure to manage 
+advection-diffusion problems on behalf of the user. We use
+a swarm-variable for tracking the history of the $\psi$ as it is transported
+by $\mathbf{u}$ and we allow the user to specify (solve for) this flow, and
+to update the swarm positions accordingly. The history variable, $\psi^*$ 
+is the value of $\psi$ upstream at an earlier timestep and allows us to 
+approximate $D \psi/Dt$ as a finite difference approximation along the
+characteristics of the advection operator:
+
+$$\left. \frac{D \psi}{Dt} \right|_{p} \approx \frac{\psi_p - \psi^*_p}{\Delta t}$$
+
+Here, the subscript $p$ indicates a value at a particle in the Lagrangian swarm. 
+
+This approach leads to a very natural problem description in python that corresponds closely to the mathematical formulation, namely:
+
+```python 
+        solver.L     = sympy.derive_by_array(solver.U,      solver.X).transpose()
+        solver.Lstar = sympy.derive_by_array(solver.U_star, solver.X).transpose()
+
+        # f0 residual term
+        solver._f0 = -solver.f + (solver.U.fn - solver.U_star.fn) / self.delta_t
+
+        # f1 residual term (backward Euler)  
+        solver._f1 =  self.L * self.k
+
+        ## OR 
+
+        # f1 residual term (Crank-Nicholson)
+        solver._f1 =  0.5 * (self.L + self.Lstar) * self.k
+```
+
+In the above, the `U_star` variable is a projection of the Lagrangian history variable
+$\psi^*_p$ onto the mesh *subject to the same boundary conditions as* $\psi$.
+
+In the `SNES_AdvectionDiffusion_Swarm` class (which is derived from `SNES_Poisson`),
+the `solve` method solves for `U_star` using an in-built projection and boundary
+conditions copied from the parent, before calling a standard Poisson solver. This class manages every aspect of the creation, refresh and solution of the necessary
+projection subroutines Lagrangian history term, but not the update of this variable or the advection. 
+
+*Caveat emptor:* In the Crank-Nicholson stiffness matrix terms above, we form the derivatives in both the flux and the flux history with the same operator where, strictly, we should transport the derivatives (or form derivatives with respect to the transported coordinate system).  
  
 ## Example 5 - Navier-Stokes
 
-All the issues from example 4 but with even more non-linearity.
+The incompressible Navier-Stokes equation of fluid dynamics is essentially the vector equivalent of the 
+scalar advection-diffusion equation above, in which the transported quantity is the velocity (strictly momentum) vector that is also responsible for the transport.
 
+$$ \rho \frac{\partial \mathbf{u}}{\partial t} + \mathbf{u}\cdot\nabla\mathbf{u} = \nabla \cdot \eta \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)/2 + \rho \mathbf{g}$$ 
+
+$$ \nabla \cdot \mathbf{u} = 0 $$
+
+Obviously this is a strongly non-linear problem, but simply introduce the time dependence to the Stokes equation in the same way as we did for the Poisson equation above. A finite difference representation of the Lagrangian derivative of the velocity is defined using a vector swarm variable  
+
+$$\left. \frac{D \mathbf{u}}{Dt} \right|_{p} \approx \frac{\mathbf{u}_p - \mathbf{u}^*_p}{\Delta t}$$
+
+And the python problem description becomes:
+
+```python
+        # definitions 
+
+        U_grad      = sympy.derive_by_array(solver.U,     solver.X)
+        U_grad_star = sympy.derive_by_array(solver.Ustar, solver.X)
+
+        strainrate = (sympy.Matrix(U_grad) + sympy.Matrix(U_grad).T)/2
+        stress     = 2*self.viscosity*solver.strainrate
+
+        strainrate_star = (sympy.Matrix(U_grad_star) + sympy.Matrix(U_grad_star).T)/2
+        stress_star     = 2*self.viscosity*solver.strainrate_star
+
+        # set up equation terms
+
+        # u f0 residual term (weighted integration) - vector function
+        solver.UF0 = - solver.bodyforce + self.rho * (solver.U.fn - solver.U_star.fn) / self.delta_t
+
+        # u f1 residual term (integration by parts / gradients) - tensor (sympy.array) term
+        solver.UF1 = 0.5 * stress * 0.5 * stress_star
+
+        # p f0 residual term (these are the constraints) - vector function
+        solver.PF0 = sympy.vector.divergence(solver.U)
+```
+
+Note, again, that, formulated in this way, the stress and strain-rate history variables neglect terms resulting from the deformation of the coordinate system over the timestep, $\Delta t$. We could instead transport the strain rate or stress 
+
+
+## Remarks
+
+The generic solver classes can be used to construct all of the examples above. The equation-system classes that we provide help to provide a template or scaffolding for a less experienced user and they also help to orchestrate cases where multiple solvers come together in a specific order (e.g. the Navier-Stokes case where history variable 
+projections need to be evaluated during the solve).
+
+Creating sub-classes from the equation systems or the generic solvers is an excellent way to build workflows whenever there is a risk of exposing some fragile construction at the user level. 
+
+Some of the need for these templates is a result of inconsistencies in the way `sympy` treats matrices, vectors and tensor (array) objects. We expect this to change over time.

@@ -103,7 +103,8 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def __init__(self, 
                  mesh     : uw.mesh.MeshClass, 
-                 u_Field  : uw.mesh.MeshVariable = None, 
+                 u_Field  : uw.mesh.MeshVariable, 
+                 v_Field  : uw.mesh.MeshVariable,
                  degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
@@ -118,26 +119,23 @@ class SNES_Darcy(SNES_Scalar):
         ## Parent class will set up default values etc
         super().__init__(mesh, u_Field, degree, solver_name, verbose)
 
-        # Here we can set some defaults for this set of KSP / SNES solvers
-        #self.petsc_options = PETSc.Options(self.petsc_options_prefix)
-        #self.petsc_options["snes_type"] = "newtonls"
-        #self.petsc_options["ksp_rtol"] = 1.0e-3
-        #self.petsc_options["ksp_monitor"] = None
-        #self.petsc_options["ksp_type"] = "fgmres"
-        #self.petsc_options["pre_type"] = "gamg"
-        #self.petsc_options["snes_converged_reason"] = None
-        #self.petsc_options["snes_monitor_short"] = None
-        #self.petsc_options["snes_view"] = None
-        #self.petsc_options["snes_rtol"] = 1.0e-3
-
         # Register the problem setup function
         self._setup_problem_description = self.poisson_problem_description
 
         # default values for properties
-        self.f = 0.0
-        self.k = 1.0
-        self.s = self.mesh.N.j  # template !
+        self._f = 0.0
+        self._k = 1.0
+        self._s = -self.mesh.N.j  # template !
+        self._v = v_Field
 
+        ## Set up the projection operator that
+        ## solves the flow rate 
+
+        self._v_projector = uw.systems.solvers.SNES_Vector_Projection(self.mesh, self.v )
+
+        # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
+        self._v_projector.smoothing = 0.0
+        self._v_projector.uw_function = -self.k * (sympy.vector.gradient(self.u.fn) - self.s)
 
     ## This function is the one we will typically over-ride to build specific solvers. 
     ## This example is a poisson-like problem with isotropic coefficients
@@ -148,12 +146,17 @@ class SNES_Darcy(SNES_Scalar):
         dim = self.mesh.dim
         N   = self.mesh.N
 
-        # f1 residual term (weighted integration) - scalar function
+        darcy_flux = -self.k * (sympy.vector.gradient(self.u.fn) - self.s)
+
+        # f1 residual term (weighted integration) 
         self._f0 = self.F0 - self.f
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self._f1 = self.F1 + self.k * (self._L) - sympy.Array(self.s.to_matrix(self.mesh.N)[0:self.mesh.dim])
+        self._f1 = self.F1 + sympy.Array(darcy_flux.to_matrix(N)[0:dim])
+
+        # This needs to be refreshed too
+        self._v_projector.uw_function = darcy_flux
 
         return 
 
@@ -180,7 +183,56 @@ class SNES_Darcy(SNES_Scalar):
     def s(self, value):
         self.is_setup = False
         self._s = sympify(value)
-   
+
+    @property
+    def v(self):
+        return self._v
+    @v.setter
+    def v(self, value):
+        self._v_projector.is_setup = False
+        self._v = sympify(value)
+
+    @timing.routine_timer_decorator
+    def solve(self, 
+              zero_init_guess             : bool = True, 
+              timestep                    : float = None,
+              _force_setup                : bool = False ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the 
+            system solution. Otherwise, the current values of `self.u` will be used.
+        timestep:
+            value used to evaluate inertial contribution
+        """
+
+        if (not self.is_setup) or _force_setup:
+            self._setup_terms()
+
+        # Solve pressure
+
+        super().solve(zero_init_guess, _force_setup )
+
+        # Now solve flow field
+
+        self._v_projector.petsc_options["snes_type"] = "newtontr" ## newtonls seems to be problematic when the previous guess is available
+        self._v_projector.petsc_options["snes_rtol"] = 1.0e-3     
+        self._v_projector.petsc_options.delValue("ksp_monitor")
+        self._v_projector.solve(zero_init_guess)
+
+        return
+
+    @timing.routine_timer_decorator
+    def _setup_terms(self):
+
+        self._v_projector.bcs = self.bcs
+        self._v_projector._setup_terms()
+
+        super()._setup_terms()
+
 
 ## --------------------------------
 ## Stokes saddle point solver plus
@@ -280,9 +332,14 @@ class SNES_Stokes(SNES_SaddlePoint):
         if solver_name == "":
             solver_name = "Stokes_{}_".format(self.instances)
 
+        if _Ppre_fn is None:
+            self._Ppre_fn = 1.0 / self.viscosity
+        else:
+            self._Ppre_fn = _Ppre_fn
+
         super().__init__(mesh, velocityField, pressureField, 
                          u_degree, p_degree,
-                         solver_name,verbose, _Ppre_fn )
+                         solver_name,verbose, self._Ppre_fn )
 
         self.penalty = 0.0
         self.viscosity=1.0
@@ -661,7 +718,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
                          u_Field.degree, 
                          self._constraint_field.degree,
                          solver_name, verbose,
-                        _Ppre_fn      = 1.0  # The saddle point solver assumes a "viscosity" term by default in the preconditioner - please move this to Stokes !! 
+                        _Ppre_fn  = 1.0  # The saddle point solver assumes a "viscosity" term by default in the preconditioner - please move this to Stokes !! 
                         )
 
         self._setup_problem_description = self.constrained_projection_problem_description
@@ -974,6 +1031,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self._setup_problem_description = self.adv_diff_swarm_problem_description
 
         self.is_setup = False
+        self.u_star_is_valid = False
 
         if projection:
             # set up a projection solver 
@@ -1010,6 +1068,8 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     @property
     def u(self):
         return self._u
+
+
 
     @property
     def u_star_fn(self):
@@ -1111,6 +1171,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                  u_degree        : Optional[int]                           = 2, 
                  p_degree        : Optional[int]                           = None,
                  rho             : Optional[float]                         = 0.0,
+                 viscosity       : Optional[float]                         = 1.0,
                  theta           : Optional[float]                         = 0.5,
                  penalty         : Optional[float]                         = 0.0,
                  solver_name     : Optional[str]                           = "",
@@ -1124,36 +1185,40 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         if solver_name == "":
             solver_name = "NStokes_swarm_{}_".format(self.instances)
 
+        self.delta_t = 1.0
+        self.theta = theta
+        self.projection = projection
+        self.rho = rho
+        self.viscosity = viscosity
+        self._u_star_raw_fn = velocityStar_fn
+
+
+        if _Ppre_fn is None:
+            self._Ppre_fn = 1.0 / (self.viscosity + self.rho / self.delta_t)
+        else:
+            self._Ppre_fn = _Ppre_fn
+
         ## Parent class will set up default values etc
         super().__init__(  
                  mesh, velocityField, pressureField,
                  u_degree, p_degree, solver_name,  
                  verbose, penalty, _Ppre_fn  )
 
-        self.delta_t = 1.0
-        self.theta = theta
-        self.projection = projection
-        self._u_star_raw_fn = velocityStar_fn
-        self.rho = rho
-
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_swarm_problem_description
-
-        self.is_setup = False
-
         if projection:
             # set up a projection solver 
             self._u_star_projected = uw.mesh.MeshVariable("uStar{}".format(self.instances), self.mesh, self.mesh.dim, degree=u_degree)
-            self._u_star_projector = uw.systems.solvers.SNES_Solenoidal_Vector_Projection(self.mesh, self._u_star_projected )
+            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(self.mesh, self._u_star_projected )
 
             # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
             self._u_star_projector.smoothing = 0.0
             self._u_star_projector.uw_function = self._u_star_raw_fn
 
 
-        # if we want u_star to satisfy the bcs then this will need to be 
-        # a projection-mesh variable but it should be ok given these points
-        # are designed to land on the mesh
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.navier_stokes_swarm_problem_description
+
+        self.is_setup = False
+        self.first_solve = True
 
         self._Ustar = sympy.Array((self.u_star_fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
         self._Lstar = sympy.derive_by_array(self._Ustar, self._X).transpose()
@@ -1193,13 +1258,13 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         else:
             return self._u_star_raw_fn
     @u_star_fn.setter
-    def u_star_fn(self, u_star_fn):
+    def u_star_fn(self, uw_function):
         self.is_setup = False
         if self.projection:
             self._u_star_projector.is_setup = False
-            self._u_star_projector.uw_function = u_star_fn
+            self._u_star_projector.uw_function = uw_function
 
-        self._u_star_raw_fn = u_star_fn
+        self._u_star_raw_fn = uw_function
 
     @property
     def delta_t(self):
@@ -1219,9 +1284,10 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
     @timing.routine_timer_decorator
     def solve(self, 
-              zero_init_guess: bool = True, 
-              timestep       : float = None,
-              _force_setup   : bool = False ):
+              zero_init_guess             : bool = True, 
+              timestep                    : float = None,
+              _force_u_star_projection    : bool = False,
+              _force_setup                : bool = False ):
         """
         Generates solution to constructed system.
 
@@ -1230,6 +1296,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the 
             system solution. Otherwise, the current values of `self.u` will be used.
+        timestep:
+            value used to evaluate inertial contribution
         """
 
         if timestep is not None and timestep != self.delta_t:
@@ -1239,13 +1307,22 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             self._setup_terms()
 
         # Make sure we update the projection of the swarm variable if requested
+        # But, this can break down on the first solve if there are constraints and bcs
+        # (we might want to use v_star for checkpointing though)
 
-        if self.projection:
-            self._u_star_projector.solve(zero_init_guess)
+        if self.projection and (not self.first_solve or _force_u_star_projection):
+            print("Solve Ustar projection, uwfn = {}".format(self._u_star_projector.uw_function))
+            self._u_star_projector.petsc_options["snes_type"] = "newtontr" ## newtonls seems to be problematic when the previous guess is available
+            #v_mag_fn = self._u_star_raw_fn.dot(self._u_star_raw_fn)
+            #v_stats = self.mesh.stats(v_mag_fn)
+            #v_rms = v_stats[6]
+            #self._u_star_projector.petsc_options["snes_atol"] = v_rms * 1.0e-2
+            self._u_star_projector.solve(zero_init_guess=False)
 
-        # Over to you Poisson Solver
+        # Over to you Stokes Solver
 
         super().solve(zero_init_guess, _force_setup )
+        self.first_solve = False
 
         return
 

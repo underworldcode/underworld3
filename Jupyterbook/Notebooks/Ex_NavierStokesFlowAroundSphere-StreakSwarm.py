@@ -240,7 +240,7 @@ with swarm.access(v_star, remeshed, X_0):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
     X_0.data[...] = swarm.data[...] 
     remeshed.data[...] = 0
-  
+
 
 # +
 # check the mesh if in a notebook / serial
