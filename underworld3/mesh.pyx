@@ -2,10 +2,6 @@
 from typing import Optional, Tuple, Union
 from collections import namedtuple
 
-from enum import Enum
-
-import math
-
 import numpy
 import numpy as np
 cimport numpy as np
@@ -14,8 +10,6 @@ import sympy.vector
 
 from mpi4py import MPI
 from petsc4py import PETSc
-
-import meshio
 
 include "./petsc_extras.pxi"
 
@@ -546,46 +540,6 @@ class MeshClass(_api_tools.Stateful):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
-
-    def mesh2pyvista(self, 
-                     elementType: Optional[int]=None
-                     ):
-        """
-        Returns a (vtk) pyvista.UnstructuredGrid object for visualisation of the mesh
-        skeleton. Note that this will normally use the elementType that is on the mesh
-        (HEX, QUAD) but, for data visualisation on higher-order elements, the actual 
-        order of the element is needed.
-        
-        ToDo: check for pyvista installation
-        ToDo: parallel safety
-        ToDo: use vtk instead of pyvista ?
-        """
-
-        import vtk
-        import pyvista as pv 
-
-        if elementType is None:
-            elementType = self.elementType
-
-        # vtk defines all meshes using 3D coordinate arrays
-        if self.cdim == 2: 
-            coords = self.data
-            vtk_coords = np.zeros((coords.shape[0], 3))
-            vtk_coords[:,0:2] = coords[:,:]
-        else:
-            vtk_coords = self.data
-
-        cells = self.mesh_dm_cells()
-        cell_type = np.empty(cells.shape[0], dtype=np.int64)
-        cell_type[:] = elementType
-
-        vtk_cells = np.empty((cells.shape[0], cells.shape[1]+1), dtype=np.int64)
-        vtk_cells[:,0] = cells.shape[1]
-        vtk_cells[:,1:] = cells[:,:]
-
-        pyvtk_unstructured_grid = pv.UnstructuredGrid(vtk_cells, cell_type, vtk_coords)
-
-        return pyvtk_unstructured_grid
 
     def mesh_dm_coords(self):
         cdim = self.dm.getCoordinateDim()
