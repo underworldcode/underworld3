@@ -98,6 +98,7 @@ class MeshFromGmshFile(MeshClass):
 
 
 class Box(MeshFromGmshFile):
+  
     @timing.routine_timer_decorator
     def __init__(self, 
                 elementRes   :Optional[Tuple[  int,  int,  int]] = (16, 16), 
@@ -293,3 +294,79 @@ class Box(MeshFromGmshFile):
         gmsh.model.mesh.generate(dim) 
         gmsh.write(filename)
         gmsh.finalize()
+
+
+class Sphere(MeshFromGmshFile):
+  
+    @timing.routine_timer_decorator
+    def __init__(self, 
+                dim              :Optional[int]   = 3,
+                radius_outer     :Optional[float] = 1.0,
+                radius_inner     :Optional[float] = 0.2,
+                cell_size        :Optional[float] = 0.1,
+                simplex          :Optional[bool]  = False, 
+                degree           :Optional[int]   = 1
+                ):
+        """
+        This class generates a spherical shell, or a full sphere
+        where the inner radius is zero.
+        Parameters
+        ----------
+        dim :
+            The mesh dimensionality.
+        radius_outer :
+            The outer radius for the spherical shell.
+        radius_inner :
+            The inner radius for the spherical shell. If this is set to 
+            zero, a full sphere is generated.
+        cell_size :
+            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
+            resolution.
+        """
+        
+        if radius_inner >= radius_outer:
+            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")  
+
+        self.radius_outer = radius_outer
+        self.radius_inner = radius_inner
+        self.cell_size = cell_size
+
+        self.filename = "mesh.msh"
+        self._build_gmsh_file(self.radius_outer, 
+                              self.radius_inner, 
+                              self.cell_size, 
+                              self.filename)
+        
+        super().__init__(filename=self.filename)
+
+    @staticmethod
+    def _build_gmsh_file(radius_outer, radius_inner, cell_size, filename):
+
+        import gmsh
+        
+        gmsh.initialize()
+        gmsh.option.setNumber("Mesh.SaveAll", 1)
+        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.model.add("Sphere")
+
+        ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_outer)
+        
+        if radius_inner > 0.0:
+            ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_inner)
+            gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
+
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cell_size)
+        gmsh.model.occ.synchronize()
+
+        innerSurface, outerSurface = gmsh.model.getEntities(2)
+        gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], innerSurface[1])
+        gmsh.model.setPhysicalName(innerSurface[1], innerSurface[1], "Inner Surface")
+        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], outerSurface[1])
+        gmsh.model.setPhysicalName(outerSurface[1], outerSurface[1], "Outer Surface")
+
+        gmsh.model.occ.synchronize()
+        gmsh.model.mesh.generate(3)
+
+        gmsh.write(filename)
+        gmsh.finalize()
+
