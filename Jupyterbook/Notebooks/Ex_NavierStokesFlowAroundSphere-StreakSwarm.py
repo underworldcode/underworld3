@@ -20,9 +20,7 @@ width = 5.0
 height = 1.0
 radius = 0.2
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
 
     # Generate local mesh on boss process
     
@@ -62,9 +60,7 @@ pipemesh.dm.view()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -245,9 +241,7 @@ with swarm.access(v_star, remeshed, X_0):
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -323,15 +317,12 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+
+
 # -
-
-
-
 def plot_V_mesh(filename):
 
-    import mpi4py
-
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -418,6 +409,11 @@ ts = 0
 dt_ns = 1.0e-4
 navier_stokes.estimate_dt()
 swarm_loop = 5
+# add a make dir
+odir = "output"
+if uw.mpi.rank == 0:
+    import os
+    os.makedirs(odir, exist_ok=True) 
 
 for step in range(0,250):
     delta_t_swarm = 5.0 * navier_stokes.estimate_dt()
@@ -468,15 +464,15 @@ for step in range(0,250):
         idx = np.where(remeshed.data == 1)[0]
         v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx]) 
 
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}, phi {}".format(ts, delta_t, phi))
                 
     if ts%1 == 0:
-        plot_V_mesh(filename="output/{}_step_{}".format(expt_name,ts))
+        plot_V_mesh(filename=odir+"/{}_step_{}".format(expt_name,ts))
 
     ts += 1
 
-    # savefile = "output/{}_ts_{}.h5".format(expt_name,step) 
+    # savefile = odir+"/{}_ts_{}.h5".format(expt_name,step) 
     # pipemesh.save(savefile)
     # v_soln.save(savefile)
     # p_soln.save(savefile)
@@ -485,9 +481,7 @@ for step in range(0,250):
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -573,6 +567,4 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
     pl.show()
 # -
-
-
 

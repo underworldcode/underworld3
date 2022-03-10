@@ -39,9 +39,8 @@ width = 2.2
 height = 0.41
 radius = 0.05
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
 
     # Generate local mesh on boss process
     
@@ -74,9 +73,8 @@ pipemesh.dm.view()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -256,9 +254,8 @@ swarm.advection(v_soln.fn,
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -335,9 +332,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 # -
 def plot_V_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -474,7 +470,7 @@ for step in range(0,500):
         idx = np.where(remeshed.data == 1)[0]
         v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx]) 
 
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(ts, delta_t))
                 
     if ts%3 == 0:
@@ -499,9 +495,8 @@ pipemesh.stats(v_soln.fn.dot(v_soln.fn))
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

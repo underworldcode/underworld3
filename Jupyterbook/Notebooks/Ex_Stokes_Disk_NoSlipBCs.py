@@ -30,8 +30,7 @@ t_soln = uw.mesh.MeshVariable("T",meshball, 1, degree=3 )
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -121,9 +120,8 @@ stokes.solve()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

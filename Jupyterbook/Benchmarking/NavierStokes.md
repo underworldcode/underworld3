@@ -10,7 +10,7 @@ This benchmark is described here:
 This benchmark is described here:
 
 
-![NS Vortex shedding benchmark](Jupyterbook/Figures/Diagrams/NS_Benchmark.png)
+![NS Vortex shedding benchmark](../Figures/Diagrams/NS_Benchmark.png)
 
 
 Standard one used in the getting started section of `Fenics`

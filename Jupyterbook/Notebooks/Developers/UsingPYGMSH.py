@@ -1,6 +1,5 @@
 # +
 from petsc4py import PETSc
-import mpi4py
 import underworld3 as uw
 import numpy as np
 

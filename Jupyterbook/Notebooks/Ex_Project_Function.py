@@ -109,9 +109,8 @@ s_soln.stats()
 # +
 # check the projection
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -161,9 +160,8 @@ s_soln.stats()
 # +
 # check the projection
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

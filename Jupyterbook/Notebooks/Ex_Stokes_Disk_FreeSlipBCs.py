@@ -32,7 +32,7 @@ meshball = uw.meshes.SphericalShell(dim=2, degree=1, radius_inner=0.0,
 
 v_soln  = uw.mesh.MeshVariable('U', meshball, 2, degree=2 )
 p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln  = uw.mesh.MeshVariable("\Delta T", meshball, 1, degree=3 )
+t_soln  = uw.mesh.MeshVariable("Delta T", meshball, 1, degree=3 )
 
 
 t_soln.fn
@@ -40,8 +40,7 @@ t_soln.fn
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -144,9 +143,8 @@ stokes.solve()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

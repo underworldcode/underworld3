@@ -31,9 +31,8 @@ meshbox.dm.view()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -156,7 +155,7 @@ stokes.solve()
 # +
 # Now make the viscosity non-linear
 
-stokes.viscosity = 0.1 + 10.0 / (1.0 + stokes._strainrate_inv2)
+stokes.viscosity = 0.1 + 10.0 / (1.0 + stokes._Einv2)
 stokes._Ppre_fn = 1.0 / (stokes.viscosity)
 
 # -
@@ -173,9 +172,8 @@ adv_diff.solve(timestep=0.01*stokes.estimate_dt())
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -223,9 +221,8 @@ adv_diff.petsc_options["pc_gamg_agg_nsmooths"]= 5
 
 def plot_T_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -294,7 +291,7 @@ for step in range(0,250):
     # stats then loop
     tstats = t_soln.stats()
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
         
     plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
@@ -317,9 +314,8 @@ for step in range(0,250):
 
 # +
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

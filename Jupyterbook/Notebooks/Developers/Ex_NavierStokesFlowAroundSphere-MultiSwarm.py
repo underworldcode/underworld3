@@ -33,9 +33,8 @@ height = 1.0
 radius = 0.2
 
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
 
     # Generate local mesh on boss process
     
@@ -75,9 +74,8 @@ pipemesh.dm.view()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -283,9 +281,8 @@ navier_stokes._u_star_projector.uw_function
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -363,9 +360,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
 def plot_V_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -521,7 +517,7 @@ for step in range(0,250):
         navier_stokes.u_star_fn = (v_star1.fn + v_star2.fn) / 2    
 
 
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(ts, delta_t))
         # display(navier_stokes._u_star_projector.uw_function)
                 
@@ -539,9 +535,8 @@ for step in range(0,250):
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

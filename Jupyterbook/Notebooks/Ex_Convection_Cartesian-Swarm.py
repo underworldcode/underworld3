@@ -40,9 +40,8 @@ y = meshbox.N.y
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -132,9 +131,8 @@ stokes.solve()
 # +
 # check the projection
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1 and ad.projection:
+if uw.mpi.size==1 and ad.projection:
 
     import numpy as np
     import pyvista as pv
@@ -186,9 +184,8 @@ if mpi4py.MPI.COMM_WORLD.size==1 and ad.projection:
 
 def plot_T_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -289,7 +286,7 @@ for step in range(0,250):
     tstats = t_soln.stats()
     tstarstats = T1._meshVar.stats()
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
         print(tstats[2], tstats[3])
         print(tstarstats[2], tstarstats[3])
@@ -315,9 +312,8 @@ for step in range(0,250):
 
 # +
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

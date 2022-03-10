@@ -39,9 +39,8 @@ new_coords = uw.function.evaluate(x * mesh.N.i + h_fn * y * mesh.N.j , mesh.data
 mesh.deform_mesh(new_coords=new_coords)
 
 # %%
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -93,9 +92,8 @@ darcy.solve()
 
 # %%
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

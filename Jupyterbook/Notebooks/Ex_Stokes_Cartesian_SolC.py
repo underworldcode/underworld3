@@ -10,8 +10,6 @@ options = PETSc.Options()
 # options["help"] = None
 
 
-
-
 # %%
 n_els = 32
 mesh = uw.meshes.Box(elementRes=(n_els,n_els))
@@ -55,12 +53,6 @@ stokes.petsc_options["snes_max_it"] = 10
 # %%
 # Solve time
 stokes.solve()
-
-# %%
-stokes._uu_g1
-
-# %%
-stokes._uu_g3
 
 # %%
 try:

@@ -87,9 +87,8 @@ import meshio
 
 # Generate local mesh on rank 0
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
 
     with pygmsh.geo.Geometry() as geom:
 
@@ -365,9 +364,8 @@ t_mesh    = uw.function.evaluate(t_soln.fn, meshball.data)
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if visuals and mpi4py.MPI.COMM_WORLD.size==1:
+if visuals and uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -447,7 +445,7 @@ vsize, vmean, vmin, vmax, vsum, vnorm2, vrms = meshball.stats((surface.fn*vr_fn)
 surface_residual_0 = vrms
 surface_mean_flux_0 = vmean
 
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
     print("surface residual 0 - {} / {}".format(surface_residual_0, norm_0))
     print("surface mean flux 0 - {} / {}".format(surface_mean_flux_0, vr0))
 # -
@@ -501,7 +499,7 @@ for it in range(0,10):
 #     t_soln.save(savefile)
 #     meshball.generate_xdmf(savefile)
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         
         print("surface residual - {} / {}".format(surface_residual/surface_residual_0, surface_residual/norm_0))
         print("surface mean flux - {} / {}".format(surface_mean_flux/vr0, vr0))
@@ -523,9 +521,8 @@ t_mesh    = uw.function.evaluate(t_soln.fn, meshball.data)
 ## hash that identifies the variable locations and
 ## evaluations require interpolation (which is really quite broken)
 
-import mpi4py
 
-if visuals and mpi4py.MPI.COMM_WORLD.size==1:
+if visuals and uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
