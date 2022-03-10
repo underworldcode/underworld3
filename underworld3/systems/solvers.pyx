@@ -332,6 +332,9 @@ class SNES_Stokes(SNES_SaddlePoint):
         if solver_name == "":
             solver_name = "Stokes_{}_".format(self.instances)
 
+        self._penalty   = 0.0
+        self._viscosity = 1.0
+
         if _Ppre_fn is None:
             self._Ppre_fn = 1.0 / self.viscosity
         else:
@@ -341,8 +344,7 @@ class SNES_Stokes(SNES_SaddlePoint):
                          u_degree, p_degree,
                          solver_name,verbose, self._Ppre_fn )
 
-        self.penalty = 0.0
-        self.viscosity=1.0
+
 
         # User-facing operations are matrices / vectors by preference
         self._E = (self._L + self._L.transpose())/2
