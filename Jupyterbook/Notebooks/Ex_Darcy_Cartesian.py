@@ -114,7 +114,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
     with mesh.access():
         usol = v_soln.data.copy()
   
-    pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn-(h_fn-y), mesh.data)
+    pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn, mesh.data)
+    pvmesh.point_data["dP"]  = uw.function.evaluate(p_soln.fn-(h_fn-y), mesh.data)
     pvmesh.point_data["K"]  = uw.function.evaluate(darcy.k, mesh.data)
     pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 

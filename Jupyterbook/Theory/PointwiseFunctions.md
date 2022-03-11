@@ -87,6 +87,8 @@ Note: underworld provides a translation between mesh variables and their `sympy`
 symbolic representation on the user-facing side that also needs to translate 
 to PETSc data structures in the compiled code. 
 
+
+
 ## Underworld Solver Classes
 
 We provide 3 base classes to build solvers. These are a scalar SNES solver, 
@@ -96,6 +98,169 @@ can then be used to build solvers for many common situations.
 
 A blank slate is a very scary thing and so we provide templates for some common equations
 and examples to show how these can be extended. 
+
+
+
+`````{tabbed} Poisson Equation
+
+````{panels}
+Equation
+^^^
+$$ \nabla \cdot (\alpha \nabla \psi) = \rho $$
+
+---
+
+`sympy` expression 
+^^^
+```python
+grad_psi  =  sympy.vector.gradient(solver.psi)
+solver.F0 =  uw_fn_rho 
+solver.F1 = -uw_fn_alpha * grad_psi
+```
+````
+`````
+
+`````{tabbed} Projections
+````{panels}
+Equation
+^^^
+Solve for $u$ on the mesh unknowns that best satisfy $\tilde{u}$ 
+evaluated on points within the mesh.
+
+$$ \int_\Omega \phi u d\Omega = \int_\Omega \phi \tilde{u} d\Omega $$
+
+---
+
+`sympy` expression 
+^^^
+```python
+solver.F0 = solver.u - uw_function_u_tilde
+solver.F1 =  0.0
+```
+````
+`````
+
+`````{tabbed} Incompressible Stokes
+````{panels}
+Equation
+^^^
+
+The momentum balance equation is 
+
+$$ \nabla \cdot \left(\mathbf{\tau} - p \mathbf{I}\right) = f_\textrm{buoy} $$
+
+with an incompressible flow constraint 
+
+$$ \nabla \cdot \mathbf{u} = 0 $$
+
+and the deviatoric stress defined as
+
+$$ \tau = \eta \left( \nabla \mathbf{u} +  \nabla \mathbf{u}^T \right) $$
+
+
+---
+
+`sympy` expression 
+^^^
+```python
+grad_U = sympy.derive_by_array(solver.U, solver.X)
+grad_U_T = grad_U.transpose()
+epsdot = (grad_U + grad_U_T)
+
+solver.UF0 = -uw_fn_buoyancy_force
+solver.UF1 =  u_fn_viscosity * epsdot - \
+              sympy.eye(dim) * solver.P
+
+# constraint equation
+solver.PF0 = sympy.vector.divergence(solver.U)
+```
+````
+
+`````
+
+`````{tabbed} Advection-Diffusion Equations
+````{panels}
+Equation
+^^^
+
+$$ \frac{\partial \psi}{\partial t} + \mathbf{u}\cdot\nabla\psi = \nabla \cdot \alpha \nabla \psi $$ 
+
+or, in Lagrangian form (following $\mathbf{u}$),
+
+$$ \frac{D \psi}{D t} = \nabla \cdot \alpha \nabla \psi $$ 
+
+and this approximation for the time derivative
+
+$$ \frac{D \psi}{Dt}  \approx \frac{\psi_p - \psi^*}{\Delta t}$$
+
+where $\psi^*$ is the value upstream at $t-\Delta t$
+
+
+
+---
+
+`sympy` expression 
+^^^
+```python
+
+grad_U  = sympy.derive_by_array(solver.U, solver.X)
+grad_Us = sympy.derive_by_array(solver.U_star, solver.X)
+DUDt   = (solver.U - solver.U_star) / delta_t
+
+solver.F0 = DUdt 
+solver.F1 = uw_fn_alpha * (grad_U + grad_Us) / 2  
+
+```
+````
+`````
+
+## Implementation & Examples
+
+### Poisson Solvers
+
+(link to another document)
+Diffusion
+
+Darcy flow
+
+Advection-diffusion (SLCN)
+
+### Advection dominated flow
+
+(link to another document)
+
+Swarm-based problems
+
+Projection / swarm evaluation
+
+Advection-diffusion (Swarm)
+
+Material point methods
+
+### Incompressible Stokes 
+
+(link to another document)
+
+Saddle point problems
+
+Stokes, boundary conditions, constraints
+
+Navier-Stokes (Swarm)
+
+Viscoelasticity
+
+## Remarks
+
+The generic solver classes can be used to construct all of the examples above. The equation-system classes that we provide help to provide a template or scaffolding for a less experienced user and they also help to orchestrate cases where multiple solvers come together in a specific order (e.g. the Navier-Stokes case where history variable 
+projections need to be evaluated during the solve).
+
+Creating sub-classes from the equation systems or the generic solvers is an excellent way to build workflows whenever there is a risk of exposing some fragile construction at the user level. 
+
+Some of the need for these templates is a result of inconsistencies in the way `sympy` treats matrices, vectors and tensor (array) objects. We expect this to change over time.
+
+
+
+
 
 ## Example 1 - The Poisson Equation
 
@@ -228,7 +393,7 @@ $$ \nabla \cdot \mathbf{\tau} - \nabla p = f_\textrm{buoy} $$
 
 with the constraint 
 
-$$ \nabla cdot \mathbf{u} = 0 $$
+$$ \nabla \cdot \mathbf{u} = 0 $$
 
 The saddle-point solver requires us to specify both of these equations and 
 to provide two solution vectors $\mathbf{u}$ and $\mathbf{p}$. In this 
@@ -242,7 +407,7 @@ constraint equation and is physically identifiable as a pressure.
         U_grad = sympy.derive_by_array(solver.U, solver.X)
 
         strainrate = (sympy.Matrix(U_grad) + sympy.Matrix(U_grad).T)/2
-        stress     = 2*self.viscosity*solver.strainrate
+        stress     = 2*solver.viscosity*solver.strainrate
 
         # set up equation terms
 
@@ -292,16 +457,16 @@ to define their own projection operator, apply the boundary conditions, and solv
 (*Feature request: allow user control over the projection, including
 boundary conditions / constraints, so that this is not part of the user's responsibility*)
 
-## Example 4 - The Scalar Advection-diffusion Equation
+## Example 5 - The Scalar Advection-diffusion Equation
 
 The situation where a quantity is diffusing through a moving fluid. 
 
-$$ \frac{\partial \psi}{\partial t} + \mathbf{u}\cdot\nabla\psi = \nabla \cdot \alpha \nabla \psi $$ 
+$$ \frac{\partial \psi}{\partial t} + \mathbf{u}\cdot\nabla\psi = \nabla \cdot \alpha \nabla \psi + f$$ 
 
 where $\mathbf{u}$ is a (velocity) vector that transports $\psi$ and $\alpha$ is a
 diffusivity. In Lagrangian form (following $\mathbf{u}$),
 
-$$ \frac{D \psi}{D t} = \nabla \cdot \alpha \nabla \psi $$ 
+$$ \frac{D \psi}{D t} = \nabla \cdot \alpha \nabla \psi + f$$ 
 
 As before, the advection terms are greatly simplified in a Lagrangian reference
 frame but now we also have diffusion terms and boundary conditions that are easy
@@ -334,15 +499,15 @@ This approach leads to a very natural problem description in python that corresp
         solver.Lstar = sympy.derive_by_array(solver.U_star, solver.X).transpose()
 
         # f0 residual term
-        solver._f0 = -solver.f + (solver.U.fn - solver.U_star.fn) / self.delta_t
+        solver._f0 = -solver.f + (solver.U.fn - solver.U_star.fn) / solver.delta_t
 
         # f1 residual term (backward Euler)  
-        solver._f1 =  self.L * self.k
+        solver._f1 =  solver.L * solver.k
 
         ## OR 
 
         # f1 residual term (Crank-Nicholson)
-        solver._f1 =  0.5 * (self.L + self.Lstar) * self.k
+        solver._f1 =  0.5 * (solver.L + solver.Lstar) * solver.k
 ```
 
 In the above, the `U_star` variable is a projection of the Lagrangian history variable
@@ -355,7 +520,7 @@ projection subroutines Lagrangian history term, but not the update of this varia
 
 *Caveat emptor:* In the Crank-Nicholson stiffness matrix terms above, we form the derivatives in both the flux and the flux history with the same operator where, strictly, we should transport the derivatives (or form derivatives with respect to the transported coordinate system).  
  
-## Example 5 - Navier-Stokes
+## Example 6 - Navier-Stokes
 
 The incompressible Navier-Stokes equation of fluid dynamics is essentially the vector equivalent of the 
 scalar advection-diffusion equation above, in which the transported quantity is the velocity (strictly momentum) vector that is also responsible for the transport.
@@ -377,15 +542,15 @@ And the python problem description becomes:
         U_grad_star = sympy.derive_by_array(solver.Ustar, solver.X)
 
         strainrate = (sympy.Matrix(U_grad) + sympy.Matrix(U_grad).T)/2
-        stress     = 2*self.viscosity*solver.strainrate
+        stress     = 2*solver.viscosity*solver.strainrate
 
         strainrate_star = (sympy.Matrix(U_grad_star) + sympy.Matrix(U_grad_star).T)/2
-        stress_star     = 2*self.viscosity*solver.strainrate_star
+        stress_star     = 2*solver.viscosity*solver.strainrate_star
 
         # set up equation terms
 
         # u f0 residual term (weighted integration) - vector function
-        solver.UF0 = - solver.bodyforce + self.rho * (solver.U.fn - solver.U_star.fn) / self.delta_t
+        solver.UF0 = - solver.bodyforce + solver.rho * (solver.U.fn - solver.U_star.fn) / solver.delta_t
 
         # u f1 residual term (integration by parts / gradients) - tensor (sympy.array) term
         solver.UF1 = 0.5 * stress * 0.5 * stress_star
@@ -396,12 +561,3 @@ And the python problem description becomes:
 
 Note, again, that, formulated in this way, the stress and strain-rate history variables neglect terms resulting from the deformation of the coordinate system over the timestep, $\Delta t$. We could instead transport the strain rate or stress 
 
-
-## Remarks
-
-The generic solver classes can be used to construct all of the examples above. The equation-system classes that we provide help to provide a template or scaffolding for a less experienced user and they also help to orchestrate cases where multiple solvers come together in a specific order (e.g. the Navier-Stokes case where history variable 
-projections need to be evaluated during the solve).
-
-Creating sub-classes from the equation systems or the generic solvers is an excellent way to build workflows whenever there is a risk of exposing some fragile construction at the user level. 
-
-Some of the need for these templates is a result of inconsistencies in the way `sympy` treats matrices, vectors and tensor (array) objects. We expect this to change over time.

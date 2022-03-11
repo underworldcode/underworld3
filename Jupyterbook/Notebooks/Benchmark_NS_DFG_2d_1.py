@@ -15,7 +15,7 @@
 #
 
 U0 = 0.3
-expt_name = "NS_benchmark_DFG2d_1_iv"
+expt_name = "NS_benchmark_DFG2d_1_v"
 
 import petsc4py
 import underworld3 as uw
