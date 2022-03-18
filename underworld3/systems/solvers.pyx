@@ -105,7 +105,6 @@ class SNES_Darcy(SNES_Scalar):
                  mesh     : uw.mesh.MeshClass, 
                  u_Field  : uw.mesh.MeshVariable, 
                  v_Field  : uw.mesh.MeshVariable,
-                 degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
 
@@ -115,6 +114,8 @@ class SNES_Darcy(SNES_Scalar):
 
         if solver_name == "":
             solver_name = "Darcy_{}_".format(self.instances)
+            
+        degree = u_Field.degree
 
         ## Parent class will set up default values etc
         super().__init__(mesh, u_Field, degree, solver_name, verbose)

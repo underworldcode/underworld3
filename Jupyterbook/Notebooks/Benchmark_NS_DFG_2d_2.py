@@ -402,12 +402,17 @@ def plot_V_mesh(filename):
                       render_points_as_spheres=True,
                       point_size=2.5, opacity=0.75
                     )
+        
+        pl.camera.SetPosition(0.75,0.2,3.0)
+        pl.camera.SetFocalPoint(0.75,0.2,0.0)
+        pl.camera.SetClippingRange(1.0,8.0)
+
 
         pl.remove_scalar_bar("Omega")
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560,2560), 
+        pl.screenshot(filename="{}.png".format(filename), window_size=(2560,1280), 
                       return_img=False)
         
         pl.close()

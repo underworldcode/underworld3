@@ -39,7 +39,7 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
     pvmesh = meshball.mesh2pyvista()
@@ -70,7 +70,7 @@ th = sympy.atan2(y+1.0e-5,x+1.0e-5)
 Rayleigh = 1.0e2
 
 # +
-# Surface-drive flow, use this bc
+# Surface-driven flow, use this bc
 
 vtheta = r * sympy.sin(th)
 
@@ -100,7 +100,7 @@ stokes.add_dirichlet_bc( (0.0, 0.0), "Centre", (0,1))
 
 # -
 
-t_init = sympy.cos(7*th)
+t_init = sympy.cos(3*th)
 
 # +
 # Write density into a variable for saving
@@ -130,7 +130,7 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 600]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
     pvmesh = meshball.mesh2pyvista()

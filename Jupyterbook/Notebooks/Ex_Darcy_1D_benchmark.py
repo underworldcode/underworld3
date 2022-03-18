@@ -31,8 +31,8 @@ mesh = uw.meshes.Unstructured_Simplex_Box(dim=2,
                                           cell_size=0.05) 
 
 
-p_soln  = uw.mesh.MeshVariable('P',   mesh, 1, degree=3 )
-v_soln  = uw.mesh.MeshVariable('U',  mesh, mesh.dim,  degree=2 )
+p_soln  = uw.mesh.MeshVariable('P',   mesh, 1, degree=1 )
+v_soln  = uw.mesh.MeshVariable('U',   mesh, mesh.dim,  degree=2 )
 
 # x and y coordinates
 x = mesh.N.x
@@ -68,7 +68,7 @@ if uw.mpi.size==1:
     pl.show(cpos="xy")
 # -
 
-# Create Poisson object
+# Create Darcy Solver
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
 
@@ -86,30 +86,38 @@ initialPressure = -1.0*y*max_pressure
 # +
 # set up two materials
 
-interfaceY = -0.25
+interfaceY = -0.2
 
 from sympy import Piecewise, ceiling, Abs
 
 k1 = 1.0
-k2 = 1e-3
+k2 = 1.0e-3
 
-kFunc = Piecewise( ( 1.0,  y >= interfaceY ),
-                   ( 1e-3, y <  interfaceY ),
+# The piecewise version
+kFunc = Piecewise( ( k1,  y >= interfaceY ),
+                   ( k2,  y <  interfaceY ),
                    ( 0.,                                True ) )
+
+# A smooth version 
+kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
 
 darcy.k = kFunc
 darcy.f = 0.0
-darcy.s = mesh.N.j * 0 # !!!
+darcy.s = -mesh.N.j
 
 # set up boundary conditions
 darcy.add_dirichlet_bc( -1.0*maxY*max_pressure, "Top" )  
-darcy.add_dirichlet_bc( -1.0*minY*max_pressure, "Bottom")
+# darcy.add_dirichlet_bc( -1.0*minY*max_pressure, "Bottom")
 
 # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.smoothing=1.0e-6
+darcy._v_projector.smoothing=0.0e-6
+darcy._v_projector.add_dirichlet_bc( 0.0, "Left",  0)
+darcy._v_projector.add_dirichlet_bc( 0.0, "Right", 0)
 # -
+
+uw.function.evaluate(kFunc, np.array([[0.0,-0.2],[0.0,-0.3]]))
 
 # Solve time
 darcy.solve()
@@ -136,12 +144,10 @@ if uw.mpi.size==1:
     with mesh.access():
         usol = v_soln.data.copy()
   
-    pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn-y, mesh.data)
+    pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn+0.5*y, mesh.data)
     pvmesh.point_data["K"]  = uw.function.evaluate(darcy.k, mesh.data)
     pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
-
- 
     arrow_loc = np.zeros((v_soln.coords.shape[0],3))
     arrow_loc[:,0:2] = v_soln.coords[...]
     
@@ -171,7 +177,7 @@ if uw.mpi.size==1:
     
     pl = pv.Plotter()
     
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
 
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P",
                   use_transparency=False, opacity=1.0)
@@ -187,10 +193,13 @@ xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
 pressure_interp = uw.function.evaluate(p_soln.fn, xy_coords)
+# -
+
+darcy._f1
 
 # +
 La = -1. * interfaceY
-Lb = 1. + interfaceY
+Lb =  1. + interfaceY
 dP = max_pressure
 
 S = 1
@@ -215,5 +224,7 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle='--', label='Ana
 ax1.grid('on')
 ax1.legend()
 # -
+
+
 
 

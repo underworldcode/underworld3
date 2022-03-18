@@ -2,7 +2,9 @@
 #
 # http://www.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/flow/dfg_benchmark1_re20.html
 #
-# No slip conditions 
+#
+# In this version of the benchmark, I am assuming that the problem is steady state, rather than fully-explicit timestepping. 
+# This means that we would like $\partial T / \partial t$ to be small. We can solve explicitly with the non-linear transport terms being included, but, if too non-linear, then the Newton solver is likely to be over-whelmed. An alternative is the pseudo-timestep that I use in this notebook - large-timesteps and driving the nodal velocity to match the transported value (on a swarm). Essentially, Picard iterations of this term. 
 #
 # ![](http://www.mathematik.tu-dortmund.de/~featflow/media/dfg_bench1_2d/geometry.png)
 #
@@ -15,7 +17,7 @@
 #
 
 U0 = 0.3
-expt_name = "NS_benchmark_DFG2d_1"
+expt_name = "NS_benchmark_DFG2d_1_ss"
 
 import petsc4py
 import underworld3 as uw
@@ -34,8 +36,6 @@ res = csize_circle
 width = 2.2
 height = 0.41
 radius = 0.05
-
-
 
 if uw.mpi.rank==0:
 
@@ -136,7 +136,7 @@ Vb = (4.0 * U0 * y * (0.41-y)) / 0.41**2
 
 v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
 vs_soln   = uw.mesh.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
-v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
+v_soln_1  = uw.mesh.MeshVariable('U_1',    pipemesh, pipemesh.dim, degree=2 )
 p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
 vorticity = uw.mesh.MeshVariable('omega',  pipemesh, 1, degree=1 )
 r_inc     = uw.mesh.MeshVariable('R',      pipemesh, 1, degree=1 )
@@ -148,15 +148,10 @@ v_star     = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
 remeshed   = uw.swarm.SwarmVariable("Vw", swarm, 1, proxy_degree=3, dtype='int')
 X_0        = uw.swarm.SwarmVariable("X0", swarm, pipemesh.dim, _proxy=False)
 
-swarm.populate(fill_param=5)
+swarm.populate(fill_param=4)
+# -
 
-# +
-passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
-passive_swarm.populate(fill_param=1, )
 
-with passive_swarm.access(passive_swarm.particle_coordinates):
-    passive_swarm.particle_coordinates.data[:,0] /= 2.0 * width
-    passive_swarm.particle_coordinates.data[:,1] = 0.2
 
 
 # +
@@ -179,11 +174,17 @@ navier_stokes = uw.systems.NavierStokesSwarm(pipemesh,
 # navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
 navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
-navier_stokes._u_star_projector.smoothing = navier_stokes.viscosity * 0.0
+navier_stokes._u_star_projector.smoothing = 0.0 # navier_stokes.viscosity * 1.0e-6
 navier_stokes._u_star_projector.penalty = 0.0001
 
-# -
 
+
+# +
+# Here we replace the time dependence with the steady state advective transport term
+# to lean towards steady state solutions 
+
+navier_stokes.UF0 =  -navier_stokes.rho * (v_soln.fn - v_soln_1.fn) / navier_stokes.delta_t
+# -
 
 nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
 nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(pipemesh.N.k)
@@ -202,8 +203,6 @@ navier_stokes.penalty=0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-32 * pipemesh.N.i
 navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t)
-
-
 
 hw = 1000.0 / res 
 with pipemesh.access(r_inc):
@@ -224,8 +223,8 @@ navier_stokes.solve(timestep=100.0)  # Stokes-like initial flow
 nodal_vorticity_from_v.solve()
 
 # +
-with pipemesh.access(v_stokes, v_soln):
-    v_stokes.data[...] = v_soln.data[...] 
+with pipemesh.access(v_soln_1):
+    v_soln_1.data[...] = 0.0 # v_soln.data[...] 
 
 with swarm.access(v_star, remeshed, X_0):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data) 
@@ -240,9 +239,6 @@ swarm.advection(v_soln.fn,
 
 # +
 # check the mesh if in a notebook / serial
-
-
-
 if uw.mpi.size==1:
 
     import numpy as np
@@ -272,7 +268,7 @@ if uw.mpi.size==1:
     with pipemesh.access():
         pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_soln_1.fn).dot(pipemesh.N.j), pipemesh.data)
 
     v_vectors = np.zeros((pipemesh.data.shape[0],3))
     v_vectors[:,0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -337,14 +333,7 @@ def plot_V_mesh(filename):
         # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0] 
 
         pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-        
-        with passive_swarm.access():
-            points = np.zeros((passive_swarm.data.shape[0],3))
-            points[:,0] = passive_swarm.data[:,0]
-            points[:,1] = passive_swarm.data[:,1]
-
-        point_cloud = pv.PolyData(points)
-        
+               
         points = np.zeros((pipemesh._centroids.shape[0],3))
         points[:,0] = pipemesh._centroids[:,0]
         points[:,1] = pipemesh._centroids[:,1]
@@ -353,7 +342,7 @@ def plot_V_mesh(filename):
 
         with pipemesh.access():
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-            pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+            pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_soln_1.fn).dot(pipemesh.N.j), pipemesh.data)
             pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
 
         with pipemesh.access():
@@ -387,20 +376,14 @@ def plot_V_mesh(filename):
 
         pl.add_mesh(pvstream)
         
-        pl.add_points(point_cloud, color="Black",
-                      render_points_as_spheres=True,
-                      point_size=5, opacity=0.5
-                    )
-        
-        pl.camera.SetPosition(0.75,0.2,1.5)
-        pl.camera.SetFocalPoint(0.75,0.2,0.0)
-        pl.camera.SetClippingRange(1.0,8.0)
-
-
         pl.remove_scalar_bar("Omega")
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
 
+        pl.camera.SetPosition(0.75,0.2,1.5)
+        pl.camera.SetFocalPoint(0.75,0.2,0.0)
+        pl.camera.SetClippingRange(1.0,8.0)
+        
         pl.screenshot(filename="{}.png".format(filename), window_size=(2560,1280), 
                       return_img=False)
         
@@ -410,42 +393,41 @@ def plot_V_mesh(filename):
 
        # pl.show()
 
+plot_V_mesh("test")
+
 ts = 0
-dt_ns = 1.0e-2
+dt_ns = 0.1
 swarm_loop = 5
 
 for step in range(0,250):
-    delta_t_swarm = 5.0 * navier_stokes.estimate_dt()
-    delta_t = min(delta_t_swarm, dt_ns)
+    delta_t_swarm = 10.0 * navier_stokes.estimate_dt()
+    delta_t =  delta_t_swarm # min(delta_t_swarm, dt_ns)
     
-    phi = delta_t / dt_ns 
+    phi = 1.0 # delta_t / dt_ns 
     
-    navier_stokes.solve(timestep=dt_ns, 
+    # with pipemesh.access(v_soln):
+    #     v_old = v_soln.data.copy()
+   
+    navier_stokes.solve(timestep=delta_t, 
                         zero_init_guess=False)
     
+    # Converging ?
+    
+    dv_fn = v_soln.fn - v_soln_1.fn
+    _,_,_,_,_,_,deltaV = pipemesh.stats(dv_fn.dot(dv_fn))
+    
+    with pipemesh.access(v_soln_1):
+        v_soln_1.data[...] = 0.5 * v_soln_1.data[...] + 0.5 * v_soln.data[...] 
+
     with swarm.access(v_star):
         v_star.data[...] = phi * uw.function.evaluate(v_soln.fn, swarm.data) + \
                            (1.0-phi) * v_star.data
-                
-    # update passive swarm
-    
-    passive_swarm.advection(v_soln.fn, 
-                            delta_t,
-                            corrector=False)
-
-    
-    npoints = 10
-    passive_swarm.dm.addNPoints(npoints)
-    with passive_swarm.access(passive_swarm.particle_coordinates):
-        for i in range(npoints):
-            passive_swarm.particle_coordinates.data[-1:-(npoints+1):-1,:] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints,2)))
-        
+                        
     # update integration swarm 
      
     swarm.advection(v_soln.fn, 
                     delta_t,
                     corrector=False)
-    
     
     # Restore a subset of points to start
     offset_idx = step%swarm_loop
@@ -462,9 +444,10 @@ for step in range(0,250):
     with swarm.access(v_star, remeshed):
         idx = np.where(remeshed.data == 1)[0]
         v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx]) 
+        
 
     if uw.mpi.rank==0:
-        print("Timestep {}, dt {}, phi {}".format(ts, delta_t, phi))
+        print("Iteration {}, dt {}, phi {}, deltaV {}".format(ts, delta_t, phi, deltaV))
                 
     if ts%1 == 0:
         nodal_vorticity_from_v.solve()
@@ -476,6 +459,10 @@ for step in range(0,250):
         # p_soln.save(savefile)
         # vorticity.save(savefile)
         # pipemesh.generate_xdmf(savefile)
+        
+    navier_stokes._u_star_projector.smoothing = navier_stokes.viscosity * 1.0e-6
+
+
 
     ts += 1
 
@@ -514,7 +501,7 @@ if uw.mpi.size==1:
     with pipemesh.access():
         pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_soln_1.fn).dot(pipemesh.N.j), pipemesh.data)
         pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
 
 
@@ -555,7 +542,7 @@ if uw.mpi.size==1:
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.033/U0, opacity=0.75)
 
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="Vmag",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="P",
                   use_transparency=False, opacity=1.0)
 
     
@@ -571,6 +558,9 @@ if uw.mpi.size==1:
     # pl.remove_scalar_bar("S")
     # pl.remove_scalar_bar("mag")
 
+    pl.camera.SetPosition(0.75,0.2,1.0)
+    pl.camera.SetFocalPoint(0.75,0.2,0.0)
+    print(pl.camera.GetPosition())
     pl.show()
 # +
 ## Pressure difference at front/rear of the cylinder should be 117
@@ -579,5 +569,9 @@ p = uw.function.evaluate(p_soln.fn, np.array([(0.15,0.2), (0.25,0.2)]))
 
 p[0]-p[1]
 # -
+pvmesh.point_data["dVy"].max()
 
 
+pvmesh.point_data["Vmag"].max()
+
+ 
