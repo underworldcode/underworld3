@@ -702,7 +702,7 @@ class Unstructured_Simplex_Box(MeshFromGmshFile):
                                             z=0, mesh_size=cell_size)
                 
                 if regular:
-                    geom.set_transfinite_surface(domain.surface, arrangement="", corner_pts=[])
+                    geom.set_transfinite_surface(domain.surface, arrangement="Alternate", corner_pts=[])
                 
                 geom.add_physical(domain.surface.curve_loop.curves[0], label="Bottom")
                 geom.add_physical(domain.surface.curve_loop.curves[1], label="Right")

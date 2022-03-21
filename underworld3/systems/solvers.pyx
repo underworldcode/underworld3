@@ -147,7 +147,7 @@ class SNES_Darcy(SNES_Scalar):
         dim = self.mesh.dim
         N   = self.mesh.N
 
-        darcy_flux = -self.k * (sympy.vector.gradient(self.u.fn) - self.s)
+        darcy_flux = self.k * (-sympy.vector.gradient(self.u.fn) + self.s)
 
         # f1 residual term (weighted integration) 
         self._f0 = self.F0 - self.f
@@ -229,7 +229,6 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def _setup_terms(self):
 
-        self._v_projector.bcs = self.bcs
         self._v_projector._setup_terms()
 
         super()._setup_terms()
