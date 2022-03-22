@@ -348,7 +348,8 @@ class Sphere(MeshFromGmshFile):
         self.cell_size = cell_size
 
         self.filename = "mesh.msh"
-        self._build_gmsh_file(self.radius_outer, 
+        self._build_gmsh_file(dim,
+                              self.radius_outer, 
                               self.radius_inner, 
                               self.cell_size, 
                               self.filename)
@@ -356,7 +357,7 @@ class Sphere(MeshFromGmshFile):
         super().__init__(filename=self.filename)
 
     @staticmethod
-    def _build_gmsh_file(radius_outer, radius_inner, cell_size, filename):
+    def _build_gmsh_file(dim, radius_outer, radius_inner, cell_size, filename):
 
         import gmsh
         
@@ -365,24 +366,56 @@ class Sphere(MeshFromGmshFile):
         gmsh.option.setNumber("General.Verbosity", 0)
         gmsh.model.add("Sphere")
 
-        ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_outer)
+        if dim == 2:
+
+            p0 = gmsh.model.geo.add_point(0,0,0, meshSize=cell_size)
+            p1 = gmsh.model.geo.add_point(radius_inner, 0., 0, meshSize=cell_size)
+            p2 = gmsh.model.geo.add_point(-radius_inner, 0, 0, meshSize=cell_size)
+
+            c1 = gmsh.model.geo.add_circle_arc(p1, p0, p2)
+            c2 = gmsh.model.geo.add_circle_arc(p2, p0, p1)
+
+            cl1 = gmsh.model.geo.add_curve_loop([c1, c2])
+            
+            gmsh.model.addPhysicalGroup(1, [c1, c2], cl1)
+            gmsh.model.setPhysicalName(1, cl1, "Lower")
+
+            p0 = gmsh.model.geo.add_point(0,0,0, meshSize=cell_size)
+            p1 = gmsh.model.geo.add_point(radius_outer, 0., 0, meshSize=cell_size)
+            p2 = gmsh.model.geo.add_point(-radius_outer, 0, 0, meshSize=cell_size)
+
+            c1 = gmsh.model.geo.add_circle_arc(p1, p0, p2)
+            c2 = gmsh.model.geo.add_circle_arc(p2, p0, p1)
+ 
+            cl2 = gmsh.model.geo.add_curve_loop([c1, c2])
+
+            s = gmsh.model.geo.add_plane_surface([cl1, cl2])
+
+            gmsh.model.addPhysicalGroup(1, [c1, c2], cl2)
+            gmsh.model.setPhysicalName(1, cl2, "Upper")
+
+            gmsh.model.geo.synchronize()
+
+        else:
+
+            ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_outer)
+
+            if radius_inner > 0.0:
+                ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_inner)
+                gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
+
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cell_size)
+            gmsh.model.occ.synchronize()
+
+            innerSurface, outerSurface = gmsh.model.getEntities(2)
+            gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], innerSurface[1])
+            gmsh.model.setPhysicalName(innerSurface[1], innerSurface[1], "Lower")
+            gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], outerSurface[1])
+            gmsh.model.setPhysicalName(outerSurface[1], outerSurface[1], "Upper")
+
+            gmsh.model.occ.synchronize()
         
-        if radius_inner > 0.0:
-            ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radius_inner)
-            gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
-
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cell_size)
-        gmsh.model.occ.synchronize()
-
-        innerSurface, outerSurface = gmsh.model.getEntities(2)
-        gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], innerSurface[1])
-        gmsh.model.setPhysicalName(innerSurface[1], innerSurface[1], "Inner Surface")
-        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], outerSurface[1])
-        gmsh.model.setPhysicalName(outerSurface[1], outerSurface[1], "Outer Surface")
-
-        gmsh.model.occ.synchronize()
-        gmsh.model.mesh.generate(3)
-
+        gmsh.model.mesh.generate(dim)
         gmsh.write(filename)
         gmsh.finalize()
 
