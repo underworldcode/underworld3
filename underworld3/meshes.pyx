@@ -40,7 +40,7 @@ class MeshFromGmshFile(MeshClass):
         self.degree = degree
 
         options = PETSc.Options()
-        self.dm = PETSc.DMPlex().createFromFile(self.filename)
+        self.dm = PETSc.DMPlex().createFromFile(self.filename, interpolate=True)
 
         part = self.dm.getPartitioner()
         part.setFromOptions()
@@ -68,7 +68,7 @@ class MeshFromGmshFile(MeshClass):
             label = self.dm.getLabel(name)
             
             if indexSet:
-                label.insertIS(indexSet, tag)
+                label.insertIS(indexSet, 1)
             indexSet.destroy()
 
         if self.verbose:
@@ -102,10 +102,12 @@ class Box(MeshFromGmshFile):
     @timing.routine_timer_decorator
     def __init__(self, 
                 elementRes   :Optional[Tuple[  int,  int,  int]] = (16, 16), 
+                cell_size    :Optional[float] = None,
                 minCoords    :Optional[Tuple[float,float,float]] = None,
                 maxCoords    :Optional[Tuple[float,float,float]] = None,
                 simplex      :Optional[bool]                     = False,
-                degree       :Optional[int]                      = 1
+                degree       :Optional[int]                      = 1,
+                regular      :Optional[bool]  = True,
                 ):
         """
         Generates a 2 or 3-dimensional box mesh.
@@ -124,29 +126,33 @@ class Box(MeshFromGmshFile):
         """
         
         self.elementRes = elementRes
+        self.cell_size = cell_size
         self.simplex = simplex
-        
-        if minCoords==None : minCoords=len(elementRes)*(0.,)
+        self.regular = regular
+
         self.minCoords = minCoords
-        
-        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
         self.maxCoords = maxCoords
 
         self.filename = "mesh.msh"
-        self._build_gmsh_file(self.elementRes, 
+        self._build_gmsh_file(self.elementRes,
+                              self.cell_size, 
                               self.minCoords, 
                               self.maxCoords, 
                               self.simplex,
+                              self.regular,
                               self.filename)
         
         super().__init__(filename=self.filename)
 
     @staticmethod
-    def _build_gmsh_file(elementRes, minCoords, maxCoords, simplex, filename):
+    def _build_gmsh_file(elementRes, cell_size, minCoords, maxCoords, simplex, regular, filename):
     
         import gmsh
 
-        lc=0.1
+        if cell_size:
+            lc = cell_size
+        else:
+            lc = 0.1
         
         gmsh.initialize()
         gmsh.option.setNumber("Mesh.SaveAll", 1)
@@ -196,6 +202,11 @@ class Box(MeshFromGmshFile):
                 gmsh.model.mesh.set_transfinite_curve(tag=l4, numNodes=ny+1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_surface(tag=surface, arrangement="Left", cornerTags=[p1,p2,p3,p4])
                 gmsh.model.mesh.set_recombine(2, surface) 
+
+            else:
+                if regular:
+                    gmsh.model.mesh.set_transfinite_surface(surface, arrangement="Alternate", cornerTags=[p1,p2,p3,p4])
+
                 
         if dim == 3:
             
@@ -289,7 +300,7 @@ class Box(MeshFromGmshFile):
                 gmsh.model.mesh.set_recombine(2, left)
 
                 gmsh.model.mesh.set_transfinite_volume(volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7])        
-                
+            
         # Generate Mesh
         gmsh.model.mesh.generate(dim) 
         gmsh.write(filename)
