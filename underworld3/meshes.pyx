@@ -62,14 +62,14 @@ class MeshFromGmshFile(MeshClass):
             name = gmsh.model.get_physical_name(dim, tag)
             
             physical_groups[name] = tag
-            indexSet = self.dm.getStratumIS("Face Sets", tag)
-
             self.dm.createLabel(name)
             label = self.dm.getLabel(name)
             
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
+            for elem in ["Face Sets", "Vertex Sets"]:
+                indexSet = self.dm.getStratumIS(elem, tag)
+                if indexSet:
+                    label.insertIS(indexSet, 1)
+                indexSet.destroy()
 
         if self.verbose:
             self.dm.view()
@@ -191,6 +191,11 @@ class Box(MeshFromGmshFile):
             gmsh.model.set_physical_name(1, l3, "Top")
             gmsh.model.add_physical_group(1, [l4] , l4)
             gmsh.model.set_physical_name(1, l4, "Left")
+
+            gmsh.model.addPhysicalGroup(0, [p1, p2], l1)
+            gmsh.model.setPhysicalName(0, l1, "Bottom")
+            gmsh.model.addPhysicalGroup(0, [p3, p4], l3)
+            gmsh.model.setPhysicalName(0, l3, "Top")
 
             if not simplex:
                 
