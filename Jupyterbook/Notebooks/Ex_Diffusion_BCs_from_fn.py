@@ -2,7 +2,6 @@
 
 # +
 from petsc4py import PETSc
-import mpi4py
 import underworld3 as uw
 from underworld3.systems import Poisson
 import numpy as np
@@ -119,7 +118,7 @@ poisson.solve()
 # +
 # check the mesh if in a notebook / serial
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
     
     import numpy as np
     import pyvista as pv

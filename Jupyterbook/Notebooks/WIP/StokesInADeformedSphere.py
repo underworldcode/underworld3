@@ -4,7 +4,6 @@
 
 # +
 
-import mpi4py
 import pygmsh
 import meshio
 
@@ -53,7 +52,7 @@ meshball = uw.meshes.SphericalShell(dim=3,
 # -
 
 
-if mpi4py.MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank==0:
 
     with pygmsh.geo.Geometry() as geom:
 
@@ -101,8 +100,7 @@ R_h.shape
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -147,8 +145,7 @@ meshball.meshio.points[:,1] = coords[:,1]
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -302,9 +299,8 @@ vr_mesh.shape
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -441,9 +437,8 @@ for it in range(0,10):
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

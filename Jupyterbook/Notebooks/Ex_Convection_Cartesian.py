@@ -21,15 +21,15 @@ import sympy
 
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
+meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0,0.0), 
+                                             maxCoords=(1.0,1.0,1.0), cell_size=1.0/32.0, regular=True)
 meshbox.dm.view()   
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -111,7 +111,7 @@ y = meshbox.N.y
 k = 1.0
 h = 0.0 
 
-adv_diff = uw.systems.AdvDiffusion(meshbox, 
+adv_diff = uw.systems.AdvDiffusionSLCN(meshbox, 
                                    u_Field=t_soln, 
                                    V_Field=v_soln,
                                    solver_name="adv_diff", 
@@ -149,12 +149,13 @@ stokes.solve()
 adv_diff.solve(timestep=0.01*stokes.estimate_dt())
 
 
+
+
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -202,9 +203,8 @@ adv_diff.petsc_options["pc_gamg_agg_nsmooths"]= 5
 
 def plot_T_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -242,8 +242,7 @@ def plot_T_mesh(filename):
 
         pl = pv.Plotter()
 
-
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+        pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
 
         pl.add_points(point_cloud, cmap="coolwarm", 
                       render_points_as_spheres=False,
@@ -259,6 +258,7 @@ def plot_T_mesh(filename):
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280,1280), 
                       return_img=False)
         # pl.show()
+        pl.close()
 
 # +
 # Convection model / update in time
@@ -275,7 +275,7 @@ for step in range(0,250):
     tstats = t_soln.stats()
     
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
 #         print(tstats)
         
@@ -299,9 +299,8 @@ for step in range(0,250):
 
 # +
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

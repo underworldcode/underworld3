@@ -140,9 +140,8 @@ adv_diff.solve(timestep=delta_t) # , coords=coords)
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -199,9 +198,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
 def plot_T_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -294,7 +292,7 @@ for step in range(1,21):
     
     tstats = t_soln.stats()    
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
         print(tstats)
         
@@ -311,9 +309,8 @@ for step in range(1,21):
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -371,5 +368,7 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
 # -
+adv_diff._f0
+
 
 

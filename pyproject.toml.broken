@@ -1,3 +1,0 @@
-[build-system]
-build-backend = "setuptools.build_meta"
-requires = ["setuptools", "pip", "Cython", "petsc4py", "mpi4py", "numpy>=1.20"]

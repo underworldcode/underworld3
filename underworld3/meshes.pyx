@@ -155,8 +155,10 @@ class MeshFromGmshFile(MeshClass):
         # options["dm_plex_separate_marker"] = None # this is never used and flags errors for mpirun
 
         self.dm =  PETSc.DMPlex().createFromFile(filename)
-        self.meshio = meshio.read(filename)
 
+        # if the gmsh file contains periodic boundaries, we also are supposed to call this: DMLocalizeCoordinates()
+
+        self.meshio = meshio.read(filename)
 
         part = self.dm.getPartitioner()
         part.setFromOptions()
@@ -700,7 +702,7 @@ class Unstructured_Simplex_Box(MeshFromGmshFile):
                                             z=0, mesh_size=cell_size)
                 
                 if regular:
-                    geom.set_transfinite_surface(domain.surface, arrangement="", corner_pts=[])
+                    geom.set_transfinite_surface(domain.surface, arrangement="Alternate", corner_pts=[])
                 
                 geom.add_physical(domain.surface.curve_loop.curves[0], label="Bottom")
                 geom.add_physical(domain.surface.curve_loop.curves[1], label="Right")

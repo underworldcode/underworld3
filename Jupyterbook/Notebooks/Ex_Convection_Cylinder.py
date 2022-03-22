@@ -36,9 +36,8 @@ meshball = uw.meshes.SphericalShell(dim=2,
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:    
+if uw.mpi.size==1:    
     import numpy as np
     import pyvista as pv
     import vtk
@@ -159,9 +158,8 @@ adv_diff.solve(timestep=0.01*stokes.estimate_dt())
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -209,9 +207,8 @@ adv_diff.petsc_options["pc_gamg_agg_nsmooths"]= 1
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv
@@ -249,9 +246,8 @@ if mpi4py.MPI.COMM_WORLD.size==1:
 
 def plot_T_mesh(filename):
 
-    import mpi4py
 
-    if mpi4py.MPI.COMM_WORLD.size==1:
+    if uw.mpi.size==1:
 
         import numpy as np
         import pyvista as pv
@@ -322,7 +318,7 @@ for step in range(0,25):
     tstats = t_soln.stats()
     
     
-    if mpi4py.MPI.COMM_WORLD.rank==0:
+    if uw.mpi.rank==0:
         print("Timestep {}, dt {}".format(step, delta_t))
 #         print(tstats)
         
@@ -346,9 +342,8 @@ for step in range(0,25):
 
 # +
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size==1:
+if uw.mpi.size==1:
 
     import numpy as np
     import pyvista as pv

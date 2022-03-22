@@ -216,6 +216,47 @@ class SwarmVariable(_api_tools.Stateful):
         return self._meshVar.fn
 
 
+    @timing.routine_timer_decorator
+    def save(self, filename : str,
+                   name     : Optional[str] = None,
+                   index    : Optional[int] = None):
+        """
+        Append variable data to the specified mesh 
+        checkpoint file. The file must already exist.
+
+        For swarm data, we currently save the proxy 
+        variable (so this will fail if the variable has
+        no proxy value). This allows some form of 
+        reconstruction of the information on a swarm
+        even if it is not an exact mapping. 
+
+        This is not ideal for discontinuous fields.
+
+        Parameters
+        ----------
+        filename :
+            The filename of the mesh checkpoint file. It
+            must already exist.
+        name :
+            Textual name for dataset. In particular, this
+            will be used for XDMF generation. If not 
+            provided, the variable name will be used. 
+        index :
+            Not currently supported. An optional index which 
+            might correspond to the timestep (for example).
+        """
+
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            print("No proxy mesh variable that can be saved")
+            return
+
+        self._meshVar.save(filename, name, index)
+
+        return
+
+
+
 #@typechecked
 class Swarm(_api_tools.Stateful):
 
@@ -304,7 +345,7 @@ class Swarm(_api_tools.Stateful):
 
         
         if layout==None:
-            if self.mesh.isSimplex==True and self.dim == 2:
+            if self.mesh.isSimplex==True and self.dim == 2 and fill_param > 1:
                 layout=SwarmPICLayout.REGULAR
             else:
                 layout=SwarmPICLayout.GAUSS
@@ -456,7 +497,7 @@ class Swarm(_api_tools.Stateful):
                   V_fn, 
                   delta_t, 
                   order = 2,
-                  corrector=True,
+                  corrector=False,
                   restore_points_to_domain_func = None
                   ):
 
@@ -465,12 +506,20 @@ class Swarm(_api_tools.Stateful):
         # Use current velocity to estimate where the particles would have
         # landed in an implicit step.
 
+        # ? how does this interact with the particle restoration function ?
+
         if corrector == True and not self._X0_uninitialised:
             with self.access(self.particle_coordinates):
                 v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
-                updated_current_coords = 0.5 * (X0.data + delta_t * v_at_Vpts + self.data)
+
+                corrected_position = X0.data + delta_t * v_at_Vpts
+                if restore_points_to_domain_func is not None:
+                    corrected_position = restore_points_to_domain_func(corrected_position) 
+
+                updated_current_coords = 0.5 * (corrected_position + self.data)
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
+                
                 if restore_points_to_domain_func is not None:
                     updated_current_coords = restore_points_to_domain_func(updated_current_coords)
 
@@ -525,3 +574,8 @@ class Swarm(_api_tools.Stateful):
                 self.data[...] = new_coords
 
         return
+
+
+
+
+ 

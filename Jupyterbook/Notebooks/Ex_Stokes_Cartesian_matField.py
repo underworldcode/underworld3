@@ -24,7 +24,7 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 n_els = 32
 minCoord = (-1,-1)
 maxCoord = (1,1)
-mesh = uw.mesh.Box(elementRes=(n_els,n_els),
+mesh = uw.meshes.Box(elementRes=(n_els,n_els),
                minCoords=minCoord, 
                maxCoords=maxCoord )
 # %%

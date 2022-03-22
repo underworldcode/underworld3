@@ -28,7 +28,7 @@ t_soln  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
 
 # Create Poisson object
 poisson = Poisson(mesh, u_Field=t_soln)
-poisson.k = 1.0 # + 0.1 * t_soln.fn**1.5
+poisson.k = 1.0 
 poisson.f = f
 
 poisson.petsc_options["snes_rtol"] = 1.0e-6
@@ -42,9 +42,6 @@ abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise( ( t_i,  abs_r < 0.5*(r_i+r_o) ),
                       ( t_o,                 True ) )
 poisson.add_dirichlet_bc( bc, "All_dm_boundaries" )
-
-# %%
-bc
 
 # %%
 poisson.solve()
