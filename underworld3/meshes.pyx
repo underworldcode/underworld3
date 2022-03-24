@@ -21,30 +21,64 @@ import underworld3.timing as timing
 
 tmpdir = gettempdir()
 
-class MeshFromGmshFile(MeshClass):
+@PETSc.Log.EventDecorator()
+def _from_gmsh(filename, comm=None):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+    comm = comm or MPI.COMM_WORLD
+    # Create a read-only PETSc.Viewer
+    gmsh_viewer = PETSc.Viewer().create(comm=comm)
+    gmsh_viewer.setType("ascii")
+    gmsh_viewer.setFileMode("r")
+    gmsh_viewer.setFileName(filename)
+    gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+
+    return gmsh_plex
+
+
+@PETSc.Log.EventDecorator()
+def _from_exodus(filename, comm):
+    """Read an Exodus .e or .exo file from `filename`.
+
+    :arg comm: communicator to build the mesh on.
+    """
+    plex = PETSc.DMPlex().createExodusFromFile(filename, comm=comm)
+
+    return plex
+
+
+@PETSc.Log.EventDecorator()
+def _from_cgns(filename, comm):
+    """Read a CGNS .cgns file from `filename`.
+
+    :arg comm: communicator to build the mesh on.
+    """
+    plex = PETSc.DMPlex().createCGNSFromFile(filename, comm=comm)
+    return plex
+
+
+class Mesh(MeshClass):
 
     @timing.routine_timer_decorator
     def __init__(self,
                  filename      :str,
                  verbose       :bool  = False,
-                 degree        :int = 1
+                 degree        :int = 1,
+                 comm = None
                 ):
         """
-        This is a generic mesh class for which users will provide 
-        the mesh as a gmsh (.msh) file.
-
-            - the file pointed to by filename needs to be a .msh file 
-            - labels are extracted from the gmsh file "physical labels"
-            - Note that the PETSc gmsh reader does not honour membership of multiple 
-              physical groups as indicated in a gmsh file - only the first one is used 
-
         """
         self.verbose = verbose
         self.filename = filename
         self.degree = degree
 
+        comm = comm or MPI.COMM_WORLD
+
         options = PETSc.Options()
-        self.dm = PETSc.DMPlex().createFromFile(self.filename, interpolate=True)
+        self.dm = _from_gmsh(filename, comm)
 
         part = self.dm.getPartitioner()
         part.setFromOptions()
@@ -101,7 +135,7 @@ class MeshFromGmshFile(MeshClass):
         return vtk_filename
 
 
-class UnstructuredBox(MeshFromGmshFile):
+class Unstructured_Simplex_Box(Mesh):
   
     @timing.routine_timer_decorator
     def __init__(self, 
@@ -258,7 +292,7 @@ class UnstructuredBox(MeshFromGmshFile):
         gmsh.finalize()
 
 
-class StructuredBox(MeshFromGmshFile):
+class Structured_Quad_Box(Mesh):
   
     @timing.routine_timer_decorator
     def __init__(self, 
@@ -449,7 +483,7 @@ class StructuredBox(MeshFromGmshFile):
         gmsh.finalize()
 
 
-class Sphere(MeshFromGmshFile):
+class SphericalShell(Mesh):
   
     @timing.routine_timer_decorator
     def __init__(self, 
@@ -519,7 +553,7 @@ class Sphere(MeshFromGmshFile):
         gmsh.finalize()
 
 
-class Annulus(MeshFromGmshFile):
+class Annulus(Mesh):
   
     @timing.routine_timer_decorator
     def __init__(self, 
