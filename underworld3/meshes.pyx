@@ -585,37 +585,36 @@ class Annulus(Mesh):
         import gmsh
         
         gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.option.setNumber("General.Verbosity", 0)
         gmsh.model.add("Annulus")
+        
 
-        p0 = gmsh.model.geo.add_point(0,0,0, meshSize=cell_size)
-        p1 = gmsh.model.geo.add_point(radius_inner, 0., 0, meshSize=cell_size)
-        p2 = gmsh.model.geo.add_point(-radius_inner, 0, 0, meshSize=cell_size)
+        p1 = gmsh.model.geo.add_point(0.0,0.0,0.0, meshSize=cell_size)
+        p2 = gmsh.model.geo.add_point(radius_inner, 0.0, 0.0, meshSize=cell_size)
+        p3 = gmsh.model.geo.add_point(-radius_inner, 0.0, 0.0, meshSize=cell_size)
 
-        c1 = gmsh.model.geo.add_circle_arc(p1, p0, p2)
-        c2 = gmsh.model.geo.add_circle_arc(p2, p0, p1)
+        c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
+        c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
 
         cl1 = gmsh.model.geo.add_curve_loop([c1, c2])
         
+        p4 = gmsh.model.geo.add_point(radius_outer, 0.0, 0.0, meshSize=cell_size)
+        p5 = gmsh.model.geo.add_point(-radius_outer, 0.0, 0.0, meshSize=cell_size)
+
+        c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
+        c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
+ 
+        cl2 = gmsh.model.geo.add_curve_loop([c3, c4])
+        
+        s = gmsh.model.geo.add_plane_surface([cl2, cl1])        
+        gmsh.model.geo.synchronize()
+        
         gmsh.model.addPhysicalGroup(1, [c1, c2], cl1)
         gmsh.model.setPhysicalName(1, cl1, "Lower")
-
-        p0 = gmsh.model.geo.add_point(0,0,0, meshSize=cell_size)
-        p1 = gmsh.model.geo.add_point(radius_outer, 0., 0, meshSize=cell_size)
-        p2 = gmsh.model.geo.add_point(-radius_outer, 0, 0, meshSize=cell_size)
-
-        c1 = gmsh.model.geo.add_circle_arc(p1, p0, p2)
-        c2 = gmsh.model.geo.add_circle_arc(p2, p0, p1)
- 
-        cl2 = gmsh.model.geo.add_curve_loop([c1, c2])
-
-        s = gmsh.model.geo.add_plane_surface([cl1, cl2])
-
-        gmsh.model.addPhysicalGroup(1, [c1, c2], cl2)
+        gmsh.model.addPhysicalGroup(1, [c3, c4], cl2)
         gmsh.model.setPhysicalName(1, cl2, "Upper")
-
-        gmsh.model.geo.synchronize()
+        gmsh.model.addPhysicalGroup(2, [s], s)
+        gmsh.model.setPhysicalName(2, s, "Elements")
 
         gmsh.model.mesh.generate(2)
         gmsh.write(filename)
