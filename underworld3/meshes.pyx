@@ -93,6 +93,7 @@ class Mesh(MeshClass):
             gmsh.option.setNumber("General.Verbosity", 0)     
         
         gmsh.open(self.filename)
+        meshdim = self.dm.getDimension()
 
         # Extract Physical groups from the gmsh file
         physical_groups = {}
@@ -102,12 +103,25 @@ class Mesh(MeshClass):
             physical_groups[name] = tag
             self.dm.createLabel(name)
             label = self.dm.getLabel(name)
-            
-            for elem in ["Face Sets", "Vertex Sets"]:
-                indexSet = self.dm.getStratumIS(elem, tag)
+
+            if dim == 0:
+                indexSet = self.dm.getStratumIS("Vertex Sets", tag)
                 if indexSet:
                     label.insertIS(indexSet, 1)
-                indexSet.destroy()
+
+            if (meshdim == 2 and dim == 1) or (meshdim == 3 and dim == 2):
+                
+                indexSet = self.dm.getStratumIS("Face Sets", tag)
+                if indexSet:
+                    label.insertIS(indexSet, 1)
+
+            if (meshdim == 2 and dim == 2) or (meshdim == 3 and dim == 3):
+                
+                indexSet = self.dm.getStratumIS("Cell Sets", tag)
+                if indexSet:
+                    label.insertIS(indexSet, 1)
+            
+            indexSet.destroy()
 
         if self.verbose:
             self.dm.view()
@@ -116,24 +130,7 @@ class Mesh(MeshClass):
 
         gmsh.finalize()
 
-        self.vtk = self._convert2vtk(self.filename) 
-
         super().__init__(simplex=self.simplex, degree=self.degree)
-
-    @staticmethod
-    def _convert2vtk(filename):
-        import gmsh
-        gmsh_filename = filename
-        vtk_filename = filename.split(".")[0] + ".vtk"
-
-        gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
-        gmsh.option.setNumber("General.Verbosity", 0)
-        gmsh.open(gmsh_filename)
-        gmsh.write(vtk_filename) 
-        gmsh.finalize()
-        return vtk_filename
-
 
 class Unstructured_Simplex_Box(Mesh):
   
@@ -181,7 +178,6 @@ class Unstructured_Simplex_Box(Mesh):
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.option.setNumber("General.Verbosity", 0)
         gmsh.model.add("Box")
         
@@ -205,7 +201,7 @@ class Unstructured_Simplex_Box(Mesh):
 
             cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
             surface = gmsh.model.geo.add_plane_surface([cl])
-
+            
             gmsh.model.geo.synchronize()
 
             # Add Physical groups
@@ -222,6 +218,9 @@ class Unstructured_Simplex_Box(Mesh):
             gmsh.model.setPhysicalName(0, l1, "Bottom")
             gmsh.model.addPhysicalGroup(0, [p3, p4], l3)
             gmsh.model.setPhysicalName(0, l3, "Top")
+
+            gmsh.model.addPhysicalGroup(2, [surface], surface)
+            gmsh.model.setPhysicalName(2, surface, "Elements")
 
             if regular:
                 gmsh.model.mesh.set_transfinite_surface(surface, arrangement="Alternate", cornerTags=[p1,p2,p3,p4])
@@ -285,6 +284,9 @@ class Unstructured_Simplex_Box(Mesh):
             gmsh.model.set_physical_name(2, right, "Right")
             gmsh.model.add_physical_group(2, [left] , left)
             gmsh.model.set_physical_name(2, left, "Left")
+
+            gmsh.model.addPhysicalGroup(3, [volume], volume)
+            gmsh.model.setPhysicalName(3, volume, "Elements")
             
         # Generate Mesh
         gmsh.model.mesh.generate(dim) 
@@ -335,7 +337,7 @@ class Structured_Quad_Box(Mesh):
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
+        #gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.option.setNumber("General.Verbosity", 0)
         gmsh.model.add("Box")
         
@@ -377,6 +379,9 @@ class Structured_Quad_Box(Mesh):
             gmsh.model.addPhysicalGroup(0, [p3, p4], l3)
             gmsh.model.setPhysicalName(0, l3, "Top")
 
+            gmsh.model.add_physical_group(2, [surface] , surface)
+            gmsh.model.set_physical_name(2, surface, "Elements")
+
             nx, ny = elementRes
 
             gmsh.model.mesh.set_transfinite_curve(tag=l1, numNodes=nx+1, meshType="Progression", coef=1.0)
@@ -385,6 +390,7 @@ class Structured_Quad_Box(Mesh):
             gmsh.model.mesh.set_transfinite_curve(tag=l4, numNodes=ny+1, meshType="Progression", coef=1.0)
             gmsh.model.mesh.set_transfinite_surface(tag=surface, arrangement="Left", cornerTags=[p1,p2,p3,p4])
             gmsh.model.mesh.set_recombine(2, surface) 
+            
 
         else:
             
@@ -527,7 +533,6 @@ class SphericalShell(Mesh):
         import gmsh
         
         gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.option.setNumber("General.Verbosity", 0)
         gmsh.model.add("Sphere")
 
@@ -541,10 +546,13 @@ class SphericalShell(Mesh):
         gmsh.model.occ.synchronize()
 
         innerSurface, outerSurface = gmsh.model.getEntities(2)
+        volume = gmsh.model.getEntities(3)[0]
         gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], innerSurface[1])
         gmsh.model.setPhysicalName(innerSurface[1], innerSurface[1], "Lower")
         gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], outerSurface[1])
         gmsh.model.setPhysicalName(outerSurface[1], outerSurface[1], "Upper")
+        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
+        gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
 
         gmsh.model.occ.synchronize()
         

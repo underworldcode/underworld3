@@ -350,6 +350,15 @@ class MeshClass(_api_tools.Stateful):
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
         viewer(self.dm)
+
+
+    def vtk(self, filename: str):
+        """
+        Save mesh to the specified file
+        """
+
+        viewer = PETSc.Viewer().createVTK(filename, "w", comm=MPI.COMM_WORLD)
+        viewer(self.dm)
     
     def generate_xdmf(self, filename:str):
         """
