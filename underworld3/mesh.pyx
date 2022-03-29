@@ -36,6 +36,29 @@ def _from_gmsh(filename, comm=None):
     gmsh_viewer.setFileMode("r")
     gmsh_viewer.setFileName(filename)
     gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+                
+    # Extract Physical groups from the gmsh file
+    import gmsh
+    gmsh.initialize()
+    gmsh.model.add("Model")
+    gmsh.open(filename)
+
+    physical_groups = {}
+    for dim, tag in gmsh.model.get_physical_groups():
+
+        name = gmsh.model.get_physical_name(dim, tag)
+        
+        physical_groups[name] = tag
+        gmsh_plex.createLabel(name)
+        label = gmsh_plex.getLabel(name)
+        
+        for elem in ["Face Sets"]:
+            indexSet = gmsh_plex.getStratumIS(elem, tag)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+    gmsh.finalize()
 
     return gmsh_plex
 
@@ -57,6 +80,7 @@ class Mesh(_api_tools.Stateful):
 
             if ext.lower() == '.msh':
                 self.dm = _from_gmsh(meshfile, comm)
+
             else:
                 raise RuntimeError("Mesh file %s has unknown format '%s'."
                                    % (meshfile, ext[1:]))
