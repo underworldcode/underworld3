@@ -12,6 +12,7 @@ from petsc4py import PETSc
 
 from   underworld3.mesh import Mesh
 
+
 def UnstructuredSimplexBox(
         minCoords: Tuple = (0., 0.),
         maxCoords: Tuple = (1.0, 1.0),
@@ -159,9 +160,24 @@ def UnstructuredSimplexBox(
  
 
 def StructuredQuadBox(
-        elementRes: Tuple = (4, 4), 
-        minCoords:  Tuple = (0., 0.), 
-        maxCoords:  Tuple = (1.0, 1.0)):
+        elementRes: Optional[Tuple[  int,  int,  int]] = (16, 16), 
+        minCoords:  Optional[Tuple[float,float,float]] = None,
+        maxCoords:  Optional[Tuple[float,float,float]] = None):
+
+    """
+    Generates a 2 or 3-dimensional box mesh.
+
+    Parameters
+    ----------
+    elementRes:
+        Tuple specifying number of elements in each axis direction.
+    minCoord:
+        Optional. Tuple specifying minimum mesh location.
+    maxCoord:
+        Optional. Tuple specifying maximum mesh location.
+    """
+    if minCoords==None : minCoords=len(elementRes)*(0.,)
+    if maxCoords==None : maxCoords=len(elementRes)*(1.,)
     
     import gmsh
 
