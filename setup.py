@@ -74,8 +74,8 @@ extensions = [
               sources = ['underworld3/mesh.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    Extension('underworld3.meshes',  # This would be pure python if not for the MeshFromCellList dmplex shenanigans
-              sources = ['underworld3/meshes.pyx',],
+    Extension('underworld3.util_mesh',  # This would be pure python if not for the MeshFromCellList dmplex shenanigans
+              sources = ['underworld3/util_mesh.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
     Extension('underworld3.maths',

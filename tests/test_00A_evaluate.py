@@ -24,24 +24,22 @@ def tensor_product(order, val1, val2):
             sum+= val1**i*val2**j
     return sum
 
-
-
 def test_non_uw_variable_constant():
     result = fn.evaluate(sympy.sympify(1.5), coords)
     assert np.allclose(1.5, result, rtol=1e-05, atol=1e-08)
 
 def test_non_uw_variable_linear():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     result = fn.evaluate(mesh.r[0],coords)
     assert np.allclose(x, result, rtol=1e-05, atol=1e-08)
 
 def test_non_uw_variable_sine():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     result = fn.evaluate(sympy.sin(mesh.r[1]),coords)
     assert np.allclose(np.sin(y), result, rtol=1e-05, atol=1e-08)
 
 def test_single_scalar_variable():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     var  = uw.mesh.MeshVariable(name="var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
     with mesh.access(var):
         var.data[:]=1.1
@@ -49,7 +47,7 @@ def test_single_scalar_variable():
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
 
 def test_single_vector_variable():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     var  = uw.mesh.MeshVariable(name="var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
     with mesh.access(var):
         var.data[:]=(1.1,1.2)
@@ -57,7 +55,7 @@ def test_single_vector_variable():
     assert np.allclose(np.array(((1.1,1.2),)), result, rtol=1e-05, atol=1e-08)
    
 def test_scalar_vector_mult():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     var_scalar  = uw.mesh.MeshVariable(name="var_scalar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
     var_vector  = uw.mesh.MeshVariable(name="var_vector", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
     with mesh.access(var_scalar, var_vector):
@@ -67,7 +65,7 @@ def test_scalar_vector_mult():
     assert np.allclose(np.array(((12.,15),)), result, rtol=1e-05, atol=1e-08)
 
 def test_vector_dot_product():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     var_vector1  = uw.mesh.MeshVariable(name="var_vector1", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
     var_vector2  = uw.mesh.MeshVariable(name="var_vector2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
     with mesh.access(var_vector1, var_vector2):
@@ -78,7 +76,7 @@ def test_vector_dot_product():
 
 
 def test_many_many_scalar_mult_var():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     # Note that this test fails for n>~15. Something something subdm segfault. 
     # Must investigate.
     nn=15
@@ -100,7 +98,7 @@ def test_many_many_scalar_mult_var():
 # that test needs to be able to take degree as a parameter...
 def test_polynomial_mesh_var_degree():
 
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     maxdegree = 10
     vars = []
 
@@ -126,7 +124,7 @@ def test_polynomial_mesh_var_degree():
 # to Sympy's `lambdify` routine. 
 def test_polynomial_sympy():
     degree = 20
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     assert np.allclose(tensor_product(degree, coords[:,0], coords[:,1]), uw.function.evaluate( tensor_product(degree, mesh.r[0], mesh.r[1]) , coords ), rtol=1e-05, atol=1e-08)
 
 
@@ -137,7 +135,7 @@ def test_polynomial_sympy():
 # We'll also do it twice, once using (xvar,yvar), and
 # another time using (xyvar[0], xyvar[1]).
 def test_polynomial_mesh_var_sympy():
-    mesh = uw.meshes.Box()
+    mesh = uw.util_mesh.StructuredQuadBox()
     xvar = uw.mesh.MeshVariable(name="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
     yvar = uw.mesh.MeshVariable(name="yvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR )
     xyvar = uw.mesh.MeshVariable(name="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR )
@@ -166,7 +164,7 @@ def test_3d_cross_product():
     coords = np.vstack((xv[0,:,0],yv[:,0,0],zv[0,0,:])).T
     
     # Now mesh and vars etc. 
-    mesh = uw.meshes.Box(elementRes=(4,)*3)
+    mesh = uw.util_mesh.StructuredQuadBox(elementRes=(4,)*3)
     name = "vector cross product test"
     var_vector1  = uw.mesh.MeshVariable(name="var_vector1", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR )
     var_vector2  = uw.mesh.MeshVariable(name="var_vector2", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR )
