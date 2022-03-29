@@ -12,11 +12,11 @@ from petsc4py import PETSc
 
 from   underworld3.mesh import Mesh
 
-def Unstructured_Simplex_Box(
-                minCoords    :Tuple = (0., 0.),
-                maxCoords    :Tuple = (1.0, 1.0),
-                cellSize    :float = 0.1,
-                regular      :bool  = True):
+def UnstructuredSimplexBox(
+        minCoords: Tuple = (0., 0.),
+        maxCoords: Tuple = (1.0, 1.0),
+        cellSize:  float = 0.1,
+        regular:   bool  = True):
   
     """
     Generates a 2 or 3-dimensional box mesh.
@@ -158,7 +158,10 @@ def Unstructured_Simplex_Box(
     return Mesh(plex, simplex=True)
  
 
-def Structured_Quad_Box(elementRes, minCoords, maxCoords):
+def StructuredQuadBox(
+        elementRes: Tuple = (4, 4), 
+        minCoords:  Tuple = (0., 0.), 
+        maxCoords:  Tuple = (1.0, 1.0)):
     
     import gmsh
 
@@ -332,7 +335,10 @@ def Structured_Quad_Box(elementRes, minCoords, maxCoords):
     return Mesh(plex, simplex=False)
 
 
-def SphericalShell(radiusOuter, radiusInner, cellSize):
+def SphericalShell(
+        radiusOuter: float=1.0,
+        radiusInner: float=0.1,
+        cellSize:    float=0.1):
 
     boundaries = {
      "Lower": 1,
@@ -385,7 +391,10 @@ def SphericalShell(radiusOuter, radiusInner, cellSize):
     return Mesh(plex, simplex=True)
 
 
-def Annulus(radiusOuter, radiusInner, cellSize):
+def Annulus(
+        radiusOuter: float = 1.0, 
+        radiusInner: float = 0.3, 
+        cellSize:    float = 0.1):
 
     boundaries = {
      "Lower": 1,
@@ -445,7 +454,10 @@ def Annulus(radiusOuter, radiusInner, cellSize):
     return Mesh(plex, simplex=True)
 
 
-def CubicSphere(radiusOuter, radiusInner, numElements=20):
+def CubicSphere(
+        radiusOuter: float = 1.0, 
+        radiusInner: float = 0.3, 
+        numElements: int = 20):
 
     boundaries = {
      "Lower": 1,
