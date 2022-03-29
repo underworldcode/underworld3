@@ -22,7 +22,7 @@ class SNES_Poisson(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",
@@ -102,7 +102,7 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable, 
                  v_Field  : uw.mesh.MeshVariable,
                  solver_name: str = "",
@@ -248,7 +248,7 @@ class SNES_Stokes(SNES_SaddlePoint):
     instances = 0
 
     def __init__(self, 
-                 mesh          : uw.mesh.MeshClass, 
+                 mesh          : uw.mesh.Mesh, 
                  velocityField : Optional[uw.mesh.MeshVariable] =None,
                  pressureField : Optional[uw.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
@@ -500,7 +500,7 @@ class SNES_Projection(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",
@@ -593,7 +593,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  solver_name: str = "",
                  verbose    = False):
@@ -701,7 +701,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  solver_name: str = "",
                  verbose    = False):
@@ -800,7 +800,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh       : uw.mesh.MeshClass, 
+                 mesh       : uw.mesh.Mesh, 
                  u_Field    : uw.mesh.MeshVariable = None, 
                  V_Field    : uw.mesh.MeshVariable = None, 
                  degree     : int  = 2,
@@ -1006,7 +1006,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh       : uw.mesh.MeshClass, 
+                 mesh       : uw.mesh.Mesh, 
                  u_Field    : uw.mesh.MeshVariable = None, 
                  u_Star_fn  = None, # uw.function.UnderworldFunction = None,
                  degree     : int  = 2,
@@ -1166,7 +1166,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh            : uw.mesh.MeshClass, 
+                 mesh            : uw.mesh.Mesh, 
                  velocityField   : uw.mesh.MeshVariable = None,
                  pressureField   : uw.mesh.MeshVariable = None,
                  velocityStar_fn = None, # uw.function.UnderworldFunction = None,

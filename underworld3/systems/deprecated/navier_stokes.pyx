@@ -21,7 +21,7 @@ class NavierStokes:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh          : underworld3.mesh.MeshClass, 
+                 mesh          : underworld3.mesh.Mesh, 
                  velocityField : Optional[underworld3.mesh.MeshVariable] =None,
                  pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 

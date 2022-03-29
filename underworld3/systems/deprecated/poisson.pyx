@@ -15,7 +15,7 @@ include "../petsc_extras.pxi"
 class Poisson:
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",

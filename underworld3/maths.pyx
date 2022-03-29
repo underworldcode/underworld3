@@ -41,7 +41,7 @@ class Integral:
     """
     @timing.routine_timer_decorator
     def __init__( self,
-                  mesh:  underworld3.mesh.MeshClass,
+                  mesh:  underworld3.mesh.Mesh,
                   fn:    Union[float, int, sympy.Basic] ):
 
         self.mesh = mesh

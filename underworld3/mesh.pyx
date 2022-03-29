@@ -1,6 +1,7 @@
 # cython: profile=False
 from typing import Optional, Tuple, Union
 from collections import namedtuple
+import os
 
 import numpy
 import numpy as np
@@ -9,6 +10,8 @@ import sympy
 import sympy.vector
 
 from mpi4py import MPI
+from mpi4py.MPI import COMM_WORLD
+
 from petsc4py import PETSc
 
 include "./petsc_extras.pxi"
@@ -18,14 +21,47 @@ import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
-class MeshClass(_api_tools.Stateful):
+
+@PETSc.Log.EventDecorator()
+def _from_gmsh(filename, comm=None):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+    comm = comm or MPI.COMM_WORLD
+    # Create a read-only PETSc.Viewer
+    gmsh_viewer = PETSc.Viewer().create(comm=comm)
+    gmsh_viewer.setType("ascii")
+    gmsh_viewer.setFileMode("r")
+    gmsh_viewer.setFileName(filename)
+    gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+
+    return gmsh_plex
+
+
+class Mesh(_api_tools.Stateful):
 
     mesh_instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, simplex, degree=1, cdim=None, *args,**kwargs):
+    def __init__(self, meshfile, simplex=None, degree=1, cdim=None, *args,**kwargs):
 
-        MeshClass.mesh_instances += 1
+        if isinstance(meshfile, PETSc.DMPlex):
+            name = "plexmesh"
+            self.dm = meshfile
+        else:
+            comm = kwargs.get("comm", COMM_WORLD)
+            name = meshfile
+            basename, ext = os.path.splitext(meshfile)
+
+            if ext.lower() == '.msh':
+                self.dm = _from_gmsh(meshfile, comm)
+            else:
+                raise RuntimeError("Mesh file %s has unknown format '%s'."
+                                   % (meshfile, ext[1:]))
+
+        Mesh.mesh_instances += 1
 
         self.isSimplex = simplex
 
@@ -654,7 +690,7 @@ class MeshClass(_api_tools.Stateful):
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, name                             : str, 
-                       mesh                             : "underworld.mesh.MeshClass", 
+                       mesh                             : "underworld.mesh.Mesh", 
                        num_components                   : int, 
                        vtype                            : Optional["underworld.VarType"] = None, 
                        degree                           : int =1 ):

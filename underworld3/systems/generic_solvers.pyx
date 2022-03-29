@@ -21,7 +21,7 @@ class SNES_Scalar:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",
@@ -350,7 +350,7 @@ class SNES_Vector:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.mesh.MeshClass, 
+                 mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",
@@ -686,7 +686,7 @@ class SNES_SaddlePoint:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh          : underworld3.mesh.MeshClass, 
+                 mesh          : underworld3.mesh.Mesh, 
                  velocityField : Optional[underworld3.mesh.MeshVariable] =None,
                  pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
