@@ -17,7 +17,7 @@ def UnstructuredSimplexBox(
         minCoords: Tuple = (0., 0.),
         maxCoords: Tuple = (1.0, 1.0),
         cellSize:  float = 0.1,
-        regular:   bool  = True):
+        regular:   bool  = False):
   
     """
     Generates a 2 or 3-dimensional box mesh.

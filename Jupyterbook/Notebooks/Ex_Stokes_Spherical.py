@@ -21,16 +21,28 @@ options["pc_fieldsplit_schur_precondition"] = "a11"
 options["fieldsplit_velocity_pc_type"] = "lu"
 options["fieldsplit_pressure_ksp_rtol"] = 1.0e-3
 options["fieldsplit_pressure_pc_type"] = "lu"
+options["dm_plex_check_all"] = None
+
+# %% [markdown]
+# ## Parameters
+
+# %%
+r_i       = 0.5
+r_o       = 1.0
+
+dens_ball = 10.
+dens_other = 1.
+radius_ball = 0.2
+
+# %% [markdown]
+# ## 2 Dimensions
 
 # %%
 # some things
 cell_size = 0.02
-r_i       = 0.5
-r_o       = 1.0
-mesh = uw.mesh.SphericalShell(dim=2,
-                              radius_inner=r_i,
-                              radius_outer=r_o,
-                              cell_size=cell_size)
+mesh = uw.util_mesh.Annulus(radiusInner=r_i,
+                              radiusOuter=r_o,
+                              cellSize=cell_size)
 
 # %%
 # Create Stokes object
@@ -38,16 +50,11 @@ stokes = Stokes(mesh,u_degree=2,p_degree=1)
 # Constant visc
 stokes.viscosity = 1.
 # No slip boundary conditions
-stokes.add_dirichlet_bc( (0.,0.), mesh.boundary.ALL_BOUNDARIES, (0,1) )
+stokes.add_dirichlet_bc( (0.,0.), ["Upper", "Lower"], (0,1) )
 
 # %%
-# Set more some things
-dens_ball = 10.
-dens_other = 1.
 position_ball = 0.75*mesh.N.j
-radius_ball = 0.2
 
-# %%
 # Create a density profile
 import sympy
 off_rvec = mesh.rvec - position_ball
@@ -82,26 +89,13 @@ stokes.p.save(savefile)
 densvar.save(savefile)
 mesh.generate_xdmf(savefile)
 
-# %%
-import k3d
-import plot
-umag = stokes.u.fn.dot(stokes.u.fn)
-
-vertices_2d = plot.mesh_coords(mesh)
-vertices = np.zeros((vertices_2d.shape[0],3),dtype=np.float32)
-vertices[:,0:2] = vertices_2d[:]
-indices = plot.mesh_faces(mesh)
-kplot = k3d.plot()
-with mesh.access():
-    kplot += k3d.mesh(vertices, indices, attribute=uw.function.evaluate(umag,stokes.u.coords),wireframe=False)
-kplot.grid_visible=False
-kplot.display()
-kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc settings
+# %% [markdown]
+# ## 3 Dimensions
 
 # %%
 # now do 3D
-cell_size=0.035
-mesh = uw.mesh.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o,cell_size=cell_size)
+cell_size=0.1
+mesh = uw.util_mesh.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=cell_size)
 
 # %%
 # Create Stokes object
@@ -109,9 +103,12 @@ stokes = Stokes(mesh,u_degree=2,p_degree=1)
 # Constant visc
 stokes.viscosity = 1.
 # No slip boundary conditions
-stokes.add_dirichlet_bc( (0.,0.,0.), mesh.boundary.ALL_BOUNDARIES, (0,1,2) )
+stokes.add_dirichlet_bc( (0.,0.,0.), ["Upper", "Lower"], (0,1,2) )
 
 # %%
+position_ball = 0.75*mesh.N.j
+
+
 # Create a density profile
 import sympy
 off_rvec = mesh.rvec - position_ball
@@ -142,21 +139,6 @@ stokes.u.save(savefile)
 stokes.p.save(savefile)
 densvar.save(savefile)
 mesh.generate_xdmf(savefile)
-
-# %%
-"""
-import k3d
-import plot
-umag = stokes.u.fn.dot(stokes.u.fn)
-vertices = np.array(plot.mesh_coords(mesh),dtype=np.float32)
-indices = plot.mesh_faces(mesh)
-kplot = k3d.plot()
-with mesh.access():
-    kplot += k3d.mesh(vertices, indices, attribute=uw.function.evaluate(umag,stokes.u.coords),wireframe=True)
-kplot.grid_visible=False
-kplot.display()
-kplot.camera = [-0.2, 0.2, 2.0,0.,0.,0.,-0.5,1.0,-0.1]  # these are some adhoc settings
-"""
 
 # %% [markdown]
 # ## Pyvista visualisation
@@ -202,11 +184,3 @@ pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=True,
 pl.add_mesh(contours, opacity=0.5)
 
 pl.show()
-
-# %%
-umag = uw.function.evaluate(umag, mesh.data)
-
-# %%
-umag.max()
-
-# %%
