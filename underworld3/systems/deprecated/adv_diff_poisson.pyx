@@ -27,7 +27,7 @@ class AdvDiffusion:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh       : uw.mesh.MeshClass, 
+                 mesh       : uw.mesh.Mesh, 
                  u_Field    : uw.mesh.MeshVariable = None, 
                  V_Field    : uw.mesh.MeshVariable = None, 
                  degree     : int  = 2,

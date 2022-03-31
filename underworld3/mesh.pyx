@@ -1,10 +1,7 @@
 # cython: profile=False
 from typing import Optional, Tuple, Union
 from collections import namedtuple
-
-from enum import Enum
-
-import math
+import os
 
 import numpy
 import numpy as np
@@ -13,9 +10,9 @@ import sympy
 import sympy.vector
 
 from mpi4py import MPI
-from petsc4py import PETSc
+from mpi4py.MPI import COMM_WORLD
 
-import meshio
+from petsc4py import PETSc
 
 include "./petsc_extras.pxi"
 
@@ -24,43 +21,90 @@ import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
-class MeshClass(_api_tools.Stateful):
+
+@PETSc.Log.EventDecorator()
+def _from_gmsh(filename, comm=None):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+    comm = comm or MPI.COMM_WORLD
+    # Create a read-only PETSc.Viewer
+    gmsh_viewer = PETSc.Viewer().create(comm=comm)
+    gmsh_viewer.setType("ascii")
+    gmsh_viewer.setFileMode("r")
+    gmsh_viewer.setFileName(filename)
+    gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+                
+    # Extract Physical groups from the gmsh file
+    import gmsh
+    gmsh.initialize()
+    gmsh.model.add("Model")
+    gmsh.open(filename)
+
+    physical_groups = {}
+    for dim, tag in gmsh.model.get_physical_groups():
+
+        name = gmsh.model.get_physical_name(dim, tag)
+        
+        physical_groups[name] = tag
+        gmsh_plex.createLabel(name)
+        label = gmsh_plex.getLabel(name)
+        
+        for elem in ["Face Sets"]:
+            indexSet = gmsh_plex.getStratumIS(elem, tag)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+    gmsh.finalize()
+
+    return gmsh_plex
+
+
+class Mesh(_api_tools.Stateful):
 
     mesh_instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, simplex, degree=1, cdim=None, *args,**kwargs):
+    def __init__(self, meshfile, simplex=None, degree=1, cdim=None, *args,**kwargs):
 
-        MeshClass.mesh_instances += 1
+        if isinstance(meshfile, PETSc.DMPlex):
+            name = "plexmesh"
+            self.dm = meshfile
+        else:
+            comm = kwargs.get("comm", COMM_WORLD)
+            name = meshfile
+            basename, ext = os.path.splitext(meshfile)
+
+            if ext.lower() == '.msh':
+                self.dm = _from_gmsh(meshfile, comm)
+
+            else:
+                raise RuntimeError("Mesh file %s has unknown format '%s'."
+                                   % (meshfile, ext[1:]))
+
+        Mesh.mesh_instances += 1
 
         self.isSimplex = simplex
 
         # Entertain a mesh that is a manifold of lower dimension
-
         if cdim is not None:
             self.cdim = cdim 
         else:
             self.cdim = self.dim 
 
-        # Enable hashing
+        # Use grid hashing for point location
         options = PETSc.Options()
         options["dm_plex_hash_location"] = 0
-
-        # Need some tweaks for <3.16.
-        petsc_version_minor = PETSc.Sys().getVersion()[1]
-        if petsc_version_minor < 16:
-            # Let's use 3.16 default heuristics to set hashing grid size.
-            cStart,cEnd = self.dm.getHeightStratum(0)
-            options["dm_plex_hash_box_nijk"] = max(2, math.floor( (cEnd - cStart)**(1.0/self.dim) * 0.8) )
-            # However, if we're in 3d and petsc <3.16, no bueno :-(
-            if self.dim==3:
-                options["dm_plex_hash_location"] = 0
-                options.delValue("dm_plex_hash_box_nijk")
         self.dm.setFromOptions()
 
         # Set sympy constructs
         from sympy.vector import CoordSys3D
+        
         self._N = CoordSys3D("N")
+        
         # Tidy some of this printing. Note that this
         # only changes the user interface printing, and 
         # switches out for simpler `BaseScalar` representations.
@@ -101,7 +145,6 @@ class MeshClass(_api_tools.Stateful):
 
         self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=3 ) 
 
-        # 
         super().__init__()
 
     def nuke_coords_and_rebuild(self):
@@ -135,7 +178,6 @@ class MeshClass(_api_tools.Stateful):
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
 
         # now set copy of this array into dictionary
-
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.cdim).copy()
 
@@ -146,10 +188,7 @@ class MeshClass(_api_tools.Stateful):
 
 
     @timing.routine_timer_decorator
-
     def update_lvec(self):
-
-
         """
         This method creates and/or updates the mesh variable local vector. 
         If the local vector is already up to date, this method will do nothing.
@@ -284,7 +323,7 @@ class MeshClass(_api_tools.Stateful):
                         # sync ghost values
                         subdm.localToGlobal(var.vec,var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec,var.vec, addv=False)
-                        ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
+                        subdm.destroy()
                         self.mesh._stale_lvec = True
                     var._data = None
                     var._set_vec(available=False)
@@ -292,7 +331,6 @@ class MeshClass(_api_tools.Stateful):
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time()-stime, "Mesh.access",1)
         return exit_manager(self)
-
 
     @property
     def N(self) -> sympy.vector.CoordSys3D:
@@ -325,7 +363,6 @@ class MeshClass(_api_tools.Stateful):
         The array of mesh element vertex coordinates.
         """
         # get flat array
-
         arr = self.dm.getCoordinatesLocal().array
         return arr.reshape(-1, self.cdim)
 
@@ -335,7 +372,6 @@ class MeshClass(_api_tools.Stateful):
         The mesh dimensionality.
         """
         return self.dm.getDimension()
-
 
     @property
     def elementType(self) -> int:
@@ -366,7 +402,6 @@ class MeshClass(_api_tools.Stateful):
 
         """
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=MPI.COMM_WORLD)
-        # cdef PetscViewer cviewer = ....
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
@@ -374,6 +409,15 @@ class MeshClass(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
+        viewer(self.dm)
+
+
+    def vtk(self, filename: str):
+        """
+        Save mesh to the specified file
+        """
+
+        viewer = PETSc.Viewer().createVTK(filename, "w", comm=MPI.COMM_WORLD)
         viewer(self.dm)
     
     def generate_xdmf(self, filename:str):
@@ -492,8 +536,6 @@ class MeshClass(_api_tools.Stateful):
 
         return self._indexMap[closest_points]
 
-
-
     def _get_mesh_centroids(self):
         """
         Obtain and cache the mesh centroids using underworld swarm technology. 
@@ -511,9 +553,6 @@ class MeshClass(_api_tools.Stateful):
         # That's it ! we should check that these objects are deleted correctly
 
         return
-
-
-
  
     def get_min_radius(self) -> double:
         """
@@ -526,6 +565,7 @@ class MeshClass(_api_tools.Stateful):
         cdef DM dm = self.dm
         cdef double minradius
         if (not hasattr(self,"_min_radius")) or (self._min_radius==None):
+            # Calling DMPlexComputeGeometryFVM generates the value returned by DMPlexGetMinRadius
             DMPlexComputeGeometryFVM(dm.dm,&cellgeom,&facegeom)
             DMPlexGetMinRadius(dm.dm,&minradius)
             self._min_radius = minradius
@@ -570,75 +610,31 @@ class MeshClass(_api_tools.Stateful):
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
 
-    def mesh2pyvista(self, 
-                     elementType: Optional[int]=None
-                     ):
-        """
-        Returns a (vtk) pyvista.UnstructuredGrid object for visualisation of the mesh
-        skeleton. Note that this will normally use the elementType that is on the mesh
-        (HEX, QUAD) but, for data visualisation on higher-order elements, the actual 
-        order of the element is needed.
-        
-        ToDo: check for pyvista installation
-        ToDo: parallel safety
-        ToDo: use vtk instead of pyvista ?
-        """
-
-        import vtk
-        import pyvista as pv 
-
-        if elementType is None:
-            elementType = self.elementType
-
-        # vtk defines all meshes using 3D coordinate arrays
-        if self.cdim == 2: 
-            coords = self.data
-            vtk_coords = np.zeros((coords.shape[0], 3))
-            vtk_coords[:,0:2] = coords[:,:]
-        else:
-            vtk_coords = self.data
-
-        cells = self.mesh_dm_cells()
-        cell_type = np.empty(cells.shape[0], dtype=np.int64)
-        cell_type[:] = elementType
-
-        vtk_cells = np.empty((cells.shape[0], cells.shape[1]+1), dtype=np.int64)
-        vtk_cells[:,0] = cells.shape[1]
-        vtk_cells[:,1:] = cells[:,:]
-
-        pyvtk_unstructured_grid = pv.UnstructuredGrid(vtk_cells, cell_type, vtk_coords)
-
-        return pyvtk_unstructured_grid
-
     def mesh_dm_coords(self):
         cdim = self.dm.getCoordinateDim()
-        #lcoords = self.dm.getCoordinatesLocal().array.reshape(-1,cdim)
         coords = self.dm.getCoordinates().array.reshape(-1,cdim)
         return coords
 
     def mesh_dm_edges(self):
-        # coords = mesh_coords(mesh)
-        # import pdb; pdb.set_trace()
+
         starti,endi = self.dm.getDepthStratum(1)
         #Offset of the node indices (level 0)
         coffset = self.dm.getDepthStratum(0)[0]
         edgesize = self.dm.getConeSize(starti)
         edges = np.zeros((endi-starti,edgesize), dtype=np.uint32)
+        
         for c in range(starti, endi):
             edges[c-starti,:] = self.dm.getCone(c) - coffset
 
-        #edges -= edges.min() #Why the offset?
-        #print(edges)
-        #print(edges.min(), edges.max(), coords.shape)
         return edges
 
     def mesh_dm_faces(self):
         #Faces / 2d cells
         coords = self.mesh_dm_coords()
-        #cdim = mesh.dm.getCoordinateDim()
 
         #Index range in mesh.dm of level 2
         starti,endi = self.dm.getDepthStratum(2)
+
         #Offset of the node indices (level 0)
         coffset = self.dm.getDepthStratum(0)[0]
         FACES=(endi-starti)
@@ -714,10 +710,11 @@ class MeshClass(_api_tools.Stateful):
                       
         return cell_vertices
 
+
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, name                             : str, 
-                       mesh                             : "underworld.mesh.MeshClass", 
+                       mesh                             : "underworld.mesh.Mesh", 
                        num_components                   : int, 
                        vtype                            : Optional["underworld.VarType"] = None, 
                        degree                           : int =1 ):
@@ -817,7 +814,6 @@ class MeshVariable(_api_tools.Stateful):
             might correspond to the timestep (for example).
         """
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=MPI.COMM_WORLD)
-        # cdef PetscViewer cviewer = ....
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
