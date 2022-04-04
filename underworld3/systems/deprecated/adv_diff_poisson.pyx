@@ -417,7 +417,7 @@ class AdvDiffusion:
         # PETSc == 3.16 introduced an explicit interface 
         # for setting the aux-vector which we'll use when available.
         cmesh_lvec = self.mesh.lvec
-        ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None,gvec)

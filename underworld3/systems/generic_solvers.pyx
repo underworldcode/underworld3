@@ -274,6 +274,21 @@ class SNES_Scalar:
 
         self.is_setup = True
 
+    def viewDiscretisation(self):
+        """
+        Return a copy of the system discretisation. Nodes and the unknown u scalar field.
+
+        Output
+        ------
+        (n, u): numpy vector of with dimensions (n, x) 
+            n is the number the local mesh nodes.
+            x is the size of dim plus the unknown values.
+        """
+        import numpy as np
+
+        with self.mesh.access():
+           return np.hstack( [self.u.coords.copy(), self.u.data.copy()] )
+
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
@@ -318,7 +333,7 @@ class SNES_Scalar:
         # PETSc == 3.16 introduced an explicit interface 
         # for setting the aux-vector which we'll use when available.
         cmesh_lvec = self.mesh.lvec
-        ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None,gvec)
@@ -654,7 +669,7 @@ class SNES_Vector:
         # PETSc == 3.16 introduced an explicit interface 
         # for setting the aux-vector which we'll use when available.
         cmesh_lvec = self.mesh.lvec
-        ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None,gvec)
@@ -1166,7 +1181,7 @@ class SNES_SaddlePoint:
         # PETSc == 3.16 introduced an explicit interface 
         # for setting the aux-vector which we'll use when available.
         cmesh_lvec = self.mesh.lvec
-        ierr = DMSetAuxiliaryVec(dm.dm, NULL, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None, gvec)
