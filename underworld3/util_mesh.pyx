@@ -375,14 +375,24 @@ def SphericalShell(
     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
     gmsh.model.occ.synchronize()
 
-    innerSurface, outerSurface = gmsh.model.getEntities(2)
+    surfaces = gmsh.model.getEntities(2)
     volume = gmsh.model.getEntities(3)[0]
-    gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], boundaries["Lower"])
-    gmsh.model.setPhysicalName(innerSurface[1], boundaries["Lower"], "Lower")
-    gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], boundaries["Upper"])
-    gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
-    gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
-    gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
+
+    if radiusInner > 0.0: 
+        innerSurface, outerSurface = surfaces
+        gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], boundaries["Lower"])
+        gmsh.model.setPhysicalName(innerSurface[1], boundaries["Lower"], "Lower")
+        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], boundaries["Upper"])
+        gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
+        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
+        gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
+
+    else:
+        outerSurface = surfaces[0]
+        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], boundaries["Upper"])
+        gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
+        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
+        gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
 
     gmsh.model.occ.synchronize()
     
@@ -423,13 +433,19 @@ def Annulus(
     gmsh.model.add("Annulus")
 
     p1 = gmsh.model.geo.add_point(0.0,0.0,0.0, meshSize=cellSize)
-    p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
-    p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
 
-    c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
-    c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
+    surfaces = []
 
-    cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"])
+    if radiusInner > 0.0:
+        p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
+        p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
+
+        c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
+        c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
+
+        cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"])
+
+        surfaces = [cl1] + surfaces
     
     p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
     p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize)
@@ -438,14 +454,18 @@ def Annulus(
     c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
 
     cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
+
+    surfaces = [cl2] + surfaces
     
-    s = gmsh.model.geo.add_plane_surface([cl2, cl1])        
+    s = gmsh.model.geo.add_plane_surface(surfaces)        
     gmsh.model.geo.synchronize()
     
-    gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"])
-    gmsh.model.setPhysicalName(1, boundaries["Lower"], "Lower")
+    if radiusInner > 0.0:
+        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"])
+        gmsh.model.setPhysicalName(1, boundaries["Lower"], "Lower")
+
     gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries["Upper"])
-    gmsh.model.setPhysicalName(1, boundaries["Lower"], "Upper")
+    gmsh.model.setPhysicalName(1, boundaries["Upper"], "Upper")
     gmsh.model.addPhysicalGroup(2, [s], s)
     gmsh.model.setPhysicalName(2, s, "Elements")
 
@@ -479,8 +499,8 @@ def CubicSphere(
      "Lower": 1,
      "Upper": 2}
 
-    r1 = radiusInner
-    r2 = radiusOuter
+    r1 = radiusInner / np.sqrt(3)
+    r2 = radiusOuter / np.sqrt(3)
 
     import gmsh
     

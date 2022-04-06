@@ -37,8 +37,8 @@ class Integral:
     >>> volumeIntegral = uw.maths.Integral(mesh=mesh, fn=1.)
     >>> np.allclose( 1., volumeIntegral.evaluate(), rtol=1e-8)
     True
-
     """
+    
     @timing.routine_timer_decorator
     def __init__( self,
                   mesh:  underworld3.mesh.Mesh,
@@ -53,6 +53,7 @@ class Integral:
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"
                                "This is a PETSc limitation.")
+                               
         # Create JIT extension.
         # Note that we pass in the mesh variables as primary variables, as this
         # is how they are represented on the mesh DM.
@@ -77,15 +78,15 @@ class Integral:
         # Now, find var with the highest degree. We will then configure the integration 
         # to use this variable's quadrature object for all variables. 
         # This needs to be double checked.  
-        deg = 0
-        for key, var in self.mesh.vars.items():
-            if var.degree >= deg:
-                deg = var.degree
-                var_base = var
+        # deg = 0
+        # for key, var in self.mesh.vars.items():
+        #     if var.degree >= deg:
+        #         deg = var.degree
+        #         var_base = var
 
-        quad_base = var_base.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(quad_base)
+        # quad_base = var_base.petsc_fe.getQuadrature()
+        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #     fe.setQuadrature(quad_base)
         
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
