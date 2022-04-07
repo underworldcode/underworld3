@@ -76,18 +76,18 @@ class Integral:
         cdef Vec cgvec
         cgvec = a_global
 
-        # Now, find var with the highest degree. We will then configure the integration 
-        # to use this variable's quadrature object for all variables. 
-        # This needs to be double checked.  
-        deg = 0
-        for key, var in self.mesh.vars.items():
-            if var.degree >= deg:
-                deg = var.degree
-                var_base = var
+        # # Now, find var with the highest degree. We will then configure the integration 
+        # # to use this variable's quadrature object for all variables. 
+        # # This needs to be double checked.  
+        # deg = 0
+        # for key, var in self.mesh.vars.items():
+        #     if var.degree >= deg:
+        #         deg = var.degree
+        #         var_base = var
 
-        quad_base = var_base.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(quad_base)
+        # quad_base = var_base.petsc_fe.getQuadrature()
+        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #     fe.setQuadrature(quad_base)
         
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
@@ -172,18 +172,18 @@ class CellWiseIntegral:
         cdef Vec cgvec
         cgvec = a_global
 
-        # Now, find var with the highest degree. We will then configure the integration 
-        # to use this variable's quadrature object for all variables. 
-        # This needs to be double checked.  
-        deg = 0
-        for key, var in self.mesh.vars.items():
-            if var.degree >= deg:
-                deg = var.degree
-                var_base = var
+        # # Now, find var with the highest degree. We will then configure the integration 
+        # # to use this variable's quadrature object for all variables. 
+        # # This needs to be double checked.  
+        # deg = 0
+        # for key, var in self.mesh.vars.items():
+        #     if var.degree >= deg:
+        #         deg = var.degree
+        #         var_base = var
 
-        quad_base = var_base.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(quad_base)
+        # quad_base = var_base.petsc_fe.getQuadrature()
+        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #     fe.setQuadrature(quad_base)
         
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
