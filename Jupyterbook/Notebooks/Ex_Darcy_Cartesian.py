@@ -55,8 +55,9 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = mesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-    
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+     
   
     pl = pv.Plotter()
    
@@ -108,13 +109,14 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = mesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
     
     with mesh.access():
         usol = v_soln.data.copy()
   
     pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn, mesh.data)
-    pvmesh.point_data["dP"]  = uw.function.evaluate(p_soln.fn-(h_fn-y), mesh.data)
+    pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.fn-(h_fn-y), mesh.data)
     pvmesh.point_data["K"]  = uw.function.evaluate(darcy.k, mesh.data)
     pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 

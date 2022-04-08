@@ -1,7 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: ipynb,py:light
+#     formats: py:light
 #     text_representation:
 #       extension: .py
 #       format_name: light
@@ -25,10 +25,13 @@ options = PETSc.Options()
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, regular=True,
-                                          minCoords=(minX,minY), 
-                                          maxCoords=(maxX,maxY),
-                                          cell_size=0.05) 
+mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(minX,minY), 
+                                           maxCoords=(maxX,maxY),
+                                           cellSize=0.05) 
+
+# mesh = uw.util_mesh.StructuredQuadBox(elementRes=(20,20),
+#                                       minCoords=(minX,minY), 
+#                                       maxCoords=(maxX,maxY),)
 
 
 p_soln  = uw.mesh.MeshVariable('P',   mesh, 1, degree=5 )
@@ -55,9 +58,9 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = mesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-    
-  
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+     
     pl = pv.Plotter()
    
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True,
@@ -91,7 +94,7 @@ interfaceY = -0.25
 from sympy import Piecewise, ceiling, Abs
 
 k1 = 1.0
-k2 = 1.0e-2
+k2 = 1.0e-3
 
 # The piecewise version
 kFunc = Piecewise( ( k1,  y >= interfaceY ),
@@ -140,8 +143,9 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = mesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-    
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+     
     with mesh.access():
         usol = v_soln.data.copy()
   
@@ -184,7 +188,7 @@ if uw.mpi.size==1:
     
     pl.add_mesh(pvstream, line_width=10.0)
     
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.005, opacity=0.75)
 
 
 
@@ -195,7 +199,7 @@ if uw.mpi.size==1:
 
 # +
 # set up interpolation coordinates
-ycoords = np.linspace(minY, maxY, 100)
+ycoords = np.linspace(minY+0.001*(maxY-minY), maxY-0.001*(maxY-minY), 100)
 xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
@@ -231,6 +235,8 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle='--', label='Ana
 ax1.grid('on')
 ax1.legend()
 # -
+
+
 
 
 

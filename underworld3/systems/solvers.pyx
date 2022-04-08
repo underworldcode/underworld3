@@ -147,7 +147,7 @@ class SNES_Darcy(SNES_Scalar):
         dim = self.mesh.dim
         N   = self.mesh.N
 
-        darcy_flux = self.k * (-sympy.vector.gradient(self.u.fn) + self.s)
+        darcy_flux = -self.k * (sympy.vector.gradient(self.u.fn) - self.s)
 
         # f1 residual term (weighted integration) 
         self._f0 = self.F0 - self.f
