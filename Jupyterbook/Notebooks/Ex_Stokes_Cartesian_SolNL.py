@@ -48,9 +48,8 @@ sol_visc = AnalyticSolNL_viscosity( *params, *r )
 
 # %%
 stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
-bnds = mesh.boundary
-stokes.add_dirichlet_bc( sol_vel, [bnds.LEFT, bnds.RIGHT],  [0,1] )  # left/right: function, markers, components
-stokes.add_dirichlet_bc( sol_vel, [bnds.TOP,  bnds.BOTTOM], [1, ] )  # top/bottom: function, markers, components
+stokes.add_dirichlet_bc( sol_vel, ["left", "right"],  [0,1] )  # left/right: function, markers, components
+stokes.add_dirichlet_bc( sol_vel, ["top", "bottom"], [ 1, ] )  # top/bottom: function, markers, components
 
 
 stokes.petsc_options["ksp_rtol"] =  1.0e-6
