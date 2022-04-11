@@ -112,8 +112,8 @@ class SNES_Scalar:
 
         # create private variables
         options = PETSc.Options()
-        options.setValue("uprivate_petscspace_degree", degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree, "uprivate_", PETSc.COMM_WORLD)
+        options.setValue("ssnes_{}_private_petscspace_degree".format(self.instances), degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree,"ssnes_{}_private_".format(self.instances), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -323,6 +323,7 @@ class SNES_Scalar:
         # from the quadratures (among other things no doubt). 
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
+
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
@@ -456,8 +457,8 @@ class SNES_Vector:
 
         # create private variables
         options = PETSc.Options()
-        options.setValue("uprivate_petscspace_degree", degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, degree, "uprivate_", PETSc.COMM_WORLD)
+        options.setValue("uprivate_{}_petscspace_degree".format(self.instances), degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, degree, "uprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -691,9 +692,6 @@ class SNES_Vector:
 
 
 ### =================================
-
-
-
 
 class SNES_SaddlePoint:
 

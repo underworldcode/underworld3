@@ -348,7 +348,7 @@ class SNES_Stokes(SNES_SaddlePoint):
 
         # User-facing operations are matrices / vectors by preference
         self._E = (self._L + self._L.transpose())/2
-        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E)**2).trace()) # scalar 2nd invariant
+        self._Einv2 = sympy.sqrt(1.0e-16+(sympy.Matrix(self._E)**2).trace()) # scalar 2nd invariant
 
 
         # Here we can set some petsc defaults for this solver
@@ -502,19 +502,19 @@ class SNES_Projection(SNES_Scalar):
     def __init__(self, 
                  mesh     : uw.mesh.Mesh, 
                  u_Field  : uw.mesh.MeshVariable = None, 
-                 degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
 
 
         SNES_Projection.instances += 1
 
+
         if solver_name == "":
             solver_name = "SProj{}_".format(self.instances)
 
         super().__init__(mesh, 
                          u_Field,
-                         degree, 
+                         u_Field.degree, 
                          solver_name, verbose )
 
         self._setup_problem_description = self.projection_problem_description
@@ -751,7 +751,6 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         # rhs in the constraint (pressure) equations
         self._p_f0 = self.PF0  + divergence(self.u.fn)
 
-        
         return 
 
     @property
