@@ -29,7 +29,9 @@ options["snes_rtol"] = 1.0e-7
 # %%
 n_els = 32
 v_degree = 1
-mesh = uw.meshes.Box(elementRes=(n_els,n_els))
+mesh = uw.util_mesh.StructuredQuadBox(elementRes=(n_els,n_els), 
+                                      minCoords=(0.0,0.0),
+                                      maxCoords=(1.0,1.0))
 
 # %%
 # NL problem 
