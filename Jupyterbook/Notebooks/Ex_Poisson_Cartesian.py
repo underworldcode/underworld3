@@ -1,4 +1,6 @@
-# %%
+# %% [markdown]
+# # Poisson Cartesian Solve
+
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
@@ -6,7 +8,10 @@ import numpy as np
 
 
 # %%
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), maxCoords=(1.0,1,0), cell_size=1.0/16) 
+from underworld3.util_mesh import UnstructuredSimplexBox
+
+# %%
+mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellize=1.0/16) 
 
 # %%
 # Create Poisson object
@@ -29,8 +34,6 @@ poisson.add_dirichlet_bc( 0., "Top" )
 poisson.solve()
 
 # %%
-
-# %%
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
@@ -49,7 +52,6 @@ if MPI.COMM_WORLD.size==1:
 
     import numpy as np
     import pyvista as pv
-    import vtk
 
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [500, 500]
@@ -57,7 +59,8 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    mesh.vtk("mesh.tmp.vtk")
+    pvmesh = pv.read("mesh.tmp.vtk")
 
     with mesh.access():
         pvmesh.point_data["T"]  = mesh_analytic_soln
@@ -73,11 +76,6 @@ if MPI.COMM_WORLD.size==1:
      
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")  
-
-# %%
-pvmesh.point_data["DT"].min()
-
-# %%
 
 # %%
 # Now let's construct something a little more complex.
@@ -110,13 +108,16 @@ with mesh.access():
 
 
 # %%
+from underworld3.util_mesh import UnstructuredSimplexBox
+
+# %%
 # Nonlinear example
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), maxCoords=(1.0,1,0), cell_size=0.05) 
+mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellSize=0.05) 
 mesh.dm.view()
 
 
 # %%
-poisson = SNES_Poisson(mesh, degree=1)
+poisson = uw.systems.Poisson(mesh, degree=1)
 
 
 # %%
