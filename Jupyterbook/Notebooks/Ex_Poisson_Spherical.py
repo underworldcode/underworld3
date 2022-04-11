@@ -17,11 +17,15 @@ r_i = 0.5
 r_o = 1.0
 
 # %%
+from underworld3.util_mesh import Annulus
+
+# %%
 # first do 2D
 cell_size=0.02
 
-mesh = uw.meshes.SphericalShell(dim=2,radius_inner=r_i, degree=1,
-                                radius_outer=r_o,cell_size=cell_size)
+mesh = Annulus(radiusInner=r_i, 
+               radiusOuter=r_o,
+               cellSize=cell_size)
 
 t_soln  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
 
@@ -67,21 +71,6 @@ poisson.f = 0.01 * poisson.u.fn**0.5
 poisson.solve(zero_init_guess=False, _force_setup=True)
 
 # %%
-poisson._g0
-
-# %%
-poisson._g1
-
-# %%
-poisson._g2
-
-# %%
-poisson._g3
-
-# %%
-0/0
-
-# %%
 # Validate
 
 from mpi4py import MPI
@@ -98,7 +87,8 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    mesh.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
 
     with mesh.access():
         pvmesh.point_data["T"]  = mesh_analytic_soln
@@ -122,10 +112,15 @@ poisson.u.save(savefile)
 mesh.generate_xdmf(savefile)
 
 # %%
+from underworld3.util_mesh import SphericalShell
+
+# %%
 # now do 3D
 cell_size=0.1
-mesh_3d = uw.meshes.SphericalShell(dim=3,radius_inner=r_i, radius_outer=r_o, degree=1, cell_size=cell_size)
-t_soln_3d  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
+mesh_3d = SphericalShell(radiusInner=r_i, 
+                         radiusOuter=r_o,
+                         cellSize=cell_size)
+t_soln_3d  = uw.mesh.MeshVariable("T", mesh_3d, 1, degree=2 )
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
@@ -182,7 +177,8 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh_3d.mesh2pyvista()
+    mesh_3d.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
 
     with mesh_3d.access():
         pvmesh.point_data["T"]  = mesh_analytic_soln
@@ -204,8 +200,6 @@ if MPI.COMM_WORLD.size==1:
      
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")  
-
-# %%
 
 # %%
 savefile = "output/poisson_spherical_3d.h5" 

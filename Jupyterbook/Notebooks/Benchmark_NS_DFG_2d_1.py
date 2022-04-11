@@ -61,16 +61,10 @@ if uw.mpi.rank==0:
         geom.save_geometry("ns_pipe_flow.msh")
         geom.save_geometry("ns_pipe_flow.vtk")
 
-# -
+pipemesh = uw.mesh._from_gmsh(filename="ns_pipe_flow.msh")
+pipemesh.view()
 
-
-pipemesh = uw.meshes.MeshFromGmshFile(dim=2, degree=1, filename="ns_pipe_flow.msh", label_groups=[], simplex=True)
-pipemesh.dm.view()
-
-# +
 # check the mesh if in a notebook / serial
-
-
 
 if uw.mpi.size==1:    
     import numpy as np
@@ -85,28 +79,12 @@ if uw.mpi.size==1:
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]     
     
-    pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    pvmesh = pv.read("ns_pipe_flow.vtk")
     
     pl = pv.Plotter()
-
-    points = np.zeros((pipemesh._centroids.shape[0],3))
-    points[:,0] = pipemesh._centroids[:,0]
-    points[:,1] = pipemesh._centroids[:,1]
-
-    point_cloud = pv.PolyData(points)
-  
     
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, 
-                  use_transparency=False, opacity=0.5)
-    
-    pl.add_points(point_cloud, color="Blue",
-                  render_points_as_spheres=True,
-                  point_size=2, opacity=1.0  )
-    
+    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)    
     pl.show(cpos="xy")
-
-# +
 # Define some functions on the mesh
 
 import sympy
@@ -120,8 +98,8 @@ x = pipemesh.N.x
 y = pipemesh.N.y
 
 # relative to the centre of the inclusion
-r  = sympy.sqrt((x-1.0)**2+(y-0.5)**2)
-th = sympy.atan2(y-0.5,x-1.0)
+r  = sympy.sqrt((x-0.2)**2+(y-0.2)**2)
+th = sympy.atan2(y-0.2,x-0.2)
 
 # need a unit_r_vec equivalent
 
@@ -257,7 +235,8 @@ if uw.mpi.size==1:
     # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0] 
 
-    pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
 
 #     points = np.zeros((t_soln.coords.shape[0],3))
 #     points[:,0] = t_soln.coords[:,0]
