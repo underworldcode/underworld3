@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.13.8
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -26,11 +26,12 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(dim=2, 
-                                             minCoords=(0.0,0.0,0.0), 
-                                             maxCoords=(1.0,1.0,1.0), 
-                                             cell_size=1.0/32.0, 
-                                             regular=True)
+from underworld3.util_mesh import UnstructuredSimplexBox
+
+meshbox = UnstructuredSimplexBox(minCoords=(0.0,0.0,0.0), 
+                                 maxCoords=(1.0,1.0,1.0), 
+                                 cellSize=1.0/32.0, 
+                                 regular=True)
 
 # +
 import sympy
@@ -124,7 +125,8 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    mesh.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
 
     with meshbox.access():
         vsol = iv_soln.data.copy()
@@ -175,7 +177,8 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    mesh.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
 
     with meshbox.access():
         vsol = v_soln.data.copy()
