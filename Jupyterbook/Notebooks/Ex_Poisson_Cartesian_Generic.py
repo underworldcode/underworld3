@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.13.8
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,9 +23,12 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0), 
-                                          maxCoords=(1.0,1,0), regular=True,
-                                          cell_size=1.0/32) 
+from underworld3.util_mesh import UnstructuredSimplexBox
+
+mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+                              maxCoords=(1.0,1.0), 
+                              regular=True,
+                              cellSize=1.0/32) 
 
 t_soln   = uw.mesh.MeshVariable("T", mesh, 1, degree=1 )
 t_soln0  = uw.mesh.MeshVariable("T0", mesh, 1, degree=1 )
@@ -92,7 +95,8 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    mesh.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
 
     with mesh.access():
         pvmesh.point_data["T"]  = mesh_analytic_soln
