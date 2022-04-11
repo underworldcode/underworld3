@@ -68,7 +68,7 @@ class Mesh(_api_tools.Stateful):
     mesh_instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, meshfile, simplex=None, degree=1, cdim=None, *args,**kwargs):
+    def __init__(self, meshfile, degree=1, *args,**kwargs):
 
         if isinstance(meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -87,13 +87,8 @@ class Mesh(_api_tools.Stateful):
 
         Mesh.mesh_instances += 1
 
-        self.isSimplex = simplex
-
-        # Entertain a mesh that is a manifold of lower dimension
-        if cdim is not None:
-            self.cdim = cdim 
-        else:
-            self.cdim = self.dim 
+        self.isSimplex = self.dm.isSimplex()
+        self.cdim = self.dm.getDimension()
 
         # Use grid hashing for point location
         options = PETSc.Options()
