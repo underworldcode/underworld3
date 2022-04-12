@@ -129,6 +129,7 @@ class Mesh(_api_tools.Stateful):
         self._equation_systems_register = []
 
         self._accessed = False
+        self._quadrature = False
         self._stale_lvec = True
         self._lvec = None
         self.petsc_fe = None
@@ -143,7 +144,7 @@ class Mesh(_api_tools.Stateful):
         # This is defined now since we cannot make a new one
         # once the init phase of uw3 is complete.
 
-        self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=3 ) 
+        self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=2 ) 
 
         super().__init__()
 
@@ -185,6 +186,49 @@ class Mesh(_api_tools.Stateful):
 
         # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
+
+        return
+        
+    @timing.routine_timer_decorator
+    def _align_quadratures(self, mesh_var=None, force=False):
+        """
+        Choose a quadrature that will be used by any solvers on 
+        this mesh. Quadratures are aligned with either:
+          - the variable that has the highest degree on the mesh at this point
+          - the variable that is provided
+
+        The default quadrature is only updated once unless
+        we set `force=True`
+
+        """
+
+        # Ensure consistent quadrature across all mesh variables
+
+        # # Find var with the highest degree. We will then configure the integration 
+        # # to use this variable's quadrature object for all variables. 
+        # # This needs to be double checked.  
+
+        if self._quadrature and not force:
+            return
+        
+        if mesh_var is None:
+            deg = 0
+            for key, var in self.vars.items():
+                if var.degree >= deg:
+                    deg = var.degree
+                    var_base = var
+        else:
+            var = mesh_var
+
+        quad_base = var_base.petsc_fe.getQuadrature()
+        self.petsc_fe.setQuadrature(quad_base)
+
+        # Do this now for consistency (it is also done by the solvers)
+        for fe in [var.petsc_fe for var in self.vars.values()]:
+            fe.setQuadrature(quad_base)
+
+        self._quadrature = True
+        return
 
 
     @timing.routine_timer_decorator

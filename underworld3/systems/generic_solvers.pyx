@@ -110,11 +110,18 @@ class SNES_Scalar:
 
         self.dm = mesh.dm.clone()
 
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+        u_quad = self.mesh.petsc_fe.getQuadrature()
+
+
         # create private variables
         options = PETSc.Options()
         options.setValue("ssnes_{}_private_petscspace_degree".format(self.instances), degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree,"ssnes_{}_private_".format(self.instances), PETSc.COMM_WORLD)
+        self.petsc_fe_u.setQuadrature(u_quad)
         self.petsc_fe_u_id = self.dm.getNumFields()
+
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         self.is_setup = False
@@ -314,9 +321,12 @@ class SNES_Scalar:
         else:
             gvec.array[:] = 0.
 
-        u_quad = self.petsc_fe_u.getQuadrature()
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+
+        u_quad = self.mesh.petsc_fe.getQuadrature()
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)       
+            fe.setQuadrature(u_quad)
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
@@ -455,10 +465,15 @@ class SNES_Vector:
 
         self.dm = mesh.dm.clone()
 
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+        u_quad = self.mesh.petsc_fe.getQuadrature()
+
         # create private variables
         options = PETSc.Options()
         options.setValue("uprivate_{}_petscspace_degree".format(self.instances), degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, degree, "uprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
+        self.petsc_fe_u.setQuadrature(u_quad)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -651,8 +666,10 @@ class SNES_Vector:
         else:
             gvec.array[:] = 0.
 
-        # Set quadrature to velocity quadrature.
-        u_quad = self.petsc_fe_u.getQuadrature()
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+
+        u_quad = self.mesh.petsc_fe.getQuadrature()
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
             fe.setQuadrature(u_quad)
 
@@ -661,6 +678,7 @@ class SNES_Vector:
         # from the quadratures (among other things no doubt). 
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
+
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
@@ -881,15 +899,21 @@ class SNES_SaddlePoint:
         # to make sure there is no namespace clash ... I haven't seen any manifestations of these clashing but
         # I wonder if that is only because we use the same degree variables most of the time in one problem ... LM
 
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+        quad = self.mesh.petsc_fe.getQuadrature()
+            
         options = PETSc.Options()
         options.setValue("uprivate_{}_petscspace_degree".format(self.instances), u_degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree,"uprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
+        self.petsc_fe_u.setQuadrature(quad)
         self.petsc_fe_u.setName("velocity")
         self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         options.setValue("pprivate_{}_petscspace_degree".format(self.instances), p_degree)
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,        1, mesh.isSimplex, u_degree,"pprivate_{}_".format(self.instances), PETSc.COMM_WORLD)
+        self.petsc_fe_p.setQuadrature(quad)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
@@ -897,8 +921,8 @@ class SNES_SaddlePoint:
         # Set pressure to use velocity's quadrature object.
         # I'm not sure if this is necessary actually as we 
         # set them to have the same degree quadrature above. 
-        u_quad = self.petsc_fe_u.getQuadrature()
-        self.petsc_fe_p.setQuadrature(u_quad)
+        # u_quad = self.petsc_fe_u.getQuadrature()
+        # self.petsc_fe_p.setQuadrature(u_quad)
         
         self.is_setup = False
 
@@ -1159,10 +1183,14 @@ class SNES_SaddlePoint:
         else:
             gvec.array[:] = 0.
 
-        # Set all quadratures to velocity quadrature.
-        u_quad = self.petsc_fe_u.getQuadrature()
+
+        # Set quadrature to consistent value given by mesh quadrature.
+        self.mesh._align_quadratures()
+        u_quad = self.mesh.petsc_fe.getQuadrature()
         for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
             fe.setQuadrature(u_quad)
+
+
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 

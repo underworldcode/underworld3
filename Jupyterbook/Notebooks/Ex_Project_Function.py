@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.13.8
+#       jupytext_version: 1.11.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -28,10 +28,9 @@ import sympy
 
 from underworld3.util_mesh import UnstructuredSimplexBox
 
-meshbox = UnstructuredSimplexBox(minCoords=(0.0,0.0,0.0), 
-                                 maxCoords=(1.0,1.0,1.0), 
-                                 cellSize=1.0/32.0, 
-                                 regular=True)
+meshbox = UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+                                 maxCoords=(1.0,1.0), 
+                                 cellSize=1.0/32.0)
 
 # +
 import sympy
@@ -125,7 +124,7 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    mesh.vtk("mesh_tmp.vtk")
+    meshbox.vtk("mesh_tmp.vtk")
     pvmesh = pv.read("mesh_tmp.vtk")
 
     with meshbox.access():
@@ -177,7 +176,7 @@ if uw.mpi.size==1:
     
     pv.start_xvfb()
     
-    mesh.vtk("mesh_tmp.vtk")
+    meshbox.vtk("mesh_tmp.vtk")
     pvmesh = pv.read("mesh_tmp.vtk")
 
     with meshbox.access():
@@ -205,3 +204,8 @@ if uw.mpi.size==1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+# -
+
+meshbox.petsc_fe.view()
+
+
