@@ -23,7 +23,7 @@ import numpy as np
 
 
 # +
-import meshio, pygmsh
+import pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
@@ -59,10 +59,9 @@ if uw.mpi.rank==0:
         
         geom.generate_mesh(dim=2, verbose=False)
         geom.save_geometry("ns_pipe_flow.msh")
-        geom.save_geometry("ns_pipe_flow.vtk")
 
-pipemesh = uw.mesh._from_gmsh(filename="ns_pipe_flow.msh")
-pipemesh.view()
+pipemesh = uw.mesh.Mesh(meshfile="ns_pipe_flow.msh")
+pipemesh.dm.view()
 
 # check the mesh if in a notebook / serial
 
@@ -79,6 +78,7 @@ if uw.mpi.size==1:
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]     
     
+    pipemesh.vtk("ns_pipe_flow.vtk")
     pvmesh = pv.read("ns_pipe_flow.vtk")
     
     pl = pv.Plotter()
