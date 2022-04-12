@@ -17,7 +17,8 @@ def UnstructuredSimplexBox(
         minCoords: Tuple = (0., 0.),
         maxCoords: Tuple = (1.0, 1.0),
         cellSize:  float = 0.1,
-        regular:   bool  = True):
+        degree:    int = 1,
+        regular:   bool = True):
   
     """
     Generates a 2 or 3-dimensional box mesh.
@@ -156,13 +157,14 @@ def UnstructuredSimplexBox(
 
     plex.removeLabel("Face Sets")     
 
-    return Mesh(plex, simplex=True)
+    return Mesh(plex, degree=degree)
  
 
 def StructuredQuadBox(
         elementRes: Optional[Tuple[  int,  int,  int]] = (16, 16), 
         minCoords:  Optional[Tuple[float,float,float]] = None,
-        maxCoords:  Optional[Tuple[float,float,float]] = None):
+        maxCoords:  Optional[Tuple[float,float,float]] = None,
+        degree:     int = 1):
 
     """
     Generates a 2 or 3-dimensional box mesh.
@@ -348,13 +350,14 @@ def StructuredQuadBox(
 
     plex.removeLabel("Face Sets")     
 
-    return Mesh(plex, simplex=False)
+    return Mesh(plex, degree=degree)
 
 
 def SphericalShell(
         radiusOuter: float=1.0,
         radiusInner: float=0.1,
-        cellSize:    float=0.1):
+        cellSize:    float=0.1,
+        degree:      int=1):
 
     boundaries = {
      "Lower": 1,
@@ -414,13 +417,14 @@ def SphericalShell(
 
     plex.removeLabel("Face Sets")     
 
-    return Mesh(plex, simplex=True)
+    return Mesh(plex, degree=degree)
 
 
 def Annulus(
         radiusOuter: float = 1.0, 
         radiusInner: float = 0.3, 
-        cellSize:    float = 0.1):
+        cellSize:    float = 0.1,
+        degree:      int = 1):
 
     boundaries = {
      "Lower": 1,
@@ -487,13 +491,14 @@ def Annulus(
 
     plex.removeLabel("Face Sets")     
 
-    return Mesh(plex, simplex=True)
+    return Mesh(plex, degree=degree)
 
 
 def CubicSphere(
         radiusOuter: float = 1.0, 
         radiusInner: float = 0.3, 
-        numElements: int = 20):
+        numElements: int = 20,
+        degree: int = 1):
 
     boundaries = {
      "Lower": 1,
@@ -601,4 +606,4 @@ def CubicSphere(
 
     plex.removeLabel("Face Sets")     
 
-    return Mesh(plex, simplex=False)
+    return Mesh(plex, degree=degree)

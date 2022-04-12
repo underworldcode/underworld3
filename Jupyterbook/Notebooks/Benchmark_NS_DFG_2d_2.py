@@ -19,15 +19,13 @@
 #
 #
 
-
-
 import petsc4py
 import underworld3 as uw
 import numpy as np
 
 
 # +
-import meshio, pygmsh
+import pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
@@ -67,7 +65,7 @@ if uw.mpi.rank==0:
 # -
 
 
-pipemesh = uw.meshes.MeshFromGmshFile(dim=2, degree=1, filename="ns_pipe_flow.msh", label_groups=[], simplex=True)
+pipemesh = uw.mesh.Mesh(degree=1, meshfile="ns_pipe_flow.msh")
 pipemesh.dm.view()
 
 # +
@@ -87,7 +85,8 @@ if uw.mpi.size==1:
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]     
     
-    pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    pipemesh.vtk("mesh_tmp.vtk")
+    pvmesh = pv.read("mesh_tmp.vtk")
     
     pl = pv.Plotter()
 

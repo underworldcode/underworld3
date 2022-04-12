@@ -11,7 +11,7 @@ import numpy as np
 from underworld3.util_mesh import UnstructuredSimplexBox
 
 # %%
-mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellize=1.0/16) 
+mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellSize=1.0/16) 
 
 # %%
 # Create Poisson object
