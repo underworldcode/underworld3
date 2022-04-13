@@ -9,15 +9,24 @@ import numpy as np
 import sympy
 
 # %%
-mesh = uw.meshes.Unstructured_Simplex_Box(dim=2, minCoords=(0.0,0.0),
-                                          maxCoords=(1.0,1,0), 
-                                          cell_size=0.05,regular=False) 
+
+mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+                                 maxCoords=(1.0,1.0), 
+                                 cellSize=1.0/32.0)
+
+
+# %%
+# mesh variables
+
+t_soln = uw.mesh.MeshVariable("T",mesh, 1, degree=3 )
+dTdX   = uw.mesh.MeshVariable("dTdX",mesh, 1, degree=3 )
 
 
 # %%
 # Create Poisson object
-poisson = uw.systems.Poisson(mesh, degree=3)
-gradient = uw.systems.Projection(mesh, degree=1)
+
+poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
+gradient = uw.systems.Projection(mesh, u_Field=dTdX)
 
 # %%
 # Set some things
@@ -33,14 +42,16 @@ poisson.solve()
 # %%
 
 # %%
-gradient.uw_function = sympy.diff(poisson.u.fn, mesh.N.x)
+gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.x)
 gradient.solve()
 
 # %%
 # non-linear smoothing term (probably not needed especially at the boundary)
 
-gradient.uw_function = sympy.diff(poisson.u.fn, mesh.N.y) 
+gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y) 
 gradient.solve(zero_init_guess=True)
+
+# %%
 
 # %%
 # Check. Construct simple linear which is solution for 
@@ -68,8 +79,9 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
-
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+    
     with mesh.access():
         pvmesh.point_data["T"] = mesh_numerical_soln
         pvmesh.point_data["dTdy"] = uw.function.evaluate(gradient.u.fn, mesh.data) 
@@ -86,13 +98,16 @@ if MPI.COMM_WORLD.size==1:
     # pl.screenshot(filename="test.png")  
 
 # %%
-with mesh.access(poisson.u):
-    poisson.u.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.y*np.pi), poisson.u.coords)
+## Now something odd ... a further call to the gradient solver blows up 
+
+# %%
+with mesh.access(t_soln):
+    t_soln.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.y * np.pi), poisson.u.coords)
     
-gradient.uw_function = sympy.vector.gradient(poisson.u.fn).to_matrix(mesh.N)[1]
-gradient.petsc_options["snes_rtol"] = 1.0e-8
-gradient.petsc_options["ksp_rtol"] = 1.0e-8
-gradient.solve()
+gradient.solve(zero_init_guess=True)
+
+# %%
+uw.function.evaluate(sympy.sin(mesh.N.y * np.pi), poisson.u.coords)
 
 # %%
 # Validate
