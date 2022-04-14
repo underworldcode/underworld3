@@ -83,3 +83,23 @@ def test_vector_projection():
     vector_projection.solve()
 
     return
+
+
+def test_gradient_recovery():
+
+    meshbox = UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+                                     maxCoords=(1.0,1.0), 
+                                     cellSize=1.0/32.0)
+    
+    x = meshbox.N.x
+    fn = sympy.cos(4.*sympy.pi * x)
+    
+    field  = uw.mesh.MeshVariable("T", meshbox, 1, degree=1)
+    gradient = uw.mesh.MeshVariable("dT/dx", meshbox, 1, degree=1)
+    
+    with meshbox.access(field):
+        field.data[:, 0] = uw.function.evaluate(fn, meshbox.data[:])
+    
+    scalar_projection = uw.systems.Projection(meshbox, gradient)
+    scalar_projection.uw_function = sympy.diff(field.fn, x)
+    scalar_projection.solve()
