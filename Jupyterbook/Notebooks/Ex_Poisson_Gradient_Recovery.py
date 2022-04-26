@@ -18,15 +18,28 @@ mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0),
 # %%
 # mesh variables
 
-t_soln = uw.mesh.MeshVariable("T",mesh, 1, degree=3 )
-dTdX   = uw.mesh.MeshVariable("dTdX",mesh, 1, degree=3 )
+t_soln = uw.mesh.MeshVariable("T", mesh, 1, degree=3 )
+dTdX   = uw.mesh.MeshVariable("dTdX", mesh, 1, degree=2 )
+gradT  = uw.mesh.MeshVariable("gradT",mesh, mesh.dim, degree=2 )
 
 
 # %%
 # Create Poisson object
 
+
+gradient = uw.systems.Projection(mesh, dTdX)
+gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.x)
+gradient.smoothing = 1.0e-3
+
+# These are both SNES Scalar objects
+
+gradT_projector = uw.systems.Vector_Projection(mesh, gradT)
+gradT_projector.uw_function = sympy.vector.gradient(t_soln.fn)
+
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
-gradient = uw.systems.Projection(mesh, u_Field=dTdX)
+
+
+# %%
 
 # %%
 # Set some things
@@ -36,10 +49,17 @@ poisson.add_dirichlet_bc( 1., "Bottom" )
 poisson.add_dirichlet_bc( 0., "Top" )  
 
 # %%
+poisson.petsc_fe_u.view()
+
+# %%
 # Solve time
 poisson.solve()
 
 # %%
+gradT_projector.solve()
+
+# %%
+gradient.petsc_fe_u.view()
 
 # %%
 gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.x)
@@ -48,8 +68,19 @@ gradient.solve()
 # %%
 # non-linear smoothing term (probably not needed especially at the boundary)
 
-gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y) 
-gradient.solve(zero_init_guess=True)
+# gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y) 
+# gradient.solve(_force_setup=True)
+
+# %%
+
+# %%
+gradT_projector.solve()
+
+# %%
+0/0
+
+# %%
+gradient.solve(_force_setup=True)
 
 # %%
 
