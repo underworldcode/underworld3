@@ -1,11 +1,9 @@
-# cython: profile=False
 from typing import Optional, Tuple
 import os
 import tempfile
 
 import  numpy
 import  numpy as np
-cimport numpy as np
 
 from mpi4py import MPI
 from petsc4py import PETSc
