@@ -45,7 +45,9 @@ class SwarmPICLayout(Enum):
 
 class SwarmVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
-    def __init__(self, name, swarm, num_components, vtype=None, dtype=float, proxy_order=2, _register=True, _proxy=True):
+    def __init__(self, name, swarm, num_components, 
+                 vtype=None, dtype=float, proxy_degree=2, 
+                 _register=True, _proxy=True, _nn_proxy=False):
 
         if name in swarm.vars.keys():
             raise ValueError("Variable with name {} already exists on swarm.".format(name))
@@ -71,7 +73,12 @@ class SwarmVariable(_api_tools.Stateful):
         # create proxy variable
         self._meshVar = None
         if _proxy:
-            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, vtype, degree=proxy_order)
+            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, 
+                                                 vtype, degree=proxy_degree)
+
+        self._register = _register
+        self._proxy = _proxy
+        self._nn_proxy = _nn_proxy
 
         super().__init__()
 
@@ -79,14 +86,49 @@ class SwarmVariable(_api_tools.Stateful):
         """
         This method updates the proxy mesh variable for the current 
         swarm & particle variable state.
+
+        Here is how it works:
+
+            1) for each particle, create a distance-weighted average on the node data
+            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
+
+        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+        Todo: some form of global fall-back for when there are no particles on a processor 
+
         """
+
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             return
-        nnmap = self.swarm._get_map(self)
-        # set NN vals on mesh var
+       
+        # 1 - Average particles to nodes with distance weighted average
+
+        kd = uw.algorithms.KDTree(self._meshVar.coords)
+        kd.build_index()
+
+        with self.swarm.access():
+            n,d,b = kd.find_closest_point(self.swarm.data)
+   
+            node_values  = np.zeros((self._meshVar.coords.shape[0],self.num_components))
+            w = np.zeros(self._meshVar.coords.shape[0]) 
+
+            if not self._nn_proxy:
+                for i in range(self.data.shape[0]):
+                    if b[i]:
+                        node_values[n[i],:] += self.data[i,:] / (1.0e-16+d[i])
+                        w[n[i]] += 1.0 / (1.0e-16+d[i])
+
+                node_values[np.where(w > 0.0)[0],:] /= w[np.where(w > 0.0)[0]].reshape(-1,1)
+
+        # 2 - set NN vals on mesh var where w == 0.0 
+         
+        p_nnmap = self.swarm._get_map(self)
+
         with self.swarm.mesh.access(self._meshVar), self.swarm.access():
-            self._meshVar.data[:,:] = self.data[nnmap,:]
+            self._meshVar.data[...] = node_values[...]
+            self._meshVar.data[np.where(w==0.0),:] = self.data[p_nnmap[np.where(w==0.0)],:]
+        
+        return      
 
     @timing.routine_timer_decorator
     def project_from(self, meshvar):
@@ -112,7 +154,6 @@ class SwarmVariable(_api_tools.Stateful):
         options.setValue("swarm_project_from_ksp_rtol", 1e-17)
         options.setValue("swarm_project_from_pc_type" , "none")
         ksp.setFromOptions()
-
 
 
 #   ierr = DMGetGlobalVector(dm, &fhat);CHKERRQ(ierr);
@@ -164,8 +205,6 @@ class SwarmVariable(_api_tools.Stateful):
         M.destroy()
         M_p.destroy()
 
-
-
     @property
     def data(self):
         if self._data is None:
@@ -177,12 +216,60 @@ class SwarmVariable(_api_tools.Stateful):
         return self._meshVar.fn
 
 
+    @timing.routine_timer_decorator
+    def save(self, filename : str,
+                   name     : Optional[str] = None,
+                   index    : Optional[int] = None):
+        """
+        Append variable data to the specified mesh 
+        checkpoint file. The file must already exist.
+
+        For swarm data, we currently save the proxy 
+        variable (so this will fail if the variable has
+        no proxy value). This allows some form of 
+        reconstruction of the information on a swarm
+        even if it is not an exact mapping. 
+
+        This is not ideal for discontinuous fields.
+
+        Parameters
+        ----------
+        filename :
+            The filename of the mesh checkpoint file. It
+            must already exist.
+        name :
+            Textual name for dataset. In particular, this
+            will be used for XDMF generation. If not 
+            provided, the variable name will be used. 
+        index :
+            Not currently supported. An optional index which 
+            might correspond to the timestep (for example).
+        """
+
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            print("No proxy mesh variable that can be saved")
+            return
+
+        self._meshVar.save(filename, name, index)
+
+        return
+
+
+
 #@typechecked
 class Swarm(_api_tools.Stateful):
+
+    instances = 0
+
     @timing.routine_timer_decorator
     def __init__(self, mesh):
+
+        Swarm.instances += 1
+
         self.mesh = mesh
         self.dim = mesh.dim
+        self.cdim = mesh.cdim
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
@@ -194,10 +281,14 @@ class Swarm(_api_tools.Stateful):
         self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords
-        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.dim, dtype=float, _register=False, _proxy=False)
+        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.cdim, dtype=float, _register=False, _proxy=False)
 
         # add variable to handle particle cell id
         self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)
+
+        # add variable to hold swarm coordinates during position updates
+        self._X0 = uw.swarm.SwarmVariable("DMSwarm_X0", self, self.cdim, dtype=float, _register=True, _proxy=False)
+        self._X0_uninitialised = True
 
         self._index = None
         self._nnmapdict = {}
@@ -241,7 +332,7 @@ class Swarm(_api_tools.Stateful):
         self.fill_param = fill_param
 
         """
-        Currently (2021.11.15) supported by PETSc release
+        Currently (2021.11.15) supported by PETSc release 3.16.x
  
         When using a DMPLEX the following case are supported:
               (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
@@ -254,7 +345,7 @@ class Swarm(_api_tools.Stateful):
 
         
         if layout==None:
-            if self.mesh.isSimplex==True and self.dim == 2:
+            if self.mesh.isSimplex==True and self.dim == 2 and fill_param > 1:
                 layout=SwarmPICLayout.REGULAR
             else:
                 layout=SwarmPICLayout.GAUSS
@@ -274,11 +365,11 @@ class Swarm(_api_tools.Stateful):
         # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
 
         self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
-        return self
+        return # self # LM: Is there any reason to return self ?
 
     @timing.routine_timer_decorator
-    def add_variable(self, name, num_components=1, dtype=float):
-        return SwarmVariable(name, self, num_components, dtype=dtype)
+    def add_variable(self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False):
+        return SwarmVariable(name, self, num_components, dtype=dtype, proxy_degree=proxy_degree, _nn_proxy=_nn_proxy)
 
     @property
     def vars(self):
@@ -376,6 +467,7 @@ class Swarm(_api_tools.Stateful):
                     if (self.em_swarm.particle_coordinates in writeable_vars) or \
                        (var                                in writeable_vars) :
                         var._update()
+
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time()-stime, "Swarm.access",1)
         return exit_manager(self)
@@ -384,7 +476,7 @@ class Swarm(_api_tools.Stateful):
         # generate tree if not avaiable
         if not self._index:
             with self.access():
-                self._index = uw.algorithms.KDTree(self.particle_coordinates.data)
+                self._index = uw.algorithms.KDTree(self.data)
 
         # get or generate map
         meshvar_coords = var._meshVar.coords
@@ -400,3 +492,90 @@ class Swarm(_api_tools.Stateful):
             self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
         return self._nnmapdict[digest]
 
+
+    def advection(self, 
+                  V_fn, 
+                  delta_t, 
+                  order = 2,
+                  corrector=False,
+                  restore_points_to_domain_func = None
+                  ):
+
+        X0 = self._X0
+
+        # Use current velocity to estimate where the particles would have
+        # landed in an implicit step.
+
+        # ? how does this interact with the particle restoration function ?
+
+        if corrector == True and not self._X0_uninitialised:
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+
+                corrected_position = X0.data + delta_t * v_at_Vpts
+                if restore_points_to_domain_func is not None:
+                    corrected_position = restore_points_to_domain_func(corrected_position) 
+
+                updated_current_coords = 0.5 * (corrected_position + self.data)
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                
+                if restore_points_to_domain_func is not None:
+                    updated_current_coords = restore_points_to_domain_func(updated_current_coords)
+
+                self.data[...] = updated_current_coords
+
+        with self.access(X0):
+            X0.data[...] = self.data[...]
+            self._X0_uninitialised = False
+
+        # Mid point algorithm (2nd order)
+        if order==2:       
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+
+                if restore_points_to_domain_func is not None:
+                    mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
+
+                self.data[...] = mid_pt_coords
+
+                ## Let the swarm be updated, and then move the rest of the way
+
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                new_coords = X0.data[...] + delta_t * v_at_Vpts
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+                if restore_points_to_domain_func is not None:
+                    new_coords = restore_points_to_domain_func(new_coords)
+
+                self.data[...] = new_coords
+
+        # Previous position algorithm (cf above) - we use the previous step as the
+        # launch point using the current velocity field. This gives a correction to the previous
+        # landing point. 
+
+        # assumes X0 is stored from the previous step ... midpoint is needed in the first step
+
+        # forward Euler (1st order)
+        else:
+            with self.access(self.particle_coordinates):
+                v_at_Vpts = uw.function.evaluate(V_fn, self.data).reshape(-1,self.dim)
+                new_coords = self.data + delta_t * v_at_Vpts 
+
+                # validate_coords to ensure they live within the domain (or there will be trouble)
+
+                if restore_points_to_domain_func is not None:
+                    new_coords = restore_points_to_domain_func(new_coords)
+
+                self.data[...] = new_coords
+
+        return
+
+
+
+
+ 

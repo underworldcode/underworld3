@@ -1,8 +1,7 @@
 # cython: profile=False
-from typing import Optional, Tuple
-from enum import Enum
-
-import math
+from typing import Optional, Tuple, Union
+from collections import namedtuple
+import os
 
 import numpy
 import numpy as np
@@ -11,6 +10,8 @@ import sympy
 import sympy.vector
 
 from mpi4py import MPI
+from mpi4py.MPI import COMM_WORLD
+
 from petsc4py import PETSc
 
 include "./petsc_extras.pxi"
@@ -20,29 +21,85 @@ import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
-class MeshClass(_api_tools.Stateful):
-    @timing.routine_timer_decorator
-    def __init__(self, simplex, *args,**kwargs):
-        self.isSimplex = simplex
 
-        # Enable hashing
+@PETSc.Log.EventDecorator()
+def _from_gmsh(filename, comm=None):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+    comm = comm or MPI.COMM_WORLD
+    # Create a read-only PETSc.Viewer
+    gmsh_viewer = PETSc.Viewer().create(comm=comm)
+    gmsh_viewer.setType("ascii")
+    gmsh_viewer.setFileMode("r")
+    gmsh_viewer.setFileName(filename)
+    gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+                
+    # Extract Physical groups from the gmsh file
+    import gmsh
+    gmsh.initialize()
+    gmsh.model.add("Model")
+    gmsh.open(filename)
+
+    physical_groups = {}
+    for dim, tag in gmsh.model.get_physical_groups():
+
+        name = gmsh.model.get_physical_name(dim, tag)
+        
+        physical_groups[name] = tag
+        gmsh_plex.createLabel(name)
+        label = gmsh_plex.getLabel(name)
+        
+        for elem in ["Face Sets"]:
+            indexSet = gmsh_plex.getStratumIS(elem, tag)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+    gmsh.finalize()
+
+    return gmsh_plex
+
+
+class Mesh(_api_tools.Stateful):
+
+    mesh_instances = 0
+
+    @timing.routine_timer_decorator
+    def __init__(self, meshfile, degree=1, *args,**kwargs):
+
+        if isinstance(meshfile, PETSc.DMPlex):
+            name = "plexmesh"
+            self.dm = meshfile
+        else:
+            comm = kwargs.get("comm", COMM_WORLD)
+            name = meshfile
+            basename, ext = os.path.splitext(meshfile)
+
+            if ext.lower() == '.msh':
+                self.dm = _from_gmsh(meshfile, comm)
+
+            else:
+                raise RuntimeError("Mesh file %s has unknown format '%s'."
+                                   % (meshfile, ext[1:]))
+
+        Mesh.mesh_instances += 1
+
+        self.isSimplex = self.dm.isSimplex()
+        self.cdim = self.dm.getDimension()
+
+        # Use grid hashing for point location
         options = PETSc.Options()
         options["dm_plex_hash_location"] = 0
-        # Need some tweaks for <3.16.
-        petsc_version_minor = PETSc.Sys().getVersion()[1]
-        if petsc_version_minor < 16:
-            # Let's use 3.16 default heuristics to set hashing grid size.
-            cStart,cEnd = self.dm.getHeightStratum(0)
-            options["dm_plex_hash_box_nijk"] = max(2, math.floor( (cEnd - cStart)**(1.0/self.dim) * 0.8) )
-            # However, if we're in 3d and petsc <3.16, no bueno :-(
-            if self.dim==3:
-                options["dm_plex_hash_location"] = 0
-                options.delValue("dm_plex_hash_box_nijk")
         self.dm.setFromOptions()
 
         # Set sympy constructs
         from sympy.vector import CoordSys3D
+        
         self._N = CoordSys3D("N")
+        
         # Tidy some of this printing. Note that this
         # only changes the user interface printing, and 
         # switches out for simpler `BaseScalar` representations.
@@ -61,46 +118,113 @@ class MeshClass(_api_tools.Stateful):
         import weakref
         self._vars = weakref.WeakValueDictionary()
 
+        # a list of equation systems that will
+        # need to be rebuilt if the mesh coordinates change
+
+        self._equation_systems_register = []
+
         self._accessed = False
+        self._quadrature = False
         self._stale_lvec = True
         self._lvec = None
+        self.petsc_fe = None
 
         self._elementType = None
 
+        self.degree = degree
 
-        # The following is the new code from the master branch (3.16 compatible which always creates zeros)
-        """
-        # dictionary for variable coordinate arrays
+        self.nuke_coords_and_rebuild()
+
+        # A private work array used in the stats routines. 
+        # This is defined now since we cannot make a new one
+        # once the init phase of uw3 is complete.
+
+        self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=2 ) 
+
+        super().__init__()
+
+    def nuke_coords_and_rebuild(self):
+
+        # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
+
         self._coord_array = {}
-        
-        # now set copy of linear array into dictionary
-        arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
-        self._index = None
-        """
 
-        # This is a reversion to the old version (3.15 compatible which seems to work)
-
-        self._coord_array = {}
         # let's go ahead and do an initial projection from linear (the default) 
         # to linear. this really is a nothing operation, but a 
         # side effect of this operation is that coordinate DM DMField is 
         # converted to the required `PetscFE` type. this may become necessary
         # later where we call the interpolation routines to project from the linear
         # mesh coordinates to other mesh coordinates. 
+
+        ## LM  - I put in the option to specify the default coordinate interpolation degree 
+        ## LM  - which seems sensible given linear interpolation seems likely to be a problem
+        ## LM  - for spherical meshes. However, I am not sure about this because it means that
+        ## LM  - the mesh coords and the size of the nodal array are different. This might break 
+        ## LM  - stuff so I will leave the default at 1
+
         options = PETSc.Options()
-        options.setValue("meshproj_petscspace_degree", 1) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, 1,"meshproj_", PETSc.COMM_WORLD)
+        options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree) 
+
+        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex,
+                                                    self.degree,  "meshproj_{}_".format(self.mesh_instances), PETSc.COMM_WORLD)
+        self.petsc_fe = cdmfe
+      
         cdef FE c_fe = cdmfe
         cdef DM c_dm = self.dm
         ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
-        # now set copy of linear array into dictionary
+
+        # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
-        self._coord_array[(self.isSimplex,1)] = arr.reshape(-1, self.dim).copy()
+        self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.cdim).copy()
+
+        self._get_mesh_centroids()
+
+        # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
 
+        return
+        
+    @timing.routine_timer_decorator
+    def _align_quadratures(self, mesh_var=None, force=False):
+        """
+        Choose a quadrature that will be used by any solvers on 
+        this mesh. Quadratures are aligned with either:
+          - the variable that has the highest degree on the mesh at this point
+          - the variable that is provided
 
-        super().__init__()
+        The default quadrature is only updated once unless
+        we set `force=True`
+
+        """
+
+        # Ensure consistent quadrature across all mesh variables
+
+        # # Find var with the highest degree. We will then configure the integration 
+        # # to use this variable's quadrature object for all variables. 
+        # # This needs to be double checked.  
+
+        if self._quadrature and not force:
+            return
+        
+        if mesh_var is None:
+            deg = 0
+            for key, var in self.vars.items():
+                if var.degree >= deg:
+                    deg = var.degree
+                    var_base = var
+        else:
+            var = mesh_var
+
+        quad_base = var_base.petsc_fe.getQuadrature()
+        self.petsc_fe.setQuadrature(quad_base)
+
+        # Do this now for consistency (it is also done by the solvers)
+        for fe in [var.petsc_fe for var in self.vars.values()]:
+            fe.setQuadrature(quad_base)
+
+        self._quadrature = True
+        return
+
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -108,6 +232,7 @@ class MeshClass(_api_tools.Stateful):
         This method creates and/or updates the mesh variable local vector. 
         If the local vector is already up to date, this method will do nothing.
         """
+
         cdef DM dm = self.dm
         if self._stale_lvec:
             if not self._lvec:
@@ -144,6 +269,27 @@ class MeshClass(_api_tools.Stateful):
     def __del__(self):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
+
+    def deform_mesh(self, 
+                    new_coords: numpy.ndarray):
+        """
+        This method will update the mesh coordinates and reset any cached coordinates in
+        the mesh and in equation systems that are registered on the mesh. 
+
+        The coord array that is passed in should match the shape of self.data
+        """
+
+        coord_vec = self.dm.getCoordinatesLocal()
+        coords = coord_vec.array.reshape(-1,self.cdim)
+        coords[...] = new_coords[...]
+                
+        self.dm.setCoordinatesLocal(coord_vec)
+        self.nuke_coords_and_rebuild()
+    
+        for eq_system in self._equation_systems_register:
+            eq_system._rebuild_after_mesh_update()
+
+        return
 
     def access(self, *writeable_vars:"MeshVariable"):
         """
@@ -216,7 +362,7 @@ class MeshClass(_api_tools.Stateful):
                         # sync ghost values
                         subdm.localToGlobal(var.vec,var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec,var.vec, addv=False)
-                        ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
+                        subdm.destroy()
                         self.mesh._stale_lvec = True
                     var._data = None
                     var._set_vec(available=False)
@@ -224,7 +370,6 @@ class MeshClass(_api_tools.Stateful):
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time()-stime, "Mesh.access",1)
         return exit_manager(self)
-
 
     @property
     def N(self) -> sympy.vector.CoordSys3D:
@@ -238,7 +383,7 @@ class MeshClass(_api_tools.Stateful):
         """
         The tuple of base scalar objects (N.x,N.y,N.z) for the mesh. 
         """
-        return self._N.base_scalars()[0:self.dim]
+        return self._N.base_scalars()[0:self.cdim]
 
     @property
     def rvec(self) -> sympy.vector.Vector:
@@ -246,10 +391,10 @@ class MeshClass(_api_tools.Stateful):
         The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
         """
         N = self.N
-        rvecguy = N.x*N.i + N.y*N.j
-        if self.dim==3:
-            rvecguy += N.z*N.k
-        return rvecguy
+        r_vec = N.x*N.i + N.y*N.j
+        if self.cdim==3:
+            r_vec += N.z*N.k
+        return r_vec
 
     @property
     def data(self) -> numpy.ndarray:
@@ -257,9 +402,8 @@ class MeshClass(_api_tools.Stateful):
         The array of mesh element vertex coordinates.
         """
         # get flat array
-
         arr = self.dm.getCoordinatesLocal().array
-        return arr.reshape(-1, self.dim)
+        return arr.reshape(-1, self.cdim)
 
     @property
     def dim(self) -> int:
@@ -267,7 +411,6 @@ class MeshClass(_api_tools.Stateful):
         The mesh dimensionality.
         """
         return self.dm.getDimension()
-
 
     @property
     def elementType(self) -> int:
@@ -298,7 +441,6 @@ class MeshClass(_api_tools.Stateful):
 
         """
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=MPI.COMM_WORLD)
-        # cdef PetscViewer cviewer = ....
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
@@ -306,6 +448,15 @@ class MeshClass(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
+        viewer(self.dm)
+
+
+    def vtk(self, filename: str):
+        """
+        Save mesh to the specified file
+        """
+
+        viewer = PETSc.Viewer().createVTK(filename, "w", comm=MPI.COMM_WORLD)
         viewer(self.dm)
     
     def generate_xdmf(self, filename:str):
@@ -346,7 +497,7 @@ class MeshClass(_api_tools.Stateful):
         cdmNew = cdmOld.clone()
         options = PETSc.Options()
         options.setValue("coordinterp_petscspace_degree", var.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.dim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
+        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
         cdmNew.setField(0,cdmfe)
         cdmNew.createDS()
         (matInterp, vecScale) = cdmOld.createInterpolation(cdmNew)
@@ -361,7 +512,7 @@ class MeshClass(_api_tools.Stateful):
         cdmNew.globalToLocal(coordsNewG,coordsNewL)
         arr = coordsNewL.array
         # reshape and grab copy
-        arrcopy = arr.reshape(-1,self.dim).copy()
+        arrcopy = arr.reshape(-1,self.cdim).copy()
         # record into coord array
         self._coord_array[key] = arrcopy
         # clean up
@@ -396,14 +547,14 @@ class MeshClass(_api_tools.Stateful):
         """
         # Create index if required
         if not self._index:
-            from underworld3.swarm import Swarm
+            from underworld3.swarm import Swarm, SwarmPICLayout
             # Create a temp swarm which we'll use to populate particles
             # at gauss points. These will then be used as basis for 
             # kd-tree indexing back to owning cells.
             tempSwarm = Swarm(self)
             # 4^dim pop is used. This number may need to be considered
             # more carefully, or possibly should be coded to be set dynamically. 
-            tempSwarm.populate(fill_param=4)
+            tempSwarm.populate(fill_param=4, layout=SwarmPICLayout.GAUSS)
             with tempSwarm.access():
                 # Build index on particle coords
                 self._indexCoords = tempSwarm.particle_coordinates.data.copy()
@@ -424,6 +575,24 @@ class MeshClass(_api_tools.Stateful):
 
         return self._indexMap[closest_points]
 
+    def _get_mesh_centroids(self):
+        """
+        Obtain and cache the mesh centroids using underworld swarm technology. 
+        This routine is called when the mesh is built / rebuilt
+        """
+
+        from underworld3.swarm import Swarm, SwarmPICLayout
+        tempSwarm = Swarm(self)
+        tempSwarm.populate(fill_param=1, layout=SwarmPICLayout.GAUSS)
+
+        with tempSwarm.access():
+            # Build index on particle coords
+            self._centroids = tempSwarm.data.copy()
+
+        # That's it ! we should check that these objects are deleted correctly
+
+        return
+ 
     def get_min_radius(self) -> double:
         """
         This method returns the minimum distance from any cell centroid to a face.
@@ -435,6 +604,7 @@ class MeshClass(_api_tools.Stateful):
         cdef DM dm = self.dm
         cdef double minradius
         if (not hasattr(self,"_min_radius")) or (self._min_radius==None):
+            # Calling DMPlexComputeGeometryFVM generates the value returned by DMPlexGetMinRadius
             DMPlexComputeGeometryFVM(dm.dm,&cellgeom,&facegeom)
             DMPlexGetMinRadius(dm.dm,&minradius)
             self._min_radius = minradius
@@ -442,77 +612,68 @@ class MeshClass(_api_tools.Stateful):
             VecDestroy(&facegeom)
         return self._min_radius
 
-    def mesh2pyvista(self, 
-                     elementType: Optional[int]=None
-                     ):
+
+    def stats(self, uw_function):
         """
-        Returns a (vtk) pyvista.UnstructuredGrid object for visualisation of the mesh
-        skeleton. Note that this will normally use the elementType that is on the mesh
-        (HEX, QUAD) but, for data visualisation on higher-order elements, the actual 
-        order of the element is needed.
+        Returns various norms on the mesh for the provided function. 
+          - size
+          - mean
+          - min
+          - max
+          - sum
+          - L2 norm
+          - rms
+
+          NOTE: this currently assumes scalar variables !
+        """    
+
+#       This uses a private work MeshVariable and the various norms defined there but
+#       could either be simplified to just use petsc vectors, or extended to 
+#       compute integrals over the elements which is in line with uw1 and uw2 
+
+        from petsc4py.PETSc import NormType 
+
+        tmp = self._work_MeshVar
+
+        with self.access(tmp):
+            tmp.data[...] = uw.function.evaluate(uw_function, tmp.coords).reshape(-1,1)
         
-        ToDo: check for pyvista installation
+        vsize =  self._work_MeshVar._gvec.getSize()
+        vmean  = tmp.mean()
+        vmax   = tmp.max()[1]
+        vmin   = tmp.min()[1]
+        vsum   = tmp.sum()
+        vnorm2 = tmp.norm(NormType.NORM_2)
+        vrms   = vnorm2 / np.sqrt(vsize)
 
-        ToDo: parallel safety
+        return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
-        ToDo: use vtk instead of pyvista 
-        """
-
-        import vtk
-        import pyvista as pv 
-
-        if elementType is None:
-            elementType = self.elementType
-
-        # vtk defines all meshes using 3D coordinate arrays
-        if self.dim == 2: 
-            coords = self.data
-            vtk_coords = np.zeros((coords.shape[0], 3))
-            vtk_coords[:,0:2] = coords[:,:]
-        else:
-            vtk_coords = self.data
-
-        cells = self.mesh_dm_cells()
-        cell_type = np.empty(cells.shape[0], dtype=np.int64)
-        cell_type[:] = elementType
-
-        vtk_cells = np.empty((cells.shape[0], cells.shape[1]+1), dtype=np.int64)
-        vtk_cells[:,0] = cells.shape[1]
-        vtk_cells[:,1:] = cells[:,:]
-
-        pyvtk_unstructured_grid = pv.UnstructuredGrid(vtk_cells, cell_type, vtk_coords)
-
-        return pyvtk_unstructured_grid
 
     def mesh_dm_coords(self):
         cdim = self.dm.getCoordinateDim()
-        #lcoords = self.dm.getCoordinatesLocal().array.reshape(-1,cdim)
         coords = self.dm.getCoordinates().array.reshape(-1,cdim)
         return coords
 
     def mesh_dm_edges(self):
-        # coords = mesh_coords(mesh)
-        # import pdb; pdb.set_trace()
+
         starti,endi = self.dm.getDepthStratum(1)
         #Offset of the node indices (level 0)
         coffset = self.dm.getDepthStratum(0)[0]
         edgesize = self.dm.getConeSize(starti)
         edges = np.zeros((endi-starti,edgesize), dtype=np.uint32)
+        
         for c in range(starti, endi):
             edges[c-starti,:] = self.dm.getCone(c) - coffset
 
-        #edges -= edges.min() #Why the offset?
-        #print(edges)
-        #print(edges.min(), edges.max(), coords.shape)
         return edges
 
     def mesh_dm_faces(self):
         #Faces / 2d cells
         coords = self.mesh_dm_coords()
-        #cdim = mesh.dm.getCoordinateDim()
 
         #Index range in mesh.dm of level 2
         starti,endi = self.dm.getDepthStratum(2)
+
         #Offset of the node indices (level 0)
         coffset = self.dm.getDepthStratum(0)[0]
         FACES=(endi-starti)
@@ -588,1383 +749,11 @@ class MeshClass(_api_tools.Stateful):
                       
         return cell_vertices
 
-class Box(MeshClass):
-    @timing.routine_timer_decorator
-    def __init__(self, 
-                elementRes   :Optional[Tuple[  int,  int,  int]] =(16, 16), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                simplex      :Optional[bool]                     =False
-                ):
-        """
-        Generates a 2 or 3-dimensional box mesh.
-
-        Parameters
-        ----------
-        elementRes:
-            Tuple specifying number of elements in each axis direction.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location.
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        simplex:
-            If `True`, simplex elements are used, and otherwise quad or 
-            hex elements. 
-        """
-        interpolate=False
-        options = PETSc.Options()
-        options["dm_plex_separate_marker"] = None
-        self.elementRes = elementRes
-        if minCoords==None : minCoords=len(elementRes)*(0.,)
-        self.minCoords = minCoords
-        if maxCoords==None : maxCoords=len(elementRes)*(1.,)
-        self.maxCoords = maxCoords
-        self.dm = PETSc.DMPlex().createBoxMesh(
-            elementRes, 
-            lower=minCoords, 
-            upper=maxCoords,
-            simplex=simplex)
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        # bcs
-        from enum import Enum        
-        if len(elementRes) == 2:
-            class Boundary2D(Enum):
-                BOTTOM = 1
-                RIGHT  = 2
-                TOP    = 3
-                LEFT   = 4
-            self.boundary = Boundary2D
-        else:
-            class Boundary3D(Enum):
-                BOTTOM = 1
-                TOP    = 2
-                FRONT  = 3
-                BACK   = 4
-                RIGHT  = 5
-                LEFT   = 6
-            self.boundary = Boundary3D
-
-        # self.dm.view()
-        # create boundary sets
-        for val in self.boundary:
-            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
-            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
-            boundary_label = self.dm.getLabel(str(val).encode('utf8'))     # get label
-            # Without this check, we have failures at this point in parallel. 
-            # Further investigation required. JM.
-            if boundary_set:
-                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
-
-        super().__init__(simplex=simplex)
-
-
-# JM: I don't think this class is required any longer
-# and the pygmsh version should instead be used. I'll
-# leave this implementation here for now.
-# class Sphere(MeshClass):
-#     """
-#     Generates a 2 or 3-dimensional box mesh.
-#     """
-#     @timing.routine_timer_decorator
-#     def __init__(self, 
-#                 refinements=4, 
-#                 radius=1.):
-
-#         self.refinements = refinements
-#         self.radius = radius
-
-#         options = PETSc.Options()
-#         options.setValue("bd_dm_refine", self.refinements)
-
-#         cdef DM dm = PETSc.DMPlex()
-#         cdef MPI_Comm ccomm = GetCommDefault()
-#         cdef PetscInt cdim = 3
-#         cdef PetscReal cradius = self.radius
-#         DMPlexCreateBallMesh(ccomm, cdim, cradius, &dm.dm)
-#         self.dm = dm
-
-
-#         part = self.dm.getPartitioner()
-#         part.setFromOptions()
-#         self.dm.distribute()
-#         self.dm.setFromOptions()
-
-#         from enum import Enum        
-#         class Boundary(Enum):
-#             OUTER = 1
-        
-#         self.boundary = Boundary
-
-#         self.dm.view()        
-        
-#         super().__init__(simplex=True)
-
-
-class MeshFromGmshFile(MeshClass):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim           :int,
-                 filename      :str,
-                 bound_markers :Optional[Enum] = None,
-                 cell_size     :Optional[float] = None,
-                 refinements   :Optional[int]   = 0,
-                 simplex       :Optional[bool] = True  # Not sure if this will be useful
-                ):
-        """
-        This is a generic mesh class for which users will provide 
-        the mesh as a gmsh (.msh) file.
-
-            - dim, simplex not inferred from the file at this point 
-            - the file pointed to by filename is a .msh file 
-            - bound_markers is an Enum that identifies the markers used by gmsh physical objects
-            - etc etc 
-        
-        """
-
-        if cell_size and (refinements>0):
-            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
-
-        self.cell_size = cell_size
-        self.refinements = refinements
-
-        options = PETSc.Options()
-        options["dm_plex_separate_marker"] = None
-
-        self.dm =  PETSc.DMPlex().createFromFile(filename)
-
-        if bound_markers is None:
-            class Boundary(Enum):
-                ALL_BOUNDARIES = 1
-            self.boundary = Boundary
-        else:
-            self.boundary = bound_markers
-
-
-        '''
-        # create boundary sets
-        for val in self.boundary:
-            boundary_set = self.dm.getStratumIS("marker",val.value)        # get the set
-            self.dm.createLabel(str(val).encode('utf8'))                   # create the label
-            boundary_label = self.dm.getLabel(str(val).encode('utf8')) # get label
-            # Without this check, we have failures at this point in parallel. 
-            # Further investigation required. JM.
-            if boundary_set:
-                boundary_label.insertIS(boundary_set, 1) # add set to label with value 1
-        '''
-
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Face Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
-
-        for val in self.boundary:
-            indexSet = self.dm.getStratumIS("Vertex Sets", val.value)
-            self.dm.createLabel(str(val).encode('utf8'))
-            label = self.dm.getLabel(str(val).encode('utf8'))
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
-
-# This is how we combine boundaries by loading multiple
-# index sets into the label (this example had the top boundary labeled in multiple parts)   
-    
-# mesh.dm.createLabel(str("Boundary.TOP").encode('utf8'))
-# label = mesh.dm.getLabel(str("Boundary.TOP").encode('utf8'))
-
-# for val in [mesh.boundary.U1, mesh.boundary.U2, mesh.boundary.U3, mesh.boundary.U4]:
-#     indexSet = mesh.dm.getStratumIS("Face Sets", val.value)
-#     if indexSet:
-#         label.insertIS(indexSet, 1)
-#     indexSet.destroy()
-
-
-        self.dm.view()
-        super().__init__(simplex=simplex)
-
-
-
-
-
-class MeshFromCellList(MeshClass):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim         :int,
-                 cells       :numpy.ndarray,
-                 coords      :numpy.ndarray,
-                 cell_size   :Optional[float] = None,
-                 refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True
-                ):
-        """
-        This is a generic mesh class for which users will provide 
-        the specifying mesh cells and coordinates.
-
-        This method wraps to the PETSc `DMPlexCreateFromCellListPetsc` routine.
-
-        Only the root process needs to provide the `cells` and `coords` arrays. It
-        will then be distributed to other processes in the communication group.
-
-        ?? Should we try to add mesh labels in here - LM ??
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        cells :
-            An array of integers of size [numCells,numCorners] specifying the vertices for each cell.
-        coords :
-            An array of floats of size [numVertices,dim] specifying the coordinates of each vertex.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        refinements :
-            The number of mesh refinements that should be performed. If this is specified, `cell_size` 
-            should not be specified. 
-        simplex:
-            If `True`, simplex elements are assumed (default is True)
-        """
-
-        if cell_size and (refinements>0):
-            raise ValueError("You should either provide a `cell_size`, or a `refinements` count, but not both.")
-        self.cell_size = cell_size
-        self.refinements = refinements
-
-        options = PETSc.Options()
-        # options.setValue("dm_refine", self.refinements)
-        from . import mesh_utils
-        from mpi4py import MPI
-        cdef DM dm  = mesh_utils._from_cell_list(dim, cells, coords, MPI.COMM_WORLD)
-        self.dm = dm
-
-        from enum import Enum
-        class Boundary(Enum):
-            ALL_BOUNDARIES = 1
-        self.boundary = Boundary
-
-        bound = self.boundary.ALL_BOUNDARIES
-        self.dm.markBoundaryFaces(str(bound).encode('utf8'),bound.value)
-
-        part = self.dm.getPartitioner()
-        part.setFromOptions()
-        self.dm.distribute()
-        self.dm.setFromOptions()
-
-        if cell_size:
-            while True:
-                # Use a factor of 2 here as PETSc returns distance from centroid to edge
-                min_rad = 2.*self.get_min_radius()
-                if min_rad > 1.5*cell_size:
-                    if MPI.COMM_WORLD.rank==0:
-                        print(f"Mesh cell size ({min_rad:.3E}) larger than requested ({cell_size:.3E}). Refining.")
-                    self.dm = self.dm.refine()
-                    self._min_radius = None
-                else:
-                    break
-
-        for val in range(refinements):
-            if MPI.COMM_WORLD.rank==0:
-                print(f"Mesh refinement {val+1} of {refinements}.")
-            self.dm = self.dm.refine()
-            self._min_radius = None
-
-        if MPI.COMM_WORLD.rank==0:
-            print(f"Generated mesh minimum cell size: {2.*self.get_min_radius():.3E}. Requested size: {cell_size:.3E}.")
-
-        self.dm.view()
-        super().__init__(simplex=simplex)
-
-class MeshFromMeshIO(MeshFromCellList):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim         :int,
-                 meshio      :"MeshIO",
-                 cell_size   :Optional[float] =None,
-                 refinements :Optional[int]   = 0,
-                 simplex      :Optional[bool] = True
-                 ):
-        """
-        This is a generic mesh class for which users will provide 
-        the specifying mesh data as a `MeshIO` object.
-
-        Only the root process needs to provide the MeshIO object. It
-        will then be distributed to other processes in the communication group.
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        meshio :
-            The MeshIO object specifying the mesh.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        refinements :
-            The number of mesh refinements that should be performed. If this is specified, `cell_size` 
-            should not be specified. 
-        simplex:
-            If `True`, simplex elements are assumed (default is True)
-        """
-
-        if dim not in (2,3):
-            raise ValueError(f"`dim` must be 2 or 3. You have passed in dim={dim}.")
-
-        # if remove_lower_dimensional_cells is called on the mesh, then the cell list 
-        # for our regular meshes should be of length 1 (all hexes, all tets, all quads and so on)
-
-        cells = coords = None
-        if MPI.COMM_WORLD.rank==0:
-            cells  = meshio.cells[0][1]
-            coords = meshio.points[:,0:dim]
-  
-        super().__init__(dim, cells, coords, cell_size, refinements, simplex=simplex)
-
-    def _get_local_cell_size(self,
-                             dim        : int,
-                             domain_vol : float,
-                             cell_size  : float) -> int:
-        """
-        This method attempts to determine an appropriate resolution for
-        the generated *local* gmsh object.
-
-        This will consequently be refined in parallel to achieve the user's 
-        requested cell_size.
-
-        Parameters
-        ----------
-        dim :
-            Mesh dimensionality.
-        domain_vol : 
-            The expected domain volume (or area) for the generated
-            mesh.
-        cell_size :
-            Typical cell characteristic length.
-
-        Returns
-        -------
-        The suggested local cell size.
-
-        """
-        def cell_count(cell_size):
-            # approx size of tri/tet
-            cell_area  = 0.5 if (dim==2) else 1/(6.*math.sqrt(2.))
-            cell_area *= cell_size**dim
-            return int(domain_vol/cell_area)
-        # Set max local at some nominal number.
-        # This may well need to be different in 2 or 3-d.
-        max_local_cells = 48**3  
-        csize_local = cell_size
-        #Keep doubling cell size until we can generate reasonably sized local mesh.
-        while cell_count(csize_local)>max_local_cells:
-            csize_local *= 1.1
-        return csize_local 
-
-
-# pygmesh generator for Hex (/ Quad)-based structured, box mesh
-
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Hex_Box(MeshFromMeshIO):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05):
-        """
-        This class generates a Cartesian box of regular hexahedral (3D) or quadrilateral (2D) 
-        elements. 
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        elementRes:
-            Tuple specifying number of elements in each axis direction.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location.
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. If this is specified, `refinements` should not be specified. 
-        """
-
-        if minCoords==None: 
-            minCoords=len(elementRes)*(0.,)
-
-        if maxCoords==None: 
-            maxCoords=len(elementRes)*(1.,)
-
-        self.pygmesh = None
-        # Only root proc generates pygmesh, then it's distributed.
-
-        if MPI.COMM_WORLD.rank==0:
-            mesh = Hex_Box.build_pygmsh( dim, elementRes, minCoords, maxCoords )
-
-        super().__init__(dim, mesh, cell_size, simplex=False)
-
-        self.pygmesh = mesh
-        self.elementRes = elementRes
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_QUAD
-        else:
-            self._elementType = vtk.VTK_HEXAHEDRON
-
-        return
-
-    def build_pygmsh(
-                dim          :Optional[  int] = 2,
-                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None 
-            ):
-
-        x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
-
-        import pygmsh
-        with pygmsh.geo.Geometry() as geom:
-            points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
-            line = geom.add_line(*points)
-
-            _, rectangle, _ = geom.extrude(
-                line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], num_layers=elementRes[1], recombine=True
-            )
-
-            # It would make sense to validate that elementRes[2] > 0 if dim==3
-
-            if dim == 3:
-                geom.extrude(
-                    rectangle,
-                    translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
-                    num_layers=elementRes[2],
-                    recombine=True,
-                )
-                
-            quad_hex_box = geom.generate_mesh()
-            quad_hex_box.remove_lower_dimensional_cells()
-
-        return quad_hex_box
-
-
-
-# pygmesh generator for Tet/Tri-based structured, box mesh
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Simplex_Box(MeshFromMeshIO):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                elementRes   :Tuple[int,  int,  int]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =0.05):
-        """
-        This class generates a spherical shell, or a full sphere
-        where the inner radius is zero.
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        elementRes:
-            Tuple specifying number of elements in each axis direction.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location.
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.   
-        """
-
-        if minCoords==None: 
-            minCoords=len(elementRes)*(0.,)
-
-        if maxCoords==None: 
-            maxCoords=len(elementRes)*(1.,)
-
-        self.pygmesh = None
-
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:
-            mesh = Simplex_Box.build_pygmsh(dim, elementRes, minCoords, maxCoords)
-    
-        super().__init__(dim, mesh, cell_size)
-
-        self.elementRes = elementRes
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
-        self.pygmesh = mesh
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_TRIANGLE
-        else:
-            self._elementType = vtk.VTK_TETRA
-
-        return
-
-
-    def build_pygmsh(
-                dim          :Optional[  int] = 2,
-                elementRes   :Optional[Tuple[int,  int,  int]]    = (16, 16, 0), 
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                cell_size    :Optional[float] =1.0):
- 
-        xx = maxCoords[0]-minCoords[0]
-        yy = maxCoords[1]-minCoords[1]
-        zz = maxCoords[2]-minCoords[2]
-
-        import pygmsh
-        with pygmsh.occ.Geometry() as geom:
-            p = geom.add_point(minCoords, 1)
-            _, l, _ = geom.extrude(p, [xx, 0, 0], num_layers=elementRes[0])
-            _, s, _ = geom.extrude(l, [0, yy, 0], num_layers=elementRes[1])
-            if elementRes[2] > 0:
-                geom.extrude(s, [0, 0, zz], num_layers=elementRes[2])
-                
-            structured_tri_rect = geom.generate_mesh()   
-            structured_tri_rect.remove_lower_dimensional_cells()
-
-        return structured_tri_rect
-
-
-# pygmesh generator for Tet/Tri-based structured, box mesh
-# Note boundary labels are needed (cf PETSc box mesh above)
-
-class Unstructured_Simplex_Box(MeshFromMeshIO):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim          :Optional[  int] = 2,
-                minCoords    :Optional[Tuple[float,float,float]] =None,
-                maxCoords    :Optional[Tuple[float,float,float]] =None,
-                coarse_cell_size: Optional[float]=0.1, 
-                global_cell_size:Optional[float]=0.05
-                ):
-        """
-        This class generates a spherical shell, or a full sphere
-        where the inner radius is zero.
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        minCoord:
-            Optional. Tuple specifying minimum mesh location. 
-        maxCoord:
-            Optional. Tuple specifying maximum mesh location.
-        coarse_cell_size :
-            The target cell size for the unstructured template mesh that will later be refined for 
-            solving the unknowns. 
-        global_cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution. 
-        """
-
-        if minCoords==None: 
-            minCoords=(0.0,0.0,0.0)
-
-        if len(minCoords) == 2:
-            minCoords = (minCoords[0], minCoords[1], 0.0)
-
-        if maxCoords==None: 
-            maxCoords=(1.0,1.0,1.0) 
-
-        if len(maxCoords) == 2:
-            maxCoords = (maxCoords[0], maxCoords[1], 0.0)
-
-
-        self.pygmesh = None
-        # Only root proc generates pygmesh, then it's distributed.
-
-
-        if MPI.COMM_WORLD.rank==0:
-            unstructured_simplex_box = Unstructured_Simplex_Box.build_pygmsh(dim, 
-                            minCoords, maxCoords, 
-                            coarse_cell_size,
-                            global_cell_size)
-
-        super().__init__(dim, unstructured_simplex_box, global_cell_size)
-
-        self.pygmesh = unstructured_simplex_box
-        self.meshio = unstructured_simplex_box
-        self.elementRes = None
-        self.minCoords = minCoords
-        self.maxCoords = maxCoords
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_TRIANGLE
-        else:
-            self._elementType = vtk.VTK_TETRA
-
-        return
-
-    def build_pygmsh(
-                     dim, 
-                     minCoords, maxCoords, 
-                     coarse_cell_size,  
-                     global_cell_size ):
-
-
-        xx = maxCoords[0]-minCoords[0]
-        yy = maxCoords[1]-minCoords[1]
-        zz = maxCoords[2]-minCoords[2]
-
-        import pygmsh
-        with pygmsh.occ.Geometry() as geom:
-            if dim == 2:
-                # args: corner point (3-tuple), width, height, corner-roundness ... 
-                box = geom.add_rectangle(minCoords,xx,yy,0.0, mesh_size=coarse_cell_size)
-            else:
-                # args: corner point (3-tuple), size (3-tuple) ... 
-                box = geom.add_box(minCoords,(xx,yy,zz), mesh_size=coarse_cell_size)
-
-            unstructured_simplex_box = geom.generate_mesh()  
-            unstructured_simplex_box.remove_lower_dimensional_cells()
-
-        return unstructured_simplex_box
-
-class SphericalShell(MeshFromMeshIO):
-
-    @timing.routine_timer_decorator
-    def __init__(self,
-                 dim            :Optional[  int] =2,
-                 radius_outer   :Optional[float] =1.0,
-                 radius_inner   :Optional[float] =0.5,
-                 cell_size      :Optional[float] =0.05):
-        """
-        This class generates a spherical shell, or a full sphere
-        where the inner radius is zero.
-
-        Parameters
-        ----------
-        dim :
-            The mesh dimensionality.
-        radius_outer :
-            The outer radius for the spherical shell.
-        radius_inner :
-            The inner radius for the spherical shell. If this is set to 
-            zero, a full sphere is generated.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.
-        """
-        if radius_inner>=radius_outer:
-            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
-        self.pygmesh = None
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:
-            if   dim==2:
-                domain_area = math.pi*(radius_outer**2 - radius_inner**2)
-                # Add factor of 2 to `cell_size`. This is a fudge factor to bring
-                # the typical generated cell_size from the pygmsh mesh closer to what
-                # petsc reports.
-                csize_local = self._get_local_cell_size(2,domain_area,2.*cell_size)
-            elif dim==3:
-                domain_vol = 4./3.*math.pi*(radius_outer**3 - radius_inner**3)
-                # Add factor of 4 to `cell_size`. This is a fudge factor to bring
-                # the typical generated cell_size from the pygmsh mesh closer to what
-                # petsc reports.
-                csize_local = self._get_local_cell_size(3,domain_vol,4.*cell_size)
-            else:
-                raise ValueError("`dim` must be in [2,3].")
-
-            import pygmsh
-            # Generate local mesh.
-            with pygmsh.occ.Geometry() as geom:
-                geom.characteristic_length_max = csize_local
-                if dim==2:
-                    ndimspherefunc = geom.add_disk
-                else:
-                    ndimspherefunc = geom.add_ball
-                ball_outer = ndimspherefunc([0.0,]*dim, radius_outer)
-                if radius_inner > 0.:
-                    ball_inner = ndimspherefunc([0.0,]*dim, radius_inner)
-                    geom.boolean_difference(ball_outer,ball_inner)
-                # The following is an example of setting a callback for variable resolution.
-                # geom.set_mesh_size_callback(
-                #     lambda dim, tag, x, y, z: 0.15*abs(1.-sqrt(x ** 2 + y ** 2 + z ** 2)) + 0.15
-                # )
-
-                self.pygmesh = geom.generate_mesh()
-                self.pygmesh.remove_lower_dimensional_cells()
-
-
-        super().__init__(dim, self.pygmesh, cell_size, simplex=True)
-
-        import vtk
-
-        if dim == 2:
-            self._elementType = vtk.VTK_TRIANGLE
-        else:
-            self._elementType = vtk.VTK_TETRA
-
-        return
-
-    
-
-
-# The following does not work correctly as the transfinite volume is not correctly 
-# meshed ... / cannot be generated consistently with these surface descriptions. 
-
-
-class StructuredCubeSphericalCap(MeshFromMeshIO):
-
-    @timing.routine_timer_decorator
-    def __init__(self,
-                elementRes     :Optional[Tuple[int,  int,  int]]  = (16, 16, 8), 
-                angles         :Optional[Tuple[float, float]] = (0.7853981633974483, 0.7853981633974483), # pi/4
-                radius_outer   :Optional[float] =1.0,
-                radius_inner   :Optional[float] =0.5,
-                simplex        :Optional[bool] = False, 
-                cell_size      :Optional[float] =1.0
-                ):
-
-        """
-        This class generates a structured spherical cap based on a deformed cube
-
-        Parameters
-        ----------
-        elementRes: 
-            Elements in the (NS, EW, R) direction 
-        angles:
-            Angle subtended at the equator, central meridian for this cube-spherical-cap. 
-            Should be less than pi/2 for respectable element distortion.
-        radius_outer :
-            The outer radius for the spherical shell.
-        radius_inner :
-            The inner radius for the spherical shell. If this is set to 
-            zero, a full sphere is generated.
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.
-        """
-
-        if radius_inner>=radius_outer:
-            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
-            
-        import pygmsh
-
-        self.pygmesh = None
-
-        # Only root proc generates pygmesh, then it's distributed.
-
-        if MPI.COMM_WORLD.rank==0:  
-            hex_box = StructuredCubeSphericalCap.build_pygmsh(elementRes, angles, radius_outer, radius_inner, simplex)
-
-        super().__init__(3, hex_box, cell_size, simplex=simplex)
-
-        self.pygmesh = hex_box
-        self.meshio = hex_box
-
-        import vtk
-
-        if simplex:
-            self._elementType = vtk.VTK_TETRA
-        else:
-            self._elementType = vtk.VTK_HEXAHEDRON
-
-        self.elementRes = elementRes
-
-        # Is the most useful definition ?
-        self.minCoords = (-angles[0]/2.0, -angles[1]/2.0, radius_inner)
-        self.maxCoords = ( angles[0]/2.0,  angles[1]/2.0, radius_outer)
-
-        return
-
-    def build_pygmsh(
-                elementRes, 
-                angles,
-                radius_outer,
-                radius_inner,
-                simplex, 
-                ):
-
-            import pygmsh 
-
-            minCoords = (-1.0,-1.0,radius_inner)
-            maxCoords = ( 1.0, 1.0,radius_outer)
-
-            xx = maxCoords[0]-minCoords[0]
-            yy = maxCoords[1]-minCoords[1]
-            zz = maxCoords[2]-minCoords[2]
-
-            x_sep=(maxCoords[0] - minCoords[0])/elementRes[0]
-
-            theta = angles[0]
-            phi = angles[1]
-
-            with pygmsh.geo.Geometry() as geom:
-                points = [geom.add_point([x, minCoords[1], minCoords[2]], x_sep) for x in [minCoords[0], maxCoords[0]]]
-                line = geom.add_line(*points)
-
-                _, rectangle, _ = geom.extrude(line, translation_axis=[0.0, maxCoords[1]-minCoords[1], 0.0], 
-                                               num_layers=elementRes[1], recombine=(not simplex))
-
-                geom.extrude(
-                        rectangle,
-                        translation_axis=[0.0, 0.0, maxCoords[2]-minCoords[2]],
-                        num_layers=elementRes[2],
-                        recombine=(not simplex),
-                    )
-                    
-                hex_box = geom.generate_mesh()
-                hex_box.remove_lower_dimensional_cells()
-
-                # Now adjust the point locations
-                # first make a pyramid that subtends the correct angle at each level
-                
-                hex_box.points[:,0] *= hex_box.points[:,2] * np.tan(theta/2) 
-                hex_box.points[:,1] *= hex_box.points[:,2] * np.tan(phi/2) 
-        
-                # second, adjust the distance so each layer forms a spherical cap 
-                
-                targetR = hex_box.points[:,2]
-                actualR = np.sqrt(hex_box.points[:,0]**2 + hex_box.points[:,1]**2 + hex_box.points[:,2]**2)
-
-                hex_box.points[:,0] *= (targetR / actualR)
-                hex_box.points[:,1] *= (targetR / actualR)
-                hex_box.points[:,2] *= (targetR / actualR)
-                            
-                # finalise geom context
-
-            return hex_box
-## 
-
-
-class StructuredCubeSphereBallMesh(MeshFromGmshFile):
-    @timing.routine_timer_decorator
-    def __init__(self,
-                dim            :Optional[int] = 2,
-                elementRes     :Tuple[int,  int]  = 8,
-                radius_outer   :Optional[float] = 1.0,
-                cell_size      :Optional[float] = 1e30,
-                simplex        :Optional[bool] = False, 
-                ):
-
-        """
-        This class generates a structured solid spherical ball based on the cubed sphere
-
-        Parameters
-        ----------
-        dim:
-        elementRes: 
-            Elements in the R direction 
-        radius_outer :
-            The outer radius for the spherical shell.
-        simplex: 
-            Tets (True) or Hexes (False)
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.
-        """
-        
-        import pygmsh
-        self.pygmesh = None
-
-        # Really this should be "Labels for the mesh not boundaries"
-
-        class Boundary(Enum):
-            ALL_BOUNDARIES = 1
-            CENTRE = 10
-            TOP    = 20
-            UPPER  = 20
-
-        ## We should pass the boundary definitions to the mesh constructor to be sure
-        ## that we use consistent values for the labels
-
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:  
-            if dim == 2:
-                cs_hex_box, filename = StructuredCubeSphereBallMesh.build_pygmsh_2D(elementRes, radius_outer, simplex=simplex)
-            else: 
-                cs_hex_box, filename = StructuredCubeSphereBallMesh.build_pygmsh_3D(elementRes, radius_outer, simplex=simplex)
-        else:
-            cs_hex_box = None
-
-        super().__init__(dim, filename=filename, bound_markers=Boundary, 
-                              cell_size=cell_size, simplex=simplex)
-
-        self.meshio  = cs_hex_box
-
-        import vtk
-
-        if simplex:
-            if dim==2:
-                self._elementType = vtk.VTK_TRIANGLE
-            else:
-                self._elementType = vtk.VTK_TETRA
-        else:
-            if dim==2:
-                self._elementType = vtk.VTK_QUAD
-            else:
-                self._elementType = vtk.VTK_HEXAHEDRON        
-
-        self.elementRes = elementRes
-
-        # Is the most useful definition
-        self.minCoords = (0.0,)
-        self.maxCoords = (radius_outer,)
-
-        return
-
-    def build_pygmsh_2D(
-            elementRes     :Optional[int]  = 16, 
-            radius_outer   :Optional[float] =1.0,
-            simplex        :Optional[bool]  =False
-            ):
-
-        import meshio
-        import gmsh
-
-        gmsh.initialize()
-        gmsh.option.setNumber("Mesh.SaveAll", 1)
-        gmsh.model.add("squared")
-
-        lc = 0.0 * radius_outer / (elementRes+1)
-        ro = radius_outer
-        r2 = radius_outer / np.sqrt(2)
-        res = elementRes*2+1
-
-        gmsh.model.geo.addPoint(0.0,0.0,0.0, lc, 1)
-        
-        gmsh.model.geo.addPoint( r2, r2, 0.0, lc, 10)
-        gmsh.model.geo.addPoint(-r2, r2, 0.0, lc, 11)
-        gmsh.model.geo.addPoint(-r2,-r2, 0.0, lc, 12)
-        gmsh.model.geo.addPoint( r2,-r2, 0.0, lc, 13)
-
-        gmsh.model.geo.add_circle_arc(10, 1, 11, tag=100)
-        gmsh.model.geo.add_circle_arc(11, 1, 12, tag=101)      
-        gmsh.model.geo.add_circle_arc(12, 1, 13, tag=102)      
-        gmsh.model.geo.add_circle_arc(13, 1, 10, tag=103)      
-
-        gmsh.model.geo.addCurveLoop([100, 101, 102, 103], 10000, reorient=True)
-        gmsh.model.geo.add_surface_filling([10000], 10101)
-        
-        gmsh.model.geo.mesh.set_transfinite_curve(100, res, meshType="Progression")
-        gmsh.model.geo.mesh.set_transfinite_curve(101, res, meshType="Progression")
-        gmsh.model.geo.mesh.set_transfinite_curve(102, res, meshType="Progression")
-        gmsh.model.geo.mesh.set_transfinite_curve(103, res, meshType="Progression")
-
-        gmsh.model.geo.mesh.setTransfiniteSurface(10101, "AlternateRight")
-        if not simplex:
-            gmsh.model.geo.mesh.setRecombine(2, 10101)
-
-
-        gmsh.model.geo.synchronize()
-        
-        centreMarker, upperMarker = 10, 20
-
-
-        #gmsh.model.add_physical_group(1, [100], outerMarker+1) # temp - to test the bc settings
-        #gmsh.model.add_physical_group(1, [101], outerMarker+2)
-        #gmsh.model.add_physical_group(1, [102], outerMarker+3)
-        #gmsh.model.add_physical_group(1, [103], outerMarker+4)
-        gmsh.model.add_physical_group(1, [100, 101, 102, 103], upperMarker)
-        
-        # Vertex groups (0d)
-        gmsh.model.add_physical_group(0, [1], centreMarker)
-
-        # Shove everything (else) in the garbage dump group because the 
-        # Option setting above does not seem to work on (my) version of gmsh
-
-        for d in range(0,3):
-            e = gmsh.model.getEntities(d)
-            gmsh.model.add_physical_group(d, [t for i,t in e], 9999)
-
-        gmsh.model.geo.remove_all_duplicates()
-        gmsh.model.mesh.generate(dim=2)
-        gmsh.model.mesh.removeDuplicateNodes()
-        
-        # Adjust points 
-
-
-       
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
-            gmsh.write(tfile.name)
-            gmsh.write("ignore_squared_disk.msh")
-            gmsh.write("ignore_squared_disk.vtk")
-            squared_disk_mesh = meshio.read(tfile.name)
-            squared_disk_mesh.remove_lower_dimensional_cells()
-
-        gmsh.finalize()
-
-        return squared_disk_mesh, "ignore_squared_disk.msh"
-        
-
-    def build_pygmsh_3D(
-                elementRes     :Optional[int]  = 16, 
-                radius_outer   :Optional[float] =1.0,
-                simplex        :Optional[bool]  =False
-                ):
-
-            import meshio
-            import gmsh
-
-            gmsh.initialize()
-            gmsh.model.add("cubed")
-            gmsh.option.setNumber("Mesh.SaveAll", 1)
-
-            lc = 0.001 * radius_outer / (elementRes+1)
-
-            r2 = radius_outer / np.sqrt(3)
-            r0 = 0.5 * radius_outer / np.sqrt(3)
-
-            res = elementRes+1
-
-            gmsh.model.geo.addPoint(0.001,0.001,0.001,0.1, 1)
-
-            # The 8 corners of the cubes
-
-            gmsh.model.geo.addPoint(-r2, -r2, -r2, lc, 100)
-            gmsh.model.geo.addPoint( r2, -r2, -r2, lc, 101)
-            gmsh.model.geo.addPoint( r2,  r2, -r2, lc, 102)
-            gmsh.model.geo.addPoint(-r2,  r2, -r2, lc, 103)
-            gmsh.model.geo.addPoint(-r2, -r2,  r2, lc, 104)
-            gmsh.model.geo.addPoint( r2, -r2,  r2, lc, 105)
-            gmsh.model.geo.addPoint( r2,  r2,  r2, lc, 106)
-            gmsh.model.geo.addPoint(-r2,  r2,  r2, lc, 107)
-
-            # The 12 edges of the cube2
-
-            gmsh.model.geo.add_circle_arc(100,1,101, 1000)
-            gmsh.model.geo.add_circle_arc(101,1,102, 1001)
-            gmsh.model.geo.add_circle_arc(102,1,103, 1002)
-            gmsh.model.geo.add_circle_arc(103,1,100, 1003)
-
-            gmsh.model.geo.add_circle_arc(101,1,105, 1004)
-            gmsh.model.geo.add_circle_arc(102,1,106, 1005)
-            gmsh.model.geo.add_circle_arc(103,1,107, 1006)
-            gmsh.model.geo.add_circle_arc(100,1,104, 1007)
-
-            gmsh.model.geo.add_circle_arc(104,1,105, 1008)
-            gmsh.model.geo.add_circle_arc(105,1,106, 1009)
-            gmsh.model.geo.add_circle_arc(106,1,107, 1010)
-            gmsh.model.geo.add_circle_arc(107,1,104, 1011)
-
-            ## These should all be transfinite lines
-
-            for i in range(1000, 1012):
-                gmsh.model.geo.mesh.set_transfinite_curve(i, res)
-
-            # The 6 faces of the cube2
-
-            gmsh.model.geo.addCurveLoop([1000, 1004, 1008, 1007], 10000, reorient=True)
-            gmsh.model.geo.addCurveLoop([1001, 1005, 1009, 1004], 10001, reorient=True)
-            gmsh.model.geo.addCurveLoop([1002, 1006, 1010, 1005], 10002, reorient=True)
-            gmsh.model.geo.addCurveLoop([1003, 1007, 1011, 1006], 10003, reorient=True)
-            gmsh.model.geo.addCurveLoop([1000, 1003, 1002, 1001], 10004, reorient=True)
-            gmsh.model.geo.addCurveLoop([1008, 1009, 1010, 1011], 10005, reorient=True)
-
-            gmsh.model.geo.add_surface_filling([10000], 10101, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10001], 10102, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10002], 10103, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10003], 10104, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10004], 10105, sphereCenterTag=1)
-            gmsh.model.geo.add_surface_filling([10005], 10106, sphereCenterTag=1)
-
-            gmsh.model.geo.synchronize()
-
-            for i in range(10101, 10107):
-                gmsh.model.geo.mesh.setTransfiniteSurface(i, "Left")
-                if not simplex:
-                    gmsh.model.geo.mesh.setRecombine(2, i)
-
-            gmsh.model.geo.synchronize()
-
-            # outer surface / inner_surface
-            gmsh.model.geo.add_surface_loop([10101, 10102, 10103, 10104, 10105, 10106], 10111)
-            gmsh.model.geo.add_volume([10111], 100001)
-
-            gmsh.model.geo.synchronize()
-
-            gmsh.model.mesh.set_transfinite_volume(100001)
-            if not simplex:
-                gmsh.model.geo.mesh.setRecombine(3, 100001)
-
-            centreMarker, outerMarker = 10, 20
-            gmsh.model.add_physical_group(0, [1], centreMarker)
-            gmsh.model.add_physical_group(2, [i for i in range(10101, 10107)], outerMarker)
-
-            # Shove everything in the garbage dump group because the 
-            # Option setting above does not seem to work on (my) version of gmsh
-
-            for d in range(0,4):
-                e = gmsh.model.getEntities(d)
-                gmsh.model.add_physical_group(d, [t for i,t in e], 9999)
-
-            gmsh.model.geo.remove_all_duplicates()
-            gmsh.model.mesh.generate(dim=3)
-            gmsh.model.mesh.removeDuplicateNodes()
-
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".msh") as tfile:
-                gmsh.write(tfile.name)
-                gmsh.write("ignore_cubedsphereball.msh")
-                gmsh.write("ignore_cubedsphereball.vtk")
-                cubed_sphere_ball_mesh = meshio.read(tfile.name)
-                cubed_sphere_ball_mesh.remove_lower_dimensional_cells()
-                
-            gmsh.finalize()
-
-            return cubed_sphere_ball_mesh
-
-
-# Replace this one with Romain's CS code
-
-
-class StructuredCubeSphereShellMesh(MeshFromMeshIO):
-
-    @timing.routine_timer_decorator
-    def __init__(self,
-                elementRes     :Tuple[int,  int]  = (16, 8), 
-                radius_outer   :Optional[float] = 1.0,
-                radius_inner   :Optional[float] = 0.5,
-                cell_size      :Optional[float] = 1e30,
-                simplex        :Optional[bool] = False, 
-                ):
-
-        """
-        This class generates a structured spherical shell based on the cubed sphere 
-
-        Parameters
-        ----------
-        elementRes: 
-            Elements in the (NS & EW , R) direction 
-        radius_outer :
-            The outer radius for the spherical shell.
-        radius_inner :
-            The inner radius for the spherical shell. If this is set to 
-            zero, a full sphere is generated.
-        simplex: 
-            Tets (True) or Hexes (False)
-        cell_size :
-            The target cell size for the final mesh. Mesh refinements will occur to achieve this target 
-            resolution.
-        """
-
-        if radius_inner>=radius_outer:
-            raise ValueError("`radius_inner` must be smaller than `radius_outer`.")
-            
-        import pygmsh
-
-        self.pygmesh = None
-
-        # Only root proc generates pygmesh, then it's distributed.
-        if MPI.COMM_WORLD.rank==0:  
-
-            cs_hex_box = StructuredCubeSphereShellMesh.build_pygmsh(elementRes, radius_outer, radius_inner, simplex=simplex)
-
-        super().__init__(3, cs_hex_box, cell_size, simplex=simplex)
-
-        self.pygmesh = cs_hex_box
-        self.meshio  = cs_hex_box
-
-        import vtk
-
-        if simplex:
-            self._elementType = vtk.VTK_TETRA
-        else:
-            self._elementType = vtk.VTK_HEXAHEDRON        
-
-        self.elementRes = elementRes
-
-        # Is the most useful definition
-        self.minCoords = (radius_inner,)
-        self.maxCoords = (radius_outer,)
-
-        return
-
-    def build_pygmsh(
-                elementRes     :Tuple[int,  int]  = (16, 8), 
-                radius_outer   :Optional[float] =1.0,
-                radius_inner   :Optional[float] =0.5,
-                simplex        :Optional[bool]  =False
-                ):
-
-
-            import pygmsh 
-            import meshio
-
-            l = 0.0
-
-            inner_radius = radius_inner
-            outer_radius = radius_outer
-            nodes = elementRes[0]+1  # resolution of the cube laterally
-            layers= elementRes[1]
-
-            with pygmsh.geo.Geometry() as geom:
-                cpoint = geom.add_point([0.0,0.0,0.0], l)
-                
-                genpt = [0,0,0,0,0,0,0,0]
-
-                # 8 corners of the cube 
-                
-                r2 = 1.0 / np.sqrt(3.0) # Generate a unit sphere
-                
-                genpt[0] = geom.add_point([ -r2, -r2, -r2],  l)
-                genpt[1] = geom.add_point([  r2, -r2, -r2],  l)
-                genpt[2] = geom.add_point([  r2,  r2, -r2],  l)
-                genpt[3] = geom.add_point([ -r2,  r2, -r2],  l)
-                genpt[4] = geom.add_point([ -r2, -r2,  r2],  l)
-                genpt[5] = geom.add_point([  r2, -r2,  r2],  l)
-                genpt[6] = geom.add_point([  r2,  r2,  r2],  l)
-                genpt[7] = geom.add_point([ -r2,  r2,  r2],  l)
-
-              
-                # 12 edges of the cube
-                
-                b_circ00 = geom.add_circle_arc(genpt[0], cpoint, genpt[1])
-                b_circ01 = geom.add_circle_arc(genpt[1], cpoint, genpt[2])
-                b_circ02 = geom.add_circle_arc(genpt[2], cpoint, genpt[3])
-                b_circ03 = geom.add_circle_arc(genpt[0], cpoint, genpt[3])
-
-                b_circ04 = geom.add_circle_arc(genpt[1], cpoint, genpt[5])
-                b_circ05 = geom.add_circle_arc(genpt[2], cpoint, genpt[6])
-                b_circ06 = geom.add_circle_arc(genpt[3], cpoint, genpt[7])
-                b_circ07 = geom.add_circle_arc(genpt[0], cpoint, genpt[4])
-
-                b_circ08 = geom.add_circle_arc(genpt[4], cpoint, genpt[5])
-                b_circ09 = geom.add_circle_arc(genpt[5], cpoint, genpt[6])
-                b_circ10 = geom.add_circle_arc(genpt[6], cpoint, genpt[7])
-                b_circ11 = geom.add_circle_arc(genpt[4], cpoint, genpt[7])
-
-                for arc in [b_circ00, b_circ01, b_circ02, b_circ03,
-                            b_circ04, b_circ05, b_circ06, b_circ07,
-                            b_circ08, b_circ09, b_circ10, b_circ11 ]:
-                    
-                        geom.set_transfinite_curve(arc, num_nodes=nodes, 
-                                                mesh_type="Progression", coeff=1.0)
-
-                # 6 Cube faces
-
-
-
-                
-                face00_loop = geom.add_curve_loop([b_circ00, b_circ04, -b_circ08, -b_circ07])
-                face00 = geom.add_surface(face00_loop) 
-                geom.set_transfinite_surface(face00, arrangement="Left",
-                                            corner_pts = [genpt[0], genpt[1], genpt[5], genpt[4]])   
-
-
-                face01_loop = geom.add_curve_loop([-b_circ01, b_circ05, b_circ09, -b_circ04])
-                face01 = geom.add_surface(face01_loop) 
-                geom.set_transfinite_surface(face01, arrangement="Left",
-                                            corner_pts = [genpt[1], genpt[2], genpt[6], genpt[5]])   
-
-
-                face02_loop = geom.add_curve_loop([b_circ02, b_circ06, -b_circ10, -b_circ05])
-                face02 = geom.add_surface(face02_loop) 
-                geom.set_transfinite_surface(face02, arrangement="Left",
-                                            corner_pts = [genpt[2], genpt[3], genpt[7], genpt[6]])   
-
-
-                face03_loop = geom.add_curve_loop([-b_circ03, b_circ07, b_circ11, -b_circ06])
-                face03 = geom.add_surface(face03_loop) 
-                geom.set_transfinite_surface(face03, arrangement="Left",
-                                            corner_pts = [genpt[3], genpt[0], genpt[4], genpt[7]])   
-
-
-                face04_loop = geom.add_curve_loop([-b_circ00, b_circ03, -b_circ02, -b_circ01])
-                face04 = geom.add_surface(face04_loop) 
-                geom.set_transfinite_surface(face04, arrangement="Left",
-                                            corner_pts = [genpt[1], genpt[0], genpt[3], genpt[2]])   
-
-
-                face05_loop = geom.add_curve_loop([b_circ08, b_circ09,  b_circ10, b_circ11])
-                face05 = geom.add_surface(face05_loop) 
-                geom.set_transfinite_surface(face05, arrangement="Left",
-                                            corner_pts = [genpt[4], genpt[5], genpt[6], genpt[7]])   
-
-
-                geom.set_recombined_surfaces([face00, face01, face02, face03, face04, face05])
-                shell = geom.add_surface_loop([face00, face01, face02, face03, face04, face05])
-                    
-                two_D_cubed_sphere = geom.generate_mesh(dim=2, verbose=False)
-                two_D_cubed_sphere.remove_orphaned_nodes()
-                two_D_cubed_sphere.remove_lower_dimensional_cells()
-
-            ## Now stack the 2D objects to make a 3d shell 
-                
-            cells = two_D_cubed_sphere.cells[0].data - 1
-            cells_per_layer = cells.shape[0]
-            mesh_points = two_D_cubed_sphere.points[1:,:]
-            points_per_layer = mesh_points.shape[0]
-
-            cells_layer = np.empty((cells_per_layer, 8), dtype=int)
-            cells_layer[:, 0:4] = cells[:,:]
-            cells_layer[:, 4:8] = cells[:,:] + points_per_layer
-
-            # stack this layer multiple times
-
-            cells_3D = np.empty((layers, cells_per_layer, 8), dtype=int) 
-
-            for i in range(0,layers):
-                cells_3D[i,:,:] = cells_layer[:,:] + i * points_per_layer
-
-            mesh_cells_3D = cells_3D.reshape(-1,8)
-
-            ## Point locations
-
-            radii = np.linspace(inner_radius, outer_radius, layers+1)
-
-            mesh_points_3D = np.empty(((layers+1)*points_per_layer, 3))
-
-            for i in range(0, layers+1):
-                mesh_points_3D[i*points_per_layer:(i+1)*points_per_layer] = mesh_points * radii[i]
-                
-            cubed_sphere_pygmsh = meshio.Mesh(mesh_points_3D, [("hexahedron", mesh_cells_3D)])
-
-            # tetrahedral version (subdivide all hexes into 6 tets)
-
-            if simplex:
-                cells = cubed_sphere_pygmsh.cells[0][1]
- 
-                t1 = cells[:,[3,0,1,5]]
-                t2 = cells[:,[3,2,1,5]]
-                t3 = cells[:,[3,2,6,5]]
-                t4 = cells[:,[3,7,6,5]]
-                t5 = cells[:,[3,7,4,5]]
-                t6 = cells[:,[3,0,4,5]]
-
-                tcells = np.vstack([t1,t2,t3,t4,t5,t6])
-
-                tet_cubed_sphere_pygmsh = meshio.Mesh(mesh_points_3D, [("tetra", tcells)])
-                tet_cubed_sphere_pygmsh.remove_lower_dimensional_cells()
-
-                return tet_cubed_sphere_pygmsh
-
-            else:
-                return cubed_sphere_pygmsh    
-
 
 class MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(self, name                             : str, 
-                       mesh                             : "underworld.mesh.MeshClass", 
+                       mesh                             : "underworld.mesh.Mesh", 
                        num_components                   : int, 
                        vtype                            : Optional["underworld.VarType"] = None, 
                        degree                           : int =1 ):
@@ -2040,8 +829,7 @@ class MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[name] = self
-
-
+    
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
@@ -2065,7 +853,6 @@ class MeshVariable(_api_tools.Stateful):
             might correspond to the timestep (for example).
         """
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=MPI.COMM_WORLD)
-        # cdef PetscViewer cviewer = ....
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
@@ -2092,7 +879,7 @@ class MeshVariable(_api_tools.Stateful):
         cdef PetscInt fields = self.field_id
         if self._lvec==None:
             # Create a subdm for this variable.
-            # This allows us to generate a local vectors.
+            # This allows us to generate a local vector.
             ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
             self._lvec  = subdm.createLocalVector()
             self._lvec.zeroEntries()       # not sure if required, but to be sure. 
@@ -2131,21 +918,124 @@ class MeshVariable(_api_tools.Stateful):
             raise RuntimeError("Data must be accessed via the mesh `access()` context manager.")
         return self._data
 
-    def min(self) -> float:
+    def min(self) -> Union[float , tuple]:
         """
         The global variable minimum value.
         """
         if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set as of yet.")
-        return self._gvec.min()
+            raise RuntimeError("It doesn't appear that any data has been set.")
 
-    def max(self) -> float:
+        if self.num_components == 1:
+            return self._gvec.min()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideMin(i)[1])
+
+            return tuple(cpts)
+
+    def max(self) -> Union[float , tuple]:
+        """
+        The global variable minimum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.max()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideMax(i)[1])
+
+            return tuple(cpts)
+
+    def sum(self) -> Union[float , tuple]:
+        """
+        The global variable sum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.sum()
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideSum(i))
+
+            return tuple(cpts)
+
+    def norm(self, norm_type) -> Union[float , tuple]:
         """
         The global variable maximum value.
         """
         if not self._lvec:
-            raise RuntimeError("It doesn't appear that any data has been set as of yet.")
-        return self._gvec.max()
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            return self._gvec.norm(norm_type)
+        else:
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideNorm(i, norm_type))
+
+            return tuple(cpts)
+
+
+    def mean(self) -> Union[float , tuple]:
+        """
+        The global variable maximum value.
+        """
+        if not self._lvec:
+            raise RuntimeError("It doesn't appear that any data has been set.")
+
+        if self.num_components == 1:
+            vecsize = self._gvec.getSize()
+            return self._gvec.sum() / vecsize
+        else:
+            vecsize = self._gvec.getSize() / self.num_components
+            cpts = []
+            for i in range(0,self.num_components):
+                cpts.append(self._gvec.strideSum(i)/vecsize)
+
+            return tuple(cpts)
+
+    def stats(self):
+        """
+        The equivalent of mesh.stats but using the native coordinates for this variable
+        Not set up for vector variables so we just skip that for now.
+
+        Returns various norms on the mesh using the native mesh discretisation for this
+        variable. It is a wrapper on the various _gvec stats routines for the variable.
+
+          - size
+          - mean
+          - min
+          - max
+          - sum
+          - L2 norm
+          - rms
+        """    
+
+        if self.num_components > 1:
+            raise NotImplementedError('stats not available for multi-component variables')
+
+#       This uses a private work MeshVariable and the various norms defined there but
+#       could either be simplified to just use petsc vectors, or extended to 
+#       compute integrals over the elements which is in line with uw1 and uw2 
+
+        from petsc4py.PETSc import NormType 
+
+        vsize =  self._gvec.getSize()
+        vmean  = self.mean()
+        vmax   = self.max()[1]
+        vmin   = self.min()[1]
+        vsum   = self.sum()
+        vnorm2 = self.norm(NormType.NORM_2)
+        vrms   = vnorm2 / np.sqrt(vsize)
+
+        return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
     @property
     def coords(self) -> numpy.ndarray:

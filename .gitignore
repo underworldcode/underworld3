@@ -27,12 +27,16 @@ old
 underworld3.egg-info/*
 keep/*
 
+
 # Jupyter Book build relics
 
 Jupyterbook/_build
 Jupyterbook/static_slides
 /Lectures/static_slides/slideshows
 *slideshows*
+Jupyterbook/node_modules/.yarn-integrity
+Jupyterbook/Notebooks_old*
+
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -42,4 +46,9 @@ Jupyterbook/static_slides
 # Visualisation artefacts
 
 ignore*vtk
-ignore*msh 
+ignore*msh
+tmp*vtk
+tmp*msh
+
+# Other
+

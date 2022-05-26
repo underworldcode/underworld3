@@ -54,7 +54,7 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
 
 @timing.routine_timer_decorator
 def _createext(name:               str, 
-               mesh:               underworld3.mesh.MeshClass,
+               mesh:               underworld3.mesh.Mesh,
                fns_residual:       List[sympy.Basic], 
                fns_jacobian:       List[sympy.Basic],
                fns_bcs:            List[sympy.Basic],
@@ -210,6 +210,7 @@ def _createext(name:               str,
 
     eqns = []
     for index, fn in enumerate(fns):
+        ## print("Processing JIT {} / {}".format(index, fn))
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0:mesh.dim,0]
         elif isinstance(fn, sympy.vector.Dyadic):
@@ -346,7 +347,8 @@ cpdef PtrContainer getptrobj():
             f.write(strguy)
 
     # Build
-    process = subprocess.Popen('python3 setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
+    import sys
+    process = subprocess.Popen([sys.executable] + 'setup.py build_ext --inplace'.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmpdir)
     process.communicate()
 
     # Load and add to dictionary

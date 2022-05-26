@@ -1,11 +1,19 @@
 from petsc4py import PETSc
+# pop the default petsc Signal handler to let petsc errors appear in python
+# unclear if this is the appropriate way see discussion
+# https://gitlab.com/petsc/petsc/-/issues/1066
+PETSc.Sys.popErrorHandler()
+
 #PETSc.Log().begin()
+
 import underworld3.mesh
+import underworld3.util_mesh
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
 import underworld3.tools
 import underworld3.algorithms
+import underworld3.mpi
 
 from enum import Enum as _Enum
 class VarType(_Enum):

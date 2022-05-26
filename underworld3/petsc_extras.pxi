@@ -25,6 +25,7 @@ cdef CHKERRQ(PetscErrorCode ierr):
 
 cdef extern from "petsc_compat.h":
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
+    PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
@@ -36,12 +37,9 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexExtrude(PetscDM idm, PetscInt layers, PetscReal height, PetscBool orderHeight, const PetscReal extNormal[], PetscBool interpolate, PetscDM* dm)
     PetscErrorCode DMPlexGetMinRadius(PetscDM dm, PetscReal *minradius)
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
-    PetscErrorCode DMSetAuxiliaryVec(PetscDM dm, PetscDMLabel label, PetscInt value, PetscVec aux)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
-    PetscErrorCode PetscFEGetQuadrature(PetscFE fem, PetscQuadrature *q)
-    PetscErrorCode PetscFESetQuadrature(PetscFE fem, PetscQuadrature q)
     # PetscErrorCode PetscViewerHDF5PushTimestepping(PetscViewer viewer)
     PetscErrorCode VecDestroy(PetscVec *v)

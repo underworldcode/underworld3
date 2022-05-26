@@ -88,10 +88,21 @@ class KDTree_Interface
                 if(dim==2)
                     founditem = index2d->findNeighbors(resultSet, &coords[item*dim], nanoflann::SearchParams(10)); // note that I believe the value 10 here is ignored.. i'll retain it as it's used in the examples
                 else
-                    founditem = index3d->findNeighbors(resultSet, &coords[item*dim], nanoflann::SearchParams(10)); 
-
+                    founditem = index3d->findNeighbors(resultSet, &coords[item*dim], nanoflann::SearchParams(10));  // See line 561 of .hpp, not used but 
+                                                                                                                    // if you want to set other args you'll need to be aware of it
                 if (out_dist_sqr!=NULL) out_dist_sqr[item] = dist; 
                 if (       found!=NULL)        found[item] = founditem; 
             }
+        }; 
+
+        size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr ) {
+          if( dim == 2 )
+           return index2d->knnSearch( query_point, num_closest, indices, out_dist_sqr ); 
+          else
+           return index3d->knnSearch( query_point, num_closest, indices, out_dist_sqr ); 
         };
+ 
 };
+
+
+// todo ... add interface to the knnSearch routines to find a neighbour cloud. 

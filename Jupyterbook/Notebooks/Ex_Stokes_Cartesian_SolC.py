@@ -8,19 +8,11 @@ import numpy as np
 
 options = PETSc.Options()
 # options["help"] = None
-# options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-8
-# options["ksp_monitor_short"] = None
-# options["snes_type"]  = "fas"
-options["snes_converged_reason"] = None
-options["snes_monitor_short"] = None
-# options["snes_view"]=None
-# options["snes_test_jacobian"] = None
-options["snes_max_it"] = 1
+
 
 # %%
 n_els = 32
-mesh = uw.mesh.Box(elementRes=(n_els,n_els))
+mesh = uw.meshes.Box(elementRes=(n_els,n_els))
 v_degree = 1
 stokes = uw.systems.Stokes(mesh, u_degree=v_degree )
 
@@ -32,14 +24,31 @@ N = mesh.N
 eta_0 = 1.
 x_c   = 0.5
 f_0   = 1.
-stokes.viscosity = 1. 
-stokes.bodyforce = Piecewise((f_0, N.x>x_c,), \
-                            (  0.,    True) )*N.j
+stokes.viscosity = 1.
+stokes.penalty = 0.0
+stokes.bodyforce = Piecewise((f_0, N.x>x_c,), (  0.,    True) )*N.j
+stokes._Ppre_fn = 1.0 / (stokes.viscosity + stokes.penalty)
+
 # free slip.  
 # note with petsc we always need to provide a vector of correct cardinality. 
 bnds = mesh.boundary
 stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], 1 )  # top/bottom: components, function, markers 
 stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: components, function, markers
+
+
+# %%
+# stokes.petsc_options["pc_type"]  = "svd"
+stokes.petsc_options["ksp_rtol"] =  1.0e-8
+# stokes.petsc_options["ksp_monitor_short"] = None
+# stokes.petsc_options["snes_type"]  = "fas"
+stokes.petsc_options["snes_converged_reason"] = None
+stokes.petsc_options["snes_monitor_short"] = None
+# stokes.petsc_options["snes_view"]=None
+# stokes.petsc_options["snes_test_jacobian"] = None
+
+stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+stokes.petsc_options["snes_max_it"] = 10
 
 # %%
 # Solve time
@@ -62,3 +71,5 @@ try:
 except ImportError:
     import warnings
     warnings.warn("Unable to test SolC results as UW2 not available.")
+
+# %%
