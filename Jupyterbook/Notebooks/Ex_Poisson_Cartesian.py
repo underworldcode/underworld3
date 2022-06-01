@@ -56,7 +56,7 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
     mesh.vtk("mesh.tmp.vtk")

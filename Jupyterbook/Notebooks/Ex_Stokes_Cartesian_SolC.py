@@ -6,15 +6,28 @@ from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
 
-options = PETSc.Options()
-# options["help"] = None
 
 
 # %%
 n_els = 32
-mesh = uw.meshes.Box(elementRes=(n_els,n_els))
-v_degree = 1
-stokes = uw.systems.Stokes(mesh, u_degree=v_degree )
+mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+                                           maxCoords=(1.0,1.0), 
+                                           cellSize=1.0/n_els, regular=True)
+
+v_degree = 2
+
+v_soln = uw.mesh.MeshVariable('U',    mesh,  mesh.dim, degree=v_degree )
+p_soln = uw.mesh.MeshVariable('P',    mesh,  1, degree=v_degree-1 )
+
+stokes = uw.systems.Stokes(mesh, 
+                velocityField=v_soln, 
+                pressureField=p_soln, 
+                u_degree=v_soln.degree, 
+                p_degree=p_soln.degree, 
+                solver_name="stokes", 
+                verbose=False)
+
+
 
 # %%
 # Set some things
@@ -24,6 +37,7 @@ N = mesh.N
 eta_0 = 1.
 x_c   = 0.5
 f_0   = 1.
+
 stokes.viscosity = 1.
 stokes.penalty = 0.0
 stokes.bodyforce = Piecewise((f_0, N.x>x_c,), (  0.,    True) )*N.j
@@ -31,24 +45,9 @@ stokes._Ppre_fn = 1.0 / (stokes.viscosity + stokes.penalty)
 
 # free slip.  
 # note with petsc we always need to provide a vector of correct cardinality. 
-bnds = mesh.boundary
-stokes.add_dirichlet_bc( (0.,0.), [bnds.TOP,  bnds.BOTTOM], 1 )  # top/bottom: components, function, markers 
-stokes.add_dirichlet_bc( (0.,0.), [bnds.LEFT, bnds.RIGHT],  0 )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( (0.,0.), ["Bottom",  "Top"], 1 )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( (0.,0.), ["Left", "Right"],  0 )  # left/right: components, function, markers
 
-
-# %%
-# stokes.petsc_options["pc_type"]  = "svd"
-stokes.petsc_options["ksp_rtol"] =  1.0e-8
-# stokes.petsc_options["ksp_monitor_short"] = None
-# stokes.petsc_options["snes_type"]  = "fas"
-stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["snes_monitor_short"] = None
-# stokes.petsc_options["snes_view"]=None
-# stokes.petsc_options["snes_test_jacobian"] = None
-
-stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-stokes.petsc_options["snes_max_it"] = 10
 
 # %%
 # Solve time

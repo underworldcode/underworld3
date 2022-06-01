@@ -108,7 +108,7 @@ def _createext(name:               str,
         routines for the code printing.
 
         For a `varlist` consisting of 2d velocity & pressure variables, 
-        for example, it'll generate routines which write the follow,
+        for example, it'll generate routines which write the following,
         where `prefix_str="petsc_u"`:
             V_x   : "petsc_u[0]"
             V_y   : "petsc_u[1]"
@@ -146,13 +146,14 @@ def _createext(name:               str,
                     u_x_i+=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
-                for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                    comp = var.fn.dot(bvec)
+                # for bvec in mesh.N.base_vectors()[0:mesh.dim]:
+                #     comp = var.fn.dot(bvec)
+                for comp in var.f:
                     # monkey patch
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode    = lambdafunc
                     u_i +=1
-                    # and also patch gradient guy into varfn guy's comp guy
+                    # and also patch gradient guy into varfn guy's comp guy   # Argh ... too much Mansourness
                     for ind in range(mesh.dim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
@@ -217,6 +218,9 @@ def _createext(name:               str,
             fn = fn.to_matrix(mesh.N)[0:mesh.dim,0:mesh.dim]
         else:
             fn = sympy.Matrix([fn])
+
+        ## print("Processing JIT {} / {}".format(index, fn))
+
         out = sympy.MatrixSymbol("out",*fn.shape)
         eqn = ("eqn_"+str(index), printer.doprint(fn, out))
         if eqn[1].startswith("// Not supported in C:"):

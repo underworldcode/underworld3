@@ -68,7 +68,7 @@ class Mesh(_api_tools.Stateful):
     mesh_instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, meshfile, degree=1, *args,**kwargs):
+    def __init__(self, meshfile, degree=1, simplex=True, *args, **kwargs):
 
         if isinstance(meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -87,7 +87,11 @@ class Mesh(_api_tools.Stateful):
 
         Mesh.mesh_instances += 1
 
-        self.isSimplex = self.dm.isSimplex()
+        try:
+            self.isSimplex = self.dm.isSimplex()
+        except:
+            self.isSimplex = True
+            
         self.cdim = self.dm.getDimension()
 
         # Use grid hashing for point location
@@ -129,10 +133,8 @@ class Mesh(_api_tools.Stateful):
         self._lvec = None
         self.petsc_fe = None
 
-        self._elementType = None
-
+        self._elementType = None  # deprecated
         self.degree = degree
-
         self.nuke_coords_and_rebuild()
 
         # A private work array used in the stats routines. 
@@ -193,7 +195,8 @@ class Mesh(_api_tools.Stateful):
           - the variable that is provided
 
         The default quadrature is only updated once unless
-        we set `force=True`
+        we set `force=True` which might be needed if new variables have
+        been added
 
         """
 
@@ -379,6 +382,15 @@ class Mesh(_api_tools.Stateful):
         return self._N
 
     @property
+    def X(self) -> sympy.tensor.NDimArray:
+
+        if self.cdim == 2: 
+            return sympy.tensor.NDimArray((self.N.x, self.N.y))
+        else:
+            return sympy.tensor.NDimArray((self.N.x, self.N.y, self.N.z))
+
+
+    @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
         """
         The tuple of base scalar objects (N.x,N.y,N.z) for the mesh. 
@@ -395,6 +407,7 @@ class Mesh(_api_tools.Stateful):
         if self.cdim==3:
             r_vec += N.z*N.k
         return r_vec
+
 
     @property
     def data(self) -> numpy.ndarray:
@@ -818,14 +831,22 @@ class MeshVariable(_api_tools.Stateful):
         from underworld3.function import UnderworldFunction
         if   vtype==uw.VarType.SCALAR:
             self._fn = UnderworldFunction(name,self,vtype)(*self.mesh.r)
+            self._f = sympy.tensor.MutableDenseNDimArray.zeros(1)
+            self._f[(0,)]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
         elif vtype==uw.VarType.VECTOR:
-            if num_components!=mesh.dim:
-                raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
-            from sympy.vector import VectorZero
-            self._fn = VectorZero()
+            self._f = sympy.tensor.MutableDenseNDimArray.zeros(num_components)
+              
+            # Tensor form (any number of components)  
             for comp in range(num_components):
-                subfn = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
-                self._fn += subfn*self.mesh.N.base_vectors()[comp]
+                self._f[(comp,)] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
+
+            # Spacial vector form (2 vectors and 3 vectors according to mesh dim)
+            if num_components==mesh.dim:
+                from sympy.vector import VectorZero
+                self._fn = VectorZero()
+                for comp in range(num_components):
+                    self._fn += self._f[(comp,)] * self.mesh.N.base_vectors()[comp]
+    
         super().__init__()
 
         self.mesh.vars[name] = self
@@ -872,6 +893,13 @@ class MeshVariable(_api_tools.Stateful):
         The handle to the function view of this variable.
         """
         return self._fn
+
+    @property
+    def f(self) -> sympy.Basic:
+        """
+        The handle to the tensor view of this variable.
+        """
+        return self._f
 
     def _set_vec(self, available):
         cdef DM subdm = PETSc.DM()

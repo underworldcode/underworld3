@@ -19,7 +19,8 @@ import numpy as np
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True)                       
+meshball = uw.util_mesh.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05)
+
 # -
 
 v_soln = uw.mesh.MeshVariable('U',meshball, 2, degree=2 )
@@ -42,7 +43,10 @@ if uw.mpi.size==1:
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = meshball.mesh2pyvista()
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")       
+
+    
     pvmesh.plot(show_edges=True, cpos="xy")
 
 
@@ -76,6 +80,9 @@ vtheta = r * sympy.sin(th)
 
 vx = -vtheta*sympy.sin(th)
 vy =  vtheta*sympy.cos(th)
+# -
+
+meshball.dm.view()
 
 # +
 # Create Stokes object
@@ -88,15 +95,16 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln,
 stokes.petsc_options["fieldsplit_velocity_pc_type"]="lu" # serial
 stokes.petsc_options["snes_converged_reason"]=None
 stokes.petsc_options["snes_monitor"]=None
-
+stokes.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
+stokes.petsc_options["pc_use_amat"] = None
 
 # Constant visc
-stokes.viscosity = 1.
+stokes.viscosity = 10.
 
 # Velocity boundary conditions
 
 stokes.add_dirichlet_bc( (0.0, 0.0), "Upper",  (0,1))
-stokes.add_dirichlet_bc( (0.0, 0.0), "Centre", (0,1))
+# stokes.add_dirichlet_bc( (0.0, 0.0), "Centre", (0,1))
 
 # -
 
@@ -133,7 +141,9 @@ if uw.mpi.size==1:
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = meshball.mesh2pyvista()
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")       
+
     
     with meshball.access():
         pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
