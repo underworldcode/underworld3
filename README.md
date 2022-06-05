@@ -90,3 +90,13 @@ PIC for composition
   -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
 
+
+### Tasks
+
+  - [ ] Solver options - robust for viscosity contrasts, customisable and quick.
+  - [ ] Investigate generalising context managers. LM - example of mesh vars dependent on functions.
+  - [ ] Proper quadratice mesh interpolations for deformed meshes.
+  - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
+  - [ ] Further integrals/reduction operators on fields variables.
+  - [ ] nKK nanoflann exposure.
+  - [ ] create developer docs for software stack and general development strategy.
