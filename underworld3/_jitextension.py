@@ -148,8 +148,6 @@ def _createext(name:               str,
                     u_x_i+=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
-                # for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                #     comp = var.fn.dot(bvec)
                 for comp in var.f:
                     # monkey patch
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"

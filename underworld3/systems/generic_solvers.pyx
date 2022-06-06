@@ -326,10 +326,6 @@ class SNES_Scalar:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-        # u_quad = self.mesh.petsc_fe.getQuadrature()
-        #for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-        #    fe.setQuadrature(u_quad)
-
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
         # from the quadratures (among other things no doubt). 
@@ -671,10 +667,6 @@ class SNES_Vector:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-        # u_quad = self.mesh.petsc_fe.getQuadrature()
-        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-        #     fe.setQuadrature(u_quad)
-
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
         # from the quadratures (among other things no doubt). 
@@ -924,7 +916,6 @@ class SNES_SaddlePoint:
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
-        
         self.is_setup = False
 
         return
@@ -1187,9 +1178,6 @@ class SNES_SaddlePoint:
 
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
-        # u_quad = self.mesh.petsc_fe.getQuadrature()
-        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-        #    fe.setQuadrature(u_quad)
 
 
         # Call `createDS()` on aux dm. This is necessary after the 

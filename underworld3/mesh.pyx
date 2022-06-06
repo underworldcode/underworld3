@@ -827,23 +827,26 @@ class MeshVariable(_api_tools.Stateful):
 
         # create associated sympy function
         from underworld3.function import UnderworldFunction
-        if   vtype==uw.VarType.SCALAR:
+        if  vtype == uw.VarType.SCALAR:
+            
             self._fn = UnderworldFunction(name,self,vtype)(*self.mesh.r)
             self._f = sympy.Matrix.zeros(1,1)
             self._f[0]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
-        elif vtype==uw.VarType.VECTOR:
-            self._f = sympy.Matrix.zeros(1,num_components)
             
+        elif vtype == uw.VarType.VECTOR:
+
+            from sympy.vector import VectorZero
+            self._fn = VectorZero()
+            self._f = sympy.Matrix.zeros(1,num_components)
+              
             # Matrix form (any number of components)  
             for comp in range(num_components):
-                self._f[0,comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
+                self._f[comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
-            if num_components==mesh.dim:
-                from sympy.vector import VectorZero
-                self._fn = VectorZero()
+            if num_components == mesh.dim:
                 for comp in range(num_components):
-                    self._fn += self._f[0,comp] * self.mesh.N.base_vectors()[comp]
+                    self._fn += self._f[comp] * self.mesh.N.base_vectors()[comp]
     
         super().__init__()
 
@@ -895,7 +898,7 @@ class MeshVariable(_api_tools.Stateful):
     @property
     def f(self) -> sympy.Basic:
         """
-        The handle to the tensor view of this variable.
+        The handle to the matrix view of this variable.
         """
         return self._f
 

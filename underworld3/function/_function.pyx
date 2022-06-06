@@ -121,7 +121,6 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{,"
         elif vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {},".format(component)
-            # ("_{x,","_{y,","_{z,")[component]
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
             # Grab weakref to var for derivative fn too.
