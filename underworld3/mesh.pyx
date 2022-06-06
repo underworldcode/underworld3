@@ -819,21 +819,22 @@ class MeshVariable(_api_tools.Stateful):
         if  vtype == uw.VarType.SCALAR:
             
             self._fn = UnderworldFunction(name,self,vtype)(*self.mesh.r)
-            self._f = sympy.Matrix([0])
+            self._f = sympy.Matrix([[0]])
             self._f[0]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
             
         elif vtype == uw.VarType.VECTOR:
 
-            self._f = sympy.Matrix([0]*num_components)
+            self._f = sympy.Matrix([[0]*num_components])
               
             # Matrix form (any number of components)  
             for comp in range(num_components):
                 self._f[comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
-            if num_components == mesh.dim:
+            if num_components==mesh.dim:
+                self._fn = VectorZero()
                 for comp in range(num_components):
-                    self._fn += self._f[comp] * self.mesh.N.base_vectors()[comp]
+                    self._fn += self._f[(comp,)] * self.mesh.N.base_vectors()[comp]
     
         super().__init__()
 
