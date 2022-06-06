@@ -887,7 +887,7 @@ class MeshVariable(_api_tools.Stateful):
     @property
     def f(self) -> sympy.Basic:
         """
-        The handle to the tensor view of this variable.
+        The handle to the matrix view of this variable.
         """
         return self._f
 
