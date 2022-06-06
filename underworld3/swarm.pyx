@@ -269,27 +269,20 @@ class IndexSwarmVariable(SwarmVariable):
 
 
         # The indices variable defines how many level set maps we create as components in the proxy variable
-
         import sympy
-        self._MaskArray = sympy.tensor.MutableDenseNDimArray.zeros(self.indices)
+        self._MaskArray = sympy.Matrix.zeros(1, self.indices)
         self._meshLevelSetVars = [ None ] * self.indices
 
         for i in range(indices):
-            self._meshLevelSetVars[i] =  uw.mesh.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, num_components=1, 
-                                                              degree=proxy_degree)
+            self._meshLevelSetVars[i] =  uw.mesh.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, 
+                                         num_components=1, degree=proxy_degree)
             self._MaskArray[(i,)] = self._meshLevelSetVars[i].fn
 
         return
 
-    # This is the sympy vector interface - it's meaningless if these are not spatial arrays
-    # @property
-    # def fn(self):
-    #     return self._MaskArray
-
     @property
     def f(self):
         return self._MaskArray
-
 
     # the update method takes the index variable and unzips it into the components of the
     # vector and then does the distance-average weighting to form a level set for each one.
@@ -328,10 +321,8 @@ class IndexSwarmVariable(SwarmVariable):
                 node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
 
             # 2 - set NN vals on mesh var where w == 0.0 
-
             with self.swarm.mesh.access(meshVar), self.swarm.access():
                 meshVar.data[...] = node_values[...].reshape(-1,1)
-
 
                 # Need to document this assumption, if there is no material found,
                 # assume the default material (0). An alternative would be to impose
@@ -341,12 +332,8 @@ class IndexSwarmVariable(SwarmVariable):
                     meshVar.data[np.where(w==0.0)] = 1.0
                 else: 
                     meshVar.data[np.where(w==0.0)] = 0.0
-
-
-   
         
         return      
-
 
 
 #@typechecked
@@ -487,6 +474,7 @@ class Swarm(_api_tools.Stateful):
 
         Example
         -------
+        
         >>> import underworld3 as uw
         >>> someMesh = uw.mesh.FeMesh_Cartesian()
         >>> with someMesh.deform_mesh():
