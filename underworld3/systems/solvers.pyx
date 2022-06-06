@@ -253,6 +253,7 @@ class SNES_Stokes(SNES_SaddlePoint):
                  pressureField : Optional[uw.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
+                 p_continous   : Optional[bool]                          =True,
                  solver_name   : Optional[str]                           ="",
                  verbose       : Optional[str]                           =False,
                  penalty       : Optional[float]                         = 0.0,
@@ -341,7 +342,7 @@ class SNES_Stokes(SNES_SaddlePoint):
             self._Ppre_fn = _Ppre_fn
 
         super().__init__(mesh, velocityField, pressureField, 
-                         u_degree, p_degree,
+                         u_degree, p_degree, p_continous,
                          solver_name,verbose, self._Ppre_fn )
 
 
@@ -510,7 +511,7 @@ class SNES_Projection(SNES_Scalar):
 
 
         if solver_name == "":
-            solver_name = "SProj{}_".format(self.instances)
+            solver_name = "SProj_{}_".format(self.instances)
 
         super().__init__(mesh, 
                          u_Field,
@@ -719,6 +720,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
                          self._constraint_field, 
                          u_Field.degree, 
                          self._constraint_field.degree,
+                         True, # continuous constraint field  
                          solver_name, verbose,
                         _Ppre_fn  = 1.0  # The saddle point solver assumes a "viscosity" term by default in the preconditioner - please move this to Stokes !! 
                         )
@@ -1171,6 +1173,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                  velocityStar_fn = None, # uw.function.UnderworldFunction = None,
                  u_degree        : Optional[int]                           = 2, 
                  p_degree        : Optional[int]                           = None,
+                 p_continous     : Optional[bool]                          = True,
                  rho             : Optional[float]                         = 0.0,
                  viscosity       : Optional[float]                         = 1.0,
                  theta           : Optional[float]                         = 0.5,
@@ -1202,7 +1205,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         ## Parent class will set up default values etc
         super().__init__(  
                  mesh, velocityField, pressureField,
-                 u_degree, p_degree, solver_name,  
+                 u_degree, p_degree, p_continous,
+                 solver_name,  
                  verbose, penalty, _Ppre_fn  )
 
         if projection:
