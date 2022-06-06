@@ -24,6 +24,7 @@ cdef inline object str2bytes(object s, char *p[]):
     p[0] = <char*>(<char*>s)
     return s
 
+
 comm = MPI.COMM_WORLD
 
 from enum import Enum
@@ -254,6 +255,97 @@ class SwarmVariable(_api_tools.Stateful):
         self._meshVar.save(filename, name, index)
 
         return
+
+
+class IndexSwarmVariable(SwarmVariable):
+
+    @timing.routine_timer_decorator
+    def __init__(self, name, swarm, indices=1, proxy_degree=2):
+
+        self.indices = indices
+
+        # These are the things we require of the generic swarm variable type
+        super().__init__(name, swarm, num_components=1, vtype=None, dtype=int, _proxy=False )
+
+
+        # The indices variable defines how many level set maps we create as components in the proxy variable
+
+        import sympy
+        self._MaskArray = sympy.tensor.MutableDenseNDimArray.zeros(self.indices)
+        self._meshLevelSetVars = [ None ] * self.indices
+
+        for i in range(indices):
+            self._meshLevelSetVars[i] =  uw.mesh.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, num_components=1, 
+                                                              degree=proxy_degree)
+            self._MaskArray[(i,)] = self._meshLevelSetVars[i].fn
+
+        return
+
+    # This is the sympy vector interface - it's meaningless if these are not spatial arrays
+    # @property
+    # def fn(self):
+    #     return self._MaskArray
+
+    @property
+    def f(self):
+        return self._MaskArray
+
+
+    # the update method takes the index variable and unzips it into the components of the
+    # vector and then does the distance-average weighting to form a level set for each one.
+
+    def _update(self):
+        """
+        This method updates the proxy mesh vector-variable for the index variable on the current swarm locations
+
+        Here is how it works:
+
+            1) for each particle, create a distance-weighted average on the node data
+
+        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+        Todo: some form of global fall-back for when there are no particles on a processor 
+
+        """
+
+        kd = uw.algorithms.KDTree(self._meshLevelSetVars[0].coords)
+        kd.build_index()
+
+        for ii in range(self.indices):
+            meshVar = self._meshLevelSetVars[ii]
+
+            # 1 - Average particles to nodes with distance weighted average
+            with self.swarm.mesh.access(meshVar), self.swarm.access():
+                n,d,b = kd.find_closest_point(self.swarm.data)
+   
+                node_values  = np.zeros((meshVar.data.shape[0],))
+                w = np.zeros((meshVar.data.shape[0],))
+
+                for i in range(self.data.shape[0]):
+                    if b[i]:
+                        node_values[n[i]] += np.isclose(self.data[i],ii) / (1.0e-16+d[i])
+                        w[n[i]] += 1.0 / (1.0e-16+d[i])
+ 
+                node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
+
+            # 2 - set NN vals on mesh var where w == 0.0 
+
+            with self.swarm.mesh.access(meshVar), self.swarm.access():
+                meshVar.data[...] = node_values[...].reshape(-1,1)
+
+
+                # Need to document this assumption, if there is no material found,
+                # assume the default material (0). An alternative would be to impose
+                # a near-neighbour hunt for a valid material and set that one. 
+                
+                if ii == 0:
+                    meshVar.data[np.where(w==0.0)] = 1.0
+                else: 
+                    meshVar.data[np.where(w==0.0)] = 0.0
+
+
+   
+        
+        return      
 
 
 

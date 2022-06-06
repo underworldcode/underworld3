@@ -9,7 +9,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_SaddlePoint
-from .._jitextension import getext, diff_fn1_wrt_fn2
+from .._jitextension import getext  # , diff_fn1_wrt_fn2
 import underworld3.timing as timing
 
 

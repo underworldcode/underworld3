@@ -10,7 +10,7 @@ from petsc4py import PETSc
 
 import underworld3 
 import underworld3 as uw
-from .._jitextension import getext, diff_fn1_wrt_fn2
+from .._jitextension import getext  #, diff_fn1_wrt_fn2
 import underworld3.timing as timing
 
 include "../petsc_extras.pxi"
@@ -326,9 +326,9 @@ class SNES_Scalar:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-        u_quad = self.mesh.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)
+        # u_quad = self.mesh.petsc_fe.getQuadrature()
+        #for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #    fe.setQuadrature(u_quad)
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
@@ -671,9 +671,9 @@ class SNES_Vector:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-        u_quad = self.mesh.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)
+        # u_quad = self.mesh.petsc_fe.getQuadrature()
+        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #     fe.setQuadrature(u_quad)
 
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
@@ -830,6 +830,8 @@ class SNES_SaddlePoint:
         self.petsc_options["pc_fieldsplit_type"] = "schur"
         self.petsc_options["pc_fieldsplit_schur_factorization_type"] = "full"
         self.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"
+        self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    # These two seem to be needed in petsc 3.17
+        self.petsc_options["pc_use_amat"] = None                        # These two seem to be needed in petsc 3.17
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
@@ -1185,9 +1187,9 @@ class SNES_SaddlePoint:
 
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
-        u_quad = self.mesh.petsc_fe.getQuadrature()
-        for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-            fe.setQuadrature(u_quad)
+        # u_quad = self.mesh.petsc_fe.getQuadrature()
+        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
+        #    fe.setQuadrature(u_quad)
 
 
         # Call `createDS()` on aux dm. This is necessary after the 
@@ -1215,7 +1217,7 @@ class SNES_SaddlePoint:
         # Copy solution back into user facing variables
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
-                print("Copy field {} to user variables".format(name), flush=True)
+                ## print("Copy field {} to user variables".format(name), flush=True)
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
