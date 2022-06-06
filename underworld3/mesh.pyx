@@ -193,7 +193,8 @@ class Mesh(_api_tools.Stateful):
           - the variable that is provided
 
         The default quadrature is only updated once unless
-        we set `force=True`
+        we set `force=True` which might be needed if new variables have
+        been added
 
         """
 
