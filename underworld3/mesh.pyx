@@ -818,14 +818,22 @@ class MeshVariable(_api_tools.Stateful):
         from underworld3.function import UnderworldFunction
         if   vtype==uw.VarType.SCALAR:
             self._fn = UnderworldFunction(name,self,vtype)(*self.mesh.r)
+            self._f = sympy.tensor.MutableDenseNDimArray.zeros(1)
+            self._f[(0,)]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
         elif vtype==uw.VarType.VECTOR:
-            if num_components!=mesh.dim:
-                raise ValueError("For 'VarType.VECTOR' types 'num_components' must equal 'mesh.dim'.")
-            from sympy.vector import VectorZero
-            self._fn = VectorZero()
+            self._f = sympy.tensor.MutableDenseNDimArray.zeros(num_components)
+              
+            # Tensor form (any number of components)  
             for comp in range(num_components):
-                subfn = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
-                self._fn += subfn*self.mesh.N.base_vectors()[comp]
+                self._f[(comp,)] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
+
+            # Spacial vector form (2 vectors and 3 vectors according to mesh dim)
+            if num_components==mesh.dim:
+                from sympy.vector import VectorZero
+                self._fn = VectorZero()
+                for comp in range(num_components):
+                    self._fn += self._f[(comp,)] * self.mesh.N.base_vectors()[comp]
+    
         super().__init__()
 
         self.mesh.vars[name] = self
@@ -872,6 +880,13 @@ class MeshVariable(_api_tools.Stateful):
         The handle to the function view of this variable.
         """
         return self._fn
+
+    @property
+    def f(self) -> sympy.Basic:
+        """
+        The handle to the tensor view of this variable.
+        """
+        return self._f
 
     def _set_vec(self, available):
         cdef DM subdm = PETSc.DM()

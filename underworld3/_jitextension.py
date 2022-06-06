@@ -108,7 +108,7 @@ def _createext(name:               str,
         routines for the code printing.
 
         For a `varlist` consisting of 2d velocity & pressure variables, 
-        for example, it'll generate routines which write the follow,
+        for example, it'll generate routines which write the following,
         where `prefix_str="petsc_u"`:
             V_x   : "petsc_u[0]"
             V_y   : "petsc_u[1]"
@@ -146,8 +146,7 @@ def _createext(name:               str,
                     u_x_i+=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
-                for bvec in mesh.N.base_vectors()[0:mesh.dim]:
-                    comp = var.fn.dot(bvec)
+                for comp in var.f:
                     # monkey patch
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode    = lambdafunc
