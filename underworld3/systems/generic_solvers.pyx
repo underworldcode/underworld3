@@ -1179,7 +1179,6 @@ class SNES_SaddlePoint:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
         # from the quadratures (among other things no doubt). 
