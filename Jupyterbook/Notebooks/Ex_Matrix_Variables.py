@@ -30,28 +30,25 @@ import sympy
 
 x = mesh.N.x
 y = mesh.N.y
+# +
+# but we have this on the mesh
+
+mesh.X
 # -
+
 v_soln = uw.mesh.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
 p_soln = uw.mesh.MeshVariable('P',    mesh, 1, degree=1 )
 
 
-from sympy.tensor.array.expressions import conv_matrix_to_array
-from sympy.tensor.array.expressions import conv_array_to_matrix
+# +
+# This is the way to get back to a matrix after diff by array for two row vectors (yuck)
+# We might just try to wrap this so it give back sane types.
+# Diff by array blows up a 1x3 by 1x3 into a 1,3,1,3 tensor rather than a 3x3 matrix 
+# and the 1 indices cannot be automatically removed 
 
 VX = sympy.derive_by_array(v_soln.f, mesh.X).reshape(v_soln.f.shape[1], mesh.X.shape[1]).tomatrix().T
-
-VX
-
-
-
-swarm     = uw.swarm.Swarm(mesh=meshbox)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
-
-
-v = sympy.Matrix.zeros(3,1)
-v[0] = 1
+# -
 
 
 
 
-swarm.populate(fill_param=5)
