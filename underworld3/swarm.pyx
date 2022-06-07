@@ -258,9 +258,11 @@ class SwarmVariable(_api_tools.Stateful):
 
 
 class IndexSwarmVariable(SwarmVariable):
-"""
-    The IndexSwarmVariable is a class that 
-"""
+    """
+    The IndexSwarmVariable is a class for managing material point 
+    behaviour. The material index variable is rendered into a 
+    collection of masks each representing the extent of one material
+    """
 
     @timing.routine_timer_decorator
     def __init__(self, name, swarm, indices=1, proxy_degree=2):
