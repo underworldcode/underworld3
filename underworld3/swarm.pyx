@@ -258,6 +258,9 @@ class SwarmVariable(_api_tools.Stateful):
 
 
 class IndexSwarmVariable(SwarmVariable):
+"""
+    The IndexSwarmVariable is a class that 
+"""
 
     @timing.routine_timer_decorator
     def __init__(self, name, swarm, indices=1, proxy_degree=2):
@@ -276,7 +279,7 @@ class IndexSwarmVariable(SwarmVariable):
         for i in range(indices):
             self._meshLevelSetVars[i] =  uw.mesh.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, 
                                          num_components=1, degree=proxy_degree)
-            self._MaskArray[(i,)] = self._meshLevelSetVars[i].fn
+            self._MaskArray[0,i] = self._meshLevelSetVars[i].fn
 
         return
 
@@ -284,19 +287,18 @@ class IndexSwarmVariable(SwarmVariable):
     def f(self):
         return self._MaskArray
 
-    # the update method takes the index variable and unzips it into the components of the
-    # vector and then does the distance-average weighting to form a level set for each one.
 
     def _update(self):
         """
-        This method updates the proxy mesh vector-variable for the index variable on the current swarm locations
+        This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations
 
         Here is how it works:
 
             1) for each particle, create a distance-weighted average on the node data
+            2) for each index in the set, we create a mask mesh variable by mapping 1.0 wherever the
+               index matches and 0.0 where it does not. 
 
-        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
-        Todo: some form of global fall-back for when there are no particles on a processor 
+        NOTE: If no material is identified with a given nodal value, the default is to material zero
 
         """
 
@@ -474,7 +476,7 @@ class Swarm(_api_tools.Stateful):
 
         Example
         -------
-        
+
         >>> import underworld3 as uw
         >>> someMesh = uw.mesh.FeMesh_Cartesian()
         >>> with someMesh.deform_mesh():
