@@ -68,7 +68,7 @@ class Mesh(_api_tools.Stateful):
     mesh_instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, meshfile, degree=1, *args,**kwargs):
+    def __init__(self, meshfile, degree=1, simplex=True, *args, **kwargs):
 
         if isinstance(meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -87,7 +87,11 @@ class Mesh(_api_tools.Stateful):
 
         Mesh.mesh_instances += 1
 
-        self.isSimplex = self.dm.isSimplex()
+        try:
+            self.isSimplex = self.dm.isSimplex()
+        except:
+            self.isSimplex = True
+            
         self.cdim = self.dm.getDimension()
 
         # Use grid hashing for point location
@@ -107,6 +111,7 @@ class Mesh(_api_tools.Stateful):
         # Jupyter rendered Latex easier to digest, but depending on 
         # how we end up using Sympy coordinate systems it may be 
         # desirable to bring back the more verbose version.
+        
         self._N.x._latex_form=r"\mathrm{x}"
         self._N.y._latex_form=r"\mathrm{y}"
         self._N.z._latex_form=r"\mathrm{z}"
@@ -129,10 +134,8 @@ class Mesh(_api_tools.Stateful):
         self._lvec = None
         self.petsc_fe = None
 
-        self._elementType = None
-
+        self._elementType = None  # deprecated
         self.degree = degree
-
         self.nuke_coords_and_rebuild()
 
         # A private work array used in the stats routines. 
@@ -380,6 +383,11 @@ class Mesh(_api_tools.Stateful):
         return self._N
 
     @property
+    def X(self) -> sympy.Matrix:
+
+        return sympy.Matrix(self.r).T
+
+    @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
         """
         The tuple of base scalar objects (N.x,N.y,N.z) for the mesh. 
@@ -396,6 +404,7 @@ class Mesh(_api_tools.Stateful):
         if self.cdim==3:
             r_vec += N.z*N.k
         return r_vec
+
 
     @property
     def data(self) -> numpy.ndarray:
@@ -800,6 +809,7 @@ class MeshVariable(_api_tools.Stateful):
                 vtype=uw.VarType.VECTOR
             else:
                 raise ValueError("Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter.")
+
         if not isinstance(vtype, uw.VarType):
             raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`.")
         self.vtype = vtype
@@ -823,20 +833,19 @@ class MeshVariable(_api_tools.Stateful):
             self._f = sympy.Matrix.zeros(1,1)
             self._f[0]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
             
-        elif vtype == uw.VarType.VECTOR:
-
-            from sympy.vector import VectorZero
-            self._fn = VectorZero()
+        elif vtype==uw.VarType.VECTOR:
             self._f = sympy.Matrix.zeros(1,num_components)
-              
+            
             # Matrix form (any number of components)  
             for comp in range(num_components):
-                self._f[comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
+                self._f[0,comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
-            if num_components == mesh.dim:
+            if num_components==mesh.dim:
+                from sympy.vector import VectorZero
+                self._fn = VectorZero()
                 for comp in range(num_components):
-                    self._fn += self._f[comp] * self.mesh.N.base_vectors()[comp]
+                    self._fn += self._f[0,comp] * self.mesh.N.base_vectors()[comp]
     
         super().__init__()
 
@@ -888,7 +897,7 @@ class MeshVariable(_api_tools.Stateful):
     @property
     def f(self) -> sympy.Basic:
         """
-        The handle to the matrix view of this variable.
+        The handle to the tensor view of this variable.
         """
         return self._f
 
