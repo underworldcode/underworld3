@@ -26,7 +26,6 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationSetDof(DMInterpolationInfo ipInfo, PetscInt dof)
     PetscErrorCode DMInterpolationAddPoints(DMInterpolationInfo ipInfo, PetscInt n, PetscReal points[])
     PetscErrorCode DMInterpolationSetUp(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool)
-    PetscErrorCode DMInterpolationEvaluate(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec vec, PetscVec out)
     PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
     MPI_Comm MPI_COMM_SELF
 
