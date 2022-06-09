@@ -1,3 +1,4 @@
+from xmlrpc.client import Boolean
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
@@ -9,7 +10,7 @@ from petsc4py import PETSc
 
 import underworld3 
 import underworld3 as uw
-from .._jitextension import getext, diff_fn1_wrt_fn2
+from .._jitextension import getext  #, diff_fn1_wrt_fn2
 import underworld3.timing as timing
 
 include "../petsc_extras.pxi"
@@ -37,6 +38,8 @@ class SNES_Scalar:
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
+
+        
 
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
@@ -1176,7 +1179,6 @@ class SNES_SaddlePoint:
         # Set quadrature to consistent value given by mesh quadrature.
         self.mesh._align_quadratures()
 
-
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
         # from the quadratures (among other things no doubt). 
@@ -1202,6 +1204,7 @@ class SNES_SaddlePoint:
         # Copy solution back into user facing variables
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
+                ## print("Copy field {} to user variables".format(name), flush=True)
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.

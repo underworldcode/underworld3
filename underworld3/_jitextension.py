@@ -5,25 +5,27 @@ import underworld3
 import underworld3.timing as timing
 
 
-def diff_fn1_wrt_fn2(fn1, fn2):
-    """
-    This function takes the derivative of a function (fn1) with respect
-    to another function (fn2). Sympy does not allow this natively, instead 
-    only allowing derivatives with respect to symbols.  Here, we 
-    temporarily subsitute fn2 for a dummy symbol, perform the derivative (with
-    respect to the dummy symbol), and then replace the dummy for fn2 again. 
-    """
-    if fn2.is_zero:
-        return 0
-    # If fn1 doesn't contain fn2, immediately return zero.
-    # The full diff method will also return zero, but will be slower.
-    if len(fn1.atoms(fn2))==0:
-        return 0
-    uwderivdummy = sympy.Symbol("uwderivdummy")
-    subfn   = fn1.xreplace({fn2:uwderivdummy})      # sub in dummy
-    subfn_d = subfn.diff(uwderivdummy)              # actual deriv
-    deriv   = subfn_d.xreplace({uwderivdummy:fn2})  # sub out dummy
-    return deriv
+## This is not required in sympy 1.9 
+
+# def diff_fn1_wrt_fn2(fn1, fn2):
+#     """
+#     This function takes the derivative of a function (fn1) with respect
+#     to another function (fn2). Sympy does not allow this natively, instead 
+#     only allowing derivatives with respect to symbols.  Here, we 
+#     temporarily subsitute fn2 for a dummy symbol, perform the derivative (with
+#     respect to the dummy symbol), and then replace the dummy for fn2 again. 
+#     """
+#     if fn2.is_zero:
+#         return 0
+#     # If fn1 doesn't contain fn2, immediately return zero.
+#     # The full diff method will also return zero, but will be slower.
+#     if len(fn1.atoms(fn2))==0:
+#         return 0
+#     uwderivdummy = sympy.Symbol("uwderivdummy")
+#     subfn   = fn1.xreplace({fn2:uwderivdummy})      # sub in dummy
+#     subfn_d = subfn.diff(uwderivdummy)              # actual deriv
+#     deriv   = subfn_d.xreplace({uwderivdummy:fn2})  # sub out dummy
+#     return deriv
 
 _ext_dict = {}
 @timing.routine_timer_decorator
@@ -151,7 +153,7 @@ def _createext(name:               str,
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode    = lambdafunc
                     u_i +=1
-                    # and also patch gradient guy into varfn guy's comp guy
+                    # and also patch gradient guy into varfn guy's comp guy   # Argh ... too much Mansourness
                     for ind in range(mesh.dim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
@@ -216,6 +218,9 @@ def _createext(name:               str,
             fn = fn.to_matrix(mesh.N)[0:mesh.dim,0:mesh.dim]
         else:
             fn = sympy.Matrix([fn])
+
+        ## print("Processing JIT {} / {}".format(index, fn))
+
         out = sympy.MatrixSymbol("out",*fn.shape)
         eqn = ("eqn_"+str(index), printer.doprint(fn, out))
         if eqn[1].startswith("// Not supported in C:"):

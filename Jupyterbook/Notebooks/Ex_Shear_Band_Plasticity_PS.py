@@ -130,7 +130,7 @@ node_viscosity   = uw.mesh.MeshVariable('eta',    mesh1, 1, degree=1 )
 r_inc            = uw.mesh.MeshVariable('R',      mesh1, 1, degree=1 )
 
 
-mesh1._align_quadratures()
+
 
 # +
 # Create NS object
@@ -143,10 +143,10 @@ stokes = uw.systems.Stokes(mesh1,
                 verbose=False,
                 solver_name="stokes")
 
+# -
 
 
-# +
-# mesh1._align_quadratures()
+
 # +
 
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2)

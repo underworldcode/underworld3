@@ -26,7 +26,7 @@ render = True
 
 meshbox = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                               maxCoords=(1.0,1.0), 
-                                              cellSize=1.0/32.0, 
+                                              cellSize=1.0/48.0, 
                                               regular=True)
 
 
@@ -65,14 +65,18 @@ with swarm.access(material):
         cx, cy, r, m = blobs[i,:]              
         inside = (swarm.data[:,0] - cx)**2 + (swarm.data[:,1] - cy)**2 < r**2
         material.data[inside] = m
+        
+# -
 
 
+material.f
 
+meshbox.X
 
 # +
-# The material fields are differentiable
+# The material fields are differentiable 
 
-sympy.derive_by_array(material.f, meshbox.X)
+sympy.derive_by_array(material.f, meshbox.X).reshape(2,4).tomatrix()
 # -
 
 mat_density = np.array([1,0.1,0.1,2])
@@ -84,17 +88,6 @@ viscosity = mat_viscosity[0] * material.f[0] + \
             mat_viscosity[1] * material.f[1] + \
             mat_viscosity[2] * material.f[2] + \
             mat_viscosity[3] * material.f[3] 
-
-# +
-visc = uw.function.evaluate(viscosity, material._meshLevelSetVars[0].coords)
-mat  = uw.function.evaluate(material.f[0]+material.f[1]+material.f[2]+material.f[3],
-                            material._meshLevelSetVars[0].coords)
-
-print("Viscosity min/max: {} / {} ".format(visc.min(), visc.max()))
-print("Mat field min/max: {} / {} ".format(mat.min(), mat.max()))
-
-
-# -
 
 if render:
 
@@ -171,16 +164,8 @@ stokes._Ppre_fn = 1.0 / (stokes.viscosity + stokes.penalty)
 # note with petsc we always need to provide a vector of correct cardinality. 
 stokes.add_dirichlet_bc( (0.,0.), ["Bottom",  "Top"], 1 )  # top/bottom: components, function, markers 
 stokes.add_dirichlet_bc( (0.,0.), ["Left", "Right"],  0 )  # left/right: components, function, markers
-
-
-# +
-stokes.petsc_options["ksp_rtol"] =  1.0e-4
-# stokes.petsc_options["snes_converged_reason"] = None
-# stokes.petsc_options["snes_monitor_short"] = None
-
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # -
+
 
 stokes.solve()
 
@@ -197,7 +182,7 @@ if uw.mpi.size==1 and render:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 250]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
     # pv.start_xvfb()
@@ -275,24 +260,24 @@ def plot_mesh(filename):
         pvmesh.point_data["rho"]  = uw.function.evaluate(density,   meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
 
-        arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
-        arrow_loc[:,0:2] = stokes.u.coords[...]
+        arrow_loc = np.zeros((meshbox.data.shape[0],3))
+        arrow_loc[:,0:2] = meshbox.data[...]
 
-        arrow_length = np.zeros((stokes.u.coords.shape[0],3))
-        arrow_length[:,0:2] = usol[...] 
+        arrow_length = np.zeros((meshbox.data.shape[0],3))
+        arrow_length[:,0:2] = uw.function.evaluate(v_soln.fn, meshbox.data)
 
         pl = pv.Plotter(off_screen=True)
 
 
-        pl.add_mesh(pvmesh, cmap="coolwarm_r", edge_color="Black", 
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", 
                     show_edges=True, scalars="rho",
                      opacity=1.0)
         
-        pl.add_points(point_cloud, cmap="Paired", 
+        pl.add_points(point_cloud, cmap="gray_r", 
                       render_points_as_spheres=True,
-                      point_size=10.0, opacity=0.5
+                      point_size=5, opacity=0.5
                     )
-        pl.add_arrows(arrow_loc, arrow_length, mag=20, opacity=0.5)
+        pl.add_arrows(arrow_loc, arrow_length, mag=50, opacity=0.8)
 
         pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("mag")
@@ -314,12 +299,10 @@ t_step = 0
 
 expt_name="output/blobs"
 
-delta_t = 0.000033     # target
-
-for step in range(0,250):
+for step in range(0,150):
     
     stokes.solve(zero_init_guess=False)
-    delta_t = 2.0*stokes.estimate_dt() 
+    delta_t = min(10.0,2.5*stokes.estimate_dt())
         
     # update swarm / swarm variables
     
@@ -329,22 +312,30 @@ for step in range(0,250):
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)
     
-#     visc = uw.function.evaluate(viscosity, material._meshLevelSetVars[0].coords)
-#     mat  = uw.function.evaluate(material.f[0]+material.f[1]+material.f[2]+material.f[3],
-#                                 material._meshLevelSetVars[0].coords)
+    visc = uw.function.evaluate(viscosity, material._meshLevelSetVars[0].coords)
+    mat  = uw.function.evaluate(material.f[0]+material.f[1]+material.f[2]+material.f[3],
+                                material._meshLevelSetVars[0].coords)
+    with meshbox.access():
+        mask = material._meshLevelSetVars[0].data + \
+               material._meshLevelSetVars[1].data + \
+               material._meshLevelSetVars[2].data + \
+               material._meshLevelSetVars[3].data   
 
-#     print("Viscosity min/max: {} / {} ".format(visc.min(), visc.max()))
-#     print("Mat field min/max: {} / {} ".format(mat.min(), mat.max()))
+    print("Viscosity min/max: {} / {} ".format(visc.min(), visc.max()))
+    print("Mat field min/max: {} / {} ".format(mat.min(), mat.max()))
+    print("Mask field min/max: {} / {} ".format(mask.min(), mask.max()))
 
-    plot_mesh(filename="{}_step_{}".format(expt_name,t_step))
+
+    if (t_step%1==0):
+        plot_mesh(filename="{}_step_{}".format(expt_name,t_step))
+        
     t_step += 1
 
-# -
 
 
-savefile = "output/bubbles.h5".format(step) 
-meshbox.save(savefile)
-v_soln.save(savefile)
-t_soln.save(savefile)
-meshbox.generate_xdmf(savefile)
+# +
+# savefile = "output/bubbles.h5".format(step) 
+# meshbox.save(savefile)
+# v_soln.save(savefile)
+# meshbox.generate_xdmf(savefile)
 
