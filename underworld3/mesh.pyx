@@ -606,7 +606,7 @@ class Mesh(_api_tools.Stateful):
         if (not hasattr(self,"_min_radius")) or (self._min_radius==None):
             # Calling DMPlexComputeGeometryFVM generates the value returned by DMPlexGetMinRadius
             DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
-            self._min_radius = dm.getMinRaidus()
+            self._min_radius = dm.getMinRadius()
             cellgeom.destroy()
             facegeom.destroy()
         return self._min_radius
