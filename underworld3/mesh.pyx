@@ -90,7 +90,7 @@ class Mesh(_api_tools.Stateful):
         try:
             self.isSimplex = self.dm.isSimplex()
         except:
-            self.isSimplex = True
+            self.isSimplex = simplex
             
         self.cdim = self.dm.getDimension()
 
