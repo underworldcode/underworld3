@@ -134,7 +134,6 @@ class Mesh(_api_tools.Stateful):
         self._lvec = None
         self.petsc_fe = None
 
-        self._elementType = None  # deprecated
         self.degree = degree
         self.nuke_coords_and_rebuild()
 
@@ -412,15 +411,6 @@ class Mesh(_api_tools.Stateful):
         """
         return self.dm.getDimension()
 
-    @property
-    def elementType(self) -> int:
-        """
-        The (vtk) element type classification for the mesh.
-        Will be set to None if it is not meaningful to set one
-        value fo the whole mesh
-        """
-        return self._elementType
-
     @timing.routine_timer_decorator
     def save(self, filename : str,
                    index    : Optional[int] = None):
@@ -446,7 +436,7 @@ class Mesh(_api_tools.Stateful):
             ## JM:To enable timestep recording, the following needs to be called.
             ## I'm unsure if the corresponding xdmf functionality is enabled via 
             ## the PETSc xdmf script.
-            # PetscViewerHDF5PushTimestepping(cviewer)
+            # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
         viewer(self.dm)
 
