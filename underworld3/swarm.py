@@ -9,22 +9,6 @@ import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
-include "./petsc_extras.pxi"
-
-cdef extern from "petsc.h" nogil:
-    PetscErrorCode DMCreateMassMatrix(PetscDM dac, PetscDM daf, PetscMat *mat)
-    PetscErrorCode DMSwarmDestroyGlobalVectorFromField(PetscDM dm, const char fieldname[], PetscVec *vec)
-
-cdef inline object str2bytes(object s, char *p[]):
-    if s is None:
-        p[0] = NULL
-        return None
-    if not isinstance(s, bytes):
-        s = s.encode()
-    p[0] = <char*>(<char*>s)
-    return s
-
-
 comm = MPI.COMM_WORLD
 
 from enum import Enum
@@ -140,14 +124,10 @@ class SwarmVariable(_api_tools.Stateful):
         self.swarm.mesh.dm.clearDS()
         self.swarm.mesh.dm.createDS()
 
-        cdef DM meshvardm = PETSc.DM()
-        cdef DM meshdm = meshvar.mesh.dm 
-        cdef PetscInt fields = meshvar.field_id
-        ierr = DMCreateSubDM(meshdm.dm, 1, &fields, NULL, &meshvardm.dm); CHKERRQ(ierr)
+        meshdm = meshvar.mesh.dm 
+        fields = meshvar.field_id
+        _, meshvardm = meshdm.createSubDM(fields)
 
-#   ierr = KSPCreate(comm, &ksp);CHKERRQ(ierr);
-#   ierr = KSPSetOptionsPrefix(ksp, "ftop_");CHKERRQ(ierr);
-#   ierr = KSPSetFromOptions(ksp);CHKERRQ(ierr);
         ksp = PETSc.KSP().create()
         ksp.setOptionsPrefix("swarm_project_from_")
         options = PETSc.Options()
@@ -156,50 +136,22 @@ class SwarmVariable(_api_tools.Stateful):
         options.setValue("swarm_project_from_pc_type" , "none")
         ksp.setFromOptions()
 
-
-#   ierr = DMGetGlobalVector(dm, &fhat);CHKERRQ(ierr);
-#   ierr = DMGetGlobalVector(dm, &rhs);CHKERRQ(ierr);
         rhs = meshvardm.getGlobalVec()
 
-#   ierr = DMCreateMassMatrix(sw, dm, &M_p);CHKERRQ(ierr);
-#   ierr = MatViewFromOptions(M_p, NULL, "-M_p_view");CHKERRQ(ierr);
-        cdef DM swarmdm = self.swarm
-        cdef Mat M_p = PETSc.Mat()
-        ierr = DMCreateMassMatrix(swarmdm.dm, meshvardm.dm, &M_p.mat); CHKERRQ(ierr)
+        M_p = self.swarm.dm.createMassMatrix(meshvardm)
 
-#   /* make particle weight vector */
-#   ierr = DMSwarmCreateGlobalVectorFromField(sw, "w_q", &f);CHKERRQ(ierr);
+        # make particle weight vector
         f = self.swarm.createGlobalVectorFromField(self.name)
 
-#   /* create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha */
-#   ierr = PetscObjectSetName((PetscObject) rhs,"rhs");CHKERRQ(ierr);
-#   ierr = VecViewFromOptions(rhs, NULL, "-rhs_view");CHKERRQ(ierr);
-#   ierr = DMCreateMatrix(dm, &M);CHKERRQ(ierr);
-#   ierr = DMPlexSNESComputeJacobianFEM(dm, fhat, M, M, user);CHKERRQ(ierr);
-#   ierr = MatViewFromOptions(M, NULL, "-M_view");CHKERRQ(ierr);
-#   ierr = MatMultTranspose(M, fhat, rhs);CHKERRQ(ierr);
-#   if (user->useBlockDiagPrec) {ierr = DMSwarmCreateMassMatrixSquare(sw, dm, &PM_p);CHKERRQ(ierr);}
-#   else                        {ierr = PetscObjectReference((PetscObject) M_p);CHKERRQ(ierr); PM_p = M_p;}
-        cdef Mat M = PETSc.Mat()
-        ierr = DMCreateMassMatrix(meshvardm.dm, meshvardm.dm, &M.mat); CHKERRQ(ierr)
+        # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
+        M = meshvardm.createMassMatrix(meshvardm)
         with meshvar.mesh.access():
             M.multTranspose(meshvar.vec_global,rhs)
     
-
-#   ierr = KSPSetOperators(ksp, M_p, PM_p);CHKERRQ(ierr);
-#   ierr = KSPSolveTranspose(ksp, rhs, f);CHKERRQ(ierr);
-#   ierr = PetscObjectSetName((PetscObject) fhat,"fhat");CHKERRQ(ierr);
-#   ierr = VecViewFromOptions(fhat, NULL, "-fhat_view");CHKERRQ(ierr);
         ksp.setOperators(M_p, M_p)
         ksp.solveTranspose(rhs,f)
 
-#   ierr = DMSwarmDestroyGlobalVectorFromField(sw, "w_q", &f);CHKERRQ(ierr);
-        # self.swarm.destroyGlobalVectorFromField(self.name)  # this appears to be broken in petsc4py
-        cdef Vec cf = f
-        cdef char *cval = NULL
-        fieldname = str2bytes(self.name, &cval)
-
-        DMSwarmDestroyGlobalVectorFromField(swarmdm.dm, cval, &cf.vec)
+        self.swarm.dm.destroyGlobalVectorFromField(self.name)
         meshvardm.restoreGlobalVec(rhs)
         meshvardm.destroy()
         ksp.destroy()

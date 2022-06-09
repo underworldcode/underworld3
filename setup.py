@@ -5,7 +5,6 @@ from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
 import os
-import subprocess
 import numpy
 import petsc4py 
 
@@ -82,10 +81,6 @@ extensions = [
               sources = ['underworld3/algorithms.pyx',],
               extra_compile_args=extra_compile_args+["-std=c++11"],
               language="c++",
-              **conf),
-    Extension('underworld3.swarm',
-              sources = ['underworld3/swarm.pyx',],
-              extra_compile_args=extra_compile_args,
               **conf),
     Extension('underworld3.petsc_types',
               sources = ['underworld3/petsc_types.pyx',],
