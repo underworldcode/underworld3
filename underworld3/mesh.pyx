@@ -1,26 +1,14 @@
-# cython: profile=False
 from typing import Optional, Tuple, Union
-from collections import namedtuple
 import os
-
 import numpy
-import numpy as np
-cimport numpy as np
 import sympy
 import sympy.vector
-
-from mpi4py import MPI
-from mpi4py.MPI import COMM_WORLD
-
 from petsc4py import PETSc
-
-include "./petsc_extras.pxi"
-
-import underworld3
 import underworld3 as uw 
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
+include "./petsc_extras.pxi"
 
 @PETSc.Log.EventDecorator()
 def _from_gmsh(filename, comm=None):
@@ -29,7 +17,7 @@ def _from_gmsh(filename, comm=None):
     :kwarg comm: Optional communicator to build the mesh on (defaults to
         COMM_WORLD).
     """
-    comm = comm or MPI.COMM_WORLD
+    comm = comm or PETSc.COMM_WORLD
     # Create a read-only PETSc.Viewer
     gmsh_viewer = PETSc.Viewer().create(comm=comm)
     gmsh_viewer.setType("ascii")
@@ -74,7 +62,7 @@ class Mesh(_api_tools.Stateful):
             name = "plexmesh"
             self.dm = meshfile
         else:
-            comm = kwargs.get("comm", COMM_WORLD)
+            comm = kwargs.get("comm", PETSc.COMM_WORLD)
             name = meshfile
             basename, ext = os.path.splitext(meshfile)
 
@@ -134,7 +122,6 @@ class Mesh(_api_tools.Stateful):
         self._lvec = None
         self.petsc_fe = None
 
-        self._elementType = None  # deprecated
         self.degree = degree
         self.nuke_coords_and_rebuild()
 
@@ -224,7 +211,6 @@ class Mesh(_api_tools.Stateful):
         self._quadrature = True
         return
 
-
     @timing.routine_timer_decorator
     def update_lvec(self):
         """
@@ -313,7 +299,7 @@ class Mesh(_api_tools.Stateful):
         """
 
         import time
-        uw.timing._incrementDepth()
+        timing._incrementDepth()
         stime = time.time()
 
         self._accessed = True
@@ -360,8 +346,8 @@ class Mesh(_api_tools.Stateful):
                     var._set_vec(available=False)
                     var._is_accessed = False
 
-                uw.timing._decrementDepth()
-                uw.timing.log_result(time.time()-stime, "Mesh.access",1)
+                timing._decrementDepth()
+                timing.log_result(time.time()-stime, "Mesh.access",1)
 
         return exit_manager(self)
 
@@ -395,7 +381,6 @@ class Mesh(_api_tools.Stateful):
             r_vec += N.z*N.k
         return r_vec
 
-
     @property
     def data(self) -> numpy.ndarray:
         """
@@ -411,15 +396,6 @@ class Mesh(_api_tools.Stateful):
         The mesh dimensionality.
         """
         return self.dm.getDimension()
-
-    @property
-    def elementType(self) -> int:
-        """
-        The (vtk) element type classification for the mesh.
-        Will be set to None if it is not meaningful to set one
-        value fo the whole mesh
-        """
-        return self._elementType
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
@@ -440,13 +416,13 @@ class Mesh(_api_tools.Stateful):
             correspond to the timestep (for example). 
 
         """
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=MPI.COMM_WORLD)
+        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
             ## I'm unsure if the corresponding xdmf functionality is enabled via 
             ## the PETSc xdmf script.
-            # PetscViewerHDF5PushTimestepping(cviewer)
+            # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
         viewer(self.dm)
 
@@ -456,7 +432,7 @@ class Mesh(_api_tools.Stateful):
         Save mesh to the specified file
         """
 
-        viewer = PETSc.Viewer().createVTK(filename, "w", comm=MPI.COMM_WORLD)
+        viewer = PETSc.Viewer().createVTK(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self.dm)
     
     def generate_xdmf(self, filename:str):
@@ -562,15 +538,15 @@ class Mesh(_api_tools.Stateful):
                 self._index.build_index()
                 # Grab mapping back to cell_ids. 
                 # Note that this is the numpy array that we eventually return from this 
-                # method. As such, we take measures to ensure that we use `np.int64` here 
+                # method. As such, we take measures to ensure that we use `numpy.int64` here 
                 # because we cast from this type in  `_function.evaluate` to construct 
-                # the PETSc cell-sf datasets, and if instead a `np.int32` is used it 
+                # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it 
                 # will cause bugs that are difficult to find.
-                self._indexMap = np.array(tempSwarm.particle_cellid.data[:,0], dtype=np.int64)
+                self._indexMap = numpy.array(tempSwarm.particle_cellid.data[:,0], dtype=numpy.int64)
 
         closest_points, dist, found = self._index.find_closest_point(coords)
 
-        if not np.allclose(found,True):
+        if not numpy.allclose(found,True):
             raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.")
 
         return self._indexMap[closest_points]
@@ -643,110 +619,9 @@ class Mesh(_api_tools.Stateful):
         vmin   = tmp.min()[1]
         vsum   = tmp.sum()
         vnorm2 = tmp.norm(NormType.NORM_2)
-        vrms   = vnorm2 / np.sqrt(vsize)
+        vrms   = vnorm2 / numpy.sqrt(vsize)
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
-
-
-    def mesh_dm_coords(self):
-        cdim = self.dm.getCoordinateDim()
-        coords = self.dm.getCoordinates().array.reshape(-1,cdim)
-        return coords
-
-    def mesh_dm_edges(self):
-
-        starti,endi = self.dm.getDepthStratum(1)
-        #Offset of the node indices (level 0)
-        coffset = self.dm.getDepthStratum(0)[0]
-        edgesize = self.dm.getConeSize(starti)
-        edges = np.zeros((endi-starti,edgesize), dtype=np.uint32)
-        
-        for c in range(starti, endi):
-            edges[c-starti,:] = self.dm.getCone(c) - coffset
-
-        return edges
-
-    def mesh_dm_faces(self):
-        #Faces / 2d cells
-        coords = self.mesh_dm_coords()
-
-        #Index range in mesh.dm of level 2
-        starti,endi = self.dm.getDepthStratum(2)
-
-        #Offset of the node indices (level 0)
-        coffset = self.dm.getDepthStratum(0)[0]
-        FACES=(endi-starti)
-        facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
-        faces = np.zeros((FACES,facesize), dtype=np.uint32)
-        for c in range(starti, endi):
-            point_closure = self.dm.getTransitiveClosure(c)[0]
-            faces[c-starti,:] = point_closure[-facesize:] - coffset
-        return faces
-
-    def mesh_dm_facesize(self):
-        return self.dm.getConeSize(self.dm.getDepthStratum(2)[0]) #Face elements 3(tri) or 4(quad)
-
-    def mesh_dm_cellsize(self):
-        depth = self.dm.getDepth()
-        if depth < 3:
-            return self.mesh_dm_facesize() #Cells are faces
-        return self.dm.getConeSize(self.dm.getDepthStratum(3)[0])  #Cell elements 4(tet) or 6(cuboid)
-
-    def mesh_dm_info(self):
-        depth = self.dm.getDepth()
-        sz = self.dm.getChart()
-        print('getChart (index range)', sz, 'getDepth', depth)
-        for i in range(depth+1):
-            starti,endi = self.dm.getDepthStratum(i)
-            conesize = self.dm.getConeSize(starti)
-            print(i, "range: [", starti, endi, "] coneSize", conesize)
-        return
-
-    def mesh_dm_cells(self):
-
-        depth = self.dm.getDepth()
-
-        if depth < 3:
-            return self.mesh_dm_faces()
-
-
-        #Index range in mesh.dm of level 3
-        starti,endi = self.dm.getDepthStratum(3)
-        #Offset of the node indices (level 0)
-        coffset = self.dm.getDepthStratum(0)[0]
-        CELLS=(endi-starti)
-        facesize = self.mesh_dm_facesize() # Face elements 3(tri) or 4(quad)
-        cellsize = self.mesh_dm_cellsize() # Cell elements 4(tet) or 6(cuboid)
-        FACES = CELLS * cellsize
-
-        if cellsize == 4:
-            cell_corners = 4
-        else:
-            cell_corners = 8
-        
-        # List of faces (vertex indices)
-        faces = np.zeros((FACES,facesize), dtype=np.uint32)
-        #print("CELLSIZE:", cellsize, "FACESIZE:",facesize, "SHAPE:",faces.shape)
-        
-        cell_vertices = np.empty((CELLS, cell_corners), dtype=np.int64)
-        
-        for c in range(CELLS):
-            # The "cone" is the list of face indices for this cell
-            cone = self.dm.getCone(c+starti)
-            #print("CONE",cone)
-            #Iterate through each face element of the cone
-            facepoints = np.empty((cellsize, facesize), dtype=np.int64)
-            for co in range(cellsize):
-                #This contains the face vertex indices in correct order at the end
-                point_closure = self.dm.getTransitiveClosure(cone[co])[0]
-                faces[cellsize*c + co,:] = point_closure[-facesize:] - coffset
-                facepoints[co, :] = point_closure[-facesize:] - coffset
-            
-            # Unique vertex values only, but preserve ordering
-            unique,indices = np.unique(facepoints.flatten(), return_index=True)
-            cell_vertices[c,:] = facepoints.flatten()[np.sort(indices)]
-                      
-        return cell_vertices
 
 
 class MeshVariable(_api_tools.Stateful):
@@ -862,7 +737,7 @@ class MeshVariable(_api_tools.Stateful):
             Not currently supported. An optional index which 
             might correspond to the timestep (for example).
         """
-        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=MPI.COMM_WORLD)
+        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
@@ -944,15 +819,12 @@ class MeshVariable(_api_tools.Stateful):
         if self.num_components == 1:
             return self._gvec.min()
         else:
-            cpts = []
-            for i in range(0,self.num_components):
-                cpts.append(self._gvec.strideMin(i)[1])
+            return tuple([self._gvec.strideMin(i)[1] for i in range(self.num_components)])
 
-            return tuple(cpts)
 
     def max(self) -> Union[float , tuple]:
         """
-        The global variable minimum value.
+        The global variable maximum value.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
@@ -960,11 +832,7 @@ class MeshVariable(_api_tools.Stateful):
         if self.num_components == 1:
             return self._gvec.max()
         else:
-            cpts = []
-            for i in range(0,self.num_components):
-                cpts.append(self._gvec.strideMax(i)[1])
-
-            return tuple(cpts)
+            return tuple([self._gvec.strideMax(i)[1] for i in range(self.num_components)])
 
     def sum(self) -> Union[float , tuple]:
         """
@@ -984,24 +852,27 @@ class MeshVariable(_api_tools.Stateful):
 
     def norm(self, norm_type) -> Union[float , tuple]:
         """
-        The global variable maximum value.
+        The global variable norm value.
+        
+        norm_type: type of norm, one of 
+            - 0: NORM 1 ||v|| = sum_i | v_i |. ||A|| = max_j || v_*j ||
+            - 1: NORM 2 ||v|| = sqrt(sum_i |v_i|^2) (vectors only)
+            - 3: NORM INFINITY ||v|| = max_i |v_i|. ||A|| = max_i || v_i* ||, maximum row sum
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
+        
+        if self.num_components > 1 and norm_type == 2:
+            raise RuntimeError("Norm 2 is only available for vectors.")
 
         if self.num_components == 1:
             return self._gvec.norm(norm_type)
         else:
-            cpts = []
-            for i in range(0,self.num_components):
-                cpts.append(self._gvec.strideNorm(i, norm_type))
-
-            return tuple(cpts)
-
+            return tuple([self._gvec.strideNorm(i, norm_type) for i in range(self.num_components)])
 
     def mean(self) -> Union[float , tuple]:
         """
-        The global variable maximum value.
+        The global variable mean value.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
@@ -1011,11 +882,7 @@ class MeshVariable(_api_tools.Stateful):
             return self._gvec.sum() / vecsize
         else:
             vecsize = self._gvec.getSize() / self.num_components
-            cpts = []
-            for i in range(0,self.num_components):
-                cpts.append(self._gvec.strideSum(i)/vecsize)
-
-            return tuple(cpts)
+            return tuple([self._gvec.strideSum(i)/vecsize for i in range(self.num_components)])
 
     def stats(self):
         """
@@ -1049,7 +916,7 @@ class MeshVariable(_api_tools.Stateful):
         vmin   = self.min()[1]
         vsum   = self.sum()
         vnorm2 = self.norm(NormType.NORM_2)
-        vrms   = vnorm2 / np.sqrt(vsize)
+        vrms   = vnorm2 / numpy.sqrt(vsize)
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 

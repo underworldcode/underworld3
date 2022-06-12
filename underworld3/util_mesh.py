@@ -1,15 +1,9 @@
 from typing import Optional, Tuple
-import os
 import tempfile
-
-import  numpy
-import  numpy as np
-
-from mpi4py import MPI
+import numpy as np
 from petsc4py import PETSc
 
-from   underworld3.mesh import Mesh
-
+from underworld3.mesh import Mesh
 
 def UnstructuredSimplexBox(
         minCoords: Tuple = (0., 0.),
@@ -605,3 +599,4 @@ def CubicSphere(
     plex.removeLabel("Face Sets")     
 
     return Mesh(plex, degree=degree)
+    
