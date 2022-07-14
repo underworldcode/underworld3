@@ -401,7 +401,7 @@ class Mesh(_api_tools.Stateful):
     def save(self, filename : str,
                    index    : Optional[int] = None):
         """
-        Save mesh data to the specified file. 
+        Save mesh data to the specified hdf5 file. 
 
         Users will generally create this file, and then
         append mesh variable data to it via the variable
@@ -721,8 +721,8 @@ class MeshVariable(_api_tools.Stateful):
                    name     : Optional[str] = None,
                    index    : Optional[int] = None):
         """
-        Append variable data to the specified mesh 
-        checkpoint file. The file must already exist.
+        Append variable data to the specified mesh hdf5
+        data file. The file must already exist.
 
         Parameters
         ----------
