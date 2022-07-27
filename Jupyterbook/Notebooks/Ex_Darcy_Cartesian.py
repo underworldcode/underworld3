@@ -41,7 +41,7 @@ mesh.deform_mesh(new_coords=new_coords)
 
 # %%
 
-if uw.mpi.size==1:
+if uw.mpi.size==1 and uw.is_notebook:
 
     import numpy as np
     import pyvista as pv
@@ -103,9 +103,7 @@ sympy.derive_by_array(F0, darcy._v_projector._U).reshape(2,2)
 # darcy._v_projector._GG1.reshape(2,4)
 
 # %%
-
-
-if uw.mpi.size==1:
+if uw.mpi.size==1 and uw.is_notebook:
 
     import numpy as np
     import pyvista as pv
