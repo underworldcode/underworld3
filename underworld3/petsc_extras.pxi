@@ -35,3 +35,10 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
+
+    # These do not appear to be in the 3.17.2 release
+    PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
+    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
+    PetscErrorCode DMDestroy(PetscDM *dm)
+
+

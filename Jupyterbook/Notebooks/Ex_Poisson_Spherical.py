@@ -17,7 +17,7 @@ r_i = 0.5
 r_o = 1.0
 
 # %%
-from underworld3.util_mesh import Annulus
+from underworld3.meshing import Annulus
 
 # %%
 # first do 2D
@@ -27,7 +27,7 @@ mesh = Annulus(radiusInner=r_i,
                radiusOuter=r_o,
                cellSize=cell_size)
 
-t_soln  = uw.mesh.MeshVariable("T", mesh, 1, degree=2 )
+t_soln  = uw.discretisation.MeshVariable("T", mesh, 1, degree=2 )
 
 
 # Create Poisson object
@@ -112,7 +112,7 @@ poisson.u.save(savefile)
 mesh.generate_xdmf(savefile)
 
 # %%
-from underworld3.util_mesh import SphericalShell
+from underworld3.meshing import SphericalShell
 
 # %%
 # now do 3D
@@ -120,7 +120,7 @@ cell_size=0.1
 mesh_3d = SphericalShell(radiusInner=r_i, 
                          radiusOuter=r_o,
                          cellSize=cell_size)
-t_soln_3d  = uw.mesh.MeshVariable("T", mesh_3d, 1, degree=2 )
+t_soln_3d  = uw.discretisation.MeshVariable("T", mesh_3d, 1, degree=2 )
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)

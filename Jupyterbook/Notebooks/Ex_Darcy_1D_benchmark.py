@@ -25,17 +25,17 @@ options = PETSc.Options()
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(minX,minY), 
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX,minY), 
                                            maxCoords=(maxX,maxY),
                                            cellSize=0.05) 
 
-# mesh = uw.util_mesh.StructuredQuadBox(elementRes=(20,20),
+# mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY), 
 #                                       maxCoords=(maxX,maxY),)
 
 
-p_soln  = uw.mesh.MeshVariable('P',   mesh, 1, degree=5 )
-v_soln  = uw.mesh.MeshVariable('U',   mesh, mesh.dim,  degree=1 )
+p_soln  = uw.discretisation.MeshVariable('P',   mesh, 1, degree=5 )
+v_soln  = uw.discretisation.MeshVariable('U',   mesh, mesh.dim,  degree=1 )
 
 # x and y coordinates
 x = mesh.N.x

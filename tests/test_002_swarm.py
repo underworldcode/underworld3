@@ -1,7 +1,7 @@
 
 def test_create_swarm():
     from underworld3 import swarm
-    from underworld3.util_mesh import StructuredQuadBox
+    from underworld3.meshing import StructuredQuadBox
     mesh = StructuredQuadBox(elementRes=(10,10), minCoords=(0., 0.), maxCoords=(1.0, 1.0))
     swarm = swarm.Swarm(mesh)
     swarm.populate(fill_param=5)
@@ -9,7 +9,7 @@ def test_create_swarm():
 
 def test_create_swarmvariable():
     from underworld3 import swarm
-    from underworld3.util_mesh import StructuredQuadBox
+    from underworld3.meshing import StructuredQuadBox
     mesh = StructuredQuadBox(elementRes=(10,10), minCoords=(0., 0.), maxCoords=(1.0, 1.0))
     swarm = swarm.Swarm(mesh)
     var = swarm.add_variable(name='test', num_components=2)

@@ -24,7 +24,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(10,2,3)
 
-qmesh2 = uw.mesh.Hex_Box(dim=3, 
+qmesh2 = uw.discretisation.Hex_Box(dim=3, 
                          elementRes=elementRes, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
@@ -38,7 +38,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(12,8,5)
 
-s_s_mesh = uw.mesh.Simplex_Box(dim=3, 
+s_s_mesh = uw.discretisation.Simplex_Box(dim=3, 
                          elementRes=elementRes, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
@@ -54,7 +54,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(12,8,5)
 
-u_s_mesh = uw.mesh.Unstructured_Simplex_Box(dim=3, 
+u_s_mesh = uw.discretisation.Unstructured_Simplex_Box(dim=3, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          coarse_cell_size=0.5,
@@ -70,21 +70,21 @@ minCoords=(-1.0, 0.0, 0.0)
 maxCoords=( 1.0, 1.0, 0.0)
 elementRes=(16,8,0)
 
-u_s_2d_mesh = uw.mesh.Unstructured_Simplex_Box(dim=2, 
+u_s_2d_mesh = uw.discretisation.Unstructured_Simplex_Box(dim=2, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          coarse_cell_size=0.2,
                          global_cell_size=0.01,           
                                          )
 
-s_s_2d_mesh = uw.mesh.Simplex_Box(dim=2, 
+s_s_2d_mesh = uw.discretisation.Simplex_Box(dim=2, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          elementRes=elementRes,
                          cell_size=0.01,           
                                          )
 
-s_q_2d_mesh = uw.mesh.Hex_Box(dim=2, 
+s_q_2d_mesh = uw.discretisation.Hex_Box(dim=2, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          elementRes=elementRes,
@@ -129,7 +129,7 @@ density
 
 # %%
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",mesh_to_test,1)
+densvar = uw.discretisation.MeshVariable("density",mesh_to_test,1)
 with mesh_to_test.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)
 
@@ -160,7 +160,7 @@ pl1.show()
 # %%
 # This is how to view the mesh without building the DM
 
-regional_cap_meshio = uw.mesh.StructuredCubeSphericalCap.build_pygmsh(
+regional_cap_meshio = uw.discretisation.StructuredCubeSphericalCap.build_pygmsh(
                                 elementRes=(64,64,64), 
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
@@ -173,7 +173,7 @@ rcm_pyvista = pv.read("ignore_rcm.vtk")
 rcm_pyvista.plot(show_edges=True)
 
 # %%
-cubed_sphere_meshio = uw.mesh.StructuredCubeSphereBallMesh.build_pygmsh(elementRes=33,
+cubed_sphere_meshio = uw.discretisation.StructuredCubeSphereBallMesh.build_pygmsh(elementRes=33,
                                         radius_outer=1.0, simplex=True)
 
 cubed_sphere_meshio.write("ignore_csb.vtk")
@@ -191,7 +191,7 @@ pl.show()
 
 
 # %%
-cubed_sphere_shell_meshio = uw.mesh.StructuredCubeSphereShellMesh.build_pygmsh(elementRes=(33,16), radius_inner=0.5,
+cubed_sphere_shell_meshio = uw.discretisation.StructuredCubeSphereShellMesh.build_pygmsh(elementRes=(33,16), radius_inner=0.5,
                                         radius_outer=1.0)
 
 
@@ -222,7 +222,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(5,2,2)
 
-qmesh2 = uw.mesh.Hex_Box(dim=3, 
+qmesh2 = uw.discretisation.Hex_Box(dim=3, 
                          elementRes=elementRes, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,

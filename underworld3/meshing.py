@@ -3,7 +3,7 @@ import tempfile
 import numpy as np
 from petsc4py import PETSc
 
-from underworld3.mesh import Mesh
+from underworld3.discretisation import Mesh
 
 def UnstructuredSimplexBox(
         minCoords: Tuple = (0., 0.),
@@ -416,11 +416,17 @@ def Annulus(
         radiusOuter: float = 1.0, 
         radiusInner: float = 0.3, 
         cellSize:    float = 0.1,
+        centre:      bool = False,
         degree:      int = 1):
 
     boundaries = {
-     "Lower": 1,
-     "Upper": 2}
+     "Lower":  1,
+     "Upper":  2
+    }
+
+    vertices = {
+        "Centre": 1
+    }
 
     import gmsh
     
@@ -428,12 +434,12 @@ def Annulus(
     gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Annulus")
 
-    p1 = gmsh.model.geo.add_point(0.0,0.0,0.0, meshSize=cellSize)
+    p1 = gmsh.model.geo.add_point(0.0,0.0,0.0, meshSize=cellSize, tag=vertices["Centre"])
 
     surfaces = []
 
     if radiusInner > 0.0:
-        p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
+        p2 = gmsh.model.geo.add_point( radiusInner, 0.0, 0.0,  meshSize=cellSize)
         p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
 
         c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
@@ -443,7 +449,7 @@ def Annulus(
 
         surfaces = [cl1] + surfaces
     
-    p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
+    p4 = gmsh.model.geo.add_point( radiusOuter, 0.0, 0.0, meshSize=cellSize)
     p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize)
 
     c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
@@ -457,11 +463,16 @@ def Annulus(
     gmsh.model.geo.synchronize()
     
     if radiusInner > 0.0:
-        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"])
+        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"] )
         gmsh.model.setPhysicalName(1, boundaries["Lower"], "Lower")
+    else:
+        gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"])
+        gmsh.model.setPhysicalName( 0, vertices["Centre"], "Centre")
+
 
     gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries["Upper"])
     gmsh.model.setPhysicalName(1, boundaries["Upper"], "Upper")
+
     gmsh.model.addPhysicalGroup(2, [s], s)
     gmsh.model.setPhysicalName(2, s, "Elements")
 
@@ -483,6 +494,17 @@ def Annulus(
 
     plex.removeLabel("Face Sets")     
 
+    for name, tag in vertices.items():
+        plex.createLabel(name)
+        label = plex.getLabel(name)
+        indexSet = plex.getStratumIS("Vertex Sets", tag)
+        if indexSet:
+            label.insertIS(indexSet, 1)
+        else:
+            plex.removeLabel(name)
+
+    plex.removeLabel("Vertex Sets")     
+
     return Mesh(plex, degree=degree)
 
 
@@ -493,8 +515,8 @@ def CubicSphere(
         degree: int = 1):
 
     boundaries = {
-     "Lower": 1,
-     "Upper": 2}
+        "Lower": 1,
+        "Upper": 2}
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)

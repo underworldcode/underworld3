@@ -26,7 +26,7 @@ options["fieldsplit_pressure_pc_type"] = "lu"
 # -
 
 cell_size=0.01
-mesh = uw.mesh.SphericalShell(2,cell_size=cell_size)
+mesh = uw.discretisation.SphericalShell(2,cell_size=cell_size)
 
 
 def plot_mesh(mesh,colour_data=None):

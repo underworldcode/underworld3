@@ -45,9 +45,9 @@ meshball = uw.meshes.MeshFromGmshFile(dim=3, filename="Sample_Meshes_Gmsh/test_m
                                       verbose=True, simplex=True)
 
 
-v_soln  = uw.mesh.MeshVariable('U', meshball, meshball.dim, degree=2 )
-p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln  = uw.mesh.MeshVariable("T", meshball, 1, degree=3 )
+v_soln  = uw.discretisation.MeshVariable('U', meshball, meshball.dim, degree=2 )
+p_soln  = uw.discretisation.MeshVariable('P', meshball, 1, degree=1 )
+t_soln  = uw.discretisation.MeshVariable("T", meshball, 1, degree=3 )
 
 
 # +

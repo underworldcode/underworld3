@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.13.8
+#       jupytext_version: 1.11.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,15 +23,15 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-from underworld3.util_mesh import UnstructuredSimplexBox
+from underworld3.meshing import UnstructuredSimplexBox
 
 mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                               maxCoords=(1.0,1.0), 
                               regular=True,
                               cellSize=1.0/32) 
 
-t_soln   = uw.mesh.MeshVariable("T", mesh, 1, degree=1 )
-t_soln0  = uw.mesh.MeshVariable("T0", mesh, 1, degree=1 )
+t_soln   = uw.discretisation.MeshVariable("T", mesh, 1, degree=1 )
+t_soln0  = uw.discretisation.MeshVariable("T0", mesh, 1, degree=1 )
 
 poisson0 = uw.systems.SNES_Scalar(mesh, u_Field=t_soln0)
 poisson0.F0 = 0.0
@@ -56,15 +56,22 @@ poisson.add_dirichlet_bc( 0., "Top" )
 # Solve time
 poisson.solve()
 
+poisson.F0 
+sympy.Matrix((0,))
+
 # +
 # Check the flux term
-
-display(poisson._X)
 display(poisson._L)
 
 # This is the internal build of the flux term
 display(poisson._f1)
 # -
+
+poisson._L
+
+poisson.u.sym.jacobian(poisson._L)
+
+poisson._f1.jacobian(poisson._L)
 
 # ## Validation
 
@@ -111,5 +118,12 @@ if MPI.COMM_WORLD.size==1:
     pl.camera_position="xy"
      
     pl.show(cpos="xy")
-    
-    
+
+
+# -
+
+
+
+t_soln.ijk
+
+

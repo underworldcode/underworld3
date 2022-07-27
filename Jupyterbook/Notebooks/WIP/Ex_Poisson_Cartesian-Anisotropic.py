@@ -172,7 +172,7 @@ poisson._f1
 # %%
 # Now create system with mesh variable as source term.
 
-mesh = uw.mesh.Box(elementRes=(9,9), minCoords=(-2.2,-.4))
+mesh = uw.discretisation.Box(elementRes=(9,9), minCoords=(-2.2,-.4))
 bnds = mesh.boundary
 # Create Poisson object
 u_degree = 1
@@ -186,7 +186,7 @@ k =   3.0   # diffusivity
 h =  10.0   # heat production, source term
 y1 = mesh.maxCoords[1]
 y0 = mesh.minCoords[1]
-diff = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.VarType.SCALAR, degree=u_degree )
+diff = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="diff", vtype=uw.VarType.SCALAR, degree=u_degree )
 # example of setting the auxiliary field by numpy array, a.k.a by hand
 with mesh.access(diff):
     diff.data[:] = k # just set every aux dof to k

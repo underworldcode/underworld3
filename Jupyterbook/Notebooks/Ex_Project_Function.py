@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# # SNES-based function evaluation
+# # Projection-based function evaluation
 #
 # Here we Use SNES solvers to project sympy / mesh variable functions and derivatives to nodes. Pointwise / symbolic functions cannot always be evaluated using `uw.function.evaluate` because they contain a mix of mesh variables, derivatives and symbols which may not be defined everywhere. 
 #
@@ -26,7 +26,7 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-from underworld3.util_mesh import UnstructuredSimplexBox
+from underworld3.meshing import UnstructuredSimplexBox
 
 meshbox = UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                  maxCoords=(1.0,1.0), 
@@ -42,9 +42,9 @@ y = meshbox.N.y
 z = meshbox.N.z
 # -
 
-s_soln  = uw.mesh.MeshVariable("T",    meshbox,  1,            degree=2 )
-v_soln  = uw.mesh.MeshVariable('U',    meshbox,  meshbox.dim,  degree=2 )
-iv_soln = uw.mesh.MeshVariable('IU',   meshbox,  meshbox.dim,  degree=2 )
+s_soln  = uw.discretisation.MeshVariable("T",    meshbox,  1,            degree=2 )
+v_soln  = uw.discretisation.MeshVariable('U',    meshbox,  meshbox.dim,  degree=2 )
+iv_soln = uw.discretisation.MeshVariable('IU',   meshbox,  meshbox.dim,  degree=2 )
 
 s_fn = sympy.cos(5.0*sympy.pi * x) * sympy.cos(5.0*sympy.pi * y)
 sv_fn = sympy.vector.curl(v_soln.fn)
@@ -59,12 +59,12 @@ swarm.populate(fill_param=3)
 # -
 
 scalar_projection = uw.systems.Projection(meshbox, s_soln)
-scalar_projection.uw_function = s_values.fn
+scalar_projection.uw_function = s_values.f
 scalar_projection.smoothing = 1.0e-6
 
 # +
 vector_projection = uw.systems.Vector_Projection(meshbox, v_soln)
-vector_projection.uw_function = v_values.fn
+vector_projection.uw_function = v_values.f
 vector_projection.smoothing = 1.0e-3  # see how well it works !
 
 # Velocity boundary conditions (compare left / right walls in the soln !)
@@ -78,11 +78,11 @@ vector_projection.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
 # try to enforce incompressibility
 
 incompressible_vector_projection = uw.systems.Solenoidal_Vector_Projection(meshbox, iv_soln)
-incompressible_vector_projection.uw_function =  v_soln.fn # + sv_fn
-incompressible_vector_projection.smoothing = 1.0e-2  # see how well it works !
+incompressible_vector_projection.uw_function =  v_soln.sym # + sv_fn
+incompressible_vector_projection.smoothing = 1.0  # see how well it works !
 
 # Velocity boundary conditions (compare left / right walls in the soln !)
-# incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Left" ,   (0,) )
+incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Left" ,   (0,) )
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Right" ,  (0,) )
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Top" ,    (1,) )
 incompressible_vector_projection.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
@@ -97,9 +97,25 @@ with swarm.access(s_values, v_values, iv_values):
 
 scalar_projection.solve()
 
+vector_projection._setup_terms()
+
+
+
+
+
 vector_projection.solve()
 
+# + jupyter={"source_hidden": true} tags=[]
+incompressible_vector_projection._setup_terms()
+# -
+
+incompressible_vector_projection._smoothing
+
+0/0
+
 incompressible_vector_projection.solve()
+
+
 
 scalar_projection.uw_function = sympy.vector.divergence(iv_soln.fn)
 scalar_projection.solve()

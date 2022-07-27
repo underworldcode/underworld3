@@ -24,7 +24,7 @@ import sympy
 render = True
 # -
 
-meshbox = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                               maxCoords=(1.0,1.0), 
                                               cellSize=1.0/48.0, 
                                               regular=True)
@@ -39,12 +39,12 @@ x = meshbox.N.x
 y = meshbox.N.y
 # -
 
-v_soln = uw.mesh.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshbox,  1, degree=1 )
+v_soln = uw.discretisation.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
+p_soln = uw.discretisation.MeshVariable('P',    meshbox,  1, degree=1 )
 
 
 swarm     = uw.swarm.Swarm(mesh=meshbox)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
+material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
 swarm.populate(fill_param=4)
 
 
@@ -182,7 +182,7 @@ if uw.mpi.size==1 and render:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 250]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
     # pv.start_xvfb()
@@ -331,11 +331,15 @@ for step in range(0,150):
         
     t_step += 1
 
+# -
 
 
-# +
-# savefile = "output/bubbles.h5".format(step) 
-# meshbox.save(savefile)
-# v_soln.save(savefile)
-# meshbox.generate_xdmf(savefile)
+
+
+savefile = "output/bubbles.h5".format(step) 
+meshbox.save(savefile)
+v_soln.save(savefile)
+meshbox.generate_xdmf(savefile)
+
+
 

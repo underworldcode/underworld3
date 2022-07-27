@@ -78,7 +78,7 @@ def do_uw3():
     sys.pushErrorHandler("debugger")
 
 
-    mesh = uw.mesh.Box(elementRes=(    n_els,)*dim, 
+    mesh = uw.discretisation.Box(elementRes=(    n_els,)*dim, 
                         minCoords =(       0.,)*dim, 
                         maxCoords =(boxLength,1.),
                         simplex=False )
@@ -86,7 +86,7 @@ def do_uw3():
     stokes = Stokes(mesh, u_degree=u_degree )
     
     # Create a variable to store material variable
-    # matMeshVar = uw.mesh.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
+    # matMeshVar = uw.discretisation.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
 
     #%%
     # Create swarm

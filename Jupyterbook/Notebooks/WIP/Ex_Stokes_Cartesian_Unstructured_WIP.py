@@ -56,7 +56,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(12,8,5)
 
-s_s_mesh = uw.mesh.Simplex_Box(dim=3, 
+s_s_mesh = uw.discretisation.Simplex_Box(dim=3, 
                          elementRes=elementRes, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
@@ -72,7 +72,7 @@ maxCoords=( 1.0, 1.1, 1.2)
 
 elementRes=(12,8,5)
 
-u_s_mesh = uw.mesh.Unstructured_Simplex_Box(dim=3, 
+u_s_mesh = uw.discretisation.Unstructured_Simplex_Box(dim=3, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          coarse_cell_size=0.25,
@@ -88,14 +88,14 @@ minCoords=(-1.0, 0.0, 0.0)
 maxCoords=( 1.0, 1.0, 0.0)
 elementRes=(16,8,0)
 
-u_s_2d_mesh = uw.mesh.Unstructured_Simplex_Box(dim=2, 
+u_s_2d_mesh = uw.discretisation.Unstructured_Simplex_Box(dim=2, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          coarse_cell_size=0.2,
                          global_cell_size=0.01,           
                                          )
 
-s_s_2d_mesh = uw.mesh.Simplex_Box(dim=2, 
+s_s_2d_mesh = uw.discretisation.Simplex_Box(dim=2, 
                          minCoords=minCoords, 
                          maxCoords=maxCoords,
                          elementRes=elementRes,
@@ -146,7 +146,7 @@ density
 
 # %%
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",mesh_to_test,1)
+densvar = uw.discretisation.MeshVariable("density",mesh_to_test,1)
 with mesh_to_test.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)
 

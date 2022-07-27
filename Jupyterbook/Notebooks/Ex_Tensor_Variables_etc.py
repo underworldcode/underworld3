@@ -23,7 +23,7 @@ import sympy
 
 # -
 
-meshbox = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                               maxCoords=(1.0,1.0), 
                                               cellSize=1.0/100.0)
 meshbox.dm.view()   
@@ -39,8 +39,8 @@ y = meshbox.N.y
 
 
 
-v_soln = uw.mesh.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshbox, 1, degree=1 )
+v_soln = uw.discretisation.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
+p_soln = uw.discretisation.MeshVariable('P',    meshbox, 1, degree=1 )
 
 
 sympy.diff(v_soln.fn, x)
@@ -66,9 +66,9 @@ material.f
 
 sympy.derive_by_array(material.f, meshbox.X)
 
-sympy.derive_by_array(v_soln.f, meshbox.X)
+material.f.jacobian(meshbox.X).T
 
-sympy.derive_by_array(sigma.f, meshbox.X)
+sympy.derive_by_array(v_soln.sym, meshbox.X)
 
 mat_density = np.array([1,10,100,1000])
 density = mat_density[0] * material.f[0] + mat_density[1] * material.f[1] + \

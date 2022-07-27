@@ -58,7 +58,7 @@ class SwarmVariable(_api_tools.Stateful):
         # create proxy variable
         self._meshVar = None
         if _proxy:
-            self._meshVar = uw.mesh.MeshVariable(name, self.swarm.mesh, num_components, 
+            self._meshVar = uw.discretisation.MeshVariable(name, self.swarm.mesh, num_components, 
                                                  vtype, degree=proxy_degree)
 
         self._register = _register
@@ -168,6 +168,9 @@ class SwarmVariable(_api_tools.Stateful):
     def fn(self):
         return self._meshVar.fn
 
+    @property
+    def f(self):
+        return self._meshVar.sym
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
@@ -228,13 +231,13 @@ class IndexSwarmVariable(SwarmVariable):
         # The indices variable defines how many level set maps we create as components in the proxy variable
 
         import sympy
-        self._MaskArray = sympy.tensor.MutableDenseNDimArray.zeros(self.indices)
+        self._MaskArray = sympy.Matrix.zeros(1,self.indices)
         self._meshLevelSetVars = [ None ] * self.indices
 
         for i in range(indices):
-            self._meshLevelSetVars[i] =  uw.mesh.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, 
+            self._meshLevelSetVars[i] =  uw.discretisation.MeshVariable(name+"["+str(i)+"]", self.swarm.mesh, 
                                          num_components=1, degree=proxy_degree)
-            self._MaskArray[0,i] = self._meshLevelSetVars[i].fn
+            self._MaskArray[0,i] = self._meshLevelSetVars[i].sym[0,0]
 
         return
 
@@ -444,7 +447,7 @@ class Swarm(_api_tools.Stateful):
         -------
 
         >>> import underworld3 as uw
-        >>> someMesh = uw.mesh.FeMesh_Cartesian()
+        >>> someMesh = uw.discretisation.FeMesh_Cartesian()
         >>> with someMesh.deform_mesh():
         ...     someMesh.data[0] = [0.1,0.1]
         >>> someMesh.data[0]

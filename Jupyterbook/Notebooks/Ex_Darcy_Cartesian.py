@@ -20,12 +20,12 @@ import sympy
 options = PETSc.Options()
 
 # %%
-mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                            maxCoords=(4.0,1.0), 
                                            cellSize=0.05) 
 
-p_soln  = uw.mesh.MeshVariable('P',   mesh, 1, degree=3 )
-v_soln  = uw.mesh.MeshVariable('U',  mesh, mesh.dim,  degree=2 )
+p_soln  = uw.discretisation.MeshVariable('P',   mesh, 1, degree=3 )
+v_soln  = uw.discretisation.MeshVariable('U',  mesh, mesh.dim,  degree=2 )
 
 
 # %%
@@ -90,7 +90,17 @@ darcy._v_projector.smoothing=1.0e-6
 darcy.solve()
 
 # %%
-# time to plot it ... 
+darcy._v_projector._U
+
+F0 = darcy.mesh.vector.to_matrix(darcy._v_projector._f0)
+F0
+
+# %%
+sympy.derive_by_array(F0, darcy._v_projector._U).reshape(2,2)
+
+# %%
+# this is broken?
+# darcy._v_projector._GG1.reshape(2,4)
 
 # %%
 

@@ -55,10 +55,10 @@ if uw.mpi.size==1:
     pl.show(cpos="xy")
 # -
 
-v_soln = uw.mesh.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshbox, 1, degree=1 )
-t_soln = uw.mesh.MeshVariable("T",    meshbox, 1, degree=3)
-t_0    = uw.mesh.MeshVariable("T0",   meshbox, 1, degree=3)
+v_soln = uw.discretisation.MeshVariable('U',    meshbox,  meshbox.dim, degree=2 )
+p_soln = uw.discretisation.MeshVariable('P',    meshbox, 1, degree=1 )
+t_soln = uw.discretisation.MeshVariable("T",    meshbox, 1, degree=3)
+t_0    = uw.discretisation.MeshVariable("T0",   meshbox, 1, degree=3)
 
 
 swarm  = uw.swarm.Swarm(mesh=meshbox)
@@ -93,7 +93,7 @@ stokes.add_dirichlet_bc( (0.0,), "Bottom" , (1,) )
 # -
 
 
-mMat = uw.mesh.MeshVariable("mMat", meshbox, 1, degree=2)
+mMat = uw.discretisation.MeshVariable("mMat", meshbox, 1, degree=2)
 projector = uw.systems.solvers.SNES_Projection(meshbox, mMat )
 projector.smoothing = 1.0e-3
 

@@ -131,6 +131,12 @@ class Mesh(_api_tools.Stateful):
 
         self._work_MeshVar = MeshVariable('work_array_1', self,  1, degree=2 ) 
 
+        # This looks a bit strange, but we'd like to 
+        # put these mesh-dependent vector calculus functions
+        # in a bundle and avoid the mesh being required as an argument
+
+        self.vector = uw.maths.mesh_vector_calculus(mesh=self)
+
         super().__init__()
 
     def nuke_coords_and_rebuild(self):
@@ -157,7 +163,15 @@ class Mesh(_api_tools.Stateful):
 
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim, self.cdim, self.isSimplex, self.degree,  "meshproj_{}_".format(self.mesh_instances), PETSc.COMM_WORLD)
-        self.dm.projectCoordinates(self.petsc_fe)
+        
+        # self.dm.projectCoordinates(self.petsc_fe)
+
+        cdmfe = self.petsc_fe 
+      
+        cdef FE c_fe = cdmfe
+        cdef DM c_dm = self.dm
+        ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
+
 
         # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
@@ -172,7 +186,7 @@ class Mesh(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def _align_quadratures(self, mesh_var=None, force=False):
         """
-        Choose a quadrature that will be used by any solvers on 
+        Choose a quadrature that will be used by any of our solvers on 
         this mesh. Quadratures are aligned with either:
           - the variable that has the highest degree on the mesh at this point
           - the variable that is provided
@@ -182,8 +196,6 @@ class Mesh(_api_tools.Stateful):
         been added
 
         """
-
-        # Ensure consistent quadrature across all mesh variables
 
         # # Find var with the highest degree. We will then configure the integration 
         # # to use this variable's quadrature object for all variables. 
@@ -291,7 +303,7 @@ class Mesh(_api_tools.Stateful):
         Example
         -------
         >>> import underworld3 as uw
-        >>> someMesh = uw.mesh.FeMesh_Cartesian()
+        >>> someMesh = uw.discretisation.FeMesh_Cartesian()
         >>> with someMesh.deform_mesh():
         ...     someMesh.data[0] = [0.1,0.1]
         >>> someMesh.data[0]
@@ -327,6 +339,9 @@ class Mesh(_api_tools.Stateful):
             def __init__(self,mesh): self.mesh = mesh
             def __enter__(self): pass
             def __exit__(self,*args):
+                cdef DM subdm
+                cdef DM dm
+                cdef PetscInt fields
                 for var in self.mesh.vars.values():
                     # only de-access variables we have set access for.
                     if var not in deaccess_list:
@@ -334,14 +349,17 @@ class Mesh(_api_tools.Stateful):
                     # set this back, although possibly not required.
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
+                    # perform sync for any modified vars.
                     if var in writeable_vars:
-                        _, subdm = self.mesh.dm.createSubDM(var.field_id)
+                        subdm = PETSc.DM()
+                        dm = self.mesh.dm
+                        fields = var.field_id
+                        ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
                         # sync ghost values
                         subdm.localToGlobal(var.vec,var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec,var.vec, addv=False)
                         subdm.destroy()
                         self.mesh._stale_lvec = True
-                
                     var._data = None
                     var._set_vec(available=False)
                     var._is_accessed = False
@@ -662,12 +680,16 @@ class MeshVariable(_api_tools.Stateful):
 
         if mesh._accessed:
             raise RuntimeError("It is not possible to add new variables to a mesh after existing variables have been accessed.")
+        
+        ## This should be a warning and return rather than an exception
+        
         if name in mesh.vars.keys():
             raise ValueError("Variable with name {} already exists on mesh.".format(name))
+
         self.name = name
 
         if vtype==None:
-            if   num_components==1:
+            if num_components==1:
                 vtype=uw.VarType.SCALAR
             elif num_components==mesh.dim:
                 vtype=uw.VarType.VECTOR
@@ -692,29 +714,29 @@ class MeshVariable(_api_tools.Stateful):
         # create associated sympy function
         from underworld3.function import UnderworldFunction
         if  vtype == uw.VarType.SCALAR:
-            
-            self._fn = UnderworldFunction(name,self,vtype)(*self.mesh.r)
-            self._f = sympy.Matrix.zeros(1,1)
-            self._f[0]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
+
+            self._sym = sympy.Matrix.zeros(1,1)
+            self._sym[0]  = UnderworldFunction(name,self,vtype)(*self.mesh.r)
+            self._ijk = self._sym[0]
             
         elif vtype==uw.VarType.VECTOR:
-            self._f = sympy.Matrix.zeros(1,num_components)
+            self._sym = sympy.Matrix.zeros(1,num_components)
             
             # Matrix form (any number of components)  
             for comp in range(num_components):
-                self._f[0,comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
+                self._sym[0,comp] = UnderworldFunction(name,self,vtype,comp)(*self.mesh.r)
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
             if num_components==mesh.dim:
-                from sympy.vector import VectorZero
-                self._fn = VectorZero()
-                for comp in range(num_components):
-                    self._fn += self._f[0,comp] * self.mesh.N.base_vectors()[comp]
+                self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
+                # self.mesh.vector.to_vector(self._sym)
+                
+
     
         super().__init__()
 
         self.mesh.vars[name] = self
-    
+   
 
     @timing.routine_timer_decorator
     def save(self, filename : str,
@@ -756,28 +778,45 @@ class MeshVariable(_api_tools.Stateful):
         """
         The handle to the function view of this variable.
         """
-        return self._fn
+        return self._ijk
 
     @property
-    def f(self) -> sympy.Basic:
+    def ijk(self) -> sympy.Basic:
+        """
+        The handle to the scalar / vector view of this variable.
+        """
+        return self._ijk
+
+    @property
+    def sym(self) -> sympy.Basic:
         """
         The handle to the tensor view of this variable.
         """
-        return self._f
+        return self._sym
+
+
+
+    # @property
+    # def f(self) -> sympy.Basic:
+    #     """
+    #     The handle to the tensor view of this variable.
+    #     """
+    #    return self._f
 
     def _set_vec(self, available):
-        dm = self.mesh.dm
-        fields = self.field_id
+        cdef DM subdm = PETSc.DM()
+        cdef DM dm = self.mesh.dm
+        cdef PetscInt fields = self.field_id
         if self._lvec==None:
             # Create a subdm for this variable.
             # This allows us to generate a local vector.
-            _, subdm = dm.createSubDM(fields)
+            ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
             self._lvec  = subdm.createLocalVector()
             self._lvec.zeroEntries()       # not sure if required, but to be sure. 
             self._gvec  = subdm.createGlobalVector()
             self._gvec.setName(self.name)  # This is set for checkpointing. 
             self._gvec.zeroEntries()
-            subdm.destroy()
+            ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
         self._available = available
 
     def __del__(self):
@@ -926,3 +965,28 @@ class MeshVariable(_api_tools.Stateful):
         The array of variable vertex coordinates. 
         """
         return self.mesh._get_coords_for_var(self)
+
+    # vector calculus routines - the advantage of using these inbuilt routines is
+    # that they are tied to the appropriate mesh definition. 
+
+    def divergence(self):
+        try:
+            return self.mesh.vector.divergence(self.sym)    
+        except:
+            return None
+        
+    def gradient(self):
+        try:
+            return self.mesh.vector.gradient(self.sym)
+        except:
+            return None
+
+    def curl(self):
+        try:
+            return self.mesh.vector.curl(self.sym)
+        except:
+            return None
+
+    def jacobian(self):
+        ## validate if this is a vector ?
+        return self.mesh.vector.jacobian(self.sym)

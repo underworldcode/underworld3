@@ -60,7 +60,7 @@ if uw.mpi.rank==0:
         geom.generate_mesh(dim=2, verbose=False)
         geom.save_geometry("ns_pipe_flow.msh")
 
-pipemesh = uw.mesh.Mesh(meshfile="ns_pipe_flow.msh")
+pipemesh = uw.discretisation.Mesh(meshfile="ns_pipe_flow.msh")
 pipemesh.dm.view()
 
 # check the mesh if in a notebook / serial
@@ -112,12 +112,12 @@ Vb = (4.0 * U0 * y * (0.41-y)) / 0.41**2
 
 # -
 
-v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
-vs_soln   = uw.mesh.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
-v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
-p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('omega',  pipemesh, 1, degree=1 )
-r_inc     = uw.mesh.MeshVariable('R',      pipemesh, 1, degree=1 )
+v_soln    = uw.discretisation.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
+vs_soln   = uw.discretisation.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
+v_stokes  = uw.discretisation.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
+p_soln    = uw.discretisation.MeshVariable('P',      pipemesh, 1, degree=1 )
+vorticity = uw.discretisation.MeshVariable('omega',  pipemesh, 1, degree=1 )
+r_inc     = uw.discretisation.MeshVariable('R',      pipemesh, 1, degree=1 )
 
 
 # +

@@ -10,7 +10,7 @@ import sympy
 
 # %%
 
-mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
                                  maxCoords=(1.0,1.0), 
                                  cellSize=1.0/32.0)
 
@@ -18,9 +18,9 @@ mesh = uw.util_mesh.UnstructuredSimplexBox(minCoords=(0.0,0.0),
 # %%
 # mesh variables
 
-t_soln = uw.mesh.MeshVariable("T", mesh, 1, degree=3 )
-dTdX   = uw.mesh.MeshVariable("dTdX", mesh, 1, degree=2 )
-gradT  = uw.mesh.MeshVariable("gradT",mesh, mesh.dim, degree=2 )
+t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3 )
+dTdX   = uw.discretisation.MeshVariable("dTdX", mesh, 1, degree=2 )
+gradT  = uw.discretisation.MeshVariable("gradT",mesh, mesh.dim, degree=2 )
 
 
 # %%
@@ -28,18 +28,19 @@ gradT  = uw.mesh.MeshVariable("gradT",mesh, mesh.dim, degree=2 )
 
 
 gradient = uw.systems.Projection(mesh, dTdX)
-gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.x)
+gradient.uw_function = sympy.diff(t_soln.sym, mesh.N.x)
 gradient.smoothing = 1.0e-3
 
 # These are both SNES Scalar objects
 
 gradT_projector = uw.systems.Vector_Projection(mesh, gradT)
-gradT_projector.uw_function = sympy.vector.gradient(t_soln.fn)
+gradT_projector.uw_function = mesh.vector.gradient(t_soln.sym)
 
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
 
 # %%
+gradT_projector.uw_function
 
 # %%
 # Set some things
@@ -62,8 +63,11 @@ gradT_projector.solve()
 gradient.petsc_fe_u.view()
 
 # %%
-gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.x)
+gradient.uw_function = sympy.diff(t_soln.sym, mesh.N.x)
 gradient.solve()
+
+# %%
+gradient.uw_function
 
 # %%
 # non-linear smoothing term (probably not needed especially at the boundary)
@@ -72,26 +76,19 @@ gradient.solve()
 # gradient.solve(_force_setup=True)
 
 # %%
-
-# %%
 gradT_projector.solve()
-
-# %%
-0/0
-
-# %%
-gradient.solve(_force_setup=True)
-
-# %%
 
 # %%
 # Check. Construct simple linear which is solution for 
 # above config.  Exclude boundaries from mesh data. 
 import numpy as np
 with mesh.access():
-    mesh_numerical_soln = uw.function.evaluate(gradient.u.fn, mesh.data)
-    if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
-        raise RuntimeError("Unexpected values encountered.")
+    mesh_numerical_soln = uw.function.evaluate(gradient.u.sym[0], mesh.data)
+    # if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
+    #     raise RuntimeError("Unexpected values encountered.")
+
+# %%
+mesh_numerical_soln
 
 # %%
 # Validate
@@ -129,16 +126,16 @@ if MPI.COMM_WORLD.size==1:
     # pl.screenshot(filename="test.png")  
 
 # %%
-## Now something odd ... a further call to the gradient solver blows up 
-
-# %%
 with mesh.access(t_soln):
-    t_soln.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.y * np.pi), poisson.u.coords)
+    t_soln.data[:,0] = uw.function.evaluate(sympy.sin(mesh.N.x * np.pi), poisson.u.coords)
     
-gradient.solve(zero_init_guess=True)
+gradient.solve()
 
 # %%
-uw.function.evaluate(sympy.sin(mesh.N.y * np.pi), poisson.u.coords)
+uw.function.evaluate(gradient.u.sym[0], mesh.data)
+
+# %%
+uw.function.evaluate(sympy.sin(mesh.N.x * np.pi), poisson.u.coords)
 
 # %%
 # Validate
@@ -157,10 +154,12 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+
 
     with mesh.access():
-        pvmesh.point_data["dTdy"] = uw.function.evaluate(gradient.u.fn-np.pi*sympy.cos(mesh.N.y*np.pi), mesh.data) 
+        pvmesh.point_data["dTdy"] = uw.function.evaluate(gradient.u.fn-np.pi*sympy.cos(mesh.N.x*np.pi), mesh.data) 
     
     pl = pv.Plotter()
 

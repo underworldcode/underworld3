@@ -75,7 +75,7 @@ def test_mesh_verts(res, dim):
     and confirm displaced coords are still closest
     to mesh verts.
     """
-    mesh = uw.util_mesh.StructuredQuadBox(elementRes=(res,)*dim)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(res,)*dim)
     index = uw.algorithms.KDTree(mesh.data)
     index.build_index()
 
@@ -104,7 +104,7 @@ def test_mesh_centroid(res,dim,ppcell):
     that closest centroid coincides with particle 
     owning cell. 
     """
-    mesh = uw.util_mesh.StructuredQuadBox(elementRes=(res,)*dim)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(res,)*dim)
     centroids = np.zeros((res**dim,dim))
     for index in range(res**dim):
         centroids[index] = mesh.dm.computeCellGeometryFVM(index)[1]

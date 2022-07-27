@@ -99,7 +99,7 @@ class UnderworldFunction(sympy.Function):
     """
     def __new__(cls, 
                 name     : str,
-                meshvar  : underworld3.mesh.MeshVariable, 
+                meshvar  : underworld3.discretisation.MeshVariable, 
                 vtype    : underworld3.VarType,
                 component: int = 0, 
                 *args, **options):

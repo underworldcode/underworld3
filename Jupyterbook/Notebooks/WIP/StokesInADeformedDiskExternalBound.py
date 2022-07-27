@@ -71,7 +71,7 @@ import os
 os.environ["SYMPY_USE_CACHE"]="no"
 
 # +
-# meshball = uw.mesh.SphericalShell(dim=2, degree=2, radius_inner=0.0, 
+# meshball = uw.discretisation.SphericalShell(dim=2, degree=2, radius_inner=0.0, 
 #                                   radius_outer=1.0, cell_size=0.1, cell_size_upper=0.075)
 
 # Build this one by hand 
@@ -135,15 +135,15 @@ meshball.meshio.remove_lower_dimensional_cells()
 meshball.meshio
 
 # +
-v_soln  = uw.mesh.MeshVariable('U', meshball, 2, degree=2 )
-p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln  = uw.mesh.MeshVariable("T", meshball, 1, degree=3 )
-vr_soln = uw.mesh.MeshVariable('Vr',meshball, 1, degree=1 )
+v_soln  = uw.discretisation.MeshVariable('U', meshball, 2, degree=2 )
+p_soln  = uw.discretisation.MeshVariable('P', meshball, 1, degree=1 )
+t_soln  = uw.discretisation.MeshVariable("T", meshball, 1, degree=3 )
+vr_soln = uw.discretisation.MeshVariable('Vr',meshball, 1, degree=1 )
 
-mask    = uw.mesh.MeshVariable('M', meshball, 1, degree=1 )
-surface = uw.mesh.MeshVariable('S_f',meshball, 1, degree=1 )
-r_mesh  = uw.mesh.MeshVariable('R', meshball,  1, degree=1 )
-r_mesh0 = uw.mesh.MeshVariable('R0',meshball,  1, degree=1 ) 
+mask    = uw.discretisation.MeshVariable('M', meshball, 1, degree=1 )
+surface = uw.discretisation.MeshVariable('S_f',meshball, 1, degree=1 )
+r_mesh  = uw.discretisation.MeshVariable('R', meshball,  1, degree=1 )
+r_mesh0 = uw.discretisation.MeshVariable('R0',meshball,  1, degree=1 ) 
 
 # +
 # Introduce a swarm so that we can introduce strain markers

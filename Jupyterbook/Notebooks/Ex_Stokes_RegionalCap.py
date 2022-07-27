@@ -39,7 +39,7 @@ import pygmsh
 import meshio
 
 
-regional_cap_meshio = uw.mesh.StructuredCubeSphericalCap.build_pygmsh(
+regional_cap_meshio = uw.discretisation.StructuredCubeSphericalCap.build_pygmsh(
                                 elementRes=(64,64,64), 
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
@@ -52,7 +52,7 @@ rcm_pyvista = pv.read("rcm.vtk")
 rcm_pyvista.plot(show_edges=True)
 
 # +
-regional_cap_mesh = uw.mesh.StructuredCubeSphericalCap(
+regional_cap_mesh = uw.discretisation.StructuredCubeSphericalCap(
                                 elementRes=(6,6,6), 
                                 angles=(np.pi/2,np.pi/2),
                                 radius_inner=0.5, 
@@ -90,7 +90,7 @@ density
 # -
 
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",regional_cap_mesh,1)
+densvar = uw.discretisation.MeshVariable("density",regional_cap_mesh,1)
 with regional_cap_mesh.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)
 

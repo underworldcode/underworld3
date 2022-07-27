@@ -34,9 +34,9 @@ meshball = uw.meshes.SphericalShell(dim=2, radius_inner=0.5,
 # -
 
 
-v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
-t_soln = uw.mesh.MeshVariable('T',    meshball, 1, degree=3 )
-t_0    = uw.mesh.MeshVariable('T0',   meshball, 1, degree=3 )
+v_soln = uw.discretisation.MeshVariable('U',    meshball, meshball.dim, degree=2 )
+t_soln = uw.discretisation.MeshVariable('T',    meshball, 1, degree=3 )
+t_0    = uw.discretisation.MeshVariable('T0',   meshball, 1, degree=3 )
 
 
 # +

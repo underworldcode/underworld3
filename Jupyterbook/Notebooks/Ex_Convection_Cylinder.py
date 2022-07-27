@@ -61,10 +61,10 @@ if uw.mpi.size==1:
     pl.show()
 # -
 
-v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
-t_soln = uw.mesh.MeshVariable("T",    meshball, 1, degree=3)
-t_0    = uw.mesh.MeshVariable("T0",   meshball, 1, degree=3)
+v_soln = uw.discretisation.MeshVariable('U',    meshball, meshball.dim, degree=2 )
+p_soln = uw.discretisation.MeshVariable('P',    meshball, 1, degree=1 )
+t_soln = uw.discretisation.MeshVariable("T",    meshball, 1, degree=3)
+t_0    = uw.discretisation.MeshVariable("T0",   meshball, 1, degree=3)
 
 
 swarm  = uw.swarm.Swarm(mesh=meshball)

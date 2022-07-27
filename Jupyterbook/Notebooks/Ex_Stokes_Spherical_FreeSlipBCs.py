@@ -86,14 +86,14 @@ import sympy
 # -
 
 
-meshball = uw.util_mesh.SphericalShell( radiusInner=r_i, 
+meshball = uw.meshing.SphericalShell( radiusInner=r_i, 
                                         radiusOuter=r_o, 
                                         cellSize=res)
 
-v_soln   = uw.mesh.MeshVariable('U', meshball, meshball.dim, degree=2 )
-p_soln   = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln   = uw.mesh.MeshVariable("T", meshball, 1, degree=2 )
-r        = uw.mesh.MeshVariable('R', meshball, 1, degree=1 )
+v_soln   = uw.discretisation.MeshVariable('U', meshball, meshball.dim, degree=2 )
+p_soln   = uw.discretisation.MeshVariable('P', meshball, 1, degree=1 )
+t_soln   = uw.discretisation.MeshVariable("T", meshball, 1, degree=2 )
+r        = uw.discretisation.MeshVariable('R', meshball, 1, degree=1 )
 
 
 # +

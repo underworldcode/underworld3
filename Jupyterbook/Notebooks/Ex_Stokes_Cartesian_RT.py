@@ -77,7 +77,7 @@ def do_uw3():
     sys.pushErrorHandler("traceback")
 
 
-    mesh = uw.mesh.Box(elementRes=(    n_els,)*dim, 
+    mesh = uw.discretisation.Box(elementRes=(    n_els,)*dim, 
                         minCoords =(       0.,)*dim, 
                         maxCoords =(boxLength,1.),
                         simplex=False )
@@ -85,7 +85,7 @@ def do_uw3():
     stokes = Stokes(mesh, u_degree=u_degree )
     
     # Create a variable to store material variable
-    # matMeshVar = uw.mesh.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
+    # matMeshVar = uw.discretisation.MeshVariable("matmeshvar", mesh, 1, uw.VarType.SCALAR, degree=u_degree+1)
 
     # Create swarm
     swarm  = uw.swarm.Swarm(mesh)
@@ -191,7 +191,7 @@ def do_uw2():
     import math
     import numpy as np
 
-    mesh = uw.mesh.FeMesh_Cartesian( elementType = ("Q1/dQ0"), 
+    mesh = uw.discretisation.FeMesh_Cartesian( elementType = ("Q1/dQ0"), 
                                     elementRes  = (n_els, n_els), 
                                     minCoord    = (0., 0.), 
                                     maxCoord    = (boxLength, boxHeight))

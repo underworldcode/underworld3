@@ -50,7 +50,7 @@ if uw.mpi.rank==0:
 # -
 
 
-mesh1 = uw.mesh.Mesh("tmp_shear_inclusion.msh", simplex=True)
+mesh1 = uw.discretisation.Mesh("tmp_shear_inclusion.msh", simplex=True)
 mesh1.dm.view()
 
 # +
@@ -113,13 +113,13 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 # -
 
-v_soln           = uw.mesh.MeshVariable('U',      mesh1, mesh1.dim,  degree=2 )
-p_soln           = uw.mesh.MeshVariable('P',      mesh1, 1, degree=1 )
-vorticity        = uw.mesh.MeshVariable('omega',  mesh1, 1, degree=1 )
-strain_rate_inv2 = uw.mesh.MeshVariable('eps',    mesh1, 1, degree=1 )
-dev_stress_inv2  = uw.mesh.MeshVariable('tau',    mesh1, 1, degree=1 )
-node_viscosity   = uw.mesh.MeshVariable('eta',    mesh1, 1, degree=1 )
-r_inc            = uw.mesh.MeshVariable('R',      mesh1, 1, degree=1 )
+v_soln           = uw.discretisation.MeshVariable('U',      mesh1, mesh1.dim,  degree=2 )
+p_soln           = uw.discretisation.MeshVariable('P',      mesh1, 1, degree=1 )
+vorticity        = uw.discretisation.MeshVariable('omega',  mesh1, 1, degree=1 )
+strain_rate_inv2 = uw.discretisation.MeshVariable('eps',    mesh1, 1, degree=1 )
+dev_stress_inv2  = uw.discretisation.MeshVariable('tau',    mesh1, 1, degree=1 )
+node_viscosity   = uw.discretisation.MeshVariable('eta',    mesh1, 1, degree=1 )
+r_inc            = uw.discretisation.MeshVariable('R',      mesh1, 1, degree=1 )
 
 
 # +

@@ -133,10 +133,10 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 # -
 
-v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
-v_stokes  = uw.mesh.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
-p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('omega', pipemesh, 1, degree=1 )
+v_soln    = uw.discretisation.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
+v_stokes  = uw.discretisation.MeshVariable('U_0',    pipemesh, pipemesh.dim, degree=2 )
+p_soln    = uw.discretisation.MeshVariable('P',      pipemesh, 1, degree=1 )
+vorticity = uw.discretisation.MeshVariable('omega', pipemesh, 1, degree=1 )
 
 
 swarm = uw.swarm.Swarm(mesh=pipemesh)

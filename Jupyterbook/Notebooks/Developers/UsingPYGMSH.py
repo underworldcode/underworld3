@@ -155,14 +155,14 @@ dm.view()
 # This should be the same thing but it is necessary to specify the groups of labels (by name)
 # if you want to combine boundaries
 
-uwmesh = uw.mesh.MeshFromGmshFile(dim=2, filename="ignore_test.msh", label_groups=label_groups, simplex=True)
+uwmesh = uw.discretisation.MeshFromGmshFile(dim=2, filename="ignore_test.msh", label_groups=label_groups, simplex=True)
 
 
 # +
 # This approach is used by the built in uw meshes which keep track of the labels etc,
 # and just keep track of the label names (all you need to use these for bcs)
 
-# uwmesh2 = uw.mesh.SphericalShell(dim=2, radius_inner=0.4, radius_outer=1.0, cell_size=0.05 )
+# uwmesh2 = uw.discretisation.SphericalShell(dim=2, radius_inner=0.4, radius_outer=1.0, cell_size=0.05 )
 # print("===========")
 # print(uwmesh2.labels)
 

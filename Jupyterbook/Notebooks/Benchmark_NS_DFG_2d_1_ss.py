@@ -134,12 +134,12 @@ Vb = (4.0 * U0 * y * (0.41-y)) / 0.41**2
 
 # -
 
-v_soln    = uw.mesh.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
-vs_soln   = uw.mesh.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
-v_soln_1  = uw.mesh.MeshVariable('U_1',    pipemesh, pipemesh.dim, degree=2 )
-p_soln    = uw.mesh.MeshVariable('P',      pipemesh, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('omega',  pipemesh, 1, degree=1 )
-r_inc     = uw.mesh.MeshVariable('R',      pipemesh, 1, degree=1 )
+v_soln    = uw.discretisation.MeshVariable('U',      pipemesh, pipemesh.dim, degree=2 )
+vs_soln   = uw.discretisation.MeshVariable('Us',     pipemesh, pipemesh.dim, degree=2 )
+v_soln_1  = uw.discretisation.MeshVariable('U_1',    pipemesh, pipemesh.dim, degree=2 )
+p_soln    = uw.discretisation.MeshVariable('P',      pipemesh, 1, degree=1 )
+vorticity = uw.discretisation.MeshVariable('omega',  pipemesh, 1, degree=1 )
+r_inc     = uw.discretisation.MeshVariable('R',      pipemesh, 1, degree=1 )
 
 
 # +

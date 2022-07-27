@@ -23,7 +23,7 @@ options["fieldsplit_pressure_ksp_rtol"] = 1.0e-3
 options["fieldsplit_pressure_pc_type"] = "lu"
 
 # %%
-from underworld3.util_mesh import SphericalShell
+from underworld3.meshing import SphericalShell
 
 # %%
 # some things
@@ -63,7 +63,7 @@ density
 
 # %%
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",mesh,1)
+densvar = uw.discretisation.MeshVariable("density",mesh,1)
 with mesh.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)
 
@@ -111,7 +111,7 @@ density
 
 # %%
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",mesh,1)
+densvar = uw.discretisation.MeshVariable("density",mesh,1)
 with mesh.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)
 

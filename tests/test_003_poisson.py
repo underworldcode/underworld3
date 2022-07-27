@@ -1,12 +1,12 @@
 import pytest
 import underworld3 as uw
 
-structured_quad_box = uw.util_mesh.StructuredQuadBox(elementRes=(5,)*2)
-unstructured_quad_box_irregular = uw.util_mesh.UnstructuredSimplexBox(cellSize=0.1, regular=False)
-unstructured_quad_box_regular = uw.util_mesh.UnstructuredSimplexBox(cellSize=0.1, regular=True) 
-spherical_shell = uw.util_mesh.SphericalShell()
-annulus = uw.util_mesh.Annulus()
-cubic_sphere = uw.util_mesh.CubicSphere()
+structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,)*2)
+unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=False)
+unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=True) 
+spherical_shell = uw.meshing.SphericalShell()
+annulus = uw.meshing.Annulus()
+cubic_sphere = uw.meshing.CubicSphere()
 
 
 @pytest.mark.parametrize("mesh", [structured_quad_box, unstructured_quad_box_irregular, unstructured_quad_box_regular])

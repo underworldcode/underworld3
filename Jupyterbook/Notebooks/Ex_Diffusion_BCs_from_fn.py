@@ -9,8 +9,6 @@ import numpy as np
 options = PETSc.Options()
 
 options["dm_plex_check_all"] = None
-
-# options["poisson_pc_type"]  = "svd"
 options["poisson_ksp_rtol"] = 1.0e-3
 # options["poisson_ksp_monitor_short"] = None
 # options["poisson_nes_type"]  = "fas"
@@ -58,9 +56,12 @@ with pygmsh.occ.Geometry() as geom:
 # -
 
 import meshio
-mesh = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True)                       
+mesh = uw.meshing.Annulus(radiusOuter=1.0, 
+                            radiusInner=0.0, cellSize=0.1)                       
 
-t_soln = uw.mesh.MeshVariable("T", mesh, 1, degree=3)
+mesh.dm.view()
+
+t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
 
 # +
 # check the mesh if in a notebook / serial
@@ -77,7 +78,9 @@ if PETSc.Comm.size == 1:
     pv.global_theme.jupyter_backend = 'pythreejs'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    meshbox.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")    
+
  
     clipped_stack = pvmesh.clip(origin=(0.0,0.0,0.0), normal=(-1, -1, 0), invert=False)
 
@@ -93,11 +96,12 @@ if PETSc.Comm.size == 1:
 # Create Poisson object
 
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln, 
-                             solver_name="poisson", degree=3)
+                             solver_name="poisson", 
+                             degree=3, verbose=True)
 poisson.k = k
 poisson.f = 0.0
 
-bcs_var = uw.mesh.MeshVariable("bcs",mesh, 1)
+bcs_var = uw.discretisation.MeshVariable("bcs", mesh, 1)
 
 # +
 import sympy
@@ -105,13 +109,15 @@ abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.cos(2.0*mesh.N.y)
 
 with mesh.access(bcs_var):
-    bcs_var.data[:,0] = uw.function.evaluate(bc, mesh.data)
+    bcs_var.data[:,0] = uw.function.evaluate(bc, bcs_var.coords)
 
-poisson.add_dirichlet_bc( bcs_var.fn, "Upper", components=0 )
-poisson.add_dirichlet_bc( 1.0, "Centre" )
+poisson.add_dirichlet_bc( bcs_var.sym[0], "Upper", components=0 )
+poisson.add_dirichlet_bc( -1.0, "Centre", components=0 )
 # -
 
 poisson.petsc_options.getAll()
+
+poisson._setup_terms()
 
 poisson.solve()
 
@@ -127,10 +133,11 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pvmesh = mesh.mesh2pyvista()
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")   
     
     pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.data)
 
@@ -142,11 +149,11 @@ if uw.mpi.size==1:
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, 
                   use_transparency=False)
     pl.show(cpos="xy")
-# +
-# savefile = "output/poisson_cyindrical_2d.h5" 
-# mesh.save(savefile)
-# poisson.u.save(savefile)
-# mesh.generate_xdmf(savefile)
+# -
+savefile = "output/poisson_cyindrical_2d.h5" 
+mesh.save(savefile)
+poisson.u.save(savefile)
+mesh.generate_xdmf(savefile)
 
 
 # +

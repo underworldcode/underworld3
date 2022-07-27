@@ -74,7 +74,7 @@ dm.getCoordinates().array.reshape(-1,3).shape
 # surfmesh = uw.meshes.MeshFromCellList(dim=2, cdim=3, cells=cells, coords=coords, simplex=True, degree=1)
 surfmesh = uw.meshes.MeshFromMeshIO(dim=2, meshio=meshio_mesh, simplex=True, degree=1)
 
-hvar = uw.mesh.MeshVariable("topo", surfmesh, num_components=1, degree=2)
+hvar = uw.discretisation.MeshVariable("topo", surfmesh, num_components=1, degree=2)
 
 swarm1 = uw.swarm.Swarm(surfmesh)
 swarm1.populate(fill_param=1, layout=uw.swarm.SwarmPICLayout.GAUSS)
@@ -123,10 +123,10 @@ if uw.mpi.size==1:
 
 # -
 
-v_soln  = uw.mesh.MeshVariable('U', meshball, 3, degree=2 )
-p_soln  = uw.mesh.MeshVariable('P', meshball, 1, degree=1 )
-t_soln  = uw.mesh.MeshVariable("T", meshball, 1, degree=3 )
-vr_soln = uw.mesh.MeshVariable('Vr',meshball, 1, degree=2 )
+v_soln  = uw.discretisation.MeshVariable('U', meshball, 3, degree=2 )
+p_soln  = uw.discretisation.MeshVariable('P', meshball, 1, degree=1 )
+t_soln  = uw.discretisation.MeshVariable("T", meshball, 1, degree=3 )
+vr_soln = uw.discretisation.MeshVariable('Vr',meshball, 1, degree=2 )
 
 
 # this is how we deform the mesh

@@ -8,7 +8,7 @@ import numpy as np
 
 
 # %%
-from underworld3.util_mesh import UnstructuredSimplexBox
+from underworld3.meshing import UnstructuredSimplexBox
 
 # %%
 mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellSize=1.0/16) 
@@ -107,7 +107,7 @@ with mesh.access():
 
 
 # %%
-from underworld3.util_mesh import UnstructuredSimplexBox
+from underworld3.meshing import UnstructuredSimplexBox
 
 # %%
 # Nonlinear example

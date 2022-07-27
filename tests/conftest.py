@@ -7,7 +7,7 @@ def load_2d_simplices_mesh():
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
 
-    mesh = uw.mesh.Box(elementRes=(resX, resY), 
+    mesh = uw.discretisation.Box(elementRes=(resX, resY), 
                 minCoords=(minX, minY),
                 maxCoords=(maxX, maxY),
                 simplex=True)
@@ -19,7 +19,7 @@ def load_2d_quads_mesh():
     minX, maxX = -5.0, 5.0
     minY, maxY = -5.0, 5.0
 
-    mesh = uw.mesh.Box(elementRes=(resX, resY), 
+    mesh = uw.discretisation.Box(elementRes=(resX, resY), 
                 minCoords=(minX, minY),
                 maxCoords=(maxX, maxY),
                 simplex=False)
@@ -32,7 +32,7 @@ def load_3d_quads_mesh():
     minY, maxY = -5.0, 5.0
     minZ, maxZ = -5.0, 5.0
 
-    mesh = uw.mesh.Box(elementRes=(resX, resY, resZ), 
+    mesh = uw.discretisation.Box(elementRes=(resX, resY, resZ), 
                 minCoords=(minX, minY, minZ),
                 maxCoords=(maxX, maxY, maxZ),
                 simplex=False)
@@ -45,7 +45,7 @@ def load_3d_simplices_mesh():
     minY, maxY = -5.0, 5.0
     minZ, maxZ = -5.0, 5.0
 
-    mesh = uw.mesh.Box(elementRes=(resX, resY, resZ), 
+    mesh = uw.discretisation.Box(elementRes=(resX, resY, resZ), 
                 minCoords=(minX, minY, minZ),
                 maxCoords=(maxX, maxY, maxZ),
                 simplex=True)

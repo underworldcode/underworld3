@@ -69,8 +69,8 @@ conf = configure()
 extra_compile_args = ['-O3', '-g']
 #extra_compile_args = ['-O0', '-g']
 extensions = [
-    Extension('underworld3.mesh',
-              sources = ['underworld3/mesh.pyx',],
+    Extension('underworld3.discretisation',
+              sources = ['underworld3/discretisation.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
     Extension('underworld3.maths',
@@ -90,10 +90,10 @@ extensions = [
               sources = ['underworld3/systems/generic_solvers.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    Extension('underworld3.systems.solvers',
-              sources = ['underworld3/systems/solvers.pyx',],
-              extra_compile_args=extra_compile_args,
-              **conf),
+    # Extension('underworld3.systems.solvers',
+    #           sources = ['underworld3/systems/solvers.pyx',],
+    #           extra_compile_args=extra_compile_args,
+    #           **conf),
     Extension('underworld3.function._function',
               sources = ['underworld3/function/_function.pyx', 'underworld3/function/petsc_tools.c',],
               extra_compile_args=extra_compile_args,

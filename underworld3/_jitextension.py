@@ -56,11 +56,11 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
 
 @timing.routine_timer_decorator
 def _createext(name:               str, 
-               mesh:               underworld3.mesh.Mesh,
+               mesh:               underworld3.discretisation.Mesh,
                fns_residual:       List[sympy.Basic], 
                fns_jacobian:       List[sympy.Basic],
                fns_bcs:            List[sympy.Basic],
-               primary_field_list: List[underworld3.mesh.MeshVariable]):
+               primary_field_list: List[underworld3.discretisation.MeshVariable]):
     """
     This creates the required extension which houses the JIT
     fn pointer for PETSc. 
@@ -148,7 +148,7 @@ def _createext(name:               str,
                     u_x_i+=1
             elif var.vtype==VarType.VECTOR:
                 # Pull out individual sub components
-                for comp in var.f:
+                for comp in var.sym:
                     # monkey patch
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode    = lambdafunc
@@ -183,6 +183,7 @@ def _createext(name:               str,
     # Note that the Heaviside implementation will be printed into all JIT 
     # files now. This is fine for now, but if more complex functions are 
     # required a cleaner solution might be desirable. 
+
     custom_functions = {
       "Heaviside": [ (lambda *args : len(args)==1, "Heaviside_1"),    # for single arg Heaviside  (defaults to 0.5 at jump).
                      (lambda *args : len(args)==2, "Heaviside_2")]    # for two arg Heavisides    (second arg is jump value).
@@ -231,6 +232,9 @@ def _createext(name:               str,
                                f"This is usually because code generation for a Sympy function (or its derivative) is not supported.\n"
                                f"Please contact the developers.")
         eqns.append(eqn)
+
+
+
     MODNAME = "fn_ptr_ext_" + str(name)
 
     codeguys = []

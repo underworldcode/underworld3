@@ -41,11 +41,11 @@ import meshio
 
 
 
-cubed_sphere_mesh_shell = uw.mesh.StructuredCubeSphereShellMesh(elementRes=(11,5), radius_inner=0.5,
+cubed_sphere_mesh_shell = uw.discretisation.StructuredCubeSphereShellMesh(elementRes=(11,5), radius_inner=0.5,
                                         radius_outer=1.0, simplex=False)
 
 
-cubed_sphere_mesh_ball = uw.mesh.StructuredCubeSphereBallMesh(elementRes=9,
+cubed_sphere_mesh_ball = uw.discretisation.StructuredCubeSphereBallMesh(elementRes=9,
                                         radius_outer=1.0, simplex=True)
 
 
@@ -96,7 +96,7 @@ density
 # -
 
 # Write density into a variable for saving
-densvar = uw.mesh.MeshVariable("density",cubed_sphere_mesh,1)
+densvar = uw.discretisation.MeshVariable("density",cubed_sphere_mesh,1)
 
 with cubed_sphere_mesh.access(densvar):
     densvar.data[:,0] = uw.function.evaluate(density,densvar.coords)

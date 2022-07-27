@@ -33,7 +33,7 @@ stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
 
 # %%
 # add & init the mat var
-matvar = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="mat", vtype=uw.VarType.SCALAR, degree=v_degree )
+matvar = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="mat", vtype=uw.VarType.SCALAR, degree=v_degree )
 
 inside = mesh.data[:,0]**2 + mesh.data[:,1]**2 < 0.5**2
 with mesh.access(matvar):

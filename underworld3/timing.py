@@ -30,7 +30,7 @@ Example
 >>> os.environ["UW_TIMING_ENABLE"] = "1"
 >>> import underworld as uw
 >>> uw.timing.start()
->>> someMesh = uw.mesh.FeMesh_Cartesian()
+>>> someMesh = uw.discretisation.FeMesh_Cartesian()
 >>> with someMesh.deform_mesh():
 ...     someMesh.data[0] = [0.1,0.1]
 >>> uw.timing.stop()

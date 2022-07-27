@@ -27,9 +27,9 @@ class AdvDiffusion:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh       : uw.mesh.Mesh, 
-                 u_Field    : uw.mesh.MeshVariable = None, 
-                 V_Field    : uw.mesh.MeshVariable = None, 
+                 mesh       : uw.discretisation.Mesh, 
+                 u_Field    : uw.discretisation.MeshVariable = None, 
+                 V_Field    : uw.discretisation.MeshVariable = None, 
                  degree     : int  = 2,
                  theta      : float = 0.5,
                  solver_name: str = "adv_diff_",
@@ -62,7 +62,7 @@ class AdvDiffusion:
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
-            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_adv_diff", vtype=uw.VarType.SCALAR, degree=degree )
+            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="u_adv_diff", vtype=uw.VarType.SCALAR, degree=degree )
         else:
             self._u = u_Field
 

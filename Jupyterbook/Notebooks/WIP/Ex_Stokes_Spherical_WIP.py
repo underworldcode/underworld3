@@ -25,7 +25,7 @@ options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it.
 
 # %%
 n_els = 64
-mesh = uw.mesh.Spherical(refinements=4)
+mesh = uw.discretisation.Spherical(refinements=4)
 # %%
 v_degree = 1
 stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )

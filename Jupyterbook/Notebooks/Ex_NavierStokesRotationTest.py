@@ -63,9 +63,9 @@ v_star = uw.swarm.SwarmVariable("Vs", swarm, meshball.dim, proxy_degree=3)
 swarm.populate(fill_param=3)
 
 
-v_soln = uw.mesh.MeshVariable('U',    meshball, meshball.dim, degree=2 )
-p_soln = uw.mesh.MeshVariable('P',    meshball, 1, degree=1 )
-vorticity = uw.mesh.MeshVariable('\omega', meshball, 1, degree=1 )
+v_soln = uw.discretisation.MeshVariable('U',    meshball, meshball.dim, degree=2 )
+p_soln = uw.discretisation.MeshVariable('P',    meshball, 1, degree=1 )
+vorticity = uw.discretisation.MeshVariable('\omega', meshball, 1, degree=1 )
 
 
 # +

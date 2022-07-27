@@ -1,1 +1,0 @@
-/Users/lmoresi/Dropbox/+Research/Publications/OtherPapers/Publications/TkalcicEtAl/StokesIC_FreeSlip.py
