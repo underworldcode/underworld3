@@ -46,7 +46,8 @@ p31 = uw.discretisation.MeshVariable('P31', mesh3, 1, degree=1 )
 
 # # Testing
 
-# +
+# + {"jupyter": {"source_hidden": true}}
+# See this: https://towardsdatascience.com/jupyter-notebooks-as-light-percent-or-sphinx-scripts-efca8bc3aa44
 ## Tests required to run this notebook 
 
 # these are the parameters to pass pytest args
@@ -199,12 +200,9 @@ try:
 except AttributeError:
     print("")
     print("AttributeError: 'MeshVariable' object has no attribute 'ijk'")
-# +
+# -
 display(mesh1.vector.to_matrix(v11.ijk)) 
 display(mesh3.vector.to_matrix(v31.ijk)) 
-
-
-# -
 
 
 # There are some helper functions that convert between `sympy.matrix` form and `sympy.vector` form. The only thing to watch out for is that all 2D vectors in sympy.vector are 3D vectors with a zero out-of-plane component so not every valid operation in sympy.vector gives a correct round-trip conversion.
@@ -280,6 +278,8 @@ v31.jacobian()
 
 v31.sym.diff(v31.mesh.X)
 
+v31.sym.diff(v31.mesh.X).shape
+
 # ## Symbolic forms
 #
 # As the operations are all in the form of `sympy` manipulations and `sympy` vector calculus routines, the fully symbolic equivalents work just fine, and so do mixtures of symbolic functions and mesh variables.  
@@ -302,3 +302,10 @@ display(curlgradFplus)
 G = sympy.Matrix([sympy.cos(2*x*y*z), sympy.exp((y**2+z**2)/sympy.sin(x)), sympy.erfc(z)]).T
 display(mesh3.vector.divergence(G))
 display(mesh3.vector.curl(G))
+# -
+
+G
+
+G[1]
+
+
