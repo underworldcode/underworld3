@@ -2,10 +2,6 @@
 # To add a new cell, type '# %%'
 # To add a new markdown cell, type '# %% [markdown]'
 # %%
-# from petsc4py import PETSc
-# import underworld3 as uw
-# import numpy as np
-
 # options = PETSc.Options()
 # # options["help"] = None
 
@@ -17,7 +13,6 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
-
 import numpy as np
 
 # %%
@@ -30,7 +25,16 @@ mesh.dm.view()
 v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=1 )
 p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=0 )
 
+# %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity = 1)
+
+# %%
+
+# %%
+
+# %%
 
 # %%
 # Set some things
@@ -40,7 +44,6 @@ N = mesh.N
 eta_0 = 1.
 x_c   = 0.5
 f_0   = 1.
-stokes.viscosity = 1.
 stokes.penalty = 0.0
 stokes.bodyforce = Piecewise((f_0, N.x>x_c,), (  0.,    True) )*N.j
 stokes._Ppre_fn = 1.0 / (stokes.viscosity + stokes.penalty)
@@ -65,8 +68,6 @@ stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 stokes.petsc_options["snes_max_it"] = 10
 
 # %%
-BF = (mesh.vector.to_matrix(stokes.bodyforce))
-type(BF)
 
 # %%
 # Solve time

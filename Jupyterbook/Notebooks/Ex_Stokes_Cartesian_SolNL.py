@@ -28,7 +28,6 @@ options["snes_rtol"] = 1.0e-7
 
 # %%
 n_els = 32
-v_degree = 1
 mesh = uw.meshing.StructuredQuadBox(elementRes=(n_els,n_els), 
                                       minCoords=(0.0,0.0),
                                       maxCoords=(1.0,1.0))
@@ -42,15 +41,28 @@ eta0 = 1.
 n = 1
 r0 = 1.5
 params = (eta0, n, r0) 
-sol_bf   = AnalyticSolNL_bodyforce( *params, *r )
-sol_vel  = AnalyticSolNL_velocity(  *params, *r )
+sol_bf_ijk   = AnalyticSolNL_bodyforce( *params, *r )
+sol_vel_ijk  = AnalyticSolNL_velocity(  *params, *r )
+
+sol_bf = mesh.vector.to_matrix(sol_bf_ijk)
+sol_vel = mesh.vector.to_matrix(sol_vel_ijk)
 sol_visc = AnalyticSolNL_viscosity( *params, *r )
 
-# %%
-stokes = Stokes(mesh, u_degree=v_degree, p_degree=v_degree-1 )
-stokes.add_dirichlet_bc( sol_vel, ["left", "right"],  [0,1] )  # left/right: function, markers, components
-stokes.add_dirichlet_bc( sol_vel, ["top", "bottom"], [ 1, ] )  # top/bottom: function, markers, components
+# debug - are problems just because there is no analytic solution module on mac
+sol_vel = sympy.Matrix([0,0])
+sol_bf = sympy.Matrix([0,0])
+sol_visc = 1
 
+# %%
+v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=1 )
+p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=0 )
+
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity = 1)
+
+stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [0,1] )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( sol_vel, ["Left", "Right"],  [0,1] )  # left/right: components, function, markers
 
 stokes.petsc_options["ksp_rtol"] =  1.0e-6
 stokes.petsc_options["snes_converged_reason"] = None
@@ -64,10 +76,18 @@ stokes.petsc_options["snes_rtol"] = 1.0e-5
 
 
 # %%
-stokes.bodyforce = sol_bf
 # do linear first to get reasonable starting place
-stokes.viscosity = 1.
+stokes.bodyforce = sol_bf
 stokes.solve()
+# %%
+mesh.vector.to_matrix(sol_bf)
+
+# %%
+mesh.vector.to_matrix(sol_bf).shape
+
+# %%
+sol_bf == sympy.sympify(sol_bf)
+
 # %%
 stokes._u_f0
 
@@ -99,5 +119,7 @@ if not np.allclose(rel_rms_diff, 0.00109, rtol=1.e-2):
 
 # %%
 stokes._uu_g3[0,1]
+
+# %%
 
 # %%
