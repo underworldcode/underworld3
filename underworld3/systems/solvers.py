@@ -72,7 +72,7 @@ class SNES_Poisson(SNES_Scalar):
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self._f1 = self.F1 + self.k * (self._L)
+        self._f1 = self.F1 + self.constitutive_model.flux(self._L) # self.k * (self._L)
 
         return 
 
@@ -126,7 +126,10 @@ class SNES_Darcy(SNES_Scalar):
         # default values for properties
         self._f = 0.0
         self._k = 1.0
-        self._s = -self.mesh.N.j  # template !
+
+        self._s = sympy.Matrix.zeros((1,self.mesh.dim))
+        self._s[1] = -1.0
+
         self._v = v_Field
 
         ## Set up the projection operator that
@@ -136,7 +139,8 @@ class SNES_Darcy(SNES_Scalar):
 
         # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
         self._v_projector.smoothing = 0.0
-        self._v_projector.uw_function = self.mesh.vector.to_matrix(-self.k * (sympy.vector.gradient(self.u.fn) - self.s))
+        darcy_flux = -self.constitutive_model.flux(self._L - self.s)
+        self._v_projector.uw_function = darcy_flux
 
     ## This function is the one we will typically over-ride to build specific solvers. 
     ## This example is a poisson-like problem with isotropic coefficients
@@ -147,17 +151,15 @@ class SNES_Darcy(SNES_Scalar):
         dim = self.mesh.dim
         N   = self.mesh.N
 
-        darcy_flux_ijk = -self.k * (sympy.vector.gradient(self.u.fn) - self.s)
-
         # f1 residual term (weighted integration) 
         self._f0 = self.F0 - self.f
 
         # f1 residual term (integration by parts / gradients)
-        # isotropic
-        self._f1 = self.F1 + self.mesh.vector.to_matrix(darcy_flux_ijk)
+        darcy_flux = -self.constitutive_model.flux(self._L - self.s)
+        self._f1 = self.F1 + darcy_flux
 
         # This needs to be refreshed too
-        self._v_projector.uw_function =self.mesh.vector.to_matrix(darcy_flux_ijk)  # ?? or the matrix version 
+        self._v_projector.uw_function = darcy_flux  # ?? or the matrix version 
 
         return 
 
@@ -169,6 +171,7 @@ class SNES_Darcy(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
     
+    # Should not need this if the constitutive law provides it. 
     @property
     def k(self):
         return self._k
@@ -229,9 +232,7 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
-
         self._v_projector._setup_terms()
-
         super()._setup_terms()
 
 
@@ -352,29 +353,6 @@ class SNES_Stokes(SNES_SaddlePoint):
         self._E = (self._L + self._L.transpose())/2
         self._Einv2 = sympy.sqrt(1.0e-16+(sympy.Matrix(self._E)**2).trace()) # scalar 2nd invariant
 
-
-        # Here we can set some petsc defaults for this solver
-        # self.petsc_options = PETSc.Options(self.petsc_options_prefix)
-        # self.petsc_options["snes_type"] = "newtonls"
-        # self.petsc_options["ksp_rtol"] = 1.0e-3
-        # self.petsc_options["ksp_monitor"] = None
-        # self.petsc_options["ksp_type"] = "fgmres"
-        # self.petsc_options["pre_type"] = "gamg"
-        # self.petsc_options["snes_converged_reason"] = None
-        # self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
-        # self.petsc_options["snes_rtol"] = 1.0e-3
-        # self.petsc_options["pc_type"] = "fieldsplit"
-        # self.petsc_options["pc_fieldsplit_type"] = "schur"
-        # self.petsc_options["pc_fieldsplit_schur_factorization_type"] = "full"
-        # self.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"
-        # self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
-        # self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
-        # self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-        # self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
-        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
-
-
         self._setup_problem_description = self.stokes_problem_description
 
         # this attrib records if we need to re-setup
@@ -395,7 +373,7 @@ class SNES_Stokes(SNES_SaddlePoint):
         # terms that become part of the weighted integral
         self._u_f0 = self.UF0 - self.bodyforce
 
-        # Integration by parts into the stiffness matrix
+        # Integration by parts into the stiffness matrix (constitutive terms)
         self._u_f1 = self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
 
         # forces in the constraint (pressure) equations
@@ -414,13 +392,16 @@ class SNES_Stokes(SNES_SaddlePoint):
         return sympy.Matrix(self._E)
     @property
     def stress_deviator(self):
-        return 2*self.viscosity*self.strainrate
+        return self.constitutive_model.flux(self.strainrate)
     @property
     def stress(self):
         return self.stress_deviator - sympy.eye(self.mesh.dim)*self.p.fn
     @property
     def div_u(self):
-        return divergence(self.u.fn)
+        return self.mesh.vector.divergence(self.u.sym)
+
+
+    ## We should not need this - the constitutive law will do it for us
     @property
     def viscosity(self):
         return self._viscosity
@@ -440,10 +421,8 @@ class SNES_Stokes(SNES_SaddlePoint):
     @bodyforce.setter
     def bodyforce(self, value):
         self.is_setup = False
-        symval = sympify(value)
-        # if not isinstance(symval, sympy.vector.Vector):
-        #     raise RuntimeError("Body force term must be a vector quantity.")
-        self._bodyforce = self.mesh.vector.to_matrix(symval)
+        # symval = sympify(value)    
+        self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
     def penalty(self):
@@ -495,7 +474,10 @@ class SNES_Projection(SNES_Scalar):
 
     Solver can be given boundary conditions that
     the continuous function needs to satisfy and 
-    non-linear constraints will be handled by SNES
+    non-linear constraints will be handled by SNES.
+
+    Consitutive model for this solver is the identity tensor (purely for validation)
+
     """
 
     instances = 0
@@ -510,7 +492,6 @@ class SNES_Projection(SNES_Scalar):
 
         SNES_Projection.instances += 1
 
-
         if solver_name == "":
             solver_name = "SProj_{}_".format(self.instances)
 
@@ -523,6 +504,7 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
+        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(self.mesh.dim, 1)
 
         return
 
@@ -589,6 +571,8 @@ class SNES_Vector_Projection(SNES_Vector):
     Solver can be given boundary conditions that
     the continuous function needs to satisfy and 
     non-linear constraints will be handled by SNES
+
+    Consitutive model for this solver is the identity tensor (purely for validation)
     """
 
     instances = 0
@@ -616,6 +600,8 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
+        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(self.mesh.dim, self.mesh.dim)
+
 
         return
 
@@ -877,8 +863,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._f0 = self.F0 - self.f + (self.u.fn - self._u_star.fn) / self.delta_t
 
         # f1 residual term
-        self._f1 = self.F1 + (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
-        
+        self._f1 = self.F1 + self.theta * self.constitutive_model.flux(self._L) + \
+                        (1.0-self.theta)* self.constitutive_model.flux(self._Lstar)
+                
         return
 
     @property
@@ -987,8 +974,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         return
 
-
-
 #################################################
 # Swarm-based advection-diffusion 
 # solver based on SNES_Poisson and swarm-variable
@@ -1065,8 +1050,9 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self._f0 = self.F0 - self.f + (self.u.fn - self.u_star_fn) / self.delta_t
 
         # f1 residual term
-        self._f1 = self.F1 + (self.theta * self._L + (1.0-self.theta) * self._Lstar) * self.k
-        
+        self._f1 = self.F1 + self.theta * self.constitutive_model.flux(self._L) + \
+                        (1.0-self.theta)* self.constitutive_model.flux(self._Lstar)
+    
         return
 
     @property
@@ -1185,6 +1171,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                  _Ppre_fn      = None,
                  restore_points_func: Callable = None
                   ):
+
         SNES_NavierStokes_Swarm.instances += 1
 
         if solver_name == "":
@@ -1233,7 +1220,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         # self._L / _Lstar is a sympy.Array object 
 
         self._Estar = (sympy.Matrix(self._Lstar) + sympy.Matrix(self._Lstar).T)/2
-        self._Stress_star = 2 * self.viscosity * self._Estar - sympy.eye(self.mesh.dim) * self.p.fn
+        self._Stress_star = self.constitutive_model.flux(self._Estar) - sympy.eye(self.mesh.dim) * self.p.fn
 
         return
 
@@ -1249,7 +1236,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self._u_f1 = self.UF1 + self.stress * self.theta + self._Stress_star * (1.0-self.theta) + self.penalty * self.div_u * sympy.eye(dim)
 
         # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + self.div_u # * self.theta  + divergence(self.u_star.fn) * (1.0-self.theta)
+        self._p_f0 = self.PF0 + self.div_u 
 
         return
 
@@ -1326,7 +1313,6 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             self._u_star_projector.solve(zero_init_guess=False)
 
         # Over to you Stokes Solver
-
         super().solve(zero_init_guess, _force_setup )
         self.first_solve = False
 

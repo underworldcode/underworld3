@@ -5,6 +5,8 @@ import underworld3
 import underworld3.timing as timing
 from ._jitextension import getext
 
+import underworld3.systems.tensors as tensor
+
 include "./petsc_extras.pxi"
 
 cdef extern from "petsc.h" nogil:
@@ -173,7 +175,7 @@ class CellWiseIntegral:
         cgvec = a_global
        
         cdef DM dmc = self.mesh.dm.clone()
-        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
+        cdef FE fec = FE().createDefault(self.dim, 1, False, -1)
         dmc.setField(0, fec)
         dmc.createDS()
 
@@ -189,13 +191,13 @@ class CellWiseIntegral:
 
         return results
 
-
 class mesh_vector_calculus:
     """Vector calculus on uw row matrices
          - this class is designed to augment the functionality of a mesh"""
 
     def __init__(self, mesh):
         self.mesh = mesh
+        self.dim = self.mesh.dim
 
     def curl(self, matrix):
         """
@@ -208,13 +210,13 @@ class mesh_vector_calculus:
         vector = self.to_vector(matrix)
         vector_curl = sympy.vector.curl(vector)
 
-        if self.mesh.dim == 3:
+        if self.dim == 3:
             return self.to_matrix(vector_curl)
         else:   
             # if 2d, the out-of-plane vector is not defined in the basis so a scalar is returned (cf. vorticity)
             return vector_curl.dot(self.mesh.N.k)
         
-    def divergence(self,matrix):
+    def divergence(self, matrix):
         """
         $\nabla \cdot \mathbf{v}$
         """
@@ -238,8 +240,10 @@ class mesh_vector_calculus:
         if isinstance(matrix, sympy.vector.Vector):
             return matrix # No need to convert
 
-        if matrix.shape == (1,self.mesh.dim):
+        if matrix.shape == (1,self.dim):
             vector = sympy.vector.matrix_to_vector(matrix, self.mesh.N)
+        elif matrix.shape == (self.dim,1):
+            vector = sympy.vector.matrix_to_vector(matrix.T, self.mesh.N)
         elif matrix.shape == (1,1):
             vector = matrix[0,0]
         else:
@@ -250,13 +254,16 @@ class mesh_vector_calculus:
 
     def to_matrix(self, vector):
 
-        if isinstance(vector, sympy.Matrix) and vector.shape == (1, self.mesh.dim):
+        if isinstance(vector, sympy.Matrix) and vector.shape == (1, self.dim):
             return vector
 
-        matrix = sympy.Matrix.zeros(1,self.mesh.dim)
+        if isinstance(vector, sympy.Matrix) and vector.shape == (self.dim,1):
+            return vector.T
+
+        matrix = sympy.Matrix.zeros(1,self.dim)
         base_vectors = self.mesh.N.base_vectors()
 
-        for i in range(self.mesh.dim):
+        for i in range(self.dim):
             matrix[0,i] = vector.dot(base_vectors[i])
 
         return matrix
@@ -266,3 +273,5 @@ class mesh_vector_calculus:
         jac = vector.diff(self.mesh.X).reshape(self.mesh.X.shape[1], vector.shape[1]).tomatrix().T
 
         return jac
+
+

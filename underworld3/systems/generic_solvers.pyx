@@ -16,6 +16,12 @@ import underworld3.timing as timing
 include "../petsc_extras.pxi"
 
 
+## Note, a generic base class could be introduced here 
+## which would have the validation, essential properties,
+## boundary condition routines, 
+## methods for the petsc_options ... 
+
+
 class SNES_Scalar:
 
     instances = 0
@@ -39,8 +45,7 @@ class SNES_Scalar:
         else:
             self.petsc_options_prefix = solver_name
 
-        
-
+    
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
@@ -54,21 +59,16 @@ class SNES_Scalar:
         # self.petsc_options["snes_view"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
 
-        ## Todo: some validity checking on the size / type of u_Field supplied
-        if not u_Field:
-            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="Us{}".format(SNES_Scalar.instances),
-                                            vtype=uw.VarType.SCALAR, degree=degree )
-        else:
-            self._u = u_Field
-
+        self._u = u_Field
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
 
-        ## sympy.Array 
+        ## sympy.Matrix - gradient tensor 
         self._L = sympy.derive_by_array(self._u.sym, self.mesh.X).reshape(1,self.mesh.dim).tomatrix()
 
         self.bcs = []
+        self._constitutive_model = None
 
         self.is_setup = False
         self.verbose = verbose
@@ -84,6 +84,7 @@ class SNES_Scalar:
 
         super().__init__()
 
+    ## F0 and F1 correspond to the functions in the PETSc SNES template
 
     @property
     def F0(self):
@@ -103,6 +104,19 @@ class SNES_Scalar:
         # should add test here to make sure this is conformal
         self._F1 = self.mesh.vector.to_matrix(value)  # Make sure this is a vector
  
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
+
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+
+        # is the model appropriate for SNES_Scalar solvers ?
+
+        self.is_setup = False
+        self._constitutive_model = model
+        self._constitutive_model.solver = self 
+
 
     def _build_dm_and_mesh_discretisation(self):
 
@@ -176,12 +190,29 @@ class SNES_Scalar:
         # the form of the input. See the projector class for an example 
 
         # f0 residual term (weighted integration) - scalar RHS function
-        self._f0 = self.F0 # some_expression_F0(self._U, self._L)
+        self._f0 = self.F0 # some_expression_F0(self._u.sym, self._L)
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.F1 # some_expresion_F1(self._U, self._L)
+        self._f1 = self.F1 # some_expresion_F1(self._u.sym, self._L)
 
         return 
+
+    def validate_solver(self):
+        """Checks to see if the required properties have been set"""
+
+        name = self.__class__.__name__
+
+        if not isinstance(self.u, uw.discretisation.MeshVariable):
+            print(f"Vector of unknowns required")
+            print(f"{name}.u = uw.discretisation.MeshVariable(...)")
+
+        if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
+            print(f"Constitutive model required")
+            print(f"{name}.constitutive_model = uw.constitutive_models...")          
+
+        return
+
+
 
     # The properties that are used in the problem description
     # F0 is a scalar function (can include u, grad_u)
@@ -288,20 +319,6 @@ class SNES_Scalar:
 
         self.is_setup = True
 
-    def viewDiscretisation(self):
-        """
-        Return a copy of the system discretisation. Nodes and the unknown u scalar field.
-
-        Output
-        ------
-        (n, u): numpy vector of with dimensions (n, x) 
-            n is the number the local mesh nodes.
-            x is the size of dim plus the unknown values.
-        """
-        import numpy as np
-
-        with self.mesh.access():
-           return np.hstack( [self.u.coords.copy(), self.u.data.copy()] )
 
     @timing.routine_timer_decorator
     def solve(self, 
@@ -410,12 +427,12 @@ class SNES_Vector:
         self.petsc_options["snes_rtol"] = 1.0e-3
 
         ## Todo: some validity checking on the size / type of u_Field supplied
-        if not u_Field:
-            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="Uv{}".format(SNES_Scalar.instances),
-                                            vtype=uw.VarType.SCALAR, degree=degree )
-        else:
-            self._u = u_Field
-
+        ##if not u_Field:
+        ##     self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="Uv{}".format(SNES_Scalar.instances),
+        ##                                     vtype=uw.VarType.SCALAR, degree=degree )
+        ## else:
+            
+        self._u = u_Field
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
         self._F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
@@ -426,6 +443,8 @@ class SNES_Vector:
         self._L = self._u.sym.jacobian(self.mesh.X) # This works for vector / vector inputs
 
         self.bcs = []
+        self._constitutive_model = None
+
 
         self.is_setup = False
         self.verbose = verbose
@@ -458,8 +477,25 @@ class SNES_Vector:
         self.is_setup = False
         # should add test here to make sure k is conformal
         self._F1 = sympify(value)
- 
 
+    @property
+    def u(self):
+        return self._u
+
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
+
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+
+        # is the model appropriate for SNES_Vector solvers ?
+
+        self.is_setup = False
+        self._constitutive_model = model
+        self._constitutive_model.solver = self 
+
+ 
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -483,11 +519,6 @@ class SNES_Vector:
         self.is_setup = False
 
         return
-
-    @property
-    def u(self):
-        return self._u
-
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components=[0]):
@@ -535,6 +566,24 @@ class SNES_Vector:
 
         return 
 
+    def validate_solver(self):
+        """Checks to see if the required properties have been set"""
+
+        name = self.__class__.__name__
+
+        if not isinstance(self.u, uw.discretisation.MeshVariable):
+            print(f"Vector of unknowns required")
+            print(f"{name}.u = uw.discretisation.MeshVariable(...)")
+            raise RuntimeError("Unknowns: MeshVariable is required")       
+
+        if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
+            print(f"Constitutive model required")
+            print(f"{name}.constitutive_model = uw.constitutive_models...")   
+            raise RuntimeError("Constitutive Model is required")       
+
+        return
+
+
     # The properties that are used in the problem description
     # F0 is a vector function (can include u, grad_u)
     # F1_i is a vector valued function (can include u, grad_u)
@@ -569,25 +618,12 @@ class SNES_Vector:
         fns_residual = [u_F0, u_F1] 
 
         # This is needed to eliminate extra dims in the tensor
-        U = sympy.Array(self._U).reshape(dim)
+        U = sympy.Array(self._u.sym).reshape(dim)
 
         G0 = sympy.derive_by_array(F0, U)
         G1 = sympy.derive_by_array(F0, self._L)
         G2 = sympy.derive_by_array(F1, U)
         G3 = sympy.derive_by_array(F1, self._L)
-
-        '''
-        self._0F0 = F0
-        self._0F1 = F1
-
-        self._u_F0 = u_F0
-        self._u_F1 = u_F1
-
-        self._GG0 = G0
-        self._GG1 = G1
-        self._GG2 = G2
-        self._GG3 = G3
-        '''
 
         # reorganise indices from sympy to petsc ordering 
         # reshape to Matrix form
@@ -853,16 +889,20 @@ class SNES_SaddlePoint:
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
 
-        if not velocityField:
-            if p_degree==None:
-                p_degree = u_degree - 1
+        ## Full batman ... from now on
+        ##
+        ##if not velocityField:
+        ##    if p_degree==None:
+        ##        p_degree = u_degree - 1
+        ##
+        ##    # create public velocity/pressure variables
+        ##    self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="usp_{}".format(self.instances), vtype=uw.VarType.VECTOR, degree=u_degree )
+        ##    self._p = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,        name="psp_{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=p_degree )
+        ## else:
 
-            # create public velocity/pressure variables
-            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="usp_{}".format(self.instances), vtype=uw.VarType.VECTOR, degree=u_degree )
-            self._p = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,        name="psp_{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=p_degree )
-        else:
-            self._u = velocityField
-            self._p = pressureField
+
+        self._u = velocityField
+        self._p = pressureField
 
         # Create this dict
         self.fields = {}
@@ -885,6 +925,8 @@ class SNES_SaddlePoint:
         self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
+        self._constitutive_model = None
+
 
         # Construct strainrate tensor for future usage.
         # Grab gradients, and let's switch out to sympy.Matrix notation
@@ -892,11 +934,9 @@ class SNES_SaddlePoint:
         N = mesh.N
 
         ## sympy.Array 
-        self._U = sympy.Array((self._u.fn.to_matrix(self.mesh.N))[0:self.mesh.dim])
-        self._P = sympy.Array([self._p.fn])
-        self._X = sympy.Array(self.mesh.r)
-        self._L = sympy.derive_by_array(self._U, self._X).transpose()
-        self._G = sympy.derive_by_array(self._P, self._X)
+  
+        self._L = self._u.sym.jacobian(self.mesh.X)
+        self._G = self._p.sym.jacobian(self.mesh.X)
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -976,6 +1016,19 @@ class SNES_SaddlePoint:
     def p(self):
         return self._p
 
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
+
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        # Check / todo - is the model appropriate for SNES_SaddlePoint solvers ?
+
+        self.is_setup = False
+        self._constitutive_model = model
+        self._constitutive_model.solver = self 
+
+
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components):
         # switch to numpy arrays
@@ -1020,6 +1073,32 @@ class SNES_SaddlePoint:
 
         return 
 
+
+    def validate_solver(self):
+        """Checks to see if the required properties have been set"""
+
+        name = self.__class__.__name__
+
+        if not isinstance(self.u, uw.discretisation.MeshVariable):
+            print(f"Vector of unknowns required")
+            print(f"{name}.u = uw.discretisation.MeshVariable(...)")
+            raise RuntimeError("Unknowns: MeshVariable is required")       
+
+
+        if not isinstance(self.p, uw.discretisation.MeshVariable):
+            print(f"Vector of constraint unknowns required")
+            print(f"{name}.p = uw.discretisation.MeshVariable(...)")
+            raise RuntimeError("Constraint (Pressure): MeshVariable is required")       
+
+
+        if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
+            print(f"Constitutive model required")
+            print(f"{name}.constitutive_model = uw.constitutive_models...")   
+            raise RuntimeError("Constitutive Model is required")       
+
+        return
+
+
     @timing.routine_timer_decorator
     def _setup_terms(self):
         dim = self.mesh.dim
@@ -1050,7 +1129,7 @@ class SNES_SaddlePoint:
         ## so we will leave both here to compare across a range of problems.
 
         # This is needed to eliminate extra dims in the tensor
-        U = sympy.Array(self._U).reshape(dim)
+        U = sympy.Array(self._u.sym).reshape(dim)
 
         G0 = sympy.derive_by_array(F0, U)
         G1 = sympy.derive_by_array(F0, self._L)
@@ -1068,18 +1147,18 @@ class SNES_SaddlePoint:
 
         # U/P block (check permutations - they don't seem to be necessary here)
 
-        self._up_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(F0, self._P).reshape(dim))
+        self._up_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(F0, self._p.sym).reshape(dim))
         self._up_G1 = sympy.ImmutableMatrix(sympy.derive_by_array(F0, self._G).reshape(dim,dim))
-        self._up_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(F1, self._P).reshape(dim,dim))
+        self._up_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(F1, self._p.sym).reshape(dim,dim))
         self._up_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(F1, self._G).reshape(dim*dim,dim))
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
         # P/U block (check permutations - they don't seem to be necessary here)
 
-        self._pu_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._U).reshape(dim))
+        self._pu_G0 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._u.sym).reshape(dim))
         self._pu_G1 = sympy.ImmutableMatrix(sympy.derive_by_array(FP0, self._L).reshape(dim,dim))
-        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._P).reshape(dim,dim))
+        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._p.sym).reshape(dim,dim))
         # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
 
         # fns_jacobian += [self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
