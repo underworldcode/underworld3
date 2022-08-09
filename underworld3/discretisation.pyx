@@ -5,6 +5,7 @@ import sympy
 import sympy.vector
 from petsc4py import PETSc
 import underworld3 as uw 
+
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
@@ -133,7 +134,9 @@ class Mesh(_api_tools.Stateful):
 
         # This looks a bit strange, but we'd like to 
         # put these mesh-dependent vector calculus functions
-        # in a bundle and avoid the mesh being required as an argument
+        # and mesh-based tensor manipulation routines 
+        # in a bundle to avoid the mesh being required as an argument
+        # since this could lead to things going out of sync
 
         self.vector = uw.maths.mesh_vector_calculus(mesh=self)
 
