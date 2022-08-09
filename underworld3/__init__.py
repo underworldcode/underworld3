@@ -11,6 +11,8 @@ import underworld3.meshing
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
+import underworld3.systems.tensors
+import underworld3.systems.constitutive_models
 import underworld3.tools
 import underworld3.algorithms
 import underworld3.mpi
@@ -31,6 +33,7 @@ import numpy as _np
 # Note that actually what we want is an ordered set (which Python
 # doesn't natively provide). Hence for the key/value pair,
 # the value is always set to `None`.
+
 from collections import OrderedDict as _OD
 _libfiles = _OD()
 _libdirs  = _OD()
