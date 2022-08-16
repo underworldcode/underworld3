@@ -169,7 +169,7 @@ class SwarmVariable(_api_tools.Stateful):
         return self._meshVar.fn
 
     @property
-    def f(self):
+    def sym(self):
         return self._meshVar.sym
 
     @timing.routine_timer_decorator

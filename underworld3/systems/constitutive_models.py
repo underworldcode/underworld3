@@ -238,7 +238,7 @@ class DiffusionModel(Constitutive_Model):
            
         d = self.dim
         kappa = self._material_properties.diffusivity
-        self._c = uw.maths.tensor.rank2_identity(d) * kappa
+        self._c = sympy.Matrix.eye(d) * kappa
 
         return 
 

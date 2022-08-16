@@ -23,14 +23,12 @@ import numpy as np
 # options["pc_type"]  = "svd"
 # options["dm_plex_check_all"] = None
 # options.getAll()
+# -
 
-# +
-import meshio
-
-meshball = uw.meshes.SphericalShell(dim=2, 
-                                    radius_inner=0.5,
-                                    radius_outer=1.0, cell_size=0.0333,
-                                    degree=1, verbose=False)
+meshball = uw.meshing.Annulus(radiusInner=0.5, 
+                              radiusOuter=1.0,
+                              cellSize=0.0333,
+                                    degree=1)
 
 
 # +
@@ -45,12 +43,14 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, -5.0]     
     
-    pvmesh = meshball.mesh2pyvista()
+    meshball.vtk("ignore_meshball.vtk")
+    pvmesh = pv.read("ignore_meshball.vtk")
+    
     
     pl = pv.Plotter()
 
@@ -77,7 +77,11 @@ swarm.populate(fill_param=3)
 # Create Stokes object
 
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
-                u_degree=2, p_degree=1, solver_name="stokes", verbose=True)
+                solver_name="stokes")
+
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity = 1)
+
 
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
@@ -97,14 +101,14 @@ stokes.add_dirichlet_bc( (0.,0.), "Lower" , (0,1) )
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec)) # normalise by outer radius if not 1.0
-unit_rvec = meshball.rvec / (1.0e-10+radius_fn)
+radius_fn = sympy.sqrt(meshball.X.dot(meshball.X)) # normalise by outer radius if not 1.0
+unit_rvec = meshball.X / (1.0e-10+radius_fn)
 gravity_fn = radius_fn
 
 # Some useful coordinate stuff 
 
-x = meshball.N.x
-y = meshball.N.y
+x = meshball.X[0]
+y = meshball.X[1]
 
 r  = sympy.sqrt(x**2+y**2)
 th = sympy.atan2(y+1.0e-5,x+1.0e-5)
@@ -125,7 +129,9 @@ adv_diff = uw.systems.AdvDiffusion(meshball,
                                    degree=3,
                                    verbose=False)
 
-adv_diff.k = k
+adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity = 1)
+
 adv_diff.theta = 0.5
 # adv_diff.f = t_soln.fn / delta_t - t_star.fn / delta_t
 
@@ -144,20 +150,37 @@ with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1,1)
     t_soln.data[...] = t_0.data[...]
 # +
-buoyancy_force = 1.0e6 * t_soln.fn / (0.5)**3 
+buoyancy_force = 1.0e6 * t_soln.sym[0] / (0.5)**3 
 stokes.bodyforce = unit_rvec * buoyancy_force  
 
 # check the stokes solve converges
 stokes.solve()
-# -
 
+# +
 # Check the diffusion part of the solve converges 
-adv_diff.solve(timestep=0.01*stokes.estimate_dt())
+adv_diff.petsc_options["ksp_monitor"]=None
+adv_diff.petsc_options["monitor"]=None
+
+adv_diff.solve(timestep=0.00001*stokes.estimate_dt())
 
 
 # +
-# check the mesh if in a notebook / serial
+diff = uw.systems.Poisson(meshball, 
+                                   u_Field=t_soln, 
+                                   solver_name="diff_only")
 
+diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity = 1)
+
+
+# -
+
+diff.solve()
+
+0/0
+
+# +
+# check the mesh if in a notebook / serial
 
 if uw.mpi.size==1:
 
@@ -168,17 +191,22 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-    pv.start_xvfb()
+    # pv.start_xvfb()
     
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
+    meshball.vtk("ignore_meshball.vtk")
+    pvmesh = pv.read("ignore_meshball.vtk")
+   
     with meshball.access():
         usol = stokes.u.data.copy()
   
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn, meshball.data)
+    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.sym[0], meshball.data)
+    pvmesh.point_data["Ts"]  = uw.function.evaluate(adv_diff._u_star.sym[0], meshball.data)
+    pvmesh.point_data["dT"]  = uw.function.evaluate(t_soln.sym[0] - adv_diff._u_star.sym[0], meshball.data)
+
+
  
     arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
     arrow_loc[:,0:2] = stokes.u.coords[...]
@@ -190,7 +218,7 @@ if uw.mpi.size==1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT",
                   use_transparency=False, opacity=0.5)
     
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
@@ -201,6 +229,8 @@ if uw.mpi.size==1:
     pl.show(cpos="xy")
 # -
 
+
+pvmesh.point_data["dT"].min()
 
 adv_diff.petsc_options["pc_gamg_agg_nsmooths"]= 1
 
@@ -213,14 +243,14 @@ if uw.mpi.size==1:
     import numpy as np
     import pyvista as pv
     import vtk
-
-      
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
+   
+    meshball.vtk("ignore_meshball.vtk")
+    pvmesh = pv.read("ignore_meshball.vtk")
+    
     with meshball.access():
         usol = stokes.u.data.copy()
   
-    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.fn-t_0.fn, meshball.data)
+    pvmesh.point_data["T"]  = uw.function.evaluate(t_soln.sym[0]-t_0.sym[0], meshball.data)
  
     arrow_loc = np.zeros((stokes.u.coords.shape[0],3))
     arrow_loc[:,0:2] = stokes.u.coords[...]
@@ -256,7 +286,7 @@ def plot_T_mesh(filename):
         pv.global_theme.background = 'white'
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = 'pythreejs'
+        pv.global_theme.jupyter_backend = 'panel'
         pv.global_theme.smooth_shading = True
         pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
         pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 

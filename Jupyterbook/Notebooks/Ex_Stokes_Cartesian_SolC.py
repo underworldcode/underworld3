@@ -25,7 +25,6 @@ mesh.dm.view()
 v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=1 )
 p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=0 )
 
-# %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity = 1)

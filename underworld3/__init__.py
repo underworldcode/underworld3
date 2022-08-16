@@ -6,6 +6,7 @@ PETSc.Sys.popErrorHandler()
 
 #PETSc.Log().begin()
 
+import underworld3._api_tools
 import underworld3.discretisation
 import underworld3.meshing
 import underworld3.maths

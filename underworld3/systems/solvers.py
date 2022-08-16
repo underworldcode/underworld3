@@ -72,7 +72,7 @@ class SNES_Poisson(SNES_Scalar):
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self._f1 = self.F1 + self.constitutive_model.flux(self._L) # self.k * (self._L)
+        self._f1 = self.F1 + self.constitutive_model.flux(self._L).T # self.k * (self._L)
 
         return 
 
@@ -823,8 +823,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # might fix this.
 
         nswarm = uw.swarm.Swarm(self.mesh)
-        nT1 = uw.swarm.SwarmVariable("advdiff_Tstar_{}".format(self.instances), nswarm, 1)
-        nX0 = uw.swarm.SwarmVariable("advdiff_X0_{}".format(self.instances), nswarm, nswarm.dim)
+        name = f"^{{[{self.instances}]}}" + r"T^{*}"
+        nT1 = uw.swarm.SwarmVariable(name, nswarm, 1)
+        name = f"^{{[{self.instances}]}}" + r"X0^{*}"
+        nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim)
 
         nswarm.dm.finalizeFieldRegister()
         nswarm.dm.addNPoints(self._u.coords.shape[0]+1) # why + 1 ? That's the number of spots actually allocated
@@ -850,7 +852,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # a projection-mesh variable but it should be ok given these points
         # are designed to land on the mesh
 
-        self._Lstar =  sympy.derive_by_array(self._u_star.fn, self._X).reshape(self.mesh.dim)
+        self._Lstar =  self.mesh.vector.jacobian(self._u_star.sym)
 
         return
 
@@ -860,11 +862,11 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = self.F0 - self.f + (self.u.fn - self._u_star.fn) / self.delta_t
+        self._f0 = self.F0 - self.f + (self.u.sym - self._u_star.sym) / self.delta_t
 
         # f1 residual term
-        self._f1 = self.F1 + self.theta * self.constitutive_model.flux(self._L) + \
-                        (1.0-self.theta)* self.constitutive_model.flux(self._Lstar)
+        self._f1 = self.F1 + self.theta * self.constitutive_model.flux(self._L).T + \
+                        (1.0-self.theta)* self.constitutive_model.flux(self._Lstar).T
                 
         return
 
@@ -962,7 +964,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # Sample the field at these locations
 
         with nswarm.access(nT1):
-            nT1.data[...] = uw.function.evaluate(t_soln.fn, nswarm.data).reshape(-1,1)
+            nT1.data[...] = uw.function.evaluate(t_soln.sym[0], nswarm.data).reshape(-1,1)
 
         # restore coords 
         with nswarm.access(nswarm.particle_coordinates):
@@ -995,7 +997,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def __init__(self, 
                  mesh       : uw.discretisation.Mesh, 
                  u_Field    : uw.discretisation.MeshVariable = None, 
-                 u_Star_fn  = None, # uw.function.UnderworldFunction = None,
+                 u_Star_fn  = None, 
                  degree     : int  = 2,
                  theta      : float = 0.5,
                  solver_name: str = "",
@@ -1037,7 +1039,8 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         # a projection-mesh variable but it should be ok given these points
         # are designed to land on the mesh
 
-        self._Lstar =  sympy.derive_by_array(self.u_star_fn, self._X).reshape(self.mesh.dim)
+        self._Lstar =  self.mesh.vector.jacobian(self.u_star_fn)
+        # sympy.derive_by_array(self.u_star_fn, self._X).reshape(self.mesh.dim)
 
         return
 
@@ -1058,8 +1061,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     @property
     def u(self):
         return self._u
-
-
 
     @property
     def u_star_fn(self):

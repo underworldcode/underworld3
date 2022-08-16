@@ -65,7 +65,9 @@ class SNES_Scalar:
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
 
         ## sympy.Matrix - gradient tensor 
-        self._L = sympy.derive_by_array(self._u.sym, self.mesh.X).reshape(1,self.mesh.dim).tomatrix()
+        self._L = self.mesh.vector.jacobian(self._u.sym)
+        
+        # sympy.derive_by_array(self._u.sym, self.mesh.X).reshape(1,self.mesh.dim).tomatrix()
 
         self.bcs = []
         self._constitutive_model = None

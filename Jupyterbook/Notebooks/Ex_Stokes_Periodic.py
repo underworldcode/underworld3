@@ -77,23 +77,7 @@ import underworld3 as uw
 from underworld3.systems import Stokes
 import numpy as np
 options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-options["ksp_rtol"] =  1.0e-3 # For demonstration purposes only 1.0e-3 is OK
-options["ksp_monitor_short"] = None
-# options["snes_type"]  = "fas"
-options["snes_converged_reason"] = None
-options["snes_monitor_short"] = None
-# options["snes_view"]=None
-# options["snes_test_jacobian"] = None
-options["snes_max_it"] = 1
-options["pc_type"] = "fieldsplit"
-options["pc_fieldsplit_type"] = "schur"
-options["pc_fieldsplit_schur_factorization_type"] ="full"
-options["pc_fieldsplit_schur_precondition"] = "a11"
-options["fieldsplit_velocity_pc_type"] = "lu"
-options["fieldsplit_pressure_ksp_rtol"] = 1.0e-3
-options["fieldsplit_pressure_pc_type"] = "lu"
+
 
 # %%
 plex = PETSc.DMPlex().createFromFile('periodicx.msh')
@@ -117,19 +101,24 @@ plex.view()
 from underworld3.discretisation import Mesh
 
 # %%
-mesh = Mesh(plex, degree=2)
+mesh = Mesh(plex, degree=1)
 
 # %%
 mesh.dm.view()
 
 # %%
 # Create Stokes object
-stokes = Stokes(mesh,u_degree=2,p_degree=1)
-# Constant visc
-stokes.viscosity = 1.
+
+v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
+p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=1 )
+
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity = 1)              
+               
 # No slip boundary conditions
-stokes.add_dirichlet_bc( (0.5,0.), ["Top"], (0,1) )
-stokes.add_dirichlet_bc( (-0.5,0.), ["Bottom"], (0,1))
+stokes.add_dirichlet_bc( ( 0.5, 0.), ["Top"],    (0,1))
+stokes.add_dirichlet_bc( (-0.5, 0.), ["Bottom"], (0,1))
 
 # %%
 # Write density into a variable for saving
@@ -141,17 +130,14 @@ with mesh.access(densvar):
 # body force
 import sympy
 
+x,y = mesh.X
 
 unit_rvec = mesh.rvec / sympy.sqrt(mesh.rvec.dot(mesh.rvec))
-stokes.bodyforce = -unit_rvec*1.0
-#stokes.bodyforce = mesh.N.i + mesh.N.j
+stokes.bodyforce = 0 * mesh.X # -mesh.X / sympy.sqrt(x**2 + y**2)
 
 # %%
 # Solve time
 stokes.solve()
-
-# %%
-stokes.u.degree
 
 # %%
 import os
@@ -163,53 +149,49 @@ stokes.p.save(savefile)
 densvar.save(savefile)
 mesh.generate_xdmf(savefile)
 
-# %% [markdown]
-# ## Pyvista visualisation
-#
-# `Pyvista` is a python vtk toolkit with a working model that closely matches scripted `paraview` in jupyter. 
-
 # %%
-import numpy as np
-import pyvista as pv
-import vtk
+# check if that works
 
-pv.global_theme.background = 'white'
-pv.global_theme.window_size = [1000, 500]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = 'pythreejs'
-pv.global_theme.smooth_shading = True
+if uw.mpi.size==1:
 
+    import numpy as np
+    import pyvista as pv
+    import vtk
 
-# %%
-
-# %%
-import meshio, io
-
-mesh.vtk("spheremesh.vtk")
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [750, 250]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.smooth_shading = True
     
-umag = stokes.u.fn.dot(stokes.u.fn) # Stokes object was re-built
+    pv.start_xvfb()
+    
+    # mesh.vtk("ignore_periodic_mesh.vtk")
+    pvmesh = pv.read("periodicx.msh")
 
-pv_vtkmesh = pv.UnstructuredGrid("spheremesh.vtk")
-pv_vtkmesh.point_data['density'] = uw.function.evaluate(density,mesh.data)
-pv_vtkmesh.point_data['umag']    = uw.function.evaluate(umag, mesh.data)
-pv_vtkmesh.point_data['urange'] = 0.5 + 0.5 * np.minimum(1.0,pv_vtkmesh.point_data['umag'] / pv_vtkmesh.point_data['umag'].mean())
+    # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
+    
+    with mesh.access():
+        vsol = v.data.copy()
 
+    arrow_loc = np.zeros((v.coords.shape[0],3))
+    arrow_loc[:,0:2] = v.coords[...]
+    
+    arrow_length = np.zeros((v.coords.shape[0],3))
+    arrow_length[:,0:2] = vsol[...] 
+    
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
+    
+    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
+    #               use_transparency=False, opacity=0.5)
+    
+    pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-1, opacity=0.5)
+    #pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
+    
+    # pl.add_points(pdata)
+
+    pl.show(cpos="xy")
 
 # %%
-clipped = pv_vtkmesh.clip(normal=(1, 0, 0), invert=False)
-contours = pv_vtkmesh.contour([1.0,5.0, 10.0], scalars="density")
-
-
-# %%
-pl = pv.Plotter()
-pl.add_mesh(clipped, cmap="coolwarm", edge_color="Black", show_edges=True, 
-            scalars="density", opacity="urange", use_transparency=False)
-pl.add_mesh(contours, opacity=0.5)
-
-pl.show()
-
-# %%
-umag = uw.function.evaluate(umag, mesh.data)
-
-# %%
-umag.max()

@@ -7,6 +7,17 @@
 #
 # %%
 from petsc4py import PETSc
+
+
+# %%
+import petsc4py
+from petsc4py import PETSc
+
+# %%
+import sys
+
+
+# %%
 import underworld3 as uw
 from underworld3.systems import Poisson
 import numpy as np
@@ -70,29 +81,6 @@ ViscousFlow.material_properties = ViscousFlow.Parameters(eta_0=sympy.symbols(r"\
                                                          director=sympy.Matrix([0,0,1]))
 
 stokes3.constitutive_model.flux(stokes3._E)
-
-# %%
-
-# %%
-stokes2.constitutive_model.material_properties=stokes2.constitutive_model.MaterialProperties(eta=1)
-
-# %%
-stokes2.constitutive_model.flux(stokes2.strainrate)
-
-# %%
-ViscoMod.material_properties = ViscoMod.MaterialProperties(eta=10)
-
-# %%
-stokes2.constitutive_model.flux(stokes2.strainrate)
-
-# %%
-stokes2._L
-
-# %%
-stokes3.p.sym
-
-# %%
-0/0
 
 # %% [markdown]
 # ## Introduction to constitutive models
@@ -388,35 +376,6 @@ sympy.simplify(difference.subs(n[2],sympy.sqrt(1-n[0]**2-n[1]**2)))
 
 # %%
 0/0
-
-# %%
-from collections import namedtuple
-from typing import NamedTuple, Union
-
-aniso_properties = namedtuple("TransIsotropic",['eta_0', 'eta_1', 'director'])
-
-# %%
-A = aniso_properties(eta_0=1.0, eta_1=0.5, director=sympy.Matrix([1,0,0]))
-
-
-# %%
-class TransIsotropic(NamedTuple):
-    """Transversely isotropic rheology -
-      - eta_0: normal viscosity
-      - eta_1: shear viscosity
-      - director: orientation of weak plane
-      See Sharples et al, 2015 for details"""
-    eta_0: Union[ float, sympy.Function ]    
-    eta_1: Union[ float, sympy.Function ]
-    director: sympy.Matrix
-
-
-# %%
-class_props = TransIsotropic(eta_0=1.0, eta_1=0.5, director=n)
-
-
-# %%
-type(u2.sym[1])
 
 # %%
 ## What does the identity tensor look like in C_ijkl, converted ?

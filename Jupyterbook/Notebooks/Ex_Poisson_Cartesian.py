@@ -1,30 +1,43 @@
 # %% [markdown]
-# # Poisson Cartesian #Solve
+# # Poisson Cartesian 
+#
+# Linear and non-linear diffusion equation
 
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
+import sympy
+
 
 
 # %%
-from underworld3.meshing import UnstructuredSimplexBox
+mesh = uw.meshing.UnstructuredSimplexBox(
+                                minCoords=(0.0,0.0), 
+                                maxCoords=(1.0,1.0), 
+                                cellSize=1.0/24) 
 
-# %%
-mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellSize=1.0/16) 
+phi = uw.discretisation.MeshVariable(r"\psi", mesh, 1, degree=2)
 
 # %%
 # Create Poisson object
-poisson = uw.systems.Poisson(mesh)
+
+poisson = uw.systems.Poisson(mesh,
+                             u_Field=phi,
+                             degree=2,
+                             solver_name="diffusion")
+
+# Constitutive law (diffusivity)
+
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity = 1)
+
 
 # %%
-import sympy
-k = 1.0 
-k
+poisson.constitutive_model.c
 
 # %%
 # Set some things
-poisson.k = k
 poisson.f = 0.
 poisson.add_dirichlet_bc( 1., "Bottom" )  
 poisson.add_dirichlet_bc( 0., "Top" )  
@@ -56,11 +69,12 @@ if MPI.COMM_WORLD.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     
-
-    pvmesh = pv.read("mesh.tmp.vtk")
+    mesh.vtk("ignore_mesh.vtk")
+    pvmesh = pv.read("ignore_mesh.vtk")
+    
     pvmesh.point_data["T"]  = mesh_analytic_soln
     pvmesh.point_data["T2"] = mesh_numerical_soln
     pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"] 
@@ -77,82 +91,145 @@ if MPI.COMM_WORLD.size==1:
     # pl.screenshot(filename="test.png")  
 
 # %%
-# Now let's construct something a little more complex.
-# First get the coord system off the mesh/dm.
-N = mesh.N
+# Create some function using one of the base scalars x,y[,z] = mesh.X 
 
-# %%
-# Create some function using one of the base scalars N.x/N.y/N.z
 import sympy
-k = sympy.exp(-N.y)
+x,y = mesh.X
+x0 = y0 = 1/sympy.sympify(2)
+k = sympy.exp(-((x-x0)**2+(y-y0)**2))
+
+poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity = k)
+poisson.constitutive_model.equation
 
 # %%
-# View
-k
-
-# %%
-# Don't forget to set the diffusivity
-poisson.k = k
+poisson.constitutive_model.flux(poisson._L)
 
 # %%
 with mesh.access():
     orig_soln = poisson.u.data.copy()
-poisson.solve()
+    
+orig_soln_mesh = uw.function.evaluate(phi.sym[0], mesh.data)
 
 # %%
-# Simply confirm different results
+poisson.solve(zero_init_guess=True, _force_setup=True)
+
+# %%
+# Simply confirm results are different
+
 with mesh.access():
-    if not np.allclose(poisson.u.data, orig_soln):
-        raise RuntimeError("Unexpected values encountered.")
+    if np.allclose(poisson.u.data, orig_soln, rtol=0.1):
+        raise RuntimeError("Values did not change !")
 
 
 # %%
-from underworld3.meshing import UnstructuredSimplexBox
+# Validate
+
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.smooth_shading = True
+    
+    mesh.vtk("ignore_mesh.vtk")
+    pvmesh2 = pv.read("ignore_mesh.vtk")
+    
+    pvmesh2.point_data["T"]  = uw.function.evaluate(phi.sym[0], mesh.data)
+    pvmesh2.point_data["dT"]  = pvmesh2.point_data["T"] - pvmesh.point_data["T"]
+
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh2, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT",
+                  use_transparency=False, opacity=0.5, scalar_bar_args=sargs)
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
 
 # %%
-# Nonlinear example
-mesh = UnstructuredSimplexBox(minCoords=(0.0,0.0), maxCoords=(1.0,1.0), cellSize=0.05) 
-mesh.dm.view()
+## Non-linear example 
 
 
-# %%
-poisson = uw.systems.Poisson(mesh, degree=1)
+# RHS term
 
-
-# %%
-u = poisson.u.fn
-
-
-# %%
-from sympy.vector import gradient
-nabla_u = gradient(u)
-poisson.k = 0.5*(nabla_u.dot(nabla_u))
-poisson.k
-
-
-# %%
-N = mesh.N
-abs_r2 = (N.x**2 + N.y**2)
+abs_r2 = (x**2 + y**2)
 poisson.f = -16*abs_r2
-poisson.f
+poisson.add_dirichlet_bc(abs_r2, ["Bottom", "Top", "Right", "Left"] )
 
+display(poisson.f)
 
-# %%
-poisson.add_dirichlet_bc(abs_r2, "All_dm_boundaries" )
+# Constitutive law (diffusivity)
+# Linear solver first
 
-# %%
-# First solve linear to get reasonable initial guess.
-k_keep = poisson.k
-poisson.k = 1.
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity = 1)
+
 poisson.solve()
-# Now solve non-linear
-poisson.k = k_keep
+
+
+# %%
+# Non-linear diffusivity
+
+grad_phi = mesh.vector.gradient(phi.sym)
+k = 5 + (grad_phi.dot(grad_phi))/2
+poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity = k)
+poisson.constitutive_model.c
+
+
+# %%
+poisson._setup_terms()
+poisson._G3
+
+
+# %%
+# Use initial guess from linear solve
+
 poisson.solve(zero_init_guess=False)
 
 # %%
-with mesh.access():
-    exact = mesh.data[:,0]**2 + mesh.data[:,1]**2
-    if not np.allclose(poisson.u.data[:,0],exact[:],rtol=7.e-2):
-        l2 = np.linalg.norm(exact[:]-poisson.u.data[:,0])
-        raise RuntimeError(f"Unexpected values encountered. Diff norm = {l2}")
+# Validate
 
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.smooth_shading = True
+    
+    mesh.vtk("ignore_mesh.vtk")
+    pvmesh2 = pv.read("ignore_mesh.vtk")
+    
+    pvmesh2.point_data["T"] = uw.function.evaluate(phi.sym[0], mesh.data)
+
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh2, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+                  use_transparency=False, opacity=0.5, scalar_bar_args=sargs)
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
+# %% [markdown]
+# ## Next steps
+#
+# We'd like to be able to look at the values of diffusivity but
+# These can't be calculated with the evaluate function. We need 
+# to project from the integration points. 
+#
+# See ./Ex_Poisson_Gradient_Recovery.py to see how we can do that

@@ -508,7 +508,7 @@ def Annulus(
     return Mesh(plex, degree=degree)
 
 
-def CubicSphere(
+def CubedSphere(
         radiusOuter: float = 1.0, 
         radiusInner: float = 0.3, 
         numElements: int = 20,
@@ -525,7 +525,7 @@ def CubicSphere(
     
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
-    gmsh.model.add("Cubic Sphere")
+    gmsh.model.add("Cubed Sphere")
 
     center_point = gmsh.model.geo.addPoint(0.,0.,0., tag=1)
 
