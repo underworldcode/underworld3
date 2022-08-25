@@ -71,14 +71,19 @@ if uw.mpi.size==1 and uw.is_notebook:
 # %%
 # Create Poisson object
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
+darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=1)
 darcy.petsc_options.delValue("ksp_monitor")
 
 # %%
 # Set some things
 
-darcy.k = sympy.exp(-2.0*2.302585*(h_fn-y)) # powers of 10
+k = sympy.exp(-2.0*2.302585*(h_fn-y)) # powers of 10
+darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=k)
+
 darcy.f = 0.0
-darcy.s = -mesh.N.j
+darcy.s = sympy.Matrix([0, -1]).T
+
 darcy.add_dirichlet_bc( 0., "Top" )  
 
 # Zero pressure gradient at sides / base (implied bc)
@@ -125,7 +130,7 @@ if uw.mpi.size==1 and uw.is_notebook:
   
     pvmesh.point_data["P"]  = uw.function.evaluate(p_soln.fn, mesh.data)
     pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.fn-(h_fn-y), mesh.data)
-    pvmesh.point_data["K"]  = uw.function.evaluate(darcy.k, mesh.data)
+    pvmesh.point_data["K"]  = uw.function.evaluate(k, mesh.data)
     pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
 

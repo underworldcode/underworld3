@@ -58,7 +58,7 @@ def configure():
     INCLUDE_DIRS += [numpy.get_include()]
 
     return dict(
-        include_dirs=INCLUDE_DIRS + [os.curdir] + [os.path.join(os.curdir,'underworld3')],
+        include_dirs=INCLUDE_DIRS + [os.curdir] + [os.path.join(os.curdir,'underworld3')] + [os.path.join(os.curdir,'underworld3', 'petsc')],
         libraries=LIBRARIES,
         library_dirs=LIBRARY_DIRS,
         runtime_library_dirs=LIBRARY_DIRS,
@@ -69,31 +69,31 @@ conf = configure()
 extra_compile_args = ['-O3', '-g']
 #extra_compile_args = ['-O0', '-g']
 extensions = [
-    Extension('underworld3.discretisation',
-              sources = ['underworld3/discretisation.pyx',],
+    # Extension('underworld3.discretisation',
+    #           sources = ['underworld3/discretisation.pyx',],
+    #           extra_compile_args=extra_compile_args,
+    #           **conf),
+    Extension('underworld3.cython.petsc_discretisation',
+              sources = ['underworld3/cython/petsc_discretisation.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    Extension('underworld3.maths',
-              sources = ['underworld3/maths.pyx',],
+    Extension('underworld3.cython.petsc_maths',
+              sources = ['underworld3/cython/petsc_maths.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    Extension('underworld3.algorithms',
-              sources = ['underworld3/algorithms.pyx',],
+    Extension('underworld3.kdtree',
+              sources = ['underworld3/kdtree.pyx',],
               extra_compile_args=extra_compile_args+["-std=c++11"],
               language="c++",
               **conf),
-    Extension('underworld3.petsc_types',
-              sources = ['underworld3/petsc_types.pyx',],
+    Extension('underworld3.cython.petsc_types',
+              sources = ['underworld3/cython/petsc_types.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    Extension('underworld3.systems.generic_solvers',
-              sources = ['underworld3/systems/generic_solvers.pyx',],
+    Extension('underworld3.cython.generic_solvers',
+              sources = ['underworld3/cython/petsc_generic_snes_solvers.pyx',],
               extra_compile_args=extra_compile_args,
               **conf),
-    # Extension('underworld3.systems.solvers',
-    #           sources = ['underworld3/systems/solvers.pyx',],
-    #           extra_compile_args=extra_compile_args,
-    #           **conf),
     Extension('underworld3.function._function',
               sources = ['underworld3/function/_function.pyx', 'underworld3/function/petsc_tools.c',],
               extra_compile_args=extra_compile_args,
@@ -106,7 +106,7 @@ extensions = [
 
 setup(name = "underworld3", 
     packages=find_packages(),
-    package_data={'underworld3':['*.pxd','*.h','function/*.h']},
+    package_data={'underworld3':['*.pxd','*.h','function/*.h', 'petsc/*.pxd', 'petsc/*.h']},
     ext_modules = cythonize(
         extensions,
         compiler_directives={'language_level' : "3"},   # or "2" or "3str"

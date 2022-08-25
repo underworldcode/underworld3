@@ -12,12 +12,23 @@ import sympy
 
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(
+from underworld3.utilities import _jitextension
+
+# %%
+mesh2 = uw.meshing.UnstructuredSimplexBox(
                                 minCoords=(0.0,0.0), 
                                 maxCoords=(1.0,1.0), 
                                 cellSize=1.0/24) 
 
-phi = uw.discretisation.MeshVariable(r"\psi", mesh, 1, degree=2)
+mesh3 = uw.meshing.UnstructuredSimplexBox(
+                                minCoords=(0.0,0.0,0.0), 
+                                maxCoords=(1.0,1.0,1.0), 
+                                cellSize=1.0/6) 
+
+mesh=mesh2
+
+phi = uw.discretisation.MeshVariable(r"\phi", mesh, 1, degree=2)
+scalar = uw.discretisation.MeshVariable(r"\Theta", mesh, 1, degree=2)
 
 # %%
 # Create Poisson object
@@ -34,7 +45,10 @@ poisson.constitutive_model.material_properties = poisson.constitutive_model.Para
 
 
 # %%
-poisson.constitutive_model.c
+poisson.constitutive_model
+
+# %%
+poisson.constitutive_model.c.shape
 
 # %%
 # Set some things
@@ -43,8 +57,14 @@ poisson.add_dirichlet_bc( 1., "Bottom" )
 poisson.add_dirichlet_bc( 0., "Top" )  
 
 # %%
+poisson._setup_terms()
+
+# %%
 # Solve time
 poisson.solve()
+
+# %%
+poisson.constitutive_model.C
 
 # %%
 # Check. Construct simple linear which is solution for 
@@ -53,7 +73,7 @@ import numpy as np
 with mesh.access():
     mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.data)
     mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.data)
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.07):
+    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.1):
         raise RuntimeError("Unexpected values encountered.")
 
 # %%
@@ -99,7 +119,6 @@ x0 = y0 = 1/sympy.sympify(2)
 k = sympy.exp(-((x-x0)**2+(y-y0)**2))
 
 poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity = k)
-poisson.constitutive_model.equation
 
 # %%
 poisson.constitutive_model.flux(poisson._L)
@@ -226,10 +245,60 @@ if MPI.COMM_WORLD.size==1:
     # pl.screenshot(filename="test.png")  
 
 # %% [markdown]
-# ## Next steps
+# ## Analysis (Gradient recovery)
 #
-# We'd like to be able to look at the values of diffusivity but
-# These can't be calculated with the evaluate function. We need 
-# to project from the integration points. 
+# We'd like to be able to look at the values of diffusivity or the
+# heat flux. 
 #
-# See ./Ex_Poisson_Gradient_Recovery.py to see how we can do that
+# These are discontinuous values computed in the element interiors but can
+# be projected to a `meshVariable`:
+#
+
+# %%
+projection = uw.systems.Projection(mesh, scalar )
+projection.uw_function = sympy.diff(phi.sym, mesh.X[1])
+projection.smoothing = 1.0e-3
+
+projection.solve()
+
+
+# %%
+sympy.diff(scalar.sym, mesh.X[1])
+
+# %%
+# Validate
+
+from mpi4py import MPI
+
+if MPI.COMM_WORLD.size==1:
+
+    import numpy as np
+    import pyvista as pv
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [500, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.smooth_shading = True
+    
+    mesh.vtk("ignore_mesh.vtk")
+    pvmesh2 = pv.read("ignore_mesh.vtk")
+    
+    pvmesh2.point_data["T"] = uw.function.evaluate(phi.sym[0], mesh.data)
+    pvmesh2.point_data["K"] = uw.function.evaluate(scalar.sym[0], mesh.data)
+
+
+    pl = pv.Plotter()
+
+    pl.add_mesh(pvmesh2, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="K",
+                  use_transparency=False, opacity=0.5, scalar_bar_args=sargs)
+    
+    pl.camera_position="xy"
+     
+    pl.show(cpos="xy")
+    # pl.screenshot(filename="test.png")  
+
+# %%
+pvmesh2.point_data["K"].max()
+
+# %%

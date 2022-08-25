@@ -1,5 +1,6 @@
 # Underworld Cython declarations to use PetscDS functionality
 # The following aren't available via petsc4py - Oct2021
+
 ctypedef int PetscInt
 ctypedef double PetscReal
 ctypedef double PetscScalar
@@ -20,3 +21,5 @@ cdef class PtrContainer:
     cdef PetscDSResidualFn* fns_residual
     cdef PetscDSJacobianFn* fns_jacobian
     cdef PetscDSResidualFn* fns_bcs
+
+

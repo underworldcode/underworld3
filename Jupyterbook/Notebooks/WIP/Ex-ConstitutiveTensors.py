@@ -56,6 +56,11 @@ stokes2 = uw.systems.Stokes(mesh2, velocityField=u2, pressureField=p2)
 stokes3 = uw.systems.Stokes(mesh3, velocityField=u3, pressureField=p3)
 
 # %%
+stokes2
+
+# %%
+
+# %%
 ## Tests 
 
 # The following tests are implemented with pytest. 
@@ -254,13 +259,20 @@ sympy.symarray('C',(d,d,d,d))
 sympy.Array(sympy.symarray('C',(d,d,d,d)))
 
 # %%
-Cmods = uw.systems.constitutive_models.Constitutive_Model(stokes2)
-Cmods.equation
+Cmods = uw.systems.constitutive_models.TransverseIsotropicFlowModel(mesh2.dim)
+Cmods.material_properties = Cmods.Parameters(eta_0=sympy.symbols("\eta"), eta_1 = sympy.symbols("\eta")/2, director=sympy.Matrix((1,1,1))/sympy.sqrt(3))
+Cmods.C
+
+# %%
+Cmods.material_properties = Cmods.Parameters(eta_0=sympy.symbols("\eta"), eta_1 = sympy.symbols("\eta"), director=sympy.Matrix((1,1,1))/sympy.sqrt(3))
+Cmods.C
+
+# %%
+Cmods
 
 # %%
 gradT = mesh2.vector.gradient(phi2.sym)
-Cmodp = uw.systems.constitutive_models.Constitutive_Model(poisson2)
-Cmodp.equation
+Cmodp = uw.systems.constitutive_models.Constitutive_Model(mesh2.dim, 1)
 
 
 # %%
@@ -277,15 +289,21 @@ Cmods.c
 # %%
 Cmods.flux(epsdot)
 
+
 # %%
-Cmodv = uw.systems.constitutive_models.ViscousFlowModel(stokes2)
-Cmodv.equation
+Cmodv = uw.systems.constitutive_models.ViscousFlowModel(2)
+Cmodv.material_properties = Cmodv.Parameters(viscosity=sympy.symbols("\eta_1"))
+
+# %%
+Cmodv
+
+# %%
 
 # %%
 Cmodv.flux(epsdot)
 
 # %%
-sympy.symbols(r'\mu')
+0/0
 
 # %%
 Cvisc = sympy.symbols(r'\eta') * uw.maths.tensor.rank4_identity(2)

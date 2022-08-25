@@ -9,7 +9,7 @@ import underworld3 as uw
 import underworld3.timing as timing
 import underworld3
 
-include "../petsc_extras.pxi"
+include "../cython/petsc_extras.pxi"
 
 # Make Cython aware of this type.
 cdef extern from "petsc.h" nogil:

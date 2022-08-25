@@ -43,6 +43,16 @@ Jupyterbook/Notebooks_old*
 
 .ipynb_checkpoints
 
+# Autobuilt documentation
+
+uw3_api_docs
+uw3_api_docs/*
+
+# pytest
+
+.pytest_cache/*
+
+
 # Visualisation artefacts
 
 ignore*vtk

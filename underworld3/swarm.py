@@ -6,7 +6,7 @@ import petsc4py.PETSc as PETSc
 from mpi4py import MPI
 
 import underworld3 as uw
-from underworld3 import _api_tools
+from   underworld3.utilities import _api_tools
 import underworld3.timing as timing
 
 comm = MPI.COMM_WORLD
@@ -88,7 +88,7 @@ class SwarmVariable(_api_tools.Stateful):
        
         # 1 - Average particles to nodes with distance weighted average
 
-        kd = uw.algorithms.KDTree(self._meshVar.coords)
+        kd = uw.kdtree.KDTree(self._meshVar.coords)
         kd.build_index()
 
         with self.swarm.access():
@@ -265,7 +265,7 @@ class IndexSwarmVariable(SwarmVariable):
 
         """
 
-        kd = uw.algorithms.KDTree(self._meshLevelSetVars[0].coords)
+        kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
         kd.build_index()
 
         for ii in range(self.indices):
@@ -527,7 +527,7 @@ class Swarm(_api_tools.Stateful):
         # generate tree if not avaiable
         if not self._index:
             with self.access():
-                self._index = uw.algorithms.KDTree(self.data)
+                self._index = uw.kdtree.KDTree(self.data)
 
         # get or generate map
         meshvar_coords = var._meshVar.coords

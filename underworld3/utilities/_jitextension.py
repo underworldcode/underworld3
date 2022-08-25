@@ -284,8 +284,8 @@ static inline double Heaviside_2 (double x, double mid_val) { return x < 0 ? 0 :
 
     # Create cython top content.
     pyx_str="""
-from underworld3.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn
-from underworld3.petsc_types cimport PtrContainer
+from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn
+from underworld3.cython.petsc_types cimport PtrContainer
 from libc.stdlib cimport malloc
 from libc.math cimport *
 

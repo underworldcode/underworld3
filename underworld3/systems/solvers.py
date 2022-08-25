@@ -8,15 +8,15 @@ from typing import Optional, Callable
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_SaddlePoint
-# from .._jitextension import getext  # , diff_fn1_wrt_fn2
+from   underworld3.systems import SNES_Scalar, SNES_Vector, SNES_SaddlePoint
 import underworld3.timing as timing
 
 
-# include "../petsc_extras.pxi"
-
-
 class SNES_Poisson(SNES_Scalar):
+    r"""
+    SNES-based poisson equation solver
+    
+    """
 
     instances = 0
 
@@ -97,6 +97,9 @@ class SNES_Poisson(SNES_Scalar):
 
 
 class SNES_Darcy(SNES_Scalar):
+    r"""
+    Darcy docstring ... 
+    """
 
     instances = 0
 
@@ -121,13 +124,13 @@ class SNES_Darcy(SNES_Scalar):
         super().__init__(mesh, u_Field, degree, solver_name, verbose)
 
         # Register the problem setup function
-        self._setup_problem_description = self.poisson_problem_description
+        self._setup_problem_description = self.darcy_problem_description
 
         # default values for properties
         self._f = 0.0
         self._k = 1.0
 
-        self._s = sympy.Matrix.zeros((1,self.mesh.dim))
+        self._s = sympy.Matrix.zeros(rows=1, cols=self.mesh.dim)
         self._s[1] = -1.0
 
         self._v = v_Field
@@ -139,14 +142,12 @@ class SNES_Darcy(SNES_Scalar):
 
         # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
         self._v_projector.smoothing = 0.0
-        darcy_flux = -self.constitutive_model.flux(self._L - self.s)
-        self._v_projector.uw_function = darcy_flux
 
     ## This function is the one we will typically over-ride to build specific solvers. 
     ## This example is a poisson-like problem with isotropic coefficients
 
     @timing.routine_timer_decorator
-    def poisson_problem_description(self):
+    def darcy_problem_description(self):
 
         dim = self.mesh.dim
         N   = self.mesh.N
@@ -155,11 +156,10 @@ class SNES_Darcy(SNES_Scalar):
         self._f0 = self.F0 - self.f
 
         # f1 residual term (integration by parts / gradients)
-        darcy_flux = -self.constitutive_model.flux(self._L - self.s)
-        self._f1 = self.F1 + darcy_flux
+        self._f1 = self.F1 + self.darcy_flux
 
-        # This needs to be refreshed too
-        self._v_projector.uw_function = darcy_flux  # ?? or the matrix version 
+        # Flow calculation
+        self._v_projector.uw_function = self.darcy_flux
 
         return 
 
@@ -170,24 +170,19 @@ class SNES_Darcy(SNES_Scalar):
     def f(self, value):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
-    
-    # Should not need this if the constitutive law provides it. 
-    @property
-    def k(self):
-        return self._k
-    @k.setter
-    def k(self, value):
-        self.is_setup = False
-        #self._k = sympify(value)
-        self._k = value
-   
+       
     @property
     def s(self):
         return self._s
     @s.setter
     def s(self, value):
         self.is_setup = False
-        self._s = sympify(value)
+        self._s = sympy.Matrix((value,))
+
+    @property 
+    def darcy_flux(self):
+        flux = self.constitutive_model.flux(self._L - self.s).T 
+        return flux
 
     @property
     def v(self):
@@ -232,6 +227,7 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
+        self._v_projector.uw_function = self.darcy_flux
         self._v_projector._setup_terms()
         super()._setup_terms()
 
@@ -246,90 +242,59 @@ class SNES_Darcy(SNES_Scalar):
 
 
 class SNES_Stokes(SNES_SaddlePoint):
+    r"""
+    This class provides functionality for a discrete representation
+    of the Stokes flow equations assuming an incompressibility (or near-incompressibility) constraint.
+
+    $$\frac{\partial}{\partial x_j} \left( \frac{\eta}{2} \left[ \frac{\partial u_i}{\partial x_j}  +  
+            \frac{\partial u_j}{\partial x_i} \right]\right) - \frac{\partial p}{\partial x_i} = f_i$$
+
+    $$\frac{\partial u_i}{\partial x_i} = 0$$
+
+    ## Properties
+
+      - The viscosity, \( \eta \) is provided by setting the `constitutive_model` property to 
+    one of the `uw.systems.constitutive_models` classes and populating the parameters. 
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - The bodyforce term, \( f_i \) is provided through the `bodyforce` property.
+
+      - The Augmented Lagrangian approach to application of the incompressibility
+    constraint is to penalise incompressibility in the Stokes equation by adding
+    \( \lambda \nabla \cdot \mathbf{u} \) when the weak form of the equations is constructed.
+    (this is in addition to the constraint equation, unlike in the classical penalty method).
+    This is activated by setting the `penalty` property to a non-zero floating point value. 
+
+      - A preconditioner is usually required for the saddle point system and this is provided 
+    though the `saddle_preconditioner` property. A common choice is \( 1/ \eta \) or 
+    \( 1 / \eta + 1/ \lambda \) if a penalty is used
+
+
+    ## Notes
+
+      - The interpolation order of the `pressureField` variable is used to determine the integration order of
+    the mixed finite element method and is usually lower than the order of the `velocityField` variable. 
+    
+      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False` 
+    (currently this is not implemented).
+
+      - The `solver_name` parameter sets the namespace for PETSc options and should be unique and 
+    compatible with the PETSc naming conventions.
+    """       
 
     instances = 0
 
     def __init__(self, 
                  mesh          : uw.discretisation.Mesh, 
-                 velocityField : Optional[uw.discretisation.MeshVariable] =None,
-                 pressureField : Optional[uw.discretisation.MeshVariable] =None,
-                 u_degree      : Optional[int]                           =2, 
-                 p_degree      : Optional[int]                           =None,
-                 p_continous   : Optional[bool]                          =True,
-                 solver_name   : Optional[str]                           ="",
-                 verbose       : Optional[str]                           =False,
-                 penalty       : Optional[float]                         = 0.0,
-                 _Ppre_fn      = None
+                 velocityField : uw.discretisation.MeshVariable,
+                 pressureField : uw.discretisation.MeshVariable,
+                 p_continous   : Optional[bool]     =True,
+                 solver_name   : Optional[str]      ="",
+                 verbose       : Optional[str]      =False,
+                 saddle_preconditioner      = None
                 ):
-        """
-        This class provides functionality for a discrete representation
-        of the Stokes flow equations.
-
-        Specifically, the class uses a mixed finite element implementation to
-        construct a system of linear equations which may then be solved.
-
-        The strong form of the given boundary value problem, for :math:`f`,
-        :math:`g` and :math:`h` given, is
-
-        .. math::
-            \\begin{align}
-            \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
-            \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
-            \\end{align}
-
-        where,
-
-        * :math:`\\sigma_{i,j}` is the stress tensor
-        * :math:`u_i` is the velocity,
-        * :math:`p`   is the pressure,
-        * :math:`f_i` is a body force,
-        * :math:`g_i` are the velocity boundary conditions (DirichletCondition)
-        * :math:`h_i` are the traction boundary conditions (NeumannCondition).
-
-        The problem boundary, :math:`\\Gamma`,
-        admits the decompositions :math:`\\Gamma=\\Gamma_{g_i}\\cup\\Gamma_{h_i}` where
-        :math:`\\emptyset=\\Gamma_{g_i}\\cap\\Gamma_{h_i}`. The equivalent weak form is:
-
-        .. math::
-            \\int_{\Omega} w_{(i,j)} \\sigma_{ij} \\, d \\Omega = \\int_{\\Omega} w_i \\, f_i \\, d\\Omega + \sum_{j=1}^{n_{sd}} \\int_{\\Gamma_{h_j}} w_i \\, h_i \\,  d \\Gamma
-
-        where we must find :math:`u` which satisfies the above for all :math:`w`
-        in some variational space.
-
-        Parameters
-        ----------
-        mesh : 
-            The mesh object which forms the basis for problem discretisation,
-            domain specification, and parallel decomposition.
-        velocityField :
-            Optional. Variable used to record system velocity. If not provided,
-            it will be generated and will be available via the `u` stokes object property.
-        pressureField :
-            Optional. Variable used to record system pressure. If not provided,
-            it will be generated and will be available via the `p` stokes object property.
-            If provided, it is up to the user to ensure that it is of appropriate order
-            relative to the provided velocity variable (usually one order lower degree).
-        u_degree :
-            Optional. The polynomial degree for the velocity field elements.
-        p_degree :
-            Optional. The polynomial degree for the pressure field elements. 
-            If provided, it is up to the user to ensure that it is of appropriate order
-            relative to the provided velocitxy variable (usually one order lower degree).
-            If not provided, it will be set to one order lower degree than the velocity field.
-        solver_name :
-            Optional. The petsc options prefix for the SNES solve. This is important to provide
-            a name space when multiples solvers are constructed that may have different SNES options.
-            For example, if you name the solver "stokes", the SNES options such as `snes_rtol` become `stokes_snes_rtol`.
-            The default is blank, and an underscore will be added to the end of the solver name if not already present.
  
-        Notes
-        -----
-        Constructor must be called by collectively all processes.
-
-        """       
-
         SNES_Stokes.instances += 1
 
         if solver_name == "":
@@ -338,16 +303,8 @@ class SNES_Stokes(SNES_SaddlePoint):
         self._penalty   = 0.0
         self._viscosity = 1.0
 
-        if _Ppre_fn is None:
-            self._Ppre_fn = 1.0 / self.viscosity
-        else:
-            self._Ppre_fn = _Ppre_fn
-
-        super().__init__(mesh, velocityField, pressureField, 
-                         u_degree, p_degree, p_continous,
-                         solver_name,verbose, self._Ppre_fn )
-
-
+        super().__init__(mesh, velocityField, pressureField,
+                         p_continous, solver_name, verbose )
 
         # User-facing operations are matrices / vectors by preference
         self._E = (self._L + self._L.transpose())/2
@@ -400,28 +357,13 @@ class SNES_Stokes(SNES_SaddlePoint):
     def div_u(self):
         return self.mesh.vector.divergence(self.u.sym)
 
-
-    ## We should not need this - the constitutive law will do it for us
-    @property
-    def viscosity(self):
-        return self._viscosity
-    @viscosity.setter
-    def viscosity(self, value):
-        self.is_setup = False
-        symval = sympify(value)
-        if isinstance(symval, sympy.vector.Vector):
-            raise RuntimeError("Viscosity appears to be a vector quantity. Scalars are required.")
-        if isinstance(symval, sympy.Matrix):
-            raise RuntimeError("Viscosity appears to be a matrix quantity. Scalars are required.")
-        self._viscosity = symval
-
     @property
     def bodyforce(self):
         return self._bodyforce
     @bodyforce.setter
     def bodyforce(self, value):
         self.is_setup = False
-        # symval = sympify(value)    
+        symval = sympify(value)    
         self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
@@ -432,8 +374,6 @@ class SNES_Stokes(SNES_SaddlePoint):
         self.is_setup = False
         symval = sympify(value)
         self._penalty = symval
-
-
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -535,7 +475,7 @@ class SNES_Projection(SNES_Scalar):
     @uw_function.setter
     def uw_function(self, user_uw_function):
         self.is_setup = False
-        self._uw_function = user_uw_function
+        self._uw_function = sympy.Matrix([user_uw_function])
 
     @property
     def smoothing(self):
@@ -683,7 +623,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
     Solver can be given boundary conditions that
     the continuous function needs to satisfy and 
     non-linear constraints will be handled by SNES
-    """
+    
 
     instances = 0
 
@@ -698,18 +638,15 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         SNES_Solenoidal_Vector_Projection.instances += 1
 
         if solver_name == "":
-            solver_name = "iVProj{}_".format(self.instances)
+            solver_name = "iVProj{}_".format(self.instances) 
 
         self._constraint_field = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="VSP_p{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=u_Field.degree-1 )
 
         super().__init__(mesh, 
                          u_Field,
                          self._constraint_field, 
-                         u_Field.degree, 
-                         self._constraint_field.degree,
                          True, # continuous constraint field  
-                         solver_name, verbose,
-                        _Ppre_fn  = 1.0  # The saddle point solver assumes a "viscosity" term by default in the preconditioner - please move this to Stokes !! 
+                         solver_name, verbose
                         )
 
         self._setup_problem_description = self.constrained_projection_problem_description
@@ -766,7 +703,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_SaddlePoint):
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
-
+"""
 
 #################################################
 # Characteristics-based advection-diffusion 
@@ -933,29 +870,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             nswarm.advection(self._V.fn, -timestep, order=2, corrector=False, 
                               restore_points_to_domain_func=self.restore_points_to_domain_func)
 
-            '''    
-            with nswarm.access(nswarm.particle_coordinates):
-                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-                mid_pt_coords = nswarm.data[...] - 0.5 * delta_t * v_at_Vpts
-
-                # validate_coords to ensure they live within the domain (or there will be trouble)
-                if self.restore_points_to_domain_func is not None:
-                    mid_pt_coords = self.restore_points_to_domain_func(mid_pt_coords)
-
-                nswarm.data[...] = mid_pt_coords
-
-            ## Let the swarm be updated, and then move the rest of the way
-
-            with nswarm.access(nswarm.particle_coordinates):
-                v_at_Vpts = uw.function.evaluate(v_soln.fn, nswarm.data).reshape(-1,self.mesh.dim)
-                new_coords = nX0.data[...] - delta_t * v_at_Vpts
-
-                # validate_coords to ensure they live within the domain (or there will be trouble)
-                if self.restore_points_to_domain_func is not None:
-                    new_coords = self.restore_points_to_domain_func(new_coords)
-
-                nswarm.data[...] = new_coords
-            '''
 
         else:  # launch points (T*) provided by omniscience user
             with nswarm.access(nswarm.particle_coordinates):
@@ -1169,7 +1083,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                  solver_name     : Optional[str]                           = "",
                  verbose         : Optional[bool]                          = False,
                  projection      : Optional[bool]                          = False,   
-                 _Ppre_fn      = None,
+                 saddle_preconditioner  = None,
                  restore_points_func: Callable = None
                   ):
 
@@ -1186,17 +1100,17 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self._u_star_raw_fn = velocityStar_fn
 
 
-        if _Ppre_fn is None:
-            self._Ppre_fn = 1.0 / (self.viscosity + self.rho / self.delta_t)
+        if saddle_preconditioner is None:
+            self._saddle_preconditioner = 1.0 / (self.viscosity + self.rho / self.delta_t)
         else:
-            self._Ppre_fn = _Ppre_fn
+            self._saddle_preconditioner = saddle_preconditioner
 
         ## Parent class will set up default values etc
         super().__init__(  
                  mesh, velocityField, pressureField,
                  u_degree, p_degree, p_continous,
                  solver_name,  
-                 verbose, penalty, _Ppre_fn  )
+                 verbose, penalty  )
 
         if projection:
             # set up a projection solver 

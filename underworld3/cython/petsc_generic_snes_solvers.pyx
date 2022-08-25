@@ -1,20 +1,18 @@
 from xmlrpc.client import Boolean
+
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
 
 from typing import Optional
-
-
 from petsc4py import PETSc
 
 import underworld3 
 import underworld3 as uw
-from .._jitextension import getext  #, diff_fn1_wrt_fn2
+from   underworld3.utilities._jitextension import getext  
 import underworld3.timing as timing
 
-include "../petsc_extras.pxi"
-
+include "petsc_extras.pxi"
 
 ## Note, a generic base class could be introduced here 
 ## which would have the validation, essential properties,
@@ -23,7 +21,10 @@ include "../petsc_extras.pxi"
 
 
 class SNES_Scalar:
+    r"""
+    SNES Scalar solver
 
+    """
     instances = 0
 
     @timing.routine_timer_decorator
@@ -119,6 +120,17 @@ class SNES_Scalar:
         self._constitutive_model = model
         self._constitutive_model.solver = self 
 
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        ## Docstring (static)
+        docstring = dedent(self.__doc__)
+        docstring = docstring.replace('\(','$').replace('\)','$')
+        display(Markdown(docstring))
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+        ## Usually, there are constitutive parameters that can be included in the iputho display 
 
     def _build_dm_and_mesh_discretisation(self):
 
@@ -393,7 +405,10 @@ class SNES_Scalar:
 # general enough to have one class to handle Vector and Scalar
 
 class SNES_Vector:
+    r"""
+    SNES Vector solver
 
+    """
     instances = 0
 
     @timing.routine_timer_decorator
@@ -461,6 +476,19 @@ class SNES_Vector:
         self.mesh._equation_systems_register.append(self)
 
         super().__init__()
+
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        ## Docstring (static)
+        docstring = dedent(self.__doc__)
+        docstring = docstring.replace('\(','$').replace('\)','$')
+        display(Markdown(docstring))
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+        ## Usually, there are constitutive parameters that can be included in the iputho display 
+
 
     @property
     def F0(self):
@@ -766,6 +794,74 @@ class SNES_Vector:
 ### =================================
 
 class SNES_SaddlePoint:
+    r"""
+    This class provides functionality for a discrete representation
+    of the Stokes flow equations.
+
+    Specifically, the class uses a mixed finite element implementation to
+    construct a system of linear equations which may then be solved.
+
+    The strong form of the given boundary value problem, for :math:`f`,
+    :math:`g` and :math:`h` given, is
+
+    .. math::
+        \\begin{align}
+        \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
+        u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
+        u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
+        \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
+        \\end{align}
+
+    where,
+
+    * :math:`\\sigma_{i,j}` is the stress tensor
+    * :math:`u_i` is the velocity,
+    * :math:`p`   is the pressure,
+    * :math:`f_i` is a body force,
+    * :math:`g_i` are the velocity boundary conditions (DirichletCondition)
+    * :math:`h_i` are the traction boundary conditions (NeumannCondition).
+
+    The problem boundary, :math:`\\Gamma`,
+    admits the decompositions :math:`\\Gamma=\\Gamma_{g_i}\\cup\\Gamma_{h_i}` where
+    :math:`\\emptyset=\\Gamma_{g_i}\\cap\\Gamma_{h_i}`. The equivalent weak form is:
+
+    .. math::
+        \\int_{\Omega} w_{(i,j)} \\sigma_{ij} \\, d \\Omega = \\int_{\\Omega} w_i \\, f_i \\, d\\Omega + \sum_{j=1}^{n_{sd}} \\int_{\\Gamma_{h_j}} w_i \\, h_i \\,  d \\Gamma
+
+    where we must find :math:`u` which satisfies the above for all :math:`w`
+    in some variational space.
+
+    Parameters
+    ----------
+    mesh : 
+        The mesh object which forms the basis for problem discretisation,
+        domain specification, and parallel decomposition.
+    velocityField :
+        Optional. Variable used to record system velocity. If not provided,
+        it will be generated and will be available via the `u` stokes object property.
+    pressureField :
+        Optional. Variable used to record system pressure. If not provided,
+        it will be generated and will be available via the `p` stokes object property.
+        If provided, it is up to the user to ensure that it is of appropriate order
+        relative to the provided velocity variable (usually one order lower degree).
+    u_degree :
+        Optional. The polynomial degree for the velocity field elements.
+    p_degree :
+        Optional. The polynomial degree for the pressure field elements. 
+        If provided, it is up to the user to ensure that it is of appropriate order
+        relative to the provided velocitxy variable (usually one order lower degree).
+        If not provided, it will be set to one order lower degree than the velocity field.
+    solver_name :
+        Optional. The petsc options prefix for the SNES solve. This is important to provide
+        a name space when multiples solvers are constructed that may have different SNES options.
+        For example, if you name the solver "stokes", the SNES options such as `snes_rtol` become `stokes_snes_rtol`.
+        The default is blank, and an underscore will be added to the end of the solver name if not already present.
+
+    Notes
+    -----
+    Constructor must be called by collectively all processes.
+
+    """   
 
     instances = 0   # count how many of these there are in order to create unique private mesh variable ids
 
@@ -774,90 +870,17 @@ class SNES_SaddlePoint:
                  mesh          : underworld3.discretisation.Mesh, 
                  velocityField : Optional[underworld3.discretisation.MeshVariable] =None,
                  pressureField : Optional[underworld3.discretisation.MeshVariable] =None,
-                 u_degree      : Optional[int]                           =2, 
-                 p_degree      : Optional[int]                           =None,
                  p_continuous  : Optional[bool]                          =True,
-                 solver_name   : Optional[str]                           ="stokes_",
+                 solver_name   : Optional[str]                           ="saddle_pt_",
                  verbose       : Optional[str]                           =False,
-                 _Ppre_fn      = None
-                  ):
-        """
-        This class provides functionality for a discrete representation
-        of the Stokes flow equations.
-
-        Specifically, the class uses a mixed finite element implementation to
-        construct a system of linear equations which may then be solved.
-
-        The strong form of the given boundary value problem, for :math:`f`,
-        :math:`g` and :math:`h` given, is
-
-        .. math::
-            \\begin{align}
-            \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
-            u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
-            \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
-            \\end{align}
-
-        where,
-
-        * :math:`\\sigma_{i,j}` is the stress tensor
-        * :math:`u_i` is the velocity,
-        * :math:`p`   is the pressure,
-        * :math:`f_i` is a body force,
-        * :math:`g_i` are the velocity boundary conditions (DirichletCondition)
-        * :math:`h_i` are the traction boundary conditions (NeumannCondition).
-
-        The problem boundary, :math:`\\Gamma`,
-        admits the decompositions :math:`\\Gamma=\\Gamma_{g_i}\\cup\\Gamma_{h_i}` where
-        :math:`\\emptyset=\\Gamma_{g_i}\\cap\\Gamma_{h_i}`. The equivalent weak form is:
-
-        .. math::
-            \\int_{\Omega} w_{(i,j)} \\sigma_{ij} \\, d \\Omega = \\int_{\\Omega} w_i \\, f_i \\, d\\Omega + \sum_{j=1}^{n_{sd}} \\int_{\\Gamma_{h_j}} w_i \\, h_i \\,  d \\Gamma
-
-        where we must find :math:`u` which satisfies the above for all :math:`w`
-        in some variational space.
-
-        Parameters
-        ----------
-        mesh : 
-            The mesh object which forms the basis for problem discretisation,
-            domain specification, and parallel decomposition.
-        velocityField :
-            Optional. Variable used to record system velocity. If not provided,
-            it will be generated and will be available via the `u` stokes object property.
-        pressureField :
-            Optional. Variable used to record system pressure. If not provided,
-            it will be generated and will be available via the `p` stokes object property.
-            If provided, it is up to the user to ensure that it is of appropriate order
-            relative to the provided velocity variable (usually one order lower degree).
-        u_degree :
-            Optional. The polynomial degree for the velocity field elements.
-        p_degree :
-            Optional. The polynomial degree for the pressure field elements. 
-            If provided, it is up to the user to ensure that it is of appropriate order
-            relative to the provided velocitxy variable (usually one order lower degree).
-            If not provided, it will be set to one order lower degree than the velocity field.
-        solver_name :
-            Optional. The petsc options prefix for the SNES solve. This is important to provide
-            a name space when multiples solvers are constructed that may have different SNES options.
-            For example, if you name the solver "stokes", the SNES options such as `snes_rtol` become `stokes_snes_rtol`.
-            The default is blank, and an underscore will be added to the end of the solver name if not already present.
- 
-        Notes
-        -----
-        Constructor must be called by collectively all processes.
-
-        """       
+                ):
+     
 
         SNES_SaddlePoint.instances += 1
 
         self.mesh = mesh
         self.verbose = verbose
         self.p_continous = p_continuous
-
-        if (velocityField is None) ^ (pressureField is None):
-            raise ValueError("You must provided *both* `pressureField` and `velocityField`, or neither, but not one or the other.")
         
         # I expect the following to break for anyone who wants to name their solver _stokes__ etc etc (LM)
 
@@ -890,19 +913,6 @@ class SNES_SaddlePoint:
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
-
-        ## Full batman ... from now on
-        ##
-        ##if not velocityField:
-        ##    if p_degree==None:
-        ##        p_degree = u_degree - 1
-        ##
-        ##    # create public velocity/pressure variables
-        ##    self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="usp_{}".format(self.instances), vtype=uw.VarType.VECTOR, degree=u_degree )
-        ##    self._p = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,        name="psp_{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=p_degree )
-        ## else:
-
-
         self._u = velocityField
         self._p = pressureField
 
@@ -924,18 +934,16 @@ class SNES_SaddlePoint:
         self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.PF0 = 0.0
 
-        self._Ppre_fn = _Ppre_fn
 
         self.bcs = []
         self._constitutive_model = None
+        self._saddle_preconditioner = sympy.sympify(1)
 
 
         # Construct strainrate tensor for future usage.
         # Grab gradients, and let's switch out to sympy.Matrix notation
         # immediately as it is probably cleaner for this.
         N = mesh.N
-
-        ## sympy.Array 
   
         self._L = self._u.sym.jacobian(self.mesh.X)
         self._G = self._p.sym.jacobian(self.mesh.X)
@@ -944,11 +952,22 @@ class SNES_SaddlePoint:
         self.is_setup = False
         super().__init__()
 
-    def _build_dm_and_mesh_discretisation(self):
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
 
+        ## Docstring (static)
+        docstring = dedent(self.__doc__)
+        docstring = docstring.replace('\(','$').replace('\)','$')
+        display(Markdown(docstring))
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+        ## Usually, there are constitutive parameters that can be included in the iputho display 
+
+
+    def _build_dm_and_mesh_discretisation(self):
         """
         Most of what is in the init phase that is not called by _setup_terms()
-
         """
         
         mesh = self.mesh
@@ -1014,6 +1033,7 @@ class SNES_SaddlePoint:
     @property
     def u(self):
         return self._u
+
     @property
     def p(self):
         return self._p
@@ -1021,15 +1041,20 @@ class SNES_SaddlePoint:
     @property
     def constitutive_model(self):
         return self._constitutive_model
-
     @constitutive_model.setter
     def constitutive_model(self, model):
         # Check / todo - is the model appropriate for SNES_SaddlePoint solvers ?
-
         self.is_setup = False
         self._constitutive_model = model
         self._constitutive_model.solver = self 
 
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, function):
+        self.is_setup = False
+        self._saddle_preconditioner = function
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, fn, boundaries, components):
@@ -1075,7 +1100,6 @@ class SNES_SaddlePoint:
 
         return 
 
-
     def validate_solver(self):
         """Checks to see if the required properties have been set"""
 
@@ -1086,12 +1110,10 @@ class SNES_SaddlePoint:
             print(f"{name}.u = uw.discretisation.MeshVariable(...)")
             raise RuntimeError("Unknowns: MeshVariable is required")       
 
-
         if not isinstance(self.p, uw.discretisation.MeshVariable):
             print(f"Vector of constraint unknowns required")
             print(f"{name}.p = uw.discretisation.MeshVariable(...)")
             raise RuntimeError("Constraint (Pressure): MeshVariable is required")       
-
 
         if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
             print(f"Constitutive model required")
@@ -1169,10 +1191,7 @@ class SNES_SaddlePoint:
 
         ## PP block is a preconditioner term, not auto-constructed
 
-        if self._Ppre_fn is None:
-            self._pp_G0 = 1/(self.viscosity)
-        else:
-            self._pp_G0 = self._Ppre_fn
+        self._pp_G0 = self.saddle_preconditioner
 
         fns_jacobian.append(self._pp_G0)
 

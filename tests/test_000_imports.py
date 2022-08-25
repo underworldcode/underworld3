@@ -41,8 +41,8 @@ def test_underworld_systems_import():
 def test_underworld_tools_import():
     import underworld3.tools
 
-def test_underworld_algorithms_import():
-    import underworld3.algorithms
+def test_underworld_kdtree_import():
+    import underworld3.kdtree
     
 def test_underworld_mpi_import():
     import underworld3.mpi

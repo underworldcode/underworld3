@@ -23,7 +23,7 @@ def test_single_coord(n,dim,coords):
     pts = np.random.random( size=(n,dim) )
 
     # Build our index
-    index = uw.algorithms.KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
     index.build_index()
 
     # Use KDTree to find closest point to a coord
@@ -52,7 +52,7 @@ def test_self_points(n,dim):
     pts = np.random.random( size=(n,dim) )
 
     # Build our index
-    index = uw.algorithms.KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
     index.build_index()
 
     # Use KDTree to find closest point to a coord
@@ -76,7 +76,7 @@ def test_mesh_verts(res, dim):
     to mesh verts.
     """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(res,)*dim)
-    index = uw.algorithms.KDTree(mesh.data)
+    index = uw.kdtree.KDTree(mesh.data)
     index.build_index()
 
     # Get copy of mesh vertices, and add some noise, but only a small 
@@ -108,7 +108,7 @@ def test_mesh_centroid(res,dim,ppcell):
     centroids = np.zeros((res**dim,dim))
     for index in range(res**dim):
         centroids[index] = mesh.dm.computeCellGeometryFVM(index)[1]
-    index = uw.algorithms.KDTree(centroids)
+    index = uw.kdtree.KDTree(centroids)
     index.build_index()
 
     # add and populate swarm

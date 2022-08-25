@@ -8,12 +8,12 @@ from petsc4py.PETSc cimport PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
 
-from underworld3.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
-from underworld3.petsc_types cimport PetscErrorCode 
-from underworld3.petsc_types cimport DMBoundaryConditionType
-from underworld3.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
-from underworld3.petsc_types cimport PtrContainer
-from underworld3.petsc_gen_xdmf import generateXdmf
+from underworld3.cython.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
+from underworld3.cython.petsc_types cimport PetscErrorCode 
+from underworld3.cython.petsc_types cimport DMBoundaryConditionType
+from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
+from underworld3.cython.petsc_types cimport PtrContainer
+from underworld3.utilities.petsc_gen_xdmf import generateXdmf
 
 ctypedef enum PetscBool:
     PETSC_FALSE

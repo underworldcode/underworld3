@@ -9,7 +9,6 @@ import underworld3 as uw
 from underworld3 import _api_tools
 import underworld3.timing as timing
 
-include "./petsc_extras.pxi"
 
 @PETSc.Log.EventDecorator()
 def _from_gmsh(filename, comm=None):
@@ -138,7 +137,7 @@ class Mesh(_api_tools.Stateful):
         # in a bundle to avoid the mesh being required as an argument
         # since this could lead to things going out of sync
 
-        self.vector = uw.maths.mesh_vector_calculus(mesh=self)
+        self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()
 
@@ -167,15 +166,16 @@ class Mesh(_api_tools.Stateful):
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim, self.cdim, self.isSimplex, self.degree,  "meshproj_{}_".format(self.mesh_instances), PETSc.COMM_WORLD)
         
-        # self.dm.projectCoordinates(self.petsc_fe)
+        # This should replace the cython code
+        self.dm.projectCoordinates(self.petsc_fe)
 
-        cdmfe = self.petsc_fe 
+        # cdmfe = self.petsc_fe 
       
-        cdef FE c_fe = cdmfe
-        cdef DM c_dm = self.dm
-        ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
+        # cdef FE c_fe = cdmfe
+        # cdef DM c_dm = self.dm
+        # ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
 
-
+    
         # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
         self._coord_array[(self.isSimplex,self.degree)] = arr.reshape(-1, self.cdim).copy()
@@ -338,13 +338,17 @@ class Mesh(_api_tools.Stateful):
                 # increment variable state
                 var._increment()
 
+
+        # We should be able to replace the cython code below ... createsubDM is now wrapped
+
         class exit_manager:
             def __init__(self,mesh): self.mesh = mesh
             def __enter__(self): pass
             def __exit__(self,*args):
-                cdef DM subdm
-                cdef DM dm
-                cdef PetscInt fields
+            #    cdef DM subdm
+            #    cdef DM dm
+            #    cdef PetscInt fields
+
                 for var in self.mesh.vars.values():
                     # only de-access variables we have set access for.
                     if var not in deaccess_list:
@@ -354,15 +358,20 @@ class Mesh(_api_tools.Stateful):
                         var._data.flags.writeable = var._old_data_flag
                     # perform sync for any modified vars.
                     if var in writeable_vars:
-                        subdm = PETSc.DM()
-                        dm = self.mesh.dm
-                        fields = var.field_id
-                        ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+                        # subdm = PETSc.DM()
+                        # dm = self.mesh.dm
+                        # fields = var.field_id
+                        # ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+
+                        indexset, subdm = self.mesh.dm.createSubDM(var.field_id)
+
                         # sync ghost values
                         subdm.localToGlobal(var.vec,var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec,var.vec, addv=False)
-                        subdm.destroy()
+
+                        # subdm.destroy()
                         self.mesh._stale_lvec = True
+
                     var._data = None
                     var._set_vec(available=False)
                     var._is_accessed = False
@@ -490,6 +499,7 @@ class Mesh(_api_tools.Stateful):
             return self._coord_array[key]
 
         # otherwise create and return
+        '''
         cdmOld = self.dm.getCoordinateDM()
         cdmNew = cdmOld.clone()
         options = PETSc.Options()
@@ -502,22 +512,42 @@ class Mesh(_api_tools.Stateful):
         coordsOld = self.dm.getCoordinates()
         coordsNewG = cdmNew.getGlobalVec()
         coordsNewL = cdmNew.getLocalVec()
+
         cdef Mat c_matInterp = matInterp
         cdef Vec c_coordsOld = coordsOld
         cdef Vec c_coordsNewG = coordsNewG
         ierr = MatInterpolate(c_matInterp.mat, c_coordsOld.vec, c_coordsNewG.vec); CHKERRQ(ierr)
         cdmNew.globalToLocal(coordsNewG,coordsNewL)
+        '''
+
+        ## Cython-free version of the code above
+        
+        dmold = self.dm.getCoordinateDM()
+        dmnew = dmold.clone()
+        options = PETSc.Options()
+        options.setValue("coordinterp_petscspace_degree", var.degree) # the var.degree argument does not appear to be honoured
+        dmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
+        dmnew.setField(0, dmfe)
+        dmnew.createDS()
+        matInterp, vecScale = dmold.createInterpolation(dmnew)
+        coordsOld  = self.dm.getCoordinates()
+        coordsNewL = dmnew.getLocalVec()
+        coordsNewG = matInterp * coordsOld
+        dmnew.globalToLocal(coordsNewG, coordsNewL)
+        
+
         arr = coordsNewL.array
         # reshape and grab copy
         arrcopy = arr.reshape(-1,self.cdim).copy()
         # record into coord array
         self._coord_array[key] = arrcopy
-        # clean up
-        cdmNew.restoreLocalVec(coordsNewL)
-        cdmNew.restoreGlobalVec(coordsNewG)
-        cdmNew.destroy()
-        cdmfe.destroy()
-        # return
+
+        # clean up (if cython)
+        # cdmNew.restoreLocalVec(coordsNewL)
+        # cdmNew.restoreGlobalVec(coordsNewG)
+        # cdmNew.destroy()
+        # cdmfe.destroy()
+        
         return arrcopy
 
     @timing.routine_timer_decorator
@@ -555,7 +585,7 @@ class Mesh(_api_tools.Stateful):
             with tempSwarm.access():
                 # Build index on particle coords
                 self._indexCoords = tempSwarm.particle_coordinates.data.copy()
-                self._index = uw.algorithms.KDTree(self._indexCoords)
+                self._index = uw.kdtree.KDTree(self._indexCoords)
                 self._index.build_index()
                 # Grab mapping back to cell_ids. 
                 # Note that this is the numpy array that we eventually return from this 
@@ -590,22 +620,20 @@ class Mesh(_api_tools.Stateful):
 
         return
  
-    def get_min_radius(self) -> double:
+    def get_min_radius(self) -> float:
         """
         This method returns the minimum distance from any cell centroid to a face.
         It wraps to the PETSc `DMPlexGetMinRadius` routine. 
         """
 
-        cdef Vec cellgeom = Vec()
-        cdef Vec facegeom = Vec()
-        cdef DM dm = self.dm
+        ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and 
+        ## does not obtain the minimum radius for the mesh.
+
+        from underworld3.petsc_discretisation import petsc_fvm_get_min_radius
 
         if (not hasattr(self,"_min_radius")) or (self._min_radius==None):
-            # Calling DMPlexComputeGeometryFVM generates the value returned by DMPlexGetMinRadius
-            DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
-            self._min_radius = dm.getMinRadius()
-            cellgeom.destroy()
-            facegeom.destroy()
+            self._min_radius = petsc_fvm_get_min_radius(self)
+
         return self._min_radius
 
 
@@ -680,6 +708,7 @@ class MeshVariable(_api_tools.Stateful):
         self._gvec = None
         self._data = None
         self._is_accessed = False
+        self._available = False
 
         if mesh._accessed:
             raise RuntimeError("It is not possible to add new variables to a mesh after existing variables have been accessed.")
@@ -807,19 +836,27 @@ class MeshVariable(_api_tools.Stateful):
     #    return self._f
 
     def _set_vec(self, available):
-        cdef DM subdm = PETSc.DM()
-        cdef DM dm = self.mesh.dm
-        cdef PetscInt fields = self.field_id
-        if self._lvec==None:
+        # cdef DM subdm = PETSc.DM()
+        # cdef DM dm = self.mesh.dm
+        # cdef PetscInt fields = self.field_id
+        # if self._lvec==None:
             # Create a subdm for this variable.
             # This allows us to generate a local vector.
-            ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+        #    ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+
+        # This should achieve the same effect as the cython code above
+
+        if self._lvec==None:
+            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+
             self._lvec  = subdm.createLocalVector()
             self._lvec.zeroEntries()       # not sure if required, but to be sure. 
             self._gvec  = subdm.createGlobalVector()
             self._gvec.setName(self.name)  # This is set for checkpointing. 
             self._gvec.zeroEntries()
-            ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
+
+        #    ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
+
         self._available = available
 
     def __del__(self):
