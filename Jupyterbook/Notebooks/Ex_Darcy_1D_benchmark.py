@@ -72,8 +72,11 @@ if uw.mpi.size==1:
 # Create Darcy Solver
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
+darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
 darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=1)
+
+
 
 # +
 # Groundwater pressure boundary condition on the bottom wall
@@ -84,12 +87,12 @@ initialPressure = -1.0*y*max_pressure
 # +
 # set up two materials
 
-interfaceY = -0.25
+interfaceY = -0.26
 
 from sympy import Piecewise, ceiling, Abs
 
 k1 = 1.0
-k2 = 1.0e-3
+k2 = 1.0e-4
 
 # The piecewise version
 kFunc = Piecewise( ( k1,  y >= interfaceY ),
@@ -226,8 +229,6 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle='--', label='Ana
 ax1.grid('on')
 ax1.legend()
 # -
-
-
 
 
 
