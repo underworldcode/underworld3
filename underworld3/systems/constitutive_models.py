@@ -230,14 +230,14 @@ class ViscousFlowModel(Constitutive_Model):
         viscosity = self._material_properties.viscosity
 
         try:
-            self._c = uw.maths.tensor.rank4_identity(d) * viscosity
+            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
         except:
             d = self.dim
             dv = uw.maths.tensor.idxmap[d][0]
             if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv,dv):
-                self._c = uw.maths.tensor.mandel_to_rank4(viscosity, d)
+                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
             elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d,d,d,d):
-                self._c = viscosity
+                self._c = 2 * viscosity
             else:
                 raise RuntimeError("Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor")
         return
