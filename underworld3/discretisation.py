@@ -629,7 +629,7 @@ class Mesh(_api_tools.Stateful):
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and 
         ## does not obtain the minimum radius for the mesh.
 
-        from underworld3.petsc_discretisation import petsc_fvm_get_min_radius
+        from underworld3.cython.petsc_discretisation import petsc_fvm_get_min_radius
 
         if (not hasattr(self,"_min_radius")) or (self._min_radius==None):
             self._min_radius = petsc_fvm_get_min_radius(self)
