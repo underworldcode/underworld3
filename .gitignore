@@ -36,6 +36,7 @@ Jupyterbook/static_slides
 *slideshows*
 Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
+package-lock.json
 
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 

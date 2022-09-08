@@ -1,0 +1,42 @@
+# Underworld3 project configuration 
+# toml cheatsheet: https://quickref.me/toml
+
+[project]
+name = "Underworld3"
+version = "0.2"
+authors = [
+  { name="Prof Diablo", email="diablo@underworldcode.org" },
+]
+description = "Underworld3 Geodynamics"
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/underworldcode/underworld3"
+"Bug Tracker" = "https://github.com/underworldcode/underworld3/issues"
+
+[build-system]
+requires = [
+  "setuptools >= 40.9.0",
+  "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+python_files = ['cookbook_*.py', 'test_*.py', 'example_*.py']
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 120
+verbose = true
+target-version = ['py36', 'py37', 'py38', 'py39', 'py310']
+include = '\.pyi?$'
+
+
