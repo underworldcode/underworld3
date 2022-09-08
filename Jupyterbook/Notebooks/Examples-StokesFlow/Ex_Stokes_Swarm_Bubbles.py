@@ -198,8 +198,6 @@ stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
 
 stokes.solve(zero_init_guess=True)
 
-
-
 # +
 # check the solution
 
@@ -235,27 +233,39 @@ if uw.mpi.size == 1 and render:
     
     # point sources at cell centres
     
-    points = np.zeros((meshbox._centroids.shape[0],3))
-    points[:,0] = meshbox._centroids[:,0]
-    points[:,1] = meshbox._centroids[:,1]
-    point_cloud = pv.PolyData(points)
+    cpoints = np.zeros((meshbox._centroids.shape[0],3))
+    cpoints[:,0] = meshbox._centroids[:,0]
+    cpoints[:,1] = meshbox._centroids[:,1]
+    cpoint_cloud = pv.PolyData(cpoints)
     
-    pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", 
-                                              integration_direction="both",
-                                              max_steps=250, surface_streamlines=True
+    pvstream = pvmesh.streamlines_from_source(cpoint_cloud, vectors="V", integrator_type=45,
+                                              integration_direction="forward", compute_vorticity=False,
+                                              max_steps=25, surface_streamlines=True
                                              )
-  
     
+    with swarm.access():
+        spoints = np.zeros((swarm.data.shape[0], 3))
+        spoints[:, 0] = swarm.data[:, 0]
+        spoints[:, 1] = swarm.data[:, 1]
+        spoints[:, 2] = 0.0
+
+    spoint_cloud = pv.PolyData(spoints)
     
-    pvstream = pvmesh.streamlines_evenly_spaced_2D(vectors="V")
-                                             
+    with swarm.access():
+        spoint_cloud.point_data["M"] = material.data[...]
+
+                                               
 
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="rho", opacity=0.5)
+    # pl.add_mesh(pvmesh, "Gray",  "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
     
-    pl.add_mesh(pvstream)
+    pl.add_mesh(pvstream, opacity=1)
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.5)
+    
+    pl.add_points(spoint_cloud, cmap="gray_r", scalars="M", 
+                  render_points_as_spheres=True, point_size=5, opacity=0.33)
 
 
     # pl.add_points(pdata)
@@ -264,11 +274,6 @@ if uw.mpi.size == 1 and render:
 
 
 # -
-
-
-pvmesh = pv.read("tmp_box.vtk")
-
-pvmesh.streamlines_evenly_spaced_2D(vectors=ar)
 
 
 def plot_mesh(filename):
@@ -289,42 +294,56 @@ def plot_mesh(filename):
 
         meshbox.vtk("tmp_box.vtk")
         pvmesh = pv.read("tmp_box.vtk")
-
-        with meshbox.access():
-            usol = stokes.u.data.copy()
-
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
-            points[:, 2] = 0.0
-
-        point_cloud = pv.PolyData(points)
-
-        with swarm.access():
-            point_cloud.point_data["M"] = material.data.astype(float)
-
+        
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
 
-        arrow_loc = np.zeros((meshbox.data.shape[0], 3))
-        arrow_loc[:, 0:2] = meshbox.data[...]
 
-        arrow_length = np.zeros((meshbox.data.shape[0], 3))
-        arrow_length[:, 0:2] = uw.function.evaluate(v_soln.fn, meshbox.data)
-        
-        vmag = np.hypot(arrow_length[:,0], arrow_length[:,1]).max()
+        velocity = np.zeros((meshbox.data.shape[0],3))
+        velocity[:,0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
+        velocity[:,1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
 
-        pl = pv.Plotter(off_screen=True)
+        pvmesh.point_data["V"] = velocity
 
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="rho", opacity=0.5)
+        # point sources at cell centres
 
-        pl.add_points(point_cloud, cmap="gray_r", render_points_as_spheres=True, point_size=7.5, opacity=0.5)
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.2/vmag, opacity=0.5)
+        cpoints = np.zeros((meshbox._centroids.shape[0],3))
+        cpoints[:,0] = meshbox._centroids[:,0]
+        cpoints[:,1] = meshbox._centroids[:,1]
+        cpoint_cloud = pv.PolyData(cpoints)
+
+        pvstream = pvmesh.streamlines_from_source(cpoint_cloud, vectors="V", integrator_type=45,
+                                                  integration_direction="forward", compute_vorticity=False,
+                                                  max_steps=25, surface_streamlines=True
+                                                 )
+
+        with swarm.access():
+            spoints = np.zeros((swarm.data.shape[0], 3))
+            spoints[:, 0] = swarm.data[:, 0]
+            spoints[:, 1] = swarm.data[:, 1]
+            spoints[:, 2] = 0.0
+
+        spoint_cloud = pv.PolyData(spoints)
+
+        with swarm.access():
+            spoint_cloud.point_data["M"] = material.data[...]
+
+        pl = pv.Plotter()
+
+        # pl.add_mesh(pvmesh, "Gray",  "wireframe")
+        # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
+
+        pl.add_mesh(pvstream, opacity=1)
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Gray", show_edges=True, scalars="visc", opacity=0.5)
+
+        pl.add_points(spoint_cloud, cmap="gray_r", scalars="M", 
+                      render_points_as_spheres=True, point_size=5, opacity=0.33)
+
+
+        # pl.add_points(pdata)   
 
         pl.remove_scalar_bar("M")
-        pl.remove_scalar_bar("mag")
-        pl.remove_scalar_bar("rho")
+        pl.remove_scalar_bar("visc")
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1250, 1250), return_img=False)
 
@@ -332,7 +351,6 @@ def plot_mesh(filename):
         pv.close_all()
         
         return
-
 
 t_step = 0
 
@@ -367,7 +385,3 @@ savefile = "output/bubbles.h5".format(step)
 meshbox.save(savefile)
 v_soln.save(savefile)
 meshbox.generate_xdmf(savefile)
-
-stokes._pp_G0
-
-
