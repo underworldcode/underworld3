@@ -5,9 +5,22 @@ from petsc4py import PETSc
 # https://gitlab.com/petsc/petsc/-/issues/1066
 PETSc.Sys.popErrorHandler()
 
-#PETSc.Log().begin()
+# PETSc.Log().begin()
+
+from enum import Enum as _Enum
+
+
+class VarType(_Enum):
+    SCALAR = 1
+    VECTOR = 2
+    MATRIX = 3
+    NVECTOR = 4
+    COMPOSITE = 5
+    OTHER = 6  # add as required
+
 
 from underworld3.utilities import _api_tools
+import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing
 import underworld3.maths
@@ -19,15 +32,6 @@ import underworld3.tools
 import underworld3.kdtree
 import underworld3.mpi
 import underworld3.cython
-
-from enum import Enum as _Enum
-class VarType(_Enum):
-    SCALAR=1
-    VECTOR=2
-    MATRIX=3
-    NVECTOR=4
-    OTHER=4  # add as required 
-
 import numpy as _np
 
 # Info for JIT modules.
@@ -40,9 +44,11 @@ import numpy as _np
 # the value is always set to `None`.
 
 from collections import OrderedDict as _OD
+
 _libfiles = _OD()
-_libdirs  = _OD()
-_incdirs  = _OD({_np.get_include():None})
+_libdirs = _OD()
+_incdirs = _OD({_np.get_include(): None})
+
 
 def _is_notebook() -> bool:
     """
@@ -55,14 +61,15 @@ def _is_notebook() -> bool:
 
     try:
         shell = get_ipython().__class__.__name__
-        if shell == 'ZMQInteractiveShell':
-            return True   # Jupyter notebook or qtconsole
-        elif shell == 'TerminalInteractiveShell':
+        if shell == "ZMQInteractiveShell":
+            return True  # Jupyter notebook or qtconsole
+        elif shell == "TerminalInteractiveShell":
             return False  # Terminal running IPython
         else:
             return False  # Other type (?)
     except NameError:
-        return False      # Probably standard Python interpreter
+        return False  # Probably standard Python interpreter
+
 
 is_notebook = _is_notebook()
 
@@ -70,10 +77,10 @@ is_notebook = _is_notebook()
 ## -------------------------------------------------------------
 
 # pdoc3 over-rides. pdoc3 has a strange path-traversal algorithm
-# that seems to have trouble finding modules if we move this 
+# that seems to have trouble finding modules if we move this
 # dictionary to any other location in the underworld3 tree
 
-__pdoc__= {}
+__pdoc__ = {}
 
 # Cython files cannot be documented. We should move pure
 # python out of these files if we can
@@ -86,5 +93,3 @@ __pdoc__["function.analytic"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
-
-

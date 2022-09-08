@@ -4,7 +4,7 @@ from petsc4py.PETSc cimport Vec, PetscVec
 from petsc4py.PETSc cimport Mat, PetscMat
 from petsc4py.PETSc cimport IS,  PetscIS
 from petsc4py.PETSc cimport FE,  PetscFE
-from petsc4py.PETSc cimport PetscDMLabel
+from petsc4py.PETSc cimport DMLabel, PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
 
@@ -35,6 +35,9 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
+
+    PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
+    PetscErrorCode DMGetLabel(DM dm, const char name[], PetscDMLabel *label)
 
     # These do not appear to be in the 3.17.2 release
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)

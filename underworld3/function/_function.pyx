@@ -104,10 +104,11 @@ class UnderworldFunction(sympy.Function):
                 component: int = 0, 
                 *args, **options):
         
-        if   vtype==uw.VarType.SCALAR:
-            fname = name
-        elif vtype==uw.VarType.VECTOR:
+        if vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {} }}".format(component)
+        else: # other types can manage their own component names
+            fname = name
+            
         ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), **options)
         # Grab weakref to meshvar.
         import weakref
@@ -120,6 +121,7 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{,"
         elif vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {},".format(component)
+
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
             # Grab weakref to var for derivative fn too.
