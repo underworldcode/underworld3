@@ -20,22 +20,21 @@ mesh2 = uw.meshing.UnstructuredSimplexBox(
                                 maxCoords=(1.0,1.0), 
                                 cellSize=1.0/24) 
 
-mesh3 = uw.meshing.UnstructuredSimplexBox(
-                                minCoords=(0.0,0.0,0.0), 
-                                maxCoords=(1.0,1.0,1.0), 
-                                cellSize=1.0/6) 
+# mesh3 = uw.meshing.UnstructuredSimplexBox(
+                                # minCoords=(0.0,0.0,0.0), 
+                                # maxCoords=(1.0,1.0,1.0), 
+                                # cellSize=1.0/6) 
 
 mesh=mesh2
 
-phi = uw.discretisation.MeshVariable(r"\phi", mesh, 1, degree=2)
-scalar = uw.discretisation.MeshVariable(r"\Theta", mesh, 1, degree=2)
+phi = uw.discretisation.MeshVariable(r"phi", mesh, 1, degree=2)
+scalar = uw.discretisation.MeshVariable(r"Theta", mesh, 1, degree=2)
 
 # %%
 # Create Poisson object
 
 poisson = uw.systems.Poisson(mesh,
                              u_Field=phi,
-                             degree=2,
                              solver_name="diffusion")
 
 # Constitutive law (diffusivity)
@@ -300,5 +299,3 @@ if MPI.COMM_WORLD.size==1:
 
 # %%
 pvmesh2.point_data["K"].max()
-
-# %%

@@ -123,7 +123,7 @@ class SNES_Poisson_Spherical_Surface(SNES_Scalar):
             solver_name = "Poisson_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         # Register the problem setup function
         self._setup_problem_description = self.poisson_problem_description
@@ -196,10 +196,8 @@ class SNES_Darcy(SNES_Scalar):
         if solver_name == "":
             solver_name = "Darcy_{}_".format(self.instances)
 
-        degree = u_Field.degree
-
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         # Register the problem setup function
         self._setup_problem_description = self.darcy_problem_description
@@ -841,7 +839,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             solver_name = "AdvDiff_slcn_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         # These are unique to the advection solver
         self._V = V_Field
@@ -1040,7 +1038,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             solver_name = "AdvDiff_swarm_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, degree, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         self.delta_t = 1.0
         self.theta = theta

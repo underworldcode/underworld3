@@ -20,7 +20,7 @@ cubed_sphere = uw.meshing.CubedSphere()
                                   unstructured_quad_box_regular, unstructured_quad_box_regular_3D])
 def test_poisson_boxmesh(mesh):
 
-    u = uw.discretisation.MeshVariable(r"\mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
+    u = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
@@ -32,7 +32,7 @@ def test_poisson_boxmesh(mesh):
 
 @pytest.mark.parametrize("mesh", [spherical_shell, annulus, cubed_sphere])
 def test_poisson_sphere(mesh):
-    u = uw.discretisation.MeshVariable(r"\mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
+    u = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
