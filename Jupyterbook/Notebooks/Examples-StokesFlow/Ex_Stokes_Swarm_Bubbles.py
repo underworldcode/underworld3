@@ -233,9 +233,9 @@ if uw.mpi.size == 1 and render:
     
     # point sources at cell centres
     
-    cpoints = np.zeros((meshbox._centroids.shape[0],3))
-    cpoints[:,0] = meshbox._centroids[:,0]
-    cpoints[:,1] = meshbox._centroids[:,1]
+    cpoints = np.zeros((meshbox._centroids.shape[0]//4,3))
+    cpoints[:,0] = meshbox._centroids[::4,0]
+    cpoints[:,1] = meshbox._centroids[::4,1]
     cpoint_cloud = pv.PolyData(cpoints)
     
     pvstream = pvmesh.streamlines_from_source(cpoint_cloud, vectors="V", integrator_type=45,
@@ -359,7 +359,7 @@ t_step = 0
 
 expt_name = "output/blobs"
 
-for step in range(0, 200):
+for step in range(0, 250):
     
     stokes.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())

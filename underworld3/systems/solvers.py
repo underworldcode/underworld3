@@ -56,7 +56,6 @@ class SNES_Poisson(SNES_Scalar):
 
         # default values for properties
         self.f = sympy.Matrix.zeros(1, 1)
-        self.k = 1.0
 
     ## This function is the one we will typically over-ride to build specific solvers.
     ## This example is a poisson-like problem with isotropic coefficients
@@ -826,7 +825,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
         V_Field: uw.discretisation.MeshVariable = None,
-        degree: int = 2,
         theta: float = 0.5,
         solver_name: str = "",
         restore_points_func: Callable = None,

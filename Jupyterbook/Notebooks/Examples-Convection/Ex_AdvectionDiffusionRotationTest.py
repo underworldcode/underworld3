@@ -28,9 +28,8 @@ options = PETSc.Options()
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(dim=2, radius_inner=0.5,
-                                    radius_outer=1.0, cell_size=0.05,
-                                    degree=1, verbose=False)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                              cellSize=0.1, qdegree=3)
 # -
 
 
@@ -64,10 +63,11 @@ delta_t = 1.0
 adv_diff = uw.systems.AdvDiffusion(meshball, 
                                    u_Field=t_soln, 
                                    V_Field=v_soln, # not needed if coords is provided 
-                                   solver_name="adv_diff", 
-                                   degree=t_soln.degree)
+                                   solver_name="adv_diff")
 
-adv_diff.k = k
+adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+adv_diff.constitutive_model.material_properties=adv_diff.constitutive_model.Parameters(diffusivity=k)
+
 
 # +
 # Create a density structure / buoyancy force
@@ -81,11 +81,8 @@ unit_rvec = meshball.rvec / (1.0e-10+radius_fn)
 
 # Some useful coordinate stuff 
 
-x = meshball.N.x
-y = meshball.N.y
-
-r  = sympy.sqrt(x**2+y**2)
-th = sympy.atan2(y+1.0e-5,x+1.0e-5)
+x,y = meshball.X
+r, th = meshball.CoordinateSystem.xR
 
 # Rigid body rotation v_theta = constant, v_r = 0.0
 
@@ -150,13 +147,14 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 10.0] 
 
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")
+    
     points = np.zeros((t_soln.coords.shape[0],3))
     points[:,0] = t_soln.coords[:,0]
     points[:,1] = t_soln.coords[:,1]
@@ -213,8 +211,9 @@ def plot_T_mesh(filename):
         pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
         pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
 
-        pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-        
+        meshball.vtk("tmp_ball.vtk")
+        pvmesh = pv.read("tmp_ball.vtk")
+
         points = np.zeros((t_soln.coords.shape[0],3))
         points[:,0] = t_soln.coords[:,0]
         points[:,1] = t_soln.coords[:,1]
@@ -319,13 +318,14 @@ if uw.mpi.size==1:
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'pythreejs'
+    pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0] 
     pv.global_theme.camera['position'] = [0.0, 0.0, 5.0] 
 
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")
+    
     points = np.zeros((t_soln.coords.shape[0],3))
     points[:,0] = t_soln.coords[:,0]
     points[:,1] = t_soln.coords[:,1]
@@ -333,7 +333,8 @@ if uw.mpi.size==1:
     point_cloud = pv.PolyData(points)
 
     with meshball.access():
-        point_cloud.point_data["T"] = t_soln.data-t_0.data
+        point_cloud.point_data["T"] = t_soln.data
+        point_cloud.point_data["dT"] = t_soln.data-t_0.data
 
     with meshball.access():
         usol = v_soln.data.copy()
@@ -348,7 +349,7 @@ if uw.mpi.size==1:
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
-    pl.add_points(point_cloud, cmap="coolwarm", 
+    pl.add_points(point_cloud, cmap="coolwarm", scalars="T",
                   render_points_as_spheres=False,
                   point_size=10, opacity=0.66
                 )

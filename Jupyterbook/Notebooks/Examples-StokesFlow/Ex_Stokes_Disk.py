@@ -79,7 +79,7 @@ vy = vtheta * sympy.cos(th)
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.material_properties=stokes.constitutive_model.Parameters(viscosity=1)
 
 # There is a null space if there are no fixed bcs, so we'll do this:
 

@@ -135,6 +135,10 @@ class SNES_Scalar:
         degree = self._u.degree
         mesh = self.mesh
 
+        if mesh.qdegree < degree: 
+            print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
+            print(f"than {degree} which is required by the {self.name} solver")
+
         self.dm = mesh.dm.clone()
 
         # Set quadrature to consistent value given by mesh quadrature
@@ -147,7 +151,7 @@ class SNES_Scalar:
 
         # create private variables
         options = PETSc.Options()
-        options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree) # for private variables
+        options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree,"{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u.setQuadrature(u_quad)
         self.petsc_fe_u_id = self.dm.getNumFields()
@@ -245,6 +249,7 @@ class SNES_Scalar:
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
+        self._build_dm_and_mesh_discretisation()
         self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we 
@@ -533,10 +538,14 @@ class SNES_Vector:
         degree = self._u.degree
         mesh = self.mesh
 
+        if mesh.qdegree < degree: 
+            print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
+            print(f"than {degree} which is required by the {self.name} solver")
+
+
         self.dm = mesh.dm.clone()
 
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures(force=True)
+        # Set quadrature to consistent value given by mesh quadrature.        
         u_quad = self.mesh.quadrature
 
         # create private variables
@@ -634,6 +643,7 @@ class SNES_Vector:
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
+        self._build_dm_and_mesh_discretisation()
         self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we 
@@ -978,6 +988,11 @@ class SNES_Stokes:
         u_degree = self.u.degree
         p_degree = self.p.degree
         p_continous = self.p.continuous
+
+        if mesh.qdegree < u_degree: 
+            print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
+            print(f"than {u_degree} which is required by the {self.name} solver")
+
 
         self.dm   = mesh.dm.clone()
 

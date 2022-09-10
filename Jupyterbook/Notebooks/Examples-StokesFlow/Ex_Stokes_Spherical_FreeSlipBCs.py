@@ -315,8 +315,4 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
 
 # -
-pvmesh.point_data["S"].min()
 
-# +
-# 1000: - 266
-# 100000: - -299

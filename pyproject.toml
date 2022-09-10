@@ -25,6 +25,7 @@ classifiers = [
 requires = [
   "setuptools >= 40.9.0",
   "wheel",
+  "cython"
 ]
 build-backend = "setuptools.build_meta"
 
