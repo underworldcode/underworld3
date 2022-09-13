@@ -102,7 +102,6 @@ class UnderworldFunction(sympy.Function):
                 meshvar  : underworld3.discretisation.MeshVariable, 
                 vtype    : underworld3.VarType,
                 component: int = 0, 
-                assumptions: 
                 *args, **options):
         
         if vtype==uw.VarType.VECTOR:
