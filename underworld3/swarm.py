@@ -54,16 +54,19 @@ class SwarmVariable(_api_tools.Stateful):
         self.name = name
         self.swarm = swarm
         self.num_components = num_components
-        if (dtype == float) or (dtype == "float") or (dtype == dtype, np.float64):
+
+        if (dtype == float) or (dtype == "float") or (dtype == np.float64):
             self.dtype = float
             petsc_type = PETSc.ScalarType
-        elif (dtype == int) or (dtype == "int") or (dtype == np.int32):
+        elif (dtype == int) or (dtype == "int") or (dtype == np.int32) or (dtype == np.int64):
             self.dtype = int
             petsc_type = PETSc.IntType
         else:
             raise TypeError(f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'.")
+
         if _register:
             self.swarm.dm.registerField(self.name, self.num_components, dtype=petsc_type)
+
         self._data = None
         # add to swarms dict
         swarm.vars[name] = self
@@ -235,12 +238,26 @@ class IndexSwarmVariable(SwarmVariable):
     """
 
     @timing.routine_timer_decorator
-    def __init__(self, name, swarm, indices=1, proxy_degree=1, proxy_continuous=True):
+    def __init__(
+        self,
+        name,
+        swarm,
+        indices=1,
+        proxy_degree=1,
+        proxy_continuous=True,
+    ):
 
         self.indices = indices
 
         # These are the things we require of the generic swarm variable type
-        super().__init__(name, swarm, num_components=1, vtype=None, dtype=int, _proxy=False)
+        super().__init__(
+            name,
+            swarm,
+            num_components=1,
+            vtype=None,
+            dtype=int,
+            _proxy=False,
+        )
 
         # The indices variable defines how many level set maps we create as components in the proxy variable
 
@@ -262,10 +279,6 @@ class IndexSwarmVariable(SwarmVariable):
         return
 
     # This is the sympy vector interface - it's meaningless if these are not spatial arrays
-    # @property
-    # def fn(self):
-    #     return self._MaskArray
-
     @property
     def sym(self):
         return self._MaskArray

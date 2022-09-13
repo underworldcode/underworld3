@@ -640,4 +640,9 @@ def CubedSphere(
 
     plex.removeLabel("Face Sets")
 
-    return Mesh(plex, degree=degree, qdegree=qdegree, coordinate_system_type=CoordinateSystemType.SPHERICAL)
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+    )

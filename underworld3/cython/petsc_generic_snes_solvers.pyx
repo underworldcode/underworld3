@@ -38,14 +38,15 @@ class SNES_Scalar:
 
         SNES_Scalar.instances += 1
 
+        self.name = solver_name
+
         ## Todo: this is obviously not particularly robust
 
         if solver_name != "" and not solver_name.endswith("_"):
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
-
-    
+   
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
@@ -426,6 +427,8 @@ class SNES_Vector:
         ## Keep track
 
         SNES_Vector.instances += 1
+        self.name = solver_name
+
 
         ## Todo: this is obviously not particularly robust
 
@@ -888,6 +891,8 @@ class SNES_Stokes:
      
 
         SNES_Stokes.instances += 1
+        self.name = solver_name
+
 
         self.mesh = mesh
         self.verbose = verbose
@@ -920,12 +925,12 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "dgmres"
+        # self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
 
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "dgmres"
+        # self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
         self._u = velocityField
@@ -1004,20 +1009,19 @@ class SNES_Stokes:
         # self.mesh._align_quadratures(force=True)
         quad = self.mesh.quadrature
         
-        # options = PETSc.Options()
-        # options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree) # for private variables
-        # self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_u = PETSc.FE().createLagrange(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
+        options = PETSc.Options()
+        options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+        #self.petsc_fe_u = PETSc.FE().createLagrange(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
         self.petsc_fe_u.setQuadrature(quad)
         self.petsc_fe_u.setName("velocity")
         self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        # options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree)
-        # options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
-        # self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, p_degree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_p = PETSc.FE().createLagrange(mesh.dim,     1, mesh.isSimplex, p_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
-        
+        options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
+        options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, p_degree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+        # self.petsc_fe_p = PETSc.FE().createLagrange(mesh.dim,     1, mesh.isSimplex, p_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
         self.petsc_fe_p.setQuadrature(quad)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
@@ -1195,6 +1199,9 @@ class SNES_Stokes:
         G3 = sympy.derive_by_array(F1, self._L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
+        # ijkl -> LJKI (hence 3120)
+        # ij k -> KJ I (hence 210)
+        # i jk -> J KI (hence 201)
 
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
@@ -1448,6 +1455,7 @@ class SNES_SaddlePoint:
 
         SNES_SaddlePoint.instances += 1
 
+        self.name = solver_name
         self.mesh = mesh
         self.verbose = verbose
         

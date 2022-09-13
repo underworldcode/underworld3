@@ -182,7 +182,7 @@ class Mesh(_api_tools.Stateful):
         ## LM  - stuff so I will leave the default at 1
 
         # options = PETSc.Options()
-        # options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), 3)
+        # options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.qdegree)
 
         # self.petsc_fe = PETSc.FE().createDefault(
         #     self.dim,
@@ -289,6 +289,7 @@ class Mesh(_api_tools.Stateful):
             # push avar arrays into the parent dm array
             a_global = self.dm.getGlobalVec()
             names, isets, dms = self.dm.createFieldDecomposition()
+
             with self.access():
                 # traverse subdms, taking user generated data in the subdm
                 # local vec, pushing it into a global sub vec

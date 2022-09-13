@@ -45,7 +45,7 @@ class CoordinateSystem:
 
         if system == CoordinateSystemType.CYLINDRICAL2D and self.mesh.dim == 2:
             self.type = "Cylindrical 2D"
-            self._R = sympy.Matrix([sympy.symbols(R"r, \theta")])
+            self._R = sympy.Matrix([sympy.symbols(R"r, \theta")], real=True)
 
             x, y = self.X
             r = sympy.sqrt(x**2 + y**2)
@@ -65,7 +65,7 @@ class CoordinateSystem:
         elif system == CoordinateSystemType.CYLINDRICAL3D and self.mesh.dim == 3:
             self.type = "Cylindrical 3D"
 
-            self._R = sympy.Matrix([sympy.symbols(R"r, \theta, z")])
+            self._R = sympy.Matrix([sympy.symbols(R"r, \theta, z")], real=True)
 
             x, y, z = self.X
             r = sympy.sqrt(x**2 + y**2)
@@ -86,7 +86,7 @@ class CoordinateSystem:
         elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
             self.type = "Spherical"
 
-            self._R = sympy.Matrix([sympy.symbols(R"r, \lambda^1, \lambda^2")])
+            self._R = sympy.Matrix([sympy.symbols(R"r, \lambda_{1}, \lambda_{2}")])
 
             x, y, z = self.X
             r = sympy.sqrt(x**2 + y**2 + z**2)
@@ -95,16 +95,18 @@ class CoordinateSystem:
 
             self._xR = sympy.Matrix([[r, l1, l2]])
 
-            th = self._R[1]
+            # l1 is longitude, l2 is latitude
+            rl1 = self._R[1]
+            rl2 = self._R[2]
             self._Rot = sympy.Matrix(
                 [
-                    [sympy.cos(th), sympy.sin(th), 0],
-                    [-sympy.sin(th), sympy.cos(th), 0],
-                    [0, 0, 1],
+                    [+sympy.cos(rl1) * sympy.cos(rl2), +sympy.sin(rl1) * sympy.cos(rl2), sympy.sin(rl2)],
+                    [-sympy.sin(rl1) * sympy.cos(rl2), +sympy.cos(rl1) * sympy.cos(rl2), 0],
+                    [-sympy.cos(rl1) * sympy.sin(rl2), -sympy.cos(rl1) * sympy.sin(rl2), sympy.cos(rl2)],
                 ]
             )
 
-            self._xRot = self._Rot.subs(th, sympy.atan2(y, x))
+            self._xRot = self._Rot.subs([(rl1, l1), (rl2, l2)])
 
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
