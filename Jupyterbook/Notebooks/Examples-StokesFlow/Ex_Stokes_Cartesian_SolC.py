@@ -39,7 +39,7 @@ mesh.petsc_fe.view()
 
 # %%
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p = uw.discretisation.MeshVariable("P", mesh, 1,        degree=1)
+p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
@@ -61,10 +61,7 @@ stokes.bodyforce = sympy.Matrix(
     [
         0,
         Piecewise(
-            (
-                f_0,
-                x > x_c,
-            ),
+            (f_0, x > x_c),
             (0.0, True),
         ),
     ]
@@ -81,7 +78,7 @@ stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: compone
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
 stokes.petsc_options["snes_rtol"] = 1.0e-6
-stokes.petsc_options["ksp_rtol"]  = 1.0e-6
+stokes.petsc_options["ksp_rtol"] = 1.0e-6
 stokes.petsc_options["snes_max_it"] = 10
 
 stokes.petsc_options["pc_use_amat"] = None
@@ -255,5 +252,3 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
-
-

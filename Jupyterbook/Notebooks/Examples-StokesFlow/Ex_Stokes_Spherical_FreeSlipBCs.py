@@ -195,6 +195,8 @@ stokes._Ppre_fn = 1.0
 
 stokes._setup_terms()
 
+
+
 # +
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
@@ -315,4 +317,5 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
 
 # -
+
 

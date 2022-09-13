@@ -25,7 +25,11 @@ render = True
 # -
 
 meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=True, qdegree=2,
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    cellSize=1.0 / 32.0,
+    regular=True,
+    qdegree=2,
 )
 
 
@@ -142,15 +146,12 @@ if render:
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
-        
-    
 
     pl = pv.Plotter(notebook=True)
 
     # pl.add_points(point_cloud, color="Black",
     #                   render_points_as_spheres=False,
     #                   point_size=2.5, opacity=0.75)
-    
 
     pl.add_mesh(
         pvmesh,
@@ -186,7 +187,7 @@ stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: compone
 
 # +
 stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options["snes_atol"] = 1.0e-5 # Not sure why rtol does not do its job when guess is used
+stokes.petsc_options["snes_atol"] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
@@ -225,24 +226,29 @@ if uw.mpi.size == 1 and render:
     pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
     pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
 
-    velocity = np.zeros((meshbox.data.shape[0],3))
-    velocity[:,0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-    velocity[:,1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-    
+    velocity = np.zeros((meshbox.data.shape[0], 3))
+    velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
+    velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
+
     pvmesh.point_data["V"] = velocity
-    
+
     # point sources at cell centres
-    
-    cpoints = np.zeros((meshbox._centroids.shape[0]//4,3))
-    cpoints[:,0] = meshbox._centroids[::4,0]
-    cpoints[:,1] = meshbox._centroids[::4,1]
+
+    cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
+    cpoints[:, 0] = meshbox._centroids[::4, 0]
+    cpoints[:, 1] = meshbox._centroids[::4, 1]
     cpoint_cloud = pv.PolyData(cpoints)
-    
-    pvstream = pvmesh.streamlines_from_source(cpoint_cloud, vectors="V", integrator_type=45,
-                                              integration_direction="forward", compute_vorticity=False,
-                                              max_steps=25, surface_streamlines=True
-                                             )
-    
+
+    pvstream = pvmesh.streamlines_from_source(
+        cpoint_cloud,
+        vectors="V",
+        integrator_type=45,
+        integration_direction="forward",
+        compute_vorticity=False,
+        max_steps=25,
+        surface_streamlines=True,
+    )
+
     with swarm.access():
         spoints = np.zeros((swarm.data.shape[0], 3))
         spoints[:, 0] = swarm.data[:, 0]
@@ -250,23 +256,19 @@ if uw.mpi.size == 1 and render:
         spoints[:, 2] = 0.0
 
     spoint_cloud = pv.PolyData(spoints)
-    
+
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
-
-                                               
 
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh, "Gray",  "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
-    
+
     pl.add_mesh(pvstream, opacity=1)
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.5)
-    
-    pl.add_points(spoint_cloud, cmap="gray_r", scalars="M", 
-                  render_points_as_spheres=True, point_size=5, opacity=0.33)
 
+    pl.add_points(spoint_cloud, cmap="gray_r", scalars="M", render_points_as_spheres=True, point_size=5, opacity=0.33)
 
     # pl.add_points(pdata)
 
@@ -294,28 +296,32 @@ def plot_mesh(filename):
 
         meshbox.vtk("tmp_box.vtk")
         pvmesh = pv.read("tmp_box.vtk")
-        
+
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
 
-
-        velocity = np.zeros((meshbox.data.shape[0],3))
-        velocity[:,0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        velocity[:,1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
+        velocity = np.zeros((meshbox.data.shape[0], 3))
+        velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
+        velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
 
         pvmesh.point_data["V"] = velocity
 
         # point sources at cell centres
 
-        cpoints = np.zeros((meshbox._centroids.shape[0],3))
-        cpoints[:,0] = meshbox._centroids[:,0]
-        cpoints[:,1] = meshbox._centroids[:,1]
+        cpoints = np.zeros((meshbox._centroids.shape[0], 3))
+        cpoints[:, 0] = meshbox._centroids[:, 0]
+        cpoints[:, 1] = meshbox._centroids[:, 1]
         cpoint_cloud = pv.PolyData(cpoints)
 
-        pvstream = pvmesh.streamlines_from_source(cpoint_cloud, vectors="V", integrator_type=45,
-                                                  integration_direction="forward", compute_vorticity=False,
-                                                  max_steps=25, surface_streamlines=True
-                                                 )
+        pvstream = pvmesh.streamlines_from_source(
+            cpoint_cloud,
+            vectors="V",
+            integrator_type=45,
+            integration_direction="forward",
+            compute_vorticity=False,
+            max_steps=25,
+            surface_streamlines=True,
+        )
 
         with swarm.access():
             spoints = np.zeros((swarm.data.shape[0], 3))
@@ -336,11 +342,11 @@ def plot_mesh(filename):
         pl.add_mesh(pvstream, opacity=1)
         pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Gray", show_edges=True, scalars="visc", opacity=0.5)
 
-        pl.add_points(spoint_cloud, cmap="gray_r", scalars="M", 
-                      render_points_as_spheres=True, point_size=5, opacity=0.33)
+        pl.add_points(
+            spoint_cloud, cmap="gray_r", scalars="M", render_points_as_spheres=True, point_size=5, opacity=0.33
+        )
 
-
-        # pl.add_points(pdata)   
+        # pl.add_points(pdata)
 
         pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("visc")
@@ -349,8 +355,9 @@ def plot_mesh(filename):
 
         # pl.show()
         pv.close_all()
-        
+
         return
+
 
 t_step = 0
 
@@ -360,7 +367,7 @@ t_step = 0
 expt_name = "output/blobs"
 
 for step in range(0, 250):
-    
+
     stokes.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
 
@@ -374,7 +381,6 @@ for step in range(0, 250):
     swarm.advection(v_soln.fn, delta_t)
     print("Swarm Advection - done")
 
-    
     if t_step % 1 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 

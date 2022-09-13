@@ -36,6 +36,8 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(n_els, n_els), minCoords=(0.0, 0
 # Create solution functions
 from underworld3.function.analytic import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity
 
+x,y = mesh.X
+
 r = mesh.r
 eta0 = 1.0
 n = 1
@@ -49,8 +51,11 @@ sol_vel = mesh.vector.to_matrix(sol_vel_ijk)
 sol_visc = AnalyticSolNL_viscosity(*params, *r)
 
 # debug - are problems just because there is no analytic solution module on mac
+# The solNL case is a MMS force term (complicated) designed to produce a specific
+# velocity field. This is a placeholder that just lets the non-linear problem run.
+
 sol_vel = sympy.Matrix([0, 0])
-sol_bf = sympy.Matrix([0, 0])
+sol_bf = sympy.Matrix([0, sympy.cos(3 * sympy.pi * x) * sympy.cos(3 * sympy.pi * y)])
 sol_visc = 1
 
 # %%
@@ -80,32 +85,26 @@ stokes.petsc_options["snes_rtol"] = 1.0e-5
 stokes.bodyforce = sol_bf
 stokes.solve()
 # %%
-mesh.vector.to_matrix(sol_bf)
-
-# %%
-mesh.vector.to_matrix(sol_bf).shape
-
-# %%
-sol_bf == sympy.sympify(sol_bf)
-
-# %%
-stokes._u_f0
-
-# %%
 # get strainrate
 sr = stokes.strainrate
 # not sure if the following is needed as div_u should be zero
-sr -= (stokes.div_u / mesh.dim) * sympy.eye(mesh.dim)
+# sr -= (stokes.div_u / mesh.dim) * sympy.eye(mesh.dim)
 # second invariant of strain rate
 inv2 = sr[0, 0] ** 2 + sr[0, 1] ** 2 + sr[1, 0] ** 2 + sr[1, 1] ** 2
 inv2 = 1 / 2 * inv2
 inv2 = sympy.sqrt(inv2)
 alpha_by_two = 2 / r0 - 2
-stokes.viscosity = 2 * eta0 * inv2**alpha_by_two
-stokes.penalty = 1.0
-# stokes._Ppre_fn = 0.01 + 1.0 / (0.01 + stokes.viscosity)
+
+viscosity = 2 * eta0 * inv2**alpha_by_two
+
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+
+stokes.penalty = 0.0
+stokes.saddle_preconditioner = 1.0 / viscosity
 stokes.solve(zero_init_guess=False)
 
+# %%
 vdiff = stokes.u.fn - sol_vel
 vdiff_dot_vdiff = uw.maths.Integral(mesh, vdiff.dot(vdiff)).evaluate()
 v_dot_v = uw.maths.Integral(mesh, stokes.u.fn.dot(stokes.u.fn)).evaluate()
@@ -118,10 +117,3 @@ if rank == 0:
 
 if not np.allclose(rel_rms_diff, 0.00109, rtol=1.0e-2):
     raise RuntimeError("Solve did not produce expected result.")
-
-# %%
-stokes._uu_g3[0, 1]
-
-# %%
-
-# %%

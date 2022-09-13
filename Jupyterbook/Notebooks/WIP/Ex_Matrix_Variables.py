@@ -25,7 +25,7 @@ mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05)
 # +
 import sympy
 
-# Some useful coordinate stuff 
+# Some useful coordinate stuff
 
 x = mesh.N.x
 y = mesh.N.y
@@ -39,9 +39,9 @@ mesh.r
 
 mesh.vector.to_vector(mesh.X)
 
-v  = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
-v2 = uw.discretisation.MeshVariable('U2',   mesh,  mesh.dim, degree=2 )
-p  = uw.discretisation.MeshVariable('P',    mesh, 1, degree=1 )
+v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+v2 = uw.discretisation.MeshVariable("U2", mesh, mesh.dim, degree=2)
+p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 
 mesh.vector.to_matrix(v._ijk)
@@ -49,7 +49,7 @@ mesh.vector.to_matrix(v._ijk)
 mesh.vector.to_matrix(v.sym)
 
 vec = sympy.vector.matrix_to_vector(v.sym, mesh.N)
-# check it 
+# check it
 print(isinstance(vec, sympy.vector.Vector))
 
 mesh.vector.to_vector(v.sym)
@@ -57,8 +57,8 @@ mesh.vector.to_vector(v.sym)
 # +
 # This is the way to get back to a matrix after diff by array for two row vectors (yuck)
 # We might just try to wrap this so it give back sane types.
-# Diff by array blows up a 1x3 by 1x3 into a 1,3,1,3 tensor rather than a 3x3 matrix 
-# and the 1 indices cannot be automatically removed 
+# Diff by array blows up a 1x3 by 1x3 into a 1,3,1,3 tensor rather than a 3x3 matrix
+# and the 1 indices cannot be automatically removed
 
 VX = sympy.derive_by_array(v.sym, mesh.X).reshape(mesh.X.shape[1], v.sym.shape[1]).tomatrix().T
 v.sym.jacobian(mesh.X)
@@ -107,5 +107,3 @@ v.gradient()
 p.gradient()
 
 p.divergence()
-
-
