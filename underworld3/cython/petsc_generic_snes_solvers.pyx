@@ -1354,18 +1354,14 @@ class SNES_Stokes:
                     subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
                     gvec.restoreSubVector(self._subdict[name][0], sgvec) 
 
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures()
-
         # Call `createDS()` on aux dm. This is necessary after the 
         # quadratures are set above, as it generates the tablatures 
         # from the quadratures (among other things no doubt). 
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        # DO WE NEED THIS since the quadratures are not updated ?
-        # self.mesh.dm.clearDS()
-        # self.mesh.dm.createDS()
+        self.mesh.dm.clearDS()
+        self.mesh.dm.createDS()
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec)
