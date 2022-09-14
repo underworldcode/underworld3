@@ -36,7 +36,7 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(n_els, n_els), minCoords=(0.0, 0
 # Create solution functions
 from underworld3.function.analytic import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity
 
-x,y = mesh.X
+x, y = mesh.X
 
 r = mesh.r
 eta0 = 1.0

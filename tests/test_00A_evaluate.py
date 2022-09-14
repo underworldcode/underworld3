@@ -17,6 +17,8 @@ coords = np.vstack((xv[0, :], yv[:, 0])).T
 # Python function which generates a polynomial space spanning function of the required degree.
 # For example for degree 2:
 # tensor_product(2,x,y) = 1 + x + y + x**2*y + x*y**2 + x**2*y**2
+
+
 def tensor_product(order, val1, val2):
     sum = 0.0
     order += 1
@@ -161,6 +163,8 @@ def test_polynomial_sympy():
 # For a cartesian mesh, linear elements will suffice.
 # We'll also do it twice, once using (xvar,yvar), and
 # another time using (xyvar[0], xyvar[1]).
+
+
 def test_polynomial_mesh_var_sympy():
     mesh = uw.meshing.StructuredQuadBox()
     xvar = uw.discretisation.MeshVariable(varname="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)

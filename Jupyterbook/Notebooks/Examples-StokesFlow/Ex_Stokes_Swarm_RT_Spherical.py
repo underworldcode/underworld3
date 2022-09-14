@@ -22,6 +22,8 @@ import numpy as np
 import sympy
 
 render = True
+# -
+
 
 # +
 lightIndex = 0
@@ -35,27 +37,22 @@ r_o = 1.0
 r_i = 0.5
 
 elements = 7
-res = 1.0/elements
+res = 1.0 / elements
 
 # +
-mesh = uw.meshing.CubedSphere(
-    radiusInner=r_i,
-    radiusOuter=r_o,
-    numElements=elements,
-    simplex=True,
-    qdegree=2,
-)
+# mesh = uw.meshing.CubedSphere(
+#     radiusInner=r_i,
+#     radiusOuter=r_o,
+#     numElements=elements,
+#     simplex=True,
+#     qdegree=2,
+# )
 
 # or
 
-# mesh = uw.meshing.SphericalShell(radiusInner=r_i, 
-#                                      radiusOuter=r_o, 
-#                                      cellSize=res, 
-#                                      qdegree=2)
+mesh = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2)
 
 # -
-
-
 
 
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -65,7 +62,7 @@ meshr = uw.discretisation.MeshVariable(r"r", mesh, 1, degree=1)
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1)
-swarm.populate(fill_param=5)
+swarm.populate(fill_param=1)
 
 
 # +
@@ -73,10 +70,12 @@ with swarm.access(material):
     material.data[...] = 0
 
 with swarm.access(material):
-    r = np.sqrt(swarm.particle_coordinates.data[:, 0]**2 +
-                swarm.particle_coordinates.data[:, 1]**2 + 
-                (swarm.particle_coordinates.data[:, 2]-offset)**2)
-    
+    r = np.sqrt(
+        swarm.particle_coordinates.data[:, 0] ** 2
+        + swarm.particle_coordinates.data[:, 1] ** 2
+        + (swarm.particle_coordinates.data[:, 2] - offset) ** 2
+    )
+
     material.data[:, 0] = np.where(r < r_layer, lightIndex, denseIndex)
 
 # -
@@ -112,8 +111,7 @@ l1 = mesh.CoordinateSystem.xR[1]
 l2 = mesh.CoordinateSystem.xR[2]
 
 
-mesh.CoordinateSystem.Rot.subs([(rl1,l1), (rl2,l2)])
-
+mesh.CoordinateSystem.Rot.subs([(rl1, l1), (rl2, l2)])
 
 
 mat_density = np.array([0, 1])  # lightIndex, denseIndex
@@ -155,12 +153,10 @@ if render:
         point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(notebook=True)
-    
-    # pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    pl.add_points(point_cloud, cmap="coolwarm", scalars="M",
-                      render_points_as_spheres=False,
-                      point_size=5, opacity=0.5)
+    pl.add_mesh(pvmesh, "Black", "wireframe")
+
+    pl.add_points(point_cloud, cmap="coolwarm", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.5)
 
     # pl.add_mesh(
     #     pvmesh,
@@ -174,9 +170,13 @@ if render:
 
     pl.show(cpos="xy")
 # +
-stokes = uw.systems.Stokes(mesh, velocityField=v_soln,
-                           pressureField=p_soln, verbose=False,
-                           solver_name="stokes",)
+stokes = uw.systems.Stokes(
+    mesh,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    verbose=False,
+    solver_name="stokes",
+)
 
 # stokes.petsc_options.delValue("ksp_monitor") # We can flip the default behaviour at some point
 stokes.petsc_options["snes_rtol"] = 1.0e-3
@@ -188,7 +188,7 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
 
 # buoyancy (magnitude)
-buoyancy =  density * (1 - surface_fn) * (1 - base_fn) 
+buoyancy = density * (1 - surface_fn) * (1 - base_fn)
 
 unit_vec_r = mesh.CoordinateSystem.unit_e_0
 
@@ -209,11 +209,9 @@ with mesh.access(meshr):
     )  # cf radius_fn which is 0->1
 
 
+stokes._setup_terms(verbose=False)
+
 stokes.solve(zero_init_guess=True)
-
-
-
-
 
 # +
 # check the solution
@@ -263,15 +261,17 @@ if uw.mpi.size == 1 and render:
     velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], mesh.data)
     velocity[:, 2] = uw.function.evaluate(v_soln.sym[2], mesh.data)
 
-    pvmesh.point_data["V"] = velocity *100
+    pvmesh.point_data["V"] = velocity * 100
 
     # point sources at cell centres
 
-    cpoints = np.zeros((mesh._centroids[::3, 0].shape[0], 3))
-    cpoints[:, 0] = mesh._centroids[::3, 0]
-    cpoints[:, 1] = mesh._centroids[::3, 1]
-    cpoints[:, 2] = mesh._centroids[::3, 2]
-    
+    subsample = 2
+
+    cpoints = np.zeros((mesh._centroids[::subsample, 0].shape[0], 3))
+    cpoints[:, 0] = mesh._centroids[::subsample, 0]
+    cpoints[:, 1] = mesh._centroids[::subsample, 1]
+    cpoints[:, 2] = mesh._centroids[::subsample, 2]
+
     cpoint_cloud = pv.PolyData(cpoints)
 
     pvstream = pvmesh.streamlines_from_source(
@@ -295,15 +295,15 @@ if uw.mpi.size == 1 and render:
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 1000))
 
-    pl.add_mesh(pvmesh, "Gray",  "wireframe")
+    pl.add_mesh(pvmesh, "Gray", "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
     pl.add_mesh(pvstream, opacity=1.0)
     # pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
 
-    # pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=5, opacity=0.3)
+    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.3)
 
     # pl.add_points(pdata)
 
@@ -351,12 +351,12 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         clipped, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S", use_transparency=False, opacity=1.0
     )
 
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=50)
+    pl.add_arrows(arrow_loc, arrow_length, mag=100)
 
     pl.show(cpos="xy")
 
 # -
+
 
 def plot_mesh(filename):
 
@@ -434,11 +434,11 @@ def plot_mesh(filename):
 
         pl.close()
         pv.close_all()
-        
+
         return
 
 
-0/0
+0 / 0
 
 t_step = 0
 
@@ -466,12 +466,6 @@ for step in range(0, 200):
     t_step += 1
 
 # -
-
-
-
-
-
-
 
 
 savefile = "output/swarm_rt.h5".format(step)

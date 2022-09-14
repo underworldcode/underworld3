@@ -1,8 +1,10 @@
 from typing import List
 import subprocess
+from xmlrpc.client import boolean
 import sympy
 import underworld3
 import underworld3.timing as timing
+from typing import Optional
 
 
 ## This is not required in sympy 1.9
@@ -31,7 +33,7 @@ _ext_dict = {}
 
 
 @timing.routine_timer_decorator
-def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
+def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=False):
     """
     Check if we've already created an equivalent extension
     and use if available.
@@ -52,7 +54,7 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list):
         jitname = abs(hash((mesh, fns)))
     # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
-        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list)
+        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=verbose)
     module = _ext_dict[jitname]
     ptrobj = module.getptrobj()
     # print(f'jit time {time.time()-time_s}')
@@ -67,6 +69,7 @@ def _createext(
     fns_jacobian: List[sympy.Basic],
     fns_bcs: List[sympy.Basic],
     primary_field_list: List[underworld3.discretisation.MeshVariable],
+    verbose: Optional[bool] = False,
 ):
     """
     This creates the required extension which houses the JIT
@@ -221,7 +224,6 @@ def _createext(
 
     eqns = []
     for index, fn in enumerate(fns):
-        ## print("Processing JIT {} / {}".format(index, fn))
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
@@ -229,7 +231,8 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
-        ## print("Processing JIT {} / {}".format(index, fn))
+        if verbose:
+            print("Processing JIT {} / {}".format(index, fn))
 
         out = sympy.MatrixSymbol("out", *fn.shape)
         eqn = ("eqn_" + str(index), printer.doprint(fn, out))
@@ -241,6 +244,9 @@ def _createext(
                 f"{spliteqn[1]}\n"
                 f"This is usually because code generation for a Sympy function (or its derivative) is not supported.\n"
                 f"Please contact the developers."
+                f"---"
+                f"The ID of the JIT component that failed is {index}"
+                f"The decription of the JIT component that failed:\n {fn}"
             )
         eqns.append(eqn)
 

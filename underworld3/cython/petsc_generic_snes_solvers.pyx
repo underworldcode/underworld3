@@ -239,7 +239,7 @@ class SNES_Scalar:
     # can be ingested by the _setup_terms() function
 
     @timing.routine_timer_decorator
-    def _setup_terms(self):
+    def _setup_terms(self, verbose=False):
         from sympy.vector import gradient
         import sympy
 
@@ -294,7 +294,7 @@ class SNES_Scalar:
         # note also that the order here is important.
 
         prim_field_list = [self.u,]
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
 
         # set functions 
         self.dm.createDS()
@@ -636,7 +636,7 @@ class SNES_Vector:
     # can be ingested by the _setup_terms() function
 
     @timing.routine_timer_decorator
-    def _setup_terms(self):
+    def _setup_terms(self, verbose=False):
         from sympy.vector import gradient
         import sympy
 
@@ -697,7 +697,7 @@ class SNES_Vector:
         # note also that the order here is important.
 
         prim_field_list = [self.u,]
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
 
         # set functions 
         self.dm.createDS()
@@ -1151,7 +1151,7 @@ class SNES_Stokes:
 
 
     @timing.routine_timer_decorator
-    def _setup_terms(self):
+    def _setup_terms(self, verbose=False):
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         N = self.mesh.N
@@ -1257,7 +1257,7 @@ class SNES_Stokes:
         # note also that the order here is important.
 
         prim_field_list = [self.u, self.p]
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
         # create indexes so that we don't rely on indices that can change
         i_res = {}
         for index,fn in enumerate(fns_residual):
@@ -1344,15 +1344,15 @@ class SNES_Stokes:
 
 
         gvec = self.dm.getGlobalVec()
+        gvec.setArray(0.0)
 
         if not zero_init_guess:
             with self.mesh.access():
                 for name,var in self.fields.items():
                     sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-                    sdm   = self._subdict[name][1]                     # Get subdm corresponding to field
-                    sdm.localToGlobal(var.vec,sgvec)                   # Copy variable data into gvec
-        else:
-            gvec.array[:] = 0.
+                    subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
+                    subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec) 
 
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures()
@@ -1363,16 +1363,21 @@ class SNES_Stokes:
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
+        # DO WE NEED THIS since the quadratures are not updated ?
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
 
         self.mesh.update_lvec()
-        cdef DM dm = self.dm
-        cdef Vec cmesh_lvec
+        self.dm.setAuxiliaryVec(self.mesh.lvec)
+
+        # We can remove this bit of cython now 
+        # 
+        # cdef DM dm = self.dm
+        # cdef Vec cmesh_lvec
         # PETSc == 3.16 introduced an explicit interface 
         # for setting the aux-vector which we'll use when available.
-        cmesh_lvec = self.mesh.lvec
-        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        # cmesh_lvec = self.mesh.lvec
+        # ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
         self.snes.solve(None, gvec)
@@ -1383,6 +1388,7 @@ class SNES_Stokes:
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
                 ## print("Copy field {} to user variables".format(name), flush=True)
+
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
@@ -1560,10 +1566,9 @@ class SNES_SaddlePoint:
         p_continous = self.p.continuous
 
         self.dm   = mesh.dm.clone()
+        self.dm.clearDS()
+        self.dm.createDS()
 
-        # In the following, I'm not sure if we should make this self.instances or go all the way up to the SNES_SADDLE class 
-        # to make sure there is no namespace clash ... I haven't seen any manifestations of these clashing but
-        # I wonder if that is only because we use the same degree variables most of the time in one problem ... LM
 
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures(force=True)
@@ -1712,7 +1717,7 @@ class SNES_SaddlePoint:
 
 
     @timing.routine_timer_decorator
-    def _setup_terms(self):
+    def _setup_terms(self, verbose=False):
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         vdim = self.vdim
@@ -1810,7 +1815,7 @@ class SNES_SaddlePoint:
         # note also that the order here is important.
 
         prim_field_list = [self.u, self.p]
-        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list)
+        cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
         # create indexes so that we don't rely on indices that can change
         i_res = {}
         for index,fn in enumerate(fns_residual):

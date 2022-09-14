@@ -204,6 +204,9 @@ class Mesh(_api_tools.Stateful):
             PETSc.COMM_WORLD,
         )
 
+        self.dm.clearDS()
+        self.dm.createDS()
+
         self.quadrature = self.petsc_fe.getQuadrature()
 
         # This should replace the cython code
@@ -282,8 +285,8 @@ class Mesh(_api_tools.Stateful):
 
         if self._stale_lvec:
             if not self._lvec:
-                self.dm.clearDS()
-                self.dm.createDS()
+                # self.dm.clearDS()
+                # self.dm.createDS()
                 # create the local vector (memory chunk) and attach to original dm
                 self._lvec = self.dm.createLocalVec()
             # push avar arrays into the parent dm array

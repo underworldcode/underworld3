@@ -386,7 +386,11 @@ class Swarm(_api_tools.Stateful):
         return self._cellid_var
 
     @timing.routine_timer_decorator
-    def populate(self, fill_param: Optional[int] = 3, layout: Optional[SwarmPICLayout] = None):
+    def populate(
+        self,
+        fill_param: Optional[int] = 3,
+        layout: Optional[SwarmPICLayout] = None,
+    ):
         (
             """
         Populate the swarm with particles throughout the domain.
@@ -406,6 +410,9 @@ class Swarm(_api_tools.Stateful):
         layout:
             Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
             type cells, and `SwarmPICLayout.GAUSS` otherwise.
+
+
+
         """
         )
 

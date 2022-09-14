@@ -85,7 +85,7 @@ def test_gradient_recovery():
         s_soln.data[:, 0] = uw.function.evaluate(fn, s_soln.coords[:])
 
     scalar_projection = uw.systems.Projection(mesh, gradient)
-    scalar_projection.uw_function = s_soln.sym.diff(x)
+    scalar_projection.uw_function = s_soln.sym.diff(x)[0]
     scalar_projection.solve()
 
 
