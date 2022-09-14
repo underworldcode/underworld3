@@ -186,7 +186,7 @@ free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
 stokes.bodyforce = unit_rvec * buoyancy_force
 stokes.bodyforce -= 100000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
-stokes._Ppre_fn = 1.0
+stokes.saddle_preconditioner = 1.0
 
 # Velocity boundary conditions
 # stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Upper", (0,1,2))
@@ -195,7 +195,7 @@ stokes._Ppre_fn = 1.0
 
 stokes._setup_terms()
 
-
+stokes._uu_G3
 
 # +
 with meshball.access(meshr):
@@ -317,5 +317,3 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
 
 # -
-
-

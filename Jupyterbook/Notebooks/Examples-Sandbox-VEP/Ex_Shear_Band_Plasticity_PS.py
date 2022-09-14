@@ -142,7 +142,6 @@ stokes = uw.systems.Stokes(
 )
 
 
-
 # +
 
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2)

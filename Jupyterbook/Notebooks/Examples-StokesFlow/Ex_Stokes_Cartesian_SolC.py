@@ -21,23 +21,6 @@ mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1
 
 
 # %%
-mesh.petsc_fe.view()
-
-# %%
-# options = PETSc.Options()
-# options.setValue("meshproj_{}_petscspace_degree".format(mesh.mesh_instances), mesh.degree)
-# options.setValue("meshproj_{}_petsc_dualspace_degree".format(mesh.mesh_instances), mesh.qdegree)
-
-# petsc_fe = PETSc.FE().createDefault(
-#     mesh.dim,
-#     mesh.cdim,
-#     mesh.isSimplex,
-#     mesh.degree,
-#     "meshproj_{}_".format(mesh.mesh_instances),
-#     PETSc.COMM_WORLD,
-# )
-
-# %%
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
@@ -81,26 +64,9 @@ stokes.petsc_options["snes_rtol"] = 1.0e-6
 stokes.petsc_options["ksp_rtol"] = 1.0e-6
 stokes.petsc_options["snes_max_it"] = 10
 
-stokes.petsc_options["pc_use_amat"] = None
-stokes.petsc_options["pc_fieldsplit_diag_use_amat"] = None
-stokes.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
-
-stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 # stokes.petsc_options["snes_monitor"]= None
 # stokes.petsc_options["ksp_monitor"] = None
 
-# stokes.petsc_options.delValue("pc_fieldsplit_diag_use_amat")
-# stokes.petsc_options.delValue("pc_fieldsplit_off_diag_use_amat")
-# stokes.petsc_options.delValue( "pc_use_amat")
-
-# %%
-mesh.quadrature.view()
-
-# %%
-stokes._p.petsc_fe.view()
-
-# %%
-stokes._u.petsc_fe.view()
 
 # %%
 # Solve time

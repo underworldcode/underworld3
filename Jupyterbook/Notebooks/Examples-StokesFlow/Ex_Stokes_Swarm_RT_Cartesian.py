@@ -355,7 +355,7 @@ def plot_mesh(filename):
 
         pl.close()
         pv.close_all()
-        
+
         return
 
 
