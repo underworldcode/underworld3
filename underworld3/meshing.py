@@ -17,7 +17,7 @@ def UnstructuredSimplexBox(
     cellSize: float = 0.1,
     degree: int = 1,
     qdegree: int = 2,
-    regular: bool = True,
+    regular: bool = False,
 ):
 
     """
@@ -29,6 +29,8 @@ def UnstructuredSimplexBox(
         Tuple specifying minimum mesh location.
     maxCoord:
         Tuple specifying maximum mesh location.
+
+    regular option works in 2D but not (currently) in 3D
     """
 
     boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
@@ -71,7 +73,7 @@ def UnstructuredSimplexBox(
         gmsh.model.setPhysicalName(2, surface, "Elements")
 
         if regular:
-            gmsh.model.mesh.set_transfinite_surface(surface, arrangement="Alternate", cornerTags=[p1, p2, p3, p4])
+            gmsh.model.mesh.set_transfinite_surface(surface, cornerTags=[p1, p2, p3, p4])
 
     else:
 
