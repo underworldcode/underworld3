@@ -9,7 +9,8 @@ import sympy.vector
 from petsc4py import PETSc
 import underworld3 as uw
 
-from underworld3 import _api_tools
+from underworld3.utilities import _api_tools
+
 from underworld3.coordinates import CoordinateSystem
 import underworld3.timing as timing
 import weakref

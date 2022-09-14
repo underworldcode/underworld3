@@ -69,10 +69,7 @@ conf = configure()
 extra_compile_args = ['-O3', '-g']
 #extra_compile_args = ['-O0', '-g']
 extensions = [
-    # Extension('underworld3.discretisation',
-    #           sources = ['underworld3/discretisation.pyx',],
-    #           extra_compile_args=extra_compile_args,
-    #           **conf),
+
     Extension('underworld3.cython.petsc_discretisation',
               sources = ['underworld3/cython/petsc_discretisation.pyx',],
               extra_compile_args=extra_compile_args,

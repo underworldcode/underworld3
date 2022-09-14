@@ -18,8 +18,9 @@ class VarType(_Enum):
     COMPOSITE = 5
     OTHER = 6  # add as required
 
-
+# Needed everywhere
 from underworld3.utilities import _api_tools
+
 import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing
@@ -29,6 +30,7 @@ import underworld3.systems
 import underworld3.maths
 import underworld3.systems.constitutive_models
 import underworld3.tools
+import underworld3.utilities
 import underworld3.kdtree
 import underworld3.mpi
 import underworld3.cython

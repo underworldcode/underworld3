@@ -3,13 +3,13 @@
 
 [project]
 name = "Underworld3"
-version = "0.2"
+version = "0.3"
 authors = [
   { name="Prof Diablo", email="diablo@underworldcode.org" },
 ]
 description = "Underworld3 Geodynamics"
 readme = "README.md"
-license = { file="LICENSE" }
+# license = { file="LICENSE" }
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",

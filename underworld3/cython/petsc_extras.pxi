@@ -13,6 +13,7 @@ from underworld3.cython.petsc_types cimport PetscErrorCode
 from underworld3.cython.petsc_types cimport DMBoundaryConditionType
 from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
+
 from underworld3.utilities.petsc_gen_xdmf import generateXdmf
 
 ctypedef enum PetscBool:
