@@ -11,6 +11,8 @@ maths.c
 swarm.c
 .env
 __pycache__
+/__pycache__
+**/__pycache__
 *.so
 examples/.ipynb_checkpoints/*
 examples/PoissonEq/poisson
@@ -22,11 +24,10 @@ examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
 build
 keep
-output*
 old
 underworld3.egg-info/*
 keep/*
-
+*.swp
 
 # Jupyter Book build relics
 

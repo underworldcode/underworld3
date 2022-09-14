@@ -183,7 +183,7 @@ if uw.mpi.size == 1:
     velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
     velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
 
-    pvmesh.point_data["V"] = velocity / 10
+    pvmesh.point_data["V"] = velocity * 3
 
     points = np.zeros((t_soln.coords.shape[0], 3))
     points[:, 0] = t_soln.coords[:, 0]
