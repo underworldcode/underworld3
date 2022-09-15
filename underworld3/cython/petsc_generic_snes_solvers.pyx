@@ -52,13 +52,13 @@ class SNES_Scalar:
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_monitor"] = None
-        self.petsc_options["ksp_type"] = "fgmres"
+        # self.petsc_options["ksp_monitor"] = None
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         # self.petsc_options["snes_view"] = None
-        self.petsc_options["snes_rtol"] = 1.0e-3
+        self.petsc_options["snes_rtol"] = 1.0e-4
 
         self._u = u_Field
         self.mesh = mesh
