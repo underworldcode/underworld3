@@ -24,6 +24,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
+# %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
@@ -71,8 +72,6 @@ stokes.petsc_options["snes_max_it"] = 10
 # %%
 # Solve time
 stokes.solve()
-
-# %%
 
 # %% [markdown]
 # ## Visualise it !
@@ -188,7 +187,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=20)
+    pl.add_arrows(arrow_loc, arrow_length, mag=50)
 
     pl.show(cpos="xy")
 

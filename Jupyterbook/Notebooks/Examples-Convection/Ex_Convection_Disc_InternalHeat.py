@@ -201,7 +201,7 @@ with meshball.access(r_mesh):
 
 # +
 buoyancy_force = gravity_fn * Rayleigh * t_soln.fn
-buoyancy_force -= Rayleigh * 1000.0 * v_soln.fn.dot(unit_rvec) * surface_fn
+buoyancy_force -= Rayleigh * 100000.0 * v_soln.fn.dot(unit_rvec) * surface_fn
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 

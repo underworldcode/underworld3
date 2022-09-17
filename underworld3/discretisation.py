@@ -116,6 +116,7 @@ class Mesh(_api_tools.Stateful):
         options["dm_plex_hash_location"] = None
         self.dm.setFromOptions()
 
+
         self._vars = weakref.WeakValueDictionary()
 
         # a list of equation systems that will
@@ -839,16 +840,6 @@ class _MeshVariable(_api_tools.Stateful):
         self._is_accessed = False
         self._available = False
 
-        if mesh._accessed:
-            raise RuntimeError(
-                "It is not possible to add new variables to a mesh after existing variables have been accessed."
-            )
-
-        ## Smash if already defined (we should check this BEFORE the old meshVariable object is destroyed)
-
-        if name in mesh.vars.keys():
-            print(f"Variable with name {name} already exists on the mesh - Skipping.")
-            raise RuntimeError
 
         self.name = name
 
@@ -885,6 +876,7 @@ class _MeshVariable(_api_tools.Stateful):
         )
 
         self.petsc_fe.setQuadrature(self.mesh.quadrature)
+
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id, self.petsc_fe)
@@ -924,6 +916,9 @@ class _MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[name] = self
+
+        self.mesh.dm.clearDS()
+        self.mesh.dm.createDS()
 
         return
 

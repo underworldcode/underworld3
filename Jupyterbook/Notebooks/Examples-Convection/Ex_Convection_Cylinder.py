@@ -25,7 +25,7 @@ import numpy as np
 # options.getAll()
 # -
 
-meshball = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.0333, degree=1)
+meshball = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.1, degree=1, qdegree=3)
 
 
 # +
@@ -76,7 +76,6 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_nam
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
 
-
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
 stokes.petsc_options.delValue("ksp_monitor")
@@ -117,7 +116,7 @@ r_i = 0.5
 r_o = 1.0
 
 adv_diff = uw.systems.AdvDiffusion(
-    meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff", degree=3, verbose=False
+    meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff", verbose=False,
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
@@ -157,15 +156,14 @@ adv_diff.solve(timestep=0.00001 * stokes.estimate_dt())
 
 
 # +
-diff = uw.systems.Poisson(meshball, u_Field=t_soln, solver_name="diff_only")
+# diff = uw.systems.Poisson(meshball, u_Field=t_soln, solver_name="diff_only")
 
-diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=1)
+# diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+# diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=1)
+# diff.solve()
 
 
 # -
-
-diff.solve()
 
 0 / 0
 
@@ -202,15 +200,15 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750,750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT", use_transparency=False, opacity=0.5
+        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.0005)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)
@@ -219,7 +217,7 @@ if uw.mpi.size == 1:
 # -
 
 
-pvmesh.point_data["dT"].min()
+pvmesh.point_data["Ts"].min()
 
 adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
 
@@ -403,4 +401,3 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     pl.show(cpos="xy")
-# -

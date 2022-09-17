@@ -45,14 +45,10 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0),
     maxCoords=(boxLength, boxHeight),
     cellSize=1.0 / 32.0,
-    regular=True,
+    regular=False,
     qdegree=2,
 )
 
-
-meshbox.quadrature.view()
-
-meshbox.dm.view()
 
 # +
 import sympy
@@ -63,18 +59,16 @@ x, y = meshbox.CoordinateSystem.X
 
 # -
 
-v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
+v_soln = uw.discretisation.MeshVariable(r"U", meshbox, meshbox.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable(r"P", meshbox, 1, degree=1)
 
 
 swarm = uw.swarm.Swarm(mesh=meshbox)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1)
+material = uw.swarm.IndexSwarmVariable(r"M", swarm, indices=2, proxy_degree=1)
 swarm.populate(fill_param=10)
 
 
 # +
-
-
 with swarm.access(material):
     material.data[...] = 0
 
@@ -82,23 +76,17 @@ with swarm.access(material):
     perturbation = offset + amplitude * np.cos(k * swarm.particle_coordinates.data[:, 0])
     material.data[:, 0] = np.where(perturbation > swarm.particle_coordinates.data[:, 1], lightIndex, denseIndex)
 
+material.sym
 # -
 
-
-material.sym
 
 X = meshbox.CoordinateSystem.X
 
-# +
 mat_density = np.array([0, 1])  # lightIndex, denseIndex
-
 density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
 
-# +
 mat_viscosity = np.array([viscosityRatio, 1])
-
 viscosity = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
-# -
 
 if render:
 
@@ -128,6 +116,7 @@ if render:
         pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
@@ -235,7 +224,7 @@ if uw.mpi.size == 1 and render:
 
     # point sources at cell centres
 
-    cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
+    cpoints = np.zeros((meshbox._centroids[::4].shape[0], 3))
     cpoints[:, 0] = meshbox._centroids[::4, 0]
     cpoints[:, 1] = meshbox._centroids[::4, 1]
     cpoint_cloud = pv.PolyData(cpoints)
@@ -261,7 +250,7 @@ if uw.mpi.size == 1 and render:
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(500,500))
 
     # pl.add_mesh(pvmesh, "Gray",  "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
@@ -269,7 +258,7 @@ if uw.mpi.size == 1 and render:
     pl.add_mesh(pvstream, opacity=1.0)
     pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
 
-    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=5, opacity=0.3)
+    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=1, opacity=0.3)
 
     # pl.add_points(pdata)
 

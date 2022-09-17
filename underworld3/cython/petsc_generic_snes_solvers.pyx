@@ -998,7 +998,6 @@ class SNES_Stokes:
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {u_degree} which is required by the {self.name} solver")
 
-
         self.dm   = mesh.dm.clone()
 
         # In the following, I'm not sure if we should make this self.instances or go all the way up to the SNES_SADDLE class 
@@ -1027,6 +1026,9 @@ class SNES_Stokes:
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
         self.is_setup = False
+
+        self.dm.clearDS()
+        self.dm.createDS()
 
         return
 
@@ -1342,7 +1344,6 @@ class SNES_Stokes:
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
 
-
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
 
@@ -1360,8 +1361,8 @@ class SNES_Stokes:
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec)
@@ -1565,7 +1566,6 @@ class SNES_SaddlePoint:
         self.dm.clearDS()
         self.dm.createDS()
 
-
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures(force=True)
         quad = self.mesh.petsc_fe.getQuadrature()
@@ -1720,6 +1720,9 @@ class SNES_SaddlePoint:
         pdim = self.pdim
 
         N = self.mesh.N
+
+        self.dm.clearDS()
+        self.dm.createDS()
 
         # residual terms
         self._setup_problem_description()
