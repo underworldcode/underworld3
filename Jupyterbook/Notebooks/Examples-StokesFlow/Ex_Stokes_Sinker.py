@@ -29,10 +29,10 @@ inner_rtol = 1e-8
 
 
 # %%
-expt_name = f"output/stinker_eta1000_rho10"
+expt_name = f"output/stinker_eta1e6_rho10"
 
 # Set the resolution.
-res = 16
+res = 32
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -44,7 +44,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 1000.0
+viscSphere = 1000000.0
 
 densityBG = 1.0
 densitySphere = 10.0
@@ -61,7 +61,7 @@ swarmGPC = 2
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0,0.0),
                                               maxCoords=(1.0,1.0),
                                               cellSize=1.0/res,
-                                              regular=True)
+                                              regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(int(2*res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
 

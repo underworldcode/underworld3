@@ -28,8 +28,6 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
 )
 
 
-meshbox.dm.view()
-
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3)
@@ -52,12 +50,11 @@ stokes = Stokes(
 # stokes.petsc_options["snes_test_jacobian"] = None
 
 # T dependent visc
-log10_delta_eta = 6
+log10_delta_eta = 18
 delta_eta = 10**log10_delta_eta
 
 stokes.petsc_options["snes_rtol"] = 1/delta_eta
 stokes.petsc_options["snes_atol"] = 0.01 # Based on how the scaling works
-
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
@@ -214,11 +211,6 @@ if uw.mpi.size == 1:
     pl.show(cpos="xy")
     pvmesh.clear_data()
     pvmesh.clear_point_data()
-
-
-# -
-
-
 
 
 # +

@@ -971,7 +971,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         if coords is None:  # Mid point method to find launch points (T*)
             nswarm.advection(
-                self._V.fn,
+                self._V.sym,
                 -timestep,
                 order=2,
                 corrector=False,
