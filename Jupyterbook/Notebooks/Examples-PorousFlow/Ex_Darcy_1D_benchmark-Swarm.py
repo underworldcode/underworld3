@@ -73,6 +73,13 @@ darcy.constitutive_model.material_properties = darcy.constitutive_model.Paramete
 
 
 # +
+swarm = uw.swarm.Swarm(mesh=mesh)
+material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
+k = uw.swarm.IndexSwarmVariable("k", swarm, indices=4)
+
+swarm.populate(fill_param=2)
+
+# +
 # Groundwater pressure boundary condition on the bottom wall
 
 max_pressure = 0.5
@@ -80,21 +87,37 @@ initialPressure = -1.0 * y * max_pressure
 
 # +
 # set up two materials
-
 interfaceY = -0.26
+
+
 
 from sympy import Piecewise, ceiling, Abs
 
 k1 = 1.0
 k2 = 1.0e-4
 
-# The piecewise version
-kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
+# # The piecewise version
+# kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 
+# darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFunc)
+# -
+
+with swarm.access(material):
+    material.data[swarm.data[:,1] >= interfaceY] = 0
+    
+    material.data[swarm.data[:,1]  < interfaceY] = 1 
+
+# +
+mat_k = np.array([k1, k2])
+
+kFn = mat_k[0] * material.sym[0] + mat_k[1] * material.sym[1]
+
+darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFn)
+
+# +
 # A smooth version
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFunc)
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
 
@@ -127,7 +150,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pv.start_xvfb()
+    # pv.start_xvfb()
 
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
@@ -136,7 +159,7 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.data)
-    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.data)
+    pvmesh.point_data["K"] = uw.function.evaluate(kFn, mesh.data)
     # pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -150,14 +173,15 @@ if uw.mpi.size == 1:
     points = np.zeros((mesh._centroids.shape[0], 3))
     points[:, 0] = mesh._centroids[:, 0]
     points[:, 1] = mesh._centroids[:, 1]
-    point_cloud = pv.PolyData(points[::3])
+    point_cloud0 = pv.PolyData(points[::3])
+    
 
     v_vectors = np.zeros((mesh.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh.data)
     pvmesh.point_data["V"] = v_vectors
 
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud,
+        point_cloud0,
         vectors="V",
         integrator_type=45,
         integration_direction="both",
@@ -166,6 +190,19 @@ if uw.mpi.size == 1:
         initial_step_length=0.001,
         max_step_length=0.01,
     )
+    
+    with swarm.access():
+        points = np.zeros((swarm.data.shape[0], 3))
+        points[:, 0] = swarm.data[:, 0]
+        points[:, 1] = swarm.data[:, 1]
+        points[:, 2] = 0.0
+        
+    point_cloud1 = pv.PolyData(points)
+    
+    with swarm.access():
+        point_cloud1.point_data["M"] = material.data.copy()
+        point_cloud1.point_data["K"] = uw.function.evaluate(kFn, swarm.data)
+
 
     pl = pv.Plotter()
 
@@ -173,12 +210,21 @@ if uw.mpi.size == 1:
         pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P", use_transparency=False, opacity=1.0
     )
 
+    pl.add_mesh(
+        point_cloud1,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=False,
+        scalars="M",
+        use_transparency=False,
+        opacity=0.95,
+    )
+        
     pl.add_mesh(pvstream, line_width=10.0)
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.005, opacity=0.75)
 
     pl.show(cpos="xy")
-# -
 
 
 # +
@@ -188,7 +234,6 @@ xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
 pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
-# -
 
 
 # +
@@ -225,3 +270,5 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle="--", label="Ana
 ax1.grid("on")
 ax1.legend()
 # -
+
+
