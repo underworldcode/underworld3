@@ -14,17 +14,18 @@ The API documentation is built ...
 Refer to the Dockerfile for uw3 build instructions.  
 
 For development, building inplace will prob be preferable.  Remove
-any existing installations using `clean.sh` then run.
+any existing installations using `clean.sh` then run
+
+```shell
+python3 setup.py develop 
+```
+
+The in-place `pip` installation may be helpful for developers (after the above)
 
 ```shell
 pip install -e .
 ```
 
-if this causes problems, 
-
-```shell
-python3 setup.py develop 
-```
 
 For in place usage, you will usually need to set an appropriate PYTHONPATH.
 
@@ -35,16 +36,17 @@ Reproduce the existing UW2 examples and extend to spherical / cylindrical
 
 - [x] Spherical stokes
 - [x] Buoyancy driven stokes (various geometries)
-- [ ] Compositional Buoyancy (Rayleigh-Taylor) via swarms (benchmark)
+- [x] Compositional Buoyancy (Rayleigh-Taylor) level set
+- [x] Compositional Buoyancy (Rayleigh-Taylor) via swarms (benchmark)
 - [x] Advection/diffusion (slcn)
-- [ ] Advection/diffusion (swarm)
+- [x] Advection/diffusion (swarm)
 - [x] Constant viscosity convection
 - [x] Convection, strongly temp-dep viscosity (stagnant lid)
 - [x] Non-linear viscosity convection 
 - [ ] Quantitative Convection benchmarks (various geometries)
 - [ ] Viscoelasticity (linear) benchmarks 
-- [ ] Inertial terms (Navier-Stokes benchmarks)
-- [ ] Anisotropic viscosity
+- [x] Inertial terms (Navier-Stokes benchmarks)
+- [x] Anisotropic viscosity
 
 
 ### Checklist
@@ -57,35 +59,41 @@ Ingredients in achieving the above
 - [x] Different element types (at least Linear / Quadratic & Hex, Tet)
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
+
 - [x] Cont Galerkin 
 - [ ] ~Disc Galerkin~
 - [x] Semi-lagrangian
 - [x] Free-slip BC on surface
 
 [[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
+
 - [x] Stokes-Boussinesq
 - [x] Temp-dep rheology
 - [x] Buoyancy driven convection
-- [x] Non-linear viscosity (Jacobian ?) and yielding in particular
+- [x] Non-linear viscosity / yielding
 - [ ] Viscoelasticity
+- [x] Navier-Stokes / interial terms
 - [ ] Energy equation, resolve bdry layers
-- [ ] kermit the 🐸 
+- [ ] ~kermit the 🐸~
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
+
+- [x] SNES - generic
 - [x] Block Stokes solvers
 - [x] Semi-lagrangian
+- [x] Swarm-projected history tems
 - [ ] ~TS~  (address this later)
 
 PIC for composition
 - [x] Viscosity, buoyancy, ... 
-- [ ] Nearest neighbour (k-d tree ? 🌳 )
-- [x] 2D - L2 projection into FEM space (Petsc shall provide)
-- [ ] 3D - L2 projection into FEM space (Petsc shall provide but not in 3D)
-
-- [ ] Petsc Integrals
-- [ ] uw.fn evaluate (for Sympy functions)
+- [x] Nearest neighbour (k-d tree ? 🌳 )
+- [ ] ~2D - L2 projection into FEM space (Petsc shall provide)~
+- [ ] ~3D - L2 projection into FEM space (Petsc shall provide but not in 3D)~
+- [x] Petsc Integrals
+- [x] uw.function evaluate (for Sympy functions)
 
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
+
 - [x] HDF5 -> XDMF -> Paraview
 - [ ] LavaVu  
 
@@ -96,13 +104,12 @@ PIC for composition
   -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
 
-
 ### Tasks
 
-  - [ ] Solver options - robust for viscosity contrasts, customisable and quick.
-  - [ ] Investigate generalising context managers. LM - example of mesh vars dependent on functions.
-  - [ ] Proper quadratice mesh interpolations for deformed meshes.
+  - [x] Solver options - robust for viscosity contrasts, customisable and quick.
+  - [ ] Investigate generalising context managers. 
+  - [ ] Proper quadratic mesh interpolations for deformed meshes.
   - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
   - [ ] Further integrals/reduction operators on fields variables.
-  - [ ] nKK nanoflann exposure.
+  - [x] nKK nanoflann exposure.
   - [ ] create developer docs for software stack and general development strategy.
