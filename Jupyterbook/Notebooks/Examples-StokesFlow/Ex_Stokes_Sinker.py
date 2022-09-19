@@ -18,23 +18,21 @@ import numpy as np
 import sympy
 from mpi4py import MPI
 
-options = PETSc.Options()
 
 
 # %%
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
+snes_rtol = 1e-6
 inner_rtol = 1e-8
-options = PETSc.Options()
-options["ksp_rtol"] = inner_rtol
-options["ksp_atol"] = inner_rtol
-options["snes_converged_reason"] = None
-options["snes_monitor_short"] = None
+
 
 # %%
+expt_name = f"output/stinker_eta1000_rho10"
+
 # Set the resolution.
-res = 32
+res = 16
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -44,33 +42,28 @@ sphereCentre = (0.0, 0.7)
 materialLightIndex = 0
 materialHeavyIndex = 1
 
-
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 10.0
-
+viscSphere = 1000.0
 
 densityBG = 1.0
 densitySphere = 10.0
-
 
 # location of tracer at bottom of sinker
 x_pos = sphereCentre[0]
 y_pos = sphereCentre[1] - sphereRadius
 
-
 nsteps = 10
-
 
 swarmGPC = 2
 
 # %%
-# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0,0.0),
-#                                               maxCoords=(1.0,1.0),
-#                                               cellSize=1.0/res,
-#                                               regular=True)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0,0.0),
+                                              maxCoords=(1.0,1.0),
+                                              cellSize=1.0/res,
+                                              regular=True)
 
-mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
+# mesh = uw.meshing.StructuredQuadBox(elementRes=(int(2*res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
 
 
 # %%
@@ -137,17 +130,29 @@ viscosity = viscosityMat
 # %%
 render = True
 
-if render:
+import numpy as np
+import pyvista as pv
+import vtk
+
+pv.global_theme.background = "white"
+pv.global_theme.window_size = [750, 750]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.smooth_shading = True
+pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+
+pl = pv.Plotter(notebook=True)
+
+def plot_T_mesh(filename):
+    
+    if not render:
+        return
 
     import numpy as np
     import pyvista as pv
     import vtk
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
 
     mesh.vtk("tmpMsh.vtk")
     pvmesh = pv.read("tmpMsh.vtk")
@@ -163,37 +168,30 @@ if render:
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-    pl = pv.Plotter(notebook=True)
-
+        
+    ## Plotting into existing pl (memory leak in panel code)
+    pl.clear()
+        
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    # pl.add_points(point_cloud, color="Black",
-    #                   render_points_as_spheres=False,
-    #                   point_size=2.5, opacity=0.75)
+    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5,)
+ 
+    pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
 
-    pl.add_mesh(
-        point_cloud,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=False,
-        scalars="M",
-        use_transparency=False,
-        opacity=0.95,
-    )
 
-    pl.show(cpos="xy")
 
 # %%
 # stokes.viscosity =  viscosity
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
-stokes.bodyforce = -1 * density * mesh.N.j
+stokes.bodyforce = sympy.Matrix([0, -1 * density])
+stokes.saddle_preconditioner = 1.0 / (viscosity+stokes.penalty)
+
 
 # %%
 # stokes.petsc_options.view()
-options["snes_converged_reason"] = None
-options["snes_monitor_short"] = None
-options["snes_test_jacobian"] = None
-options["snes_test_jacobian_view"] = None
+stokes.petsc_options["snes_converged_reason"] = None
+stokes.petsc_options["snes_rtol"] = snes_rtol
+
 # stokes.petsc_options['snes_test_jacobian'] = None
 # stokes.petsc_options['snes_test_jacobian_view'] = None
 
@@ -220,14 +218,21 @@ while step < nstep:
     stokes.solve()
     ### estimate dt
     dt = stokes.estimate_dt()
-
+    
+    ## This way should be a bit safer in parallel where particles can move
+    ## processors in the middle of the calculation if you are not careful
+    ## PS - the function.evaluate needs fixing to take sympy.Matrix functions
+    
+    swarm.advection(stokes.u.sym, dt, corrector=False )
+    
     ### get velocity on particles
-    with swarm.access():
-        vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
+#     with swarm.access():
+#         vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
 
-    ### advect swarm
-    with swarm.access(swarm.particle_coordinates):
-        swarm.particle_coordinates.data[:] += dt * vel_on_particles
+#     ### advect swarm
+#     with swarm.access(swarm.particle_coordinates):
+#         swarm.particle_coordinates.data[:] += dt * vel_on_particles
+              
     ### advect tracer
     vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
     tracer += dt * vel_on_tracer
@@ -235,9 +240,13 @@ while step < nstep:
     ### print some stuff
     if uw.mpi.rank == 0:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
+        plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 
+        
     step += 1
     time += dt
+    
+
 
 # %%
 if uw.mpi.rank == 0:
@@ -254,7 +263,7 @@ if uw.mpi.rank == 0:
     ax.set_ylabel("Sinker position")
 
 # %%
-# check if that works
+# check if that worked
 
 if uw.mpi.size == 1:
 

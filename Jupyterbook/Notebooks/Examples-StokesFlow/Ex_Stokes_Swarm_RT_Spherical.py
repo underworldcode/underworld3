@@ -274,11 +274,12 @@ if uw.mpi.size == 1 and render:
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
 pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "pythreejs"
+pv.global_theme.jupyter_backend = "panel"
 pv.global_theme.smooth_shading = False
 pv.global_theme.camera["viewup"] = [1.0, 1.0, 1.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
+pl = pv.Plotter()
 
 def plot_mesh(filename):
 
@@ -335,7 +336,8 @@ def plot_mesh(filename):
     contours = pvmesh.contour(isosurfaces=[0.0], scalars="Mat")
 
 
-    pl = pv.Plotter()
+    ## Plotting into existing pl (memory leak in pyvista)
+    pl.clear()
 
     pl.add_mesh(pvmesh, "Gray",  "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
@@ -356,9 +358,6 @@ def plot_mesh(filename):
     
     pl.camera_position = 'xz'
     pl.screenshot(filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False)
-
-    pl.close()
-    pv.close_all()
 
     return
 # -

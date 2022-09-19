@@ -231,7 +231,7 @@ pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-meshbox.vtk("tmp_box_mesh.vtk")
+pl = pv.Plotter()
 
 
 def plot_T_mesh(filename):
@@ -242,13 +242,6 @@ def plot_T_mesh(filename):
         import pyvista as pv
         import vtk
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
         meshbox.vtk("tmp_box_mesh.vtk")
         pvmesh = pv.read("tmp_box_mesh.vtk")
@@ -286,7 +279,10 @@ def plot_T_mesh(filename):
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
 
-        pl = pv.Plotter()
+            
+        ## PLOTTING
+        
+        pl.clear()
 
         pl.add_mesh(
             pvmesh,
@@ -307,13 +303,9 @@ def plot_T_mesh(filename):
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
         # pl.show()
-        pl.close()
 
         pvmesh.clear_data()
         pvmesh.clear_point_data()
-
-        pv.close_all()
-
 
 # -
 
@@ -353,6 +345,7 @@ for step in range(0, 1000):
 # t_soln.save(savefile)
 # meshbox.generate_xdmf(savefile)
 
+pass
 # -
 
 
