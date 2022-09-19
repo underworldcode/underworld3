@@ -13,6 +13,7 @@ comm = MPI.COMM_WORLD
 
 from enum import Enum
 
+
 class SwarmType(Enum):
     DMSWARM_PIC = 1
 

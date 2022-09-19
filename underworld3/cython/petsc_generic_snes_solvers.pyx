@@ -142,23 +142,12 @@ class SNES_Scalar:
 
         self.dm = mesh.dm.clone()
 
-        # Set quadrature to consistent value given by mesh quadrature
-        # We force the rebuild which allows the solvers to ratchet up
-        # the quadrature order when they are defined (but not reduce it)
-        # This can occur if variables are defined by the solver itself
-
-        # self.mesh._align_quadratures(force=True)
-        u_quad = self.mesh.quadrature
-
-        # create private variables
+        # create private variables using standard quadrature order from the mesh
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, degree,"{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_u.setQuadrature(u_quad)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
-
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
-
         self.is_setup = False
 
         return
@@ -545,18 +534,12 @@ class SNES_Vector:
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {degree} which is required by the {self.name} solver")
 
-
         self.dm = mesh.dm.clone()
-
-        # Set quadrature to consistent value given by mesh quadrature.        
-        u_quad = self.mesh.quadrature
 
         # create private variables
         options = PETSc.Options()
-        options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree) # for private variables
-
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, degree,"{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_u.setQuadrature(u_quad)
+        options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree,"{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -999,34 +982,22 @@ class SNES_Stokes:
             print(f"than {u_degree} which is required by the {self.name} solver")
 
         self.dm   = mesh.dm.clone()
-
-        # In the following, I'm not sure if we should make this self.instances or go all the way up to the SNES_SADDLE class 
-        # to make sure there is no namespace clash ... I haven't seen any manifestations of these clashing but
-        # I wonder if that is only because we use the same degree variables most of the time in one problem ... LM
-
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures(force=True)
-        quad = self.mesh.quadrature
-        
+      
         options = PETSc.Options()
         options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        #self.petsc_fe_u = PETSc.FE().createLagrange(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
-        self.petsc_fe_u.setQuadrature(quad)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u.setName("velocity")
         self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
-        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, p_degree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        # self.petsc_fe_p = PETSc.FE().createLagrange(mesh.dim,     1, mesh.isSimplex, p_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
-        self.petsc_fe_p.setQuadrature(quad)
+        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
-        self.is_setup = False
 
+        self.is_setup = False
         self.dm.clearDS()
         self.dm.createDS()
 
@@ -1563,32 +1534,25 @@ class SNES_SaddlePoint:
         p_continous = self.p.continuous
 
         self.dm   = mesh.dm.clone()
-        self.dm.clearDS()
-        self.dm.createDS()
 
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures(force=True)
-        quad = self.mesh.petsc_fe.getQuadrature()
             
         options = PETSc.Options()
-        options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree) # for private variables
-        # self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_u = PETSc.FE().createLagrange(mesh.dim, mesh.dim, mesh.isSimplex, u_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
-        self.petsc_fe_u.setQuadrature(quad)
+        options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u.setName("velocity")
         self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), self.mesh.qdegree)
+        options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
-        # self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, p_degree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_p = PETSc.FE().createLagrange(mesh.dim,     1, mesh.isSimplex, p_degree, self.mesh.qdegree, PETSc.COMM_WORLD)
-        
-        self.petsc_fe_p.setQuadrature(quad)
+        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)        
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
         self.is_setup = False
+
+        self.dm.clearDS()
+        self.dm.createDS()
 
         return
 

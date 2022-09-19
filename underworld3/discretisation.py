@@ -116,7 +116,6 @@ class Mesh(_api_tools.Stateful):
         options["dm_plex_hash_location"] = None
         self.dm.setFromOptions()
 
-
         self._vars = weakref.WeakValueDictionary()
 
         # a list of equation systems that will
@@ -183,33 +182,20 @@ class Mesh(_api_tools.Stateful):
         ## LM  - the mesh coords and the size of the nodal array are different. This might break
         ## LM  - stuff so I will leave the default at 1
 
-        # options = PETSc.Options()
-        # options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.qdegree)
+        options = PETSc.Options()
+        options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree)
 
-        # self.petsc_fe = PETSc.FE().createDefault(
-        #     self.dim,
-        #     self.cdim,
-        #     self.isSimplex,
-        #     self.degree,
-        #     "meshproj_{}_".format(self.mesh_instances),
-        #     PETSc.COMM_WORLD,
-        # )
-
-        print(f"Mesh - coord degree {self.degree}, integration degree {self.qdegree}")
-
-        self.petsc_fe = PETSc.FE().createLagrange(
+        self.petsc_fe = PETSc.FE().createDefault(
             self.dim,
             self.cdim,
             self.isSimplex,
-            self.degree,
             self.qdegree,
+            "meshproj_{}_".format(self.mesh_instances),
             PETSc.COMM_WORLD,
         )
 
         self.dm.clearDS()
         self.dm.createDS()
-
-        self.quadrature = self.petsc_fe.getQuadrature()
 
         # This should replace the cython code
         self.dm.projectCoordinates(self.petsc_fe)
@@ -223,8 +209,9 @@ class Mesh(_api_tools.Stateful):
 
         arr = self.dm.getCoordinatesLocal().array
 
-        ## We should probably cache continuous v discontinous bases ... not just degree / simplex
-        self._coord_array[(self.isSimplex, self.degree)] = arr.reshape(-1, self.cdim).copy()
+        key = (self.isSimplex, self.degree, True)  # Assumes continuous basis for coordinates
+
+        self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
         self._get_mesh_centroids()
 
         # invalidate the cell-search k-d tree and the mesh centroid data
@@ -545,7 +532,7 @@ class Mesh(_api_tools.Stateful):
         cdmNew = cdmOld.clone()
         options = PETSc.Options()
         options.setValue("coordinterp_petscspace_degree", var.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, var.degree, "coordinterp_", PETSc.COMM_WORLD)
+        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, self.qdegree, "coordinterp_", PETSc.COMM_WORLD)
         cdmNew.setField(0,cdmfe)
         cdmNew.createDS()
         (matInterp, vecScale) = cdmOld.createInterpolation(cdmNew)
@@ -566,16 +553,14 @@ class Mesh(_api_tools.Stateful):
         dmold = self.dm.getCoordinateDM()
         dmnew = dmold.clone()
         options = PETSc.Options()
-        options.setValue(
-            "coordinterp_petscspace_degree", var.degree
-        )  # the var.degree argument does not appear to be honoured
 
-        options.setValue("coordinterp_petscdualspace_lagrange_continuity", var.continuous)
+        options["coordinterp_petscspace_degree"] = var.degree
+        options["coordinterp_petscdualspace_lagrange_continuity"] = var.continuous
         dmfe = PETSc.FE().createDefault(
             self.dim,
             self.cdim,
             self.isSimplex,
-            var.degree,
+            self.qdegree,
             "coordinterp_",
             PETSc.COMM_WORLD,
         )
@@ -840,7 +825,6 @@ class _MeshVariable(_api_tools.Stateful):
         self._is_accessed = False
         self._available = False
 
-
         self.name = name
 
         if vtype == None:
@@ -870,13 +854,10 @@ class _MeshVariable(_api_tools.Stateful):
             self.mesh.dm.getDimension(),
             num_components,
             self.mesh.isSimplex,
-            PETSc.DEFAULT,
+            self.mesh.qdegree,
             name + "_",
             PETSc.COMM_WORLD,
         )
-
-        self.petsc_fe.setQuadrature(self.mesh.quadrature)
-
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id, self.petsc_fe)

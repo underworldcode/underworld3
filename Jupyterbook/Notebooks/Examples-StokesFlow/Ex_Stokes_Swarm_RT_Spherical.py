@@ -354,7 +354,7 @@ def plot_mesh(filename):
     pl.remove_scalar_bar("V")
     # pl.remove_scalar_bar("rho")
     
-    pl.camera_position = 'xy'
+    pl.camera_position = 'xz'
     pl.screenshot(filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False)
 
     pl.close()
@@ -362,8 +362,6 @@ def plot_mesh(filename):
 
     return
 # -
-
-
 
 t_step = 0
 
@@ -397,8 +395,5 @@ savefile = "output/swarm_rt.h5".format(step)
 mesh.save(savefile)
 v_soln.save(savefile)
 mesh.generate_xdmf(savefile)
-
-pvmesh = pv.read("tmp_mesh.vtk")
-pvmes
 
 

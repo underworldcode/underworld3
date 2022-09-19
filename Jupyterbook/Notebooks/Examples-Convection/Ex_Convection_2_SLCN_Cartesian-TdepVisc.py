@@ -56,6 +56,8 @@ log10_delta_eta = 6
 delta_eta = 10**log10_delta_eta
 
 stokes.petsc_options["snes_rtol"] = 1/delta_eta
+stokes.petsc_options["snes_atol"] = 0.01 # Based on how the scaling works
+
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
@@ -329,7 +331,7 @@ expt_name = f"output/Ra1e6_eta1e{log10_delta_eta}"
 
 for step in range(0, 1000):
 
-    stokes.solve(zero_init_guess=True)
+    stokes.solve(zero_init_guess=False)
     delta_t = 5.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=True)
 

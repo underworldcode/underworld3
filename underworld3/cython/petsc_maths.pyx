@@ -171,6 +171,8 @@ class CellWiseIntegral:
         self.mesh.dm.localToGlobal(self.mesh.lvec, a_global)
         cdef Vec cgvec
         cgvec = a_global
+
+        ## Does this need to be consistent with everything else ?
        
         cdef DM dmc = self.mesh.dm.clone()
         cdef FE fec = FE().createDefault(self.dim, 1, False, -1)

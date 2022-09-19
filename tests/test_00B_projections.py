@@ -17,7 +17,11 @@ from underworld3.meshing import UnstructuredSimplexBox
 # +
 ## Set up the mesh(es) etc for tests and examples
 
-mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
+mesh = UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    cellSize=1.0 / 32.0,
+)
 
 x, y = mesh.X
 
@@ -25,13 +29,11 @@ s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 gradient = uw.discretisation.MeshVariable("dTdx", mesh, 1, degree=1)
 
-
 swarm = uw.swarm.Swarm(mesh=mesh)
 s_values = uw.swarm.SwarmVariable("Ss", swarm, 1, proxy_degree=3)
 v_values = uw.swarm.SwarmVariable("Vs", swarm, mesh.dim, proxy_degree=3)
 
 swarm.populate(fill_param=3)
-
 
 # +
 def test_scalar_projection():

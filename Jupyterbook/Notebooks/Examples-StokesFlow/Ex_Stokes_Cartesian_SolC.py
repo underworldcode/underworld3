@@ -30,6 +30,33 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
 
 # %%
+opt = PETSc.Options()
+opt["fem_666_petscspace_degree"]=3
+opt["fem_666_petscdualspace_lagrange_continuity"]=False
+
+fe =  PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "fem_666_", PETSc.COMM_WORLD)
+fe.view()
+
+# %%
+mesh.qdegree
+
+# %%
+
+# %%
+mesh.petsc_fe.setQuadrature(q)
+
+# %%
+stokes.petsc_fe_p.setQuadrature(mesh.quadrature.duplicate())
+
+# %%
+q = mesh.quadrature.duplicate().view()
+
+# %%
+
+# %%
+0/0
+
+# %%
 # Set some things
 import sympy
 from sympy import Piecewise
