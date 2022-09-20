@@ -1,4 +1,4 @@
-# # Temperature-dependent viscosity convection, Cartesian Domain(benchmark)
+# # Non-linear viscosity convection, Cartesian domain (benchmark)
 #
 # This is a simple example in which we try to instantiate two solvers on the mesh and have them use a common set of variables.
 #
@@ -21,17 +21,18 @@ import sympy
 
 # -
 
-
 meshbox = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-    cellSize=1.0 / 32.0, qdegree=3
+    cellSize=1.0 / 24.0, qdegree=3
 )
 
-
+# +
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1, continuous=True)
+p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
 t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3)
+
+visc = uw.discretisation.MeshVariable(r"\eta(\dot\varepsilon)", meshbox, 1, degree=1)
 
 
 # +
@@ -47,28 +48,21 @@ stokes = Stokes(
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
 # stokes.petsc_options.delValue("ksp_monitor")
-# stokes.petsc_options["snes_test_jacobian"] = None
 
-# T dependent visc
-log10_delta_eta = 6
-delta_eta = 10**log10_delta_eta
+# Linear visc
+delta_eta = 1.0e6
 
-stokes.petsc_options["snes_rtol"] = 1/delta_eta
-stokes.petsc_options["snes_atol"] = 0.01 # Based on how the scaling works
-
-viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
+viscosity_L = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_L)
+stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.0 
 
-stokes.saddle_preconditioner = 1.0 / (viscosity+stokes.penalty)
-
 # Velocity boundary conditions
-stokes.add_dirichlet_bc((0.0,), "Top",   (1,))
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-stokes.add_dirichlet_bc((0.0,), "Left",  (0,))
+stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
-
+stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 
 
 # +
@@ -90,10 +84,9 @@ x, y = meshbox.X
 k = 1.0
 h = 0.0
 
-adv_diff = uw.systems.AdvDiffusionSLCN(
-    meshbox,
-    u_Field=t_soln,
-    V_Field=v_soln,
+adv_diff = uw.systems.AdvDiffusion(
+    meshbox, u_Field=t_soln, 
+    V_Field=v_soln, 
     solver_name="adv_diff",
 )
 
@@ -102,6 +95,22 @@ adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Pa
 
 adv_diff.theta = 0.5
 
+
+# +
+# Create a scalar function calculator that we can use to obtain viscosity etc
+
+scalar_projection = uw.systems.Projection(meshbox, visc)
+scalar_projection.uw_function = (0.1 + 10.0 / (1.0 + stokes._Einv2)) # stokes.constitutive_model.material_properties.viscosity
+scalar_projection.smoothing = 1.0e-6
+
+
+
+# +
+expt_name = "output/Ra1e6_NL"
+
+Rayleigh = 1.0e6
+buoyancy_force = Rayleigh * t_soln.sym[0]
+stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
 # +
 # Define T boundary conditions via a sympy function
@@ -116,26 +125,143 @@ adv_diff.add_dirichlet_bc(0.0, "Top")
 with meshbox.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
-    print(t_0.data.max(), t_0.data.min())
 # -
 
 
-buoyancy_force = 1.0e6 * t_soln.sym[0]
-stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
-
-# check the stokes solve is set up and that it converges
-stokes.solve(zero_init_guess=True)
-
-
-# Check the diffusion part of the solve converges
-adv_diff.solve(timestep=0.1 * stokes.estimate_dt())
+# Linear problem for initial solution of velocity field
+stokes.solve()
 
 # +
+# Now make the viscosity non-linear
+
+viscosity_NL = viscosity_L * (0.1 + 10.0 / (1.0 + stokes._Einv2))
+
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_NL)
+
+stokes.saddle_preconditioner = 1 / viscosity_NL
+# -
+
+stokes.solve(zero_init_guess=False)
+
+# Check the diffusion part of the solve converges
+adv_diff.solve(timestep=0.01 * stokes.estimate_dt())
+
+
+# Compute viscosity field
+scalar_projection.solve()
+
+with meshbox.access():
+    print(visc.min(), visc.max())
+
+# +
+# check the mesh if in a notebook / serial
+import pyvista as pv
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
 pv.global_theme.antialiasing = True
 pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.smooth_shading = True
+pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+
+pl = pv.Plotter()
+
+if uw.mpi.size == 1:
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+
+    meshbox.vtk("tmp_box_mesh.vtk")
+    pvmesh = pv.read("tmp_box_mesh.vtk")
+
+    velocity = np.zeros((meshbox.data.shape[0], 3))
+    velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
+    velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
+
+    pvmesh.point_data["V"] = 10.0 * velocity / velocity.max()
+    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+    pvmesh.point_data["eta"] = uw.function.evaluate(visc.fn, meshbox.data)
+
+    # point sources at cell centres
+
+    cpoints = np.zeros((meshbox._centroids[::2].shape[0], 3))
+    cpoints[:, 0] = meshbox._centroids[::2, 0]
+    cpoints[:, 1] = meshbox._centroids[::2, 1]
+    cpoint_cloud = pv.PolyData(cpoints)
+
+    pvstream = pvmesh.streamlines_from_source(
+        cpoint_cloud,
+        vectors="V",
+        integrator_type=45,
+        integration_direction="forward",
+        compute_vorticity=False,
+        max_steps=25,
+        surface_streamlines=True,
+    )
+
+    points = np.zeros((t_soln.coords.shape[0], 3))
+    points[:, 0] = t_soln.coords[:, 0]
+    points[:, 1] = t_soln.coords[:, 1]
+
+    point_cloud = pv.PolyData(points)
+
+    with meshbox.access():
+        point_cloud.point_data["T"] = t_soln.data.copy()
+
+
+    ## PLOTTING
+
+    pl.clear()
+
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Gray",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=0.5,
+    )
+    
+    pl.add_mesh(
+        pvmesh,
+        cmap="Greys",
+        show_edges=False,
+        scalars="eta",
+        use_transparency=False,
+        opacity=0.25,
+    )
+
+    # pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
+
+    pl.add_mesh(pvstream, opacity=0.4)
+
+    pl.remove_scalar_bar("T")
+    pl.remove_scalar_bar("V")
+    pl.remove_scalar_bar("eta")
+    
+
+    # pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+    pl.show()
+
+
+# -
+
+
+
+
+# +
+import pyvista as pv
+
+
+pv.global_theme.background = "white"
+pv.global_theme.window_size = [750, 750]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = "pythreejs"
 pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
@@ -148,9 +274,7 @@ def plot_T_mesh(filename):
     if uw.mpi.size == 1:
 
         import numpy as np
-        import pyvista as pv
         import vtk
-
 
         meshbox.vtk("tmp_box_mesh.vtk")
         pvmesh = pv.read("tmp_box_mesh.vtk")
@@ -159,14 +283,15 @@ def plot_T_mesh(filename):
         velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
         velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
 
-        pvmesh.point_data["V"] = velocity / 333
+        pvmesh.point_data["V"] = 10.0 * velocity / velocity.max()
         pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+        pvmesh.point_data["eta"] = uw.function.evaluate(visc.fn, meshbox.data)
 
         # point sources at cell centres
 
-        cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
-        cpoints[:, 0] = meshbox._centroids[::4, 0]
-        cpoints[:, 1] = meshbox._centroids[::4, 1]
+        cpoints = np.zeros((meshbox._centroids[::2].shape[0], 3))
+        cpoints[:, 0] = meshbox._centroids[::2, 0]
+        cpoints[:, 1] = meshbox._centroids[::2, 1]
         cpoint_cloud = pv.PolyData(cpoints)
 
         pvstream = pvmesh.streamlines_from_source(
@@ -188,9 +313,9 @@ def plot_T_mesh(filename):
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
 
-            
+
         ## PLOTTING
-        
+
         pl.clear()
 
         pl.add_mesh(
@@ -203,58 +328,55 @@ def plot_T_mesh(filename):
             opacity=0.5,
         )
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
+        pl.add_mesh(
+            pvmesh,
+            cmap="Greys",
+            show_edges=False,
+            scalars="eta",
+            use_transparency=False,
+            opacity=0.25,
+        )
+
+        # pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
 
         pl.add_mesh(pvstream, opacity=0.4)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("V")
+        pl.remove_scalar_bar("eta")
+
+
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
-        # pl.show()
 
-        pvmesh.clear_data()
-        pvmesh.clear_point_data()
 
-# -
-
-t_step = 0
 
 # +
 # Convection model / update in time
 
-##
-## There is a strange interaction here between the solvers if the zero_guess is
-## set to False
-##
 
-expt_name = f"output/Ra1e6_eta1e{log10_delta_eta}"
-
-for step in range(0, 1000):
+for step in range(0, 250):
 
     stokes.solve(zero_init_guess=False)
     delta_t = 5.0 * stokes.estimate_dt()
-    adv_diff.solve(timestep=delta_t, zero_init_guess=True)
+    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     # stats then loop
     tstats = t_soln.stats()
 
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))
-    #         print(tstats)
 
-    if t_step % 5 == 0:
-        plot_T_mesh(filename="{}_step_{}".format(expt_name, t_step))
+    plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 
-    t_step += 1
-
-# savefile = "{}_ts_{}.h5".format(expt_name,step)
-# meshbox.save(savefile)
-# v_soln.save(savefile)
-# t_soln.save(savefile)
-# meshbox.generate_xdmf(savefile)
-
+    # savefile = "{}_ts_{}.h5".format(expt_name,step)
+    # meshbox.save(savefile)
+    # v_soln.save(savefile)
+    # t_soln.save(savefile)
+    # meshbox.generate_xdmf(savefile)
+    
 pass
+
 # -
 
 
@@ -277,11 +399,12 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "pythreejs"
     pv.global_theme.smooth_shading = True
 
-    meshbox.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pv.start_xvfb()
+
+    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
     points = np.zeros((t_soln.coords.shape[0], 3))
     points[:, 0] = t_soln.coords[:, 0]
@@ -305,14 +428,11 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=100, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.25)
+    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7.5, opacity=0.25)
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     pl.show(cpos="xy")
-# -
-
-

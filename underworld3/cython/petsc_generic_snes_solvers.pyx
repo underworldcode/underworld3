@@ -51,13 +51,10 @@ class SNES_Scalar:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_rtol"] = 1.0e-3
-        # self.petsc_options["ksp_monitor"] = None
         self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
         self.petsc_options["snes_rtol"] = 1.0e-4
 
         self._u = u_Field
@@ -65,9 +62,6 @@ class SNES_Scalar:
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
         self._L = self._u.sym.jacobian(self.mesh.X)
-
-        
-        # sympy.derive_by_array(self._u.sym, self.mesh.X).reshape(1,self.mesh.dim).tomatrix()
 
         self.bcs = []
         self._constitutive_model = None

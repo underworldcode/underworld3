@@ -39,18 +39,6 @@ class SNES_Poisson(SNES_Scalar):
         ## Parent class will set up default values etc
         super().__init__(mesh, u_Field, solver_name, verbose)
 
-        # Here we can set some defaults for this set of KSP / SNES solvers
-        # self.petsc_options = PETSc.Options(self.petsc_options_prefix)
-        # self.petsc_options["snes_type"] = "newtonls"
-        # self.petsc_options["ksp_rtol"] = 1.0e-3
-        # self.petsc_options["ksp_monitor"] = None
-        # self.petsc_options["ksp_type"] = "fgmres"
-        # self.petsc_options["pc_type"] = "gamg"
-        # self.petsc_options["snes_converged_reason"] = None
-        # self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
-        # self.petsc_options["snes_rtol"] = 1.0e-3
-
         # Register the problem setup function
         self._setup_problem_description = self.poisson_problem_description
 
@@ -83,92 +71,6 @@ class SNES_Poisson(SNES_Scalar):
     def f(self, value):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
-
-    @property
-    def k(self):
-        return self._k
-
-    @k.setter
-    def k(self, value):
-        self.is_setup = False
-        self._k = value
-
-
-#########
-
-
-class SNES_Poisson_Spherical_Surface(SNES_Scalar):
-    r"""
-    SNES-based poisson equation solver for the surface of a sphere
-    """
-
-    instances = 0
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        u_Field: uw.discretisation.MeshVariable = None,
-        degree=2,
-        solver_name: str = "",
-        verbose=False,
-    ):
-
-        ## Keep track
-
-        SNES_Poisson_Spherical_Surface.instances += 1
-
-        if solver_name == "":
-            solver_name = "Poisson_{}_".format(self.instances)
-
-        ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, solver_name, verbose)
-
-        # Register the problem setup function
-        self._setup_problem_description = self.poisson_problem_description
-
-        # default values for properties
-        self.f = sympy.Matrix.zeros(1, 1)
-        self.k = 1.0
-
-    ## This function is the one we will typically over-ride to build specific solvers.
-    ## This example is a poisson-like problem with isotropic coefficients
-
-    @timing.routine_timer_decorator
-    def poisson_problem_description(self):
-
-        dim = self.mesh.dim
-        N = self.mesh.N
-
-        # f1 residual term (weighted integration) - scalar function
-        self._f0 = self.F0 - self.f
-
-        # f1 residual term (integration by parts / gradients)
-        # isotropic
-        self._f1 = self.F1 + self.constitutive_model.flux(self._L).T  # self.k * (self._L)
-
-        return
-
-    @property
-    def f(self):
-        return self._f
-
-    @f.setter
-    def f(self, value):
-        self.is_setup = False
-        self._f = sympy.Matrix((value,))
-
-    @property
-    def k(self):
-        return self._k
-
-    @k.setter
-    def k(self, value):
-        self.is_setup = False
-        self._k = value
-
-
-#########
 
 
 class SNES_Darcy(SNES_Scalar):
@@ -382,10 +284,12 @@ class SNES_Stokes(SNES_Stokes):
 
         self._penalty = 0.0
         self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
+        self._saddle_preconditioner = sympy.sympify(1)
+        self._bodyforce = sympy.Matrix([0] * self.mesh.dim)
 
         # User-facing operations are matrices / vectors by preference
         self._E = (self._L + self._L.transpose()) / 2
-        self._Einv2 = sympy.sqrt(1.0e-16 + (sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
+        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
 
         self._setup_problem_description = self.stokes_problem_description
 
@@ -455,6 +359,16 @@ class SNES_Stokes(SNES_Stokes):
     def bodyforce(self, value):
         self.is_setup = False
         self._bodyforce = self.mesh.vector.to_matrix(value)
+
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._saddle_preconditioner = symval
 
     @property
     def penalty(self):
@@ -556,7 +470,7 @@ class SNES_Projection(SNES_Scalar):
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        self._f1 = self.F1  # + self.smoothing * self._L
+        self._f1 = self.F1 + self.smoothing * self._L
 
         return
 
