@@ -113,10 +113,11 @@ th = sympy.atan2(y - 0.5, x - 1.0)
 inclusion_rvec = mesh1.rvec - 1.0 * mesh1.N.i - 0.5 * mesh1.N.j
 inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
-# -
 
+# +
 v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1)
+
 vorticity = uw.discretisation.MeshVariable("omega", mesh1, 1, degree=1)
 strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=1)
 dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=1)
@@ -131,11 +132,18 @@ stokes = uw.systems.Stokes(
     mesh1,
     velocityField=v_soln,
     pressureField=p_soln,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
     verbose=False,
     solver_name="stokes",
 )
+
+stokes.penalty = 0.0 
+stokes.petsc_options["ksp_monitor"] = None
+
+# Linear viscosity
+viscosity = 1
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.saddle_preconditioner = 1 / viscosity
 
 
 # +
@@ -148,12 +156,12 @@ nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2)
-nodal_tau_inv2.uw_function = stokes.viscosity * stokes._Einv2
+nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity)
-nodal_visc_calc.uw_function = stokes.viscosity
+nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
 nodal_visc_calc.smoothing = 1.0e-3
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
@@ -165,7 +173,7 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 # Constant visc
 
 stokes.penalty = 0.0
-stokes.bodyforce = 1.0e-32 * mesh1.N.i
+stokes.bodyforce = 1.0e-32 * mesh1.CoordinateSystem.unit_e_1
 
 hw = 1000.0 / res
 with mesh1.access(r_inc):
@@ -180,20 +188,25 @@ stokes.add_dirichlet_bc((1.0, 0.0), "top", (0, 1))
 stokes.add_dirichlet_bc((-1.0, 0.0), "bottom", (0, 1))
 stokes.add_dirichlet_bc(0.0, "left", 1)
 stokes.add_dirichlet_bc(0.0, "right", 1)
-# -
 
 
+# +
 # linear solve first
-stokes.viscosity = 1.0
+
 stokes.solve()
 
 # +
 # Now introduce the non-linearity once we have an initial strain rate
 
-tau_y = 3.0 + 0.5 * stokes.p.fn
+tau_y = 5.0 + 0.1 * stokes.p.fn
 
-stokes.viscosity = sympy.Max(sympy.Min(tau_y / stokes._Einv2, 1.0), 0.1)
-stokes._Ppre_fn = 1.0 / stokes.viscosity
+viscosity = sympy.Max(sympy.Min(0.5*tau_y / stokes._Einv2, 1.0), 0.1)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.saddle_preconditioner = 1 / viscosity
+
+nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
+nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
 
 stokes.solve(zero_init_guess=False)
 
@@ -202,10 +215,8 @@ stokes.solve(zero_init_guess=False)
 
 nodal_strain_rate_inv2.solve()
 
-nodal_visc_calc.uw_function = stokes.viscosity
 nodal_visc_calc.solve(_force_setup=True)
 
-nodal_tau_inv2.uw_function = stokes.viscosity * stokes._Einv2
 nodal_tau_inv2.solve(_force_setup=True)
 
 # +
@@ -238,7 +249,7 @@ if uw.mpi.size == 1:
 
     v_vectors = np.zeros((mesh1.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh1.data)
-    pvmesh.point_data["V"] = v_vectors
+    pvmesh.point_data["V"] =  v_vectors / v_vectors.max()
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v_soln.coords[...]
@@ -248,28 +259,26 @@ if uw.mpi.size == 1:
 
     # point sources at cell centres
 
-    points = np.zeros((mesh1._centroids.shape[0], 3))
-    points[:, 0] = mesh1._centroids[:, 0]
-    points[:, 1] = mesh1._centroids[:, 1]
+    subsample=10
+    points = np.zeros((mesh1._centroids[::subsample].shape[0], 3))
+    points[:, 0] = mesh1._centroids[::subsample, 0]
+    points[:, 1] = mesh1._centroids[::subsample, 1]
     point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", integration_direction="both", max_steps=100)
 
     pl = pv.Plotter(window_size=(1000, 500))
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
 
-    # pl.add_points(point_cloud, cmap="coolwarm",
-    #               render_points_as_spheres=False,
-    #               point_size=10, opacity=0.66
-    #             )
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh, cmap="coolwarm", edge_color="Black", clim=[-1,1],
+        show_edges=True, scalars="P", use_transparency=False, opacity=1.0
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    # pl.add_mesh(pvstream)
+    pl.add_mesh(pvstream)
 
     # pl.remove_scalar_bar("mag")
 

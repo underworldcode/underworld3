@@ -54,7 +54,7 @@ if uw.mpi.rank == 0:
 
 
 mesh1 = uw.discretisation.Mesh("tmp_ps_shear_inclusion.msh", simplex=True)
-mesh1.dm.view()
+# mesh1.dm.view()
 
 # +
 # check the mesh if in a notebook / serial
@@ -100,8 +100,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x = mesh1.N.x
-y = mesh1.N.y
+x,y = mesh1.X
 
 # relative to the centre of the inclusion
 r = sympy.sqrt((x - 1.0) ** 2 + (y - 0.5) ** 2)
@@ -142,6 +141,15 @@ stokes = uw.systems.Stokes(
 )
 
 
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.material_properties.viscosity
+stokes.penalty = 0.0 
+
+stokes.petsc_options["ksp_monitor"] = None
+
+
+
 # +
 
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2)
@@ -152,12 +160,12 @@ nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2)
-nodal_tau_inv2.uw_function = stokes.viscosity * stokes._Einv2
+nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity)
-nodal_visc_calc.uw_function = stokes.viscosity
+nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
 nodal_visc_calc.smoothing = 1.0e-3
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
@@ -182,24 +190,27 @@ surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
 stokes.add_dirichlet_bc((vx_ps, vy_ps), ["top", "bottom", "left", "right"], (0, 1))
 
-# -
 
 
+# +
 # linear solve first
-stokes.viscosity = 1.0
-stokes._Ppre_fn = 1.0 / stokes.viscosity
+
 stokes.solve()
 # +
 # Now introduce the non-linearity once we have an initial strain rate
 
-tau_y = 3.0  # + 0.5 * stokes.p.fn
-stokes.viscosity = sympy.Min(tau_y / stokes._Einv2, 1.0)
+tau_y = 5.0 + 0.5 * stokes.p.fn
+viscosity = sympy.Min(0.5*tau_y / stokes._Einv2, 1.0)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.saddle_preconditioner = 1 / viscosity
 
 stokes.solve(zero_init_guess=False)
 # -
 
 
-nodal_visc_calc.uw_function
+nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
+nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
+
 
 # +
 # from petsc4py import PETSc
@@ -209,10 +220,10 @@ nodal_visc_calc.uw_function
 
 nodal_strain_rate_inv2.solve()
 
-nodal_visc_calc.uw_function = stokes.viscosity
-nodal_visc_calc.solve(_force_setup=True)
+nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
+nodal_visc_calc.solve()
 
-nodal_tau_inv2.uw_function = stokes.viscosity * stokes._Einv2
+nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
 nodal_tau_inv2.solve(_force_setup=True)
 
 
@@ -277,7 +288,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="Edot",
+        scalars="Str",
         use_transparency=False,
         opacity=1.0,
     )  # clim=[0.0,1.0])
@@ -296,3 +307,7 @@ pvmesh.point_data["P"].min(), pvmesh.point_data["P"].max()  # cf 4.26
 pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
+
+3-4.654077083892794/2
+
+
