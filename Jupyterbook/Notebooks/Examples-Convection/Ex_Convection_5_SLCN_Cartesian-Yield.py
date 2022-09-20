@@ -138,7 +138,7 @@ stokes.solve()
 # +
 # Now make the viscosity non-linear
 
-tau_Y = 1.0e5 * (1 + 10 * (1-y))
+tau_Y = 1.0e5 * (1 + 100 * (1-y))
 
 viscosity_NL = sympy.Piecewise( 
     ( viscosity_L, 2 * viscosity_L * stokes._Einv2 < tau_Y),
@@ -190,16 +190,17 @@ if uw.mpi.size == 1:
     velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
     velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
 
-    pvmesh.point_data["V"] = 10.0 * velocity / velocity.max()
+    pvmesh.point_data["V"] = 1.0 * velocity / velocity.max()
     pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym[0], meshbox.data)
     pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], meshbox.data)
     pvmesh.point_data["tau"] = uw.function.evaluate(tau_inv.sym[0], meshbox.data)
 
     # point sources at cell centres
 
-    cpoints = np.zeros((meshbox._centroids[::2].shape[0], 3))
-    cpoints[:, 0] = meshbox._centroids[::2, 0]
-    cpoints[:, 1] = meshbox._centroids[::2, 1]
+    subsample = 10
+    cpoints = np.zeros((meshbox._centroids[::subsample].shape[0], 3))
+    cpoints[:, 0] = meshbox._centroids[::subsample, 0]
+    cpoints[:, 1] = meshbox._centroids[::subsample, 1]
     cpoint_cloud = pv.PolyData(cpoints)
 
     pvstream = pvmesh.streamlines_from_source(
@@ -230,29 +231,31 @@ if uw.mpi.size == 1:
         pvmesh,
         cmap="coolwarm",
         edge_color="Gray",
-        show_edges=True,
+        show_edges=False,
         scalars="T",
         use_transparency=False,
-        opacity=0.05,
+        opacity=0.75,
     )
     
     pl.add_mesh(
         pvmesh,
         cmap="Greys",
         show_edges=False,
-        scalars="tau",
+        scalars="eta",
         use_transparency=False,
-        opacity=0.25,
+        opacity="geom",
     )
 
     # pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
 
-    # pl.add_mesh(pvstream, opacity=0.4)
+    pl.add_mesh(pvstream, opacity=0.2)
 
-
-
+    
     # pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
     pl.show()
+
+
+# -
 
 
 # +
@@ -292,9 +295,10 @@ def plot_T_mesh(filename):
 
         # point sources at cell centres
 
-        cpoints = np.zeros((meshbox._centroids[::2].shape[0], 3))
-        cpoints[:, 0] = meshbox._centroids[::2, 0]
-        cpoints[:, 1] = meshbox._centroids[::2, 1]
+        subsample = 10
+        cpoints = np.zeros((meshbox._centroids[::subsample].shape[0], 3))
+        cpoints[:, 0] = meshbox._centroids[::subsample, 0]
+        cpoints[:, 1] = meshbox._centroids[::subsample, 1]
         cpoint_cloud = pv.PolyData(cpoints)
 
         pvstream = pvmesh.streamlines_from_source(
@@ -328,28 +332,26 @@ def plot_T_mesh(filename):
             show_edges=True,
             scalars="T",
             use_transparency=False,
-            opacity=0.5,
+            opacity=0.75,
         )
 
         pl.add_mesh(
             pvmesh,
             cmap="Greys",
             show_edges=False,
-            scalars="tau",
+            scalars="eta",
             use_transparency=False,
-            opacity=0.25,
+            opacity="geom",
         )
 
-        # pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
-
-        pl.add_mesh(pvstream, opacity=0.4)
-
-        pl.remove_scalar_bar("T")
-        pl.remove_scalar_bar("V")
-        pl.remove_scalar_bar("tau")
-
-
-
+        pl.add_mesh(pvstream, opacity=0.5)
+        
+        for key in pvmesh.point_data.keys():
+            try:
+                pl.remove_scalar_bar(key)
+            except KeyError:
+                pass
+                
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
 
 

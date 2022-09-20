@@ -48,15 +48,35 @@ Reproduce the existing UW2 examples and extend to spherical / cylindrical
 - [x] Inertial terms (Navier-Stokes benchmarks)
 - [x] Anisotropic viscosity
 
+## Repository milestones
+
+ - [x] pip install 
+ - [ ] conda install 
+ - [x] auto-formatting (e.g. black)
+ - [x] pytest setup
+ - [ ] pytest full-coverage
+ - [ ] pytest on commit / PR
+ - [x] api docs (pdoc3)
+ - [ ] jupyterbook docs (autobuild / publish)
+ - [ ] JOSS compatibility:
+   - [ ] LICENCE
+   - [ ] citation txt
+   - [ ] PR / Commit templates
+   - [ ] Policies
 
 ### Checklist
 
 Ingredients in achieving the above
 
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
-- [x] spherical annulus - https://github.com/julesghub/cubie
+
+- [x] spherical, annulus 
 - [x] Cartesian
 - [x] Different element types (at least Linear / Quadratic & Hex, Tet)
+- [ ] Sandbox-style deforming mesh
+  - [ ] Sandbox-style deforming mesh *with particles* 
+- [ ] Remeshing examples / adaptivity
+- [ ] Earth topography / plate boundary adapted mesh
 
 [[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
 
@@ -64,6 +84,8 @@ Ingredients in achieving the above
 - [ ] ~Disc Galerkin~
 - [x] Semi-lagrangian
 - [x] Free-slip BC on surface
+  - [ ] Penalty - Needs improved interface for users)
+
 
 [[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
 
@@ -74,17 +96,20 @@ Ingredients in achieving the above
 - [ ] Viscoelasticity
 - [x] Navier-Stokes / interial terms
 - [ ] Energy equation, resolve bdry layers
+- [ ]
 - [ ] ~kermit the 🐸~
 
 [[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
 
-- [x] SNES - generic
+- [x] SNES - generic vector / scalar
 - [x] Block Stokes solvers
 - [x] Semi-lagrangian
-- [x] Swarm-projected history tems
+- [x] Swarm-projected history terms
+- [x] Projection solvers for function (sympy / variables) evaluation
 - [ ] ~TS~  (address this later)
 
 PIC for composition
+
 - [x] Viscosity, buoyancy, ... 
 - [x] Nearest neighbour (k-d tree ? 🌳 )
 - [ ] ~2D - L2 projection into FEM space (Petsc shall provide)~
@@ -95,7 +120,8 @@ PIC for composition
 [[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
 
 - [x] HDF5 -> XDMF -> Paraview
-- [ ] LavaVu  
+- [x] pyvista (serial)
+- [ ] LavaVu (or pyvista parallel workflow)
 
 [[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
 - [ ] MMS
@@ -108,7 +134,7 @@ PIC for composition
 
   - [x] Solver options - robust for viscosity contrasts, customisable and quick.
   - [ ] Investigate generalising context managers. 
-  - [ ] Proper quadratic mesh interpolations for deformed meshes.
+  - [ ] ~Proper quadratic mesh interpolations for deformed meshes.~
   - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
   - [ ] Further integrals/reduction operators on fields variables.
   - [x] nKK nanoflann exposure.
