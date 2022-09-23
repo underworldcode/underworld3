@@ -139,7 +139,7 @@ class SNES_Scalar:
         # create private variables using standard quadrature order from the mesh
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.is_setup = False

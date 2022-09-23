@@ -34,9 +34,6 @@ def petsc_dm_create_surface_submesh(incoming_dm, boundary_label, boundary_label_
         Wraps DMPlexCreateSubmesh
         """
 
-        ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and 
-        ## does not obtain the minimum radius for the mesh.
-
 
         cdef DM dm = incoming_dm
         cdef DM subdm
@@ -52,4 +49,24 @@ def petsc_dm_create_surface_submesh(incoming_dm, boundary_label, boundary_label_
         return 
 
         
+def petsc_dm_project_coordinates(incoming_dm, incoming_petsc_fe=None):
+        """
+        Something hangs in petsc4py version of this in parallel
+        """
+
+        cdef DM c_dm = incoming_dm
+        cdef FE c_fe = incoming_petsc_fe
+
+
+        if incoming_petsc_fe is None:
+                ierr = DMProjectCoordinates( c_dm.dm, NULL ); CHKERRQ(ierr)
+
+        else:
+                ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
+
+
+        # DM should be updated, no value returned
+
+        return 
+
 

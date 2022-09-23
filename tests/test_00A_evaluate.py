@@ -146,6 +146,8 @@ def test_polynomial_mesh_var_degree():
 # We don't really need any UW infrastructure for this test, but it's useful
 # to stress our `evaluate()` function. It should however simply reduce
 # to Sympy's `lambdify` routine.
+
+
 def test_polynomial_sympy():
     degree = 20
     mesh = uw.meshing.StructuredQuadBox()

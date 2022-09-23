@@ -20,7 +20,6 @@ options = PETSc.Options()
 # options["dm_plex_check_all"] = None
 # options.getAll()
 
-# -
 
 
 # +
@@ -315,4 +314,3 @@ for step in range(0, 20):
 
     ts += 1
 
-# -

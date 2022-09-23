@@ -28,8 +28,8 @@ p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
 t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3)
 
-visc = uw.discretisation.MeshVariable(r"\eta(\dot\varepsilon)", meshbox, 1, degree=1)
-tau_inv = uw.discretisation.MeshVariable(r"|\tau|", meshbox, 1, degree=1)
+visc = uw.discretisation.MeshVariable(r"\eta(\dot\varepsilon)", meshbox, 1, degree=2)
+tau_inv = uw.discretisation.MeshVariable(r"|\tau|", meshbox, 1, degree=2)
 # -
 
 
@@ -160,6 +160,11 @@ adv_diff.solve(timestep=0.01 * stokes.estimate_dt())
 viscosity_evaluation.solve()
 stress_inv_evaluation.solve()
 
+# +
+with meshbox.access():
+    print(visc.min(), visc.max())
+    print(tau_inv.min(), tau_inv.max())
+
 
 
 # +
@@ -250,7 +255,6 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(pvstream, opacity=0.2)
 
-    
     # pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
     pl.show()
 
@@ -324,6 +328,8 @@ def plot_T_mesh(filename):
         ## PLOTTING
 
         pl.clear()
+        
+        pl.camera_position="xy"
 
         pl.add_mesh(
             pvmesh,

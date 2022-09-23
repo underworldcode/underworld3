@@ -3,6 +3,7 @@
 from typing import Optional, Tuple, Union
 import os
 from xmlrpc.client import Boolean
+import mpi4py
 import numpy
 import sympy
 import sympy.vector
@@ -10,14 +11,16 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities import _api_tools
-
 from underworld3.coordinates import CoordinateSystem
+from underworld3.cython import petsc_discretisation
+
+
 import underworld3.timing as timing
 import weakref
 
 
 @PETSc.Log.EventDecorator()
-def _from_gmsh(filename, comm=None):
+def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=None):
     """Read a Gmsh .msh file from `filename`.
 
     :kwarg comm: Optional communicator to build the mesh on (defaults to
@@ -25,13 +28,21 @@ def _from_gmsh(filename, comm=None):
     """
     comm = comm or PETSc.COMM_WORLD
     # Create a read-only PETSc.Viewer
-    gmsh_viewer = PETSc.Viewer().create(comm=comm)
-    gmsh_viewer.setType("ascii")
-    gmsh_viewer.setFileMode("r")
-    gmsh_viewer.setFileName(filename)
-    gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+    # gmsh_viewer = PETSc.Viewer().create(comm=comm)
+    # gmsh_viewer.setType("ascii")
+    # gmsh_viewer.setFileMode("r")
+    # gmsh_viewer.setFileName(filename)
+    # gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
+
+    # This is probably simpler
+    gmsh_plex = PETSc.DMPlex().createFromFile(filename)
 
     # Extract Physical groups from the gmsh file
+
+    ## NOTE: should we be doing this is parallel ??
+    ## 1) Race conditions on gmsh files / locking etc
+    ## 2) Why not pass in these collections from the gmsh generator and process accordingly
+
     import gmsh
 
     gmsh.initialize()
@@ -44,6 +55,7 @@ def _from_gmsh(filename, comm=None):
         name = gmsh.model.get_physical_name(dim, tag)
 
         physical_groups[name] = tag
+
         gmsh_plex.createLabel(name)
         label = gmsh_plex.getLabel(name)
 
@@ -64,7 +76,14 @@ class Mesh(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def __init__(
-        self, plex_or_meshfile, degree=1, simplex=True, coordinate_system_type=None, qdegree=2, *args, **kwargs
+        self,
+        plex_or_meshfile,
+        degree=1,
+        simplex=True,
+        coordinate_system_type=None,
+        qdegree=2,
+        *args,
+        **kwargs,
     ):
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
@@ -131,6 +150,7 @@ class Mesh(_api_tools.Stateful):
 
         self.degree = degree
         self.qdegree = qdegree
+
         self.nuke_coords_and_rebuild()
 
         # A private work array used in the stats routines.
@@ -176,12 +196,6 @@ class Mesh(_api_tools.Stateful):
         # later where we call the interpolation routines to project from the linear
         # mesh coordinates to other mesh coordinates.
 
-        ## LM  - I put in the option to specify the default coordinate interpolation degree
-        ## LM  - which seems sensible given linear interpolation seems likely to be a problem
-        ## LM  - for spherical meshes. However, I am not sure about this because it means that
-        ## LM  - the mesh coords and the size of the nodal array are different. This might break
-        ## LM  - stuff so I will leave the default at 1
-
         options = PETSc.Options()
         options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree)
 
@@ -194,75 +208,37 @@ class Mesh(_api_tools.Stateful):
             PETSc.COMM_WORLD,
         )
 
-        self.dm.clearDS()
-        self.dm.createDS()
+        if self.degree != 1:
 
-        # This should replace the cython code
-        self.dm.projectCoordinates(self.petsc_fe)
+            # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
+            # issues with petsc that we see in parallel - in which case there is a fallback, pass no
+            # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
+            # (but it should !)
 
-        # cdmfe = self.petsc_fe
-        # cdef FE c_fe = cdmfe
-        # cdef DM c_dm = self.dm
-        # ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
+            self.dm.projectCoordinates(self.petsc_fe)
+
+        else:
+
+            uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
 
         arr = self.dm.getCoordinatesLocal().array
 
-        key = (self.isSimplex, self.degree, True)  # Assumes continuous basis for coordinates
+        key = (
+            self.isSimplex,
+            self.degree,
+            True,
+        )  # True here assumes continuous basis for coordinates ...
 
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
-        self._get_mesh_centroids()
+
+        # self._centroids = self._get_coords_for_basis(0, True)
+        self._centroids = self._get_mesh_centroids()
 
         # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
 
-        return
-
-    def build_quadratures(self, degree):
-
-        return
-
-    @timing.routine_timer_decorator
-    def _align_quadratures(self, mesh_var=None, force=False):
-        """
-        Choose a quadrature that will be used by any of our solvers on
-        this mesh. Quadratures are aligned with either:
-          - the variable that has the highest degree on the mesh at this point
-          - the variable that is provided
-
-        The default quadrature is only updated once unless
-        we set `force=True` which might be needed if new variables have
-        been added
-
-        """
-
-        # # Find var with the highest degree. We will then configure the integration
-        # # to use this variable's quadrature object for all variables.
-        # # This needs to be double checked.
-
-        return
-
-        if self._quadrature and not force:
-            return
-
-        if mesh_var is None:
-            deg = 0
-            for key, var in self.vars.items():
-                if var.degree >= deg:
-                    deg = var.degree
-                    var_base = var
-        else:
-            var = mesh_var
-
-        quad_base = var_base.petsc_fe.getQuadrature()
-        self.petsc_fe.setQuadrature(quad_base)
-
-        # Do this now for consistency (it is also done by the solvers)
-        for fe in [var.petsc_fe for var in self.vars.values()]:
-            fe.setQuadrature(quad_base)
-
-        self._quadrature = True
         return
 
     @timing.routine_timer_decorator
@@ -522,40 +498,28 @@ class Mesh(_api_tools.Stateful):
         it is first created and then returned.
         """
         key = (self.isSimplex, var.degree, var.continuous)
+
         # if array already created, return.
         if key in self._coord_array:
             return self._coord_array[key]
+        else:
+            self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
+            return self._coord_array[key]
 
-        # otherwise create and return
+    def _get_coords_for_basis(self, degree, continuous):
         """
-        cdmOld = self.dm.getCoordinateDM()
-        cdmNew = cdmOld.clone()
-        options = PETSc.Options()
-        options.setValue("coordinterp_petscspace_degree", var.degree) 
-        cdmfe = PETSc.FE().createDefault(self.dim, self.cdim, self.isSimplex, self.qdegree, "coordinterp_", PETSc.COMM_WORLD)
-        cdmNew.setField(0,cdmfe)
-        cdmNew.createDS()
-        (matInterp, vecScale) = cdmOld.createInterpolation(cdmNew)
-        vecScale.destroy() # not needed
-        coordsOld = self.dm.getCoordinates()
-        coordsNewG = cdmNew.getGlobalVec()
-        coordsNewL = cdmNew.getLocalVec()
-
-        cdef Mat c_matInterp = matInterp
-        cdef Vec c_coordsOld = coordsOld
-        cdef Vec c_coordsNewG = coordsNewG
-        ierr = MatInterpolate(c_matInterp.mat, c_coordsOld.vec, c_coordsNewG.vec); CHKERRQ(ierr)
-        cdmNew.globalToLocal(coordsNewG,coordsNewL)
+        This function returns the vertex array for the
+        provided variable. If the array does not already exist,
+        it is first created and then returned.
         """
-
-        ## Cython-free version of the code above
 
         dmold = self.dm.getCoordinateDM()
         dmnew = dmold.clone()
-        options = PETSc.Options()
 
-        options["coordinterp_petscspace_degree"] = var.degree
-        options["coordinterp_petscdualspace_lagrange_continuity"] = var.continuous
+        options = PETSc.Options()
+        options["coordinterp_petscspace_degree"] = degree
+        options["coordinterp_petscdualspace_lagrange_continuity"] = continuous
+
         dmfe = PETSc.FE().createDefault(
             self.dim,
             self.cdim,
@@ -574,16 +538,7 @@ class Mesh(_api_tools.Stateful):
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
         arr = coordsNewL.array
-        # reshape and grab copy
         arrcopy = arr.reshape(-1, self.cdim).copy()
-        # record into coord array
-        self._coord_array[key] = arrcopy
-
-        # clean up (if cython)
-        # cdmNew.restoreLocalVec(coordsNewL)
-        # cdmNew.restoreGlobalVec(coordsNewG)
-        # cdmNew.destroy()
-        # cdmfe.destroy()
 
         return arrcopy
 
@@ -655,11 +610,9 @@ class Mesh(_api_tools.Stateful):
 
         with tempSwarm.access():
             # Build index on particle coords
-            self._centroids = tempSwarm.data.copy()
+            centroids = tempSwarm.data.copy()
 
-        # That's it ! we should check that these objects are deleted correctly
-
-        return
+        return centroids
 
     def get_min_radius(self) -> float:
         """
@@ -850,8 +803,11 @@ class _MeshVariable(_api_tools.Stateful):
         options.setValue(f"{name}_petscspace_degree", degree)
         options.setValue(f"{name}_petscdualspace_lagrange_continuity", continuous)
 
-        self.petsc_fe = PETSc.FE().createDefault(
-            self.mesh.dm.getDimension(),
+        fe_factory = PETSc.FE()
+        dim = self.mesh.dm.getDimension()
+
+        self.petsc_fe = fe_factory.createDefault(
+            dim,
             num_components,
             self.mesh.isSimplex,
             self.mesh.qdegree,

@@ -33,10 +33,10 @@ if uw.mpi.rank == 0:
         geom.characteristic_length_max = csize
 
         inclusion = geom.add_circle(
-            (width / 2.0, height / 2.0, 0.0), radius, make_surface=False, mesh_size=csize_circle
+            (0.0, 0.0, 0.0), radius, make_surface=False, mesh_size=csize_circle
         )
         domain = geom.add_rectangle(
-            xmin=0.0, ymin=0.0, xmax=width, ymax=height, z=0, holes=[inclusion], mesh_size=csize
+            xmin=-width/2, ymin=-height/2, xmax=width/2, ymax=height/2, z=0, holes=[inclusion], mesh_size=csize
         )
 
         geom.add_physical(domain.surface.curve_loop.curves[0], label="bottom")
@@ -55,41 +55,6 @@ if uw.mpi.rank == 0:
 
 
 mesh1 = uw.discretisation.Mesh("tmp_shear_inclusion.msh", simplex=True)
-mesh1.dm.view()
-
-# +
-# check the mesh if in a notebook / serial
-
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
-
-    pl = pv.Plotter()
-
-    points = np.zeros((mesh1._centroids.shape[0], 3))
-    points[:, 0] = mesh1._centroids[:, 0]
-    points[:, 1] = mesh1._centroids[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
-
-    #
-
-    pl.show(cpos="xy")
 
 # +
 # Define some functions on the mesh
@@ -101,8 +66,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x = mesh1.N.x
-y = mesh1.N.y
+x,y = mesh1.X
 
 # relative to the centre of the inclusion
 r = sympy.sqrt((x - 1.0) ** 2 + (y - 0.5) ** 2)
@@ -198,7 +162,7 @@ stokes.solve()
 # +
 # Now introduce the non-linearity once we have an initial strain rate
 
-tau_y = 5.0 + 0.1 * stokes.p.fn
+tau_y = 5.0 + 0.9 * stokes.p.fn
 
 viscosity = sympy.Max(sympy.Min(0.5*tau_y / stokes._Einv2, 1.0), 0.1)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
@@ -233,6 +197,9 @@ if uw.mpi.size == 1:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+
 
     mesh1.vtk("tmp_shear_inclusion.vtk")
     pvmesh = pv.read("tmp_shear_inclusion.vtk")
@@ -267,27 +234,34 @@ if uw.mpi.size == 1:
 
     pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", integration_direction="both", max_steps=100)
 
-    pl = pv.Plotter(window_size=(1000, 500))
+    pl = pv.Plotter(window_size=(500, 500))
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
+    pl.camera_position="xy"
 
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", clim=[-1,1],
+        pvmesh, cmap="coolwarm", edge_color="Black", clim=[-2,2],
         show_edges=True, scalars="P", use_transparency=False, opacity=1.0
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)
 
+
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+# + active=""
+# pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max()
 # -
-pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max()
 
 pvmesh.point_data["P"].min(), pvmesh.point_data["P"].max()  # cf 4.26
 
 pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
+
+sympy.Min()
+
+
