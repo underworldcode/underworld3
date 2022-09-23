@@ -22,11 +22,9 @@ size :: int
 """
 
 from mpi4py import MPI as _MPI
-
 comm = _MPI.COMM_WORLD
 size = comm.size
 rank = comm.rank
-
 
 def barrier():
     """
@@ -35,8 +33,7 @@ def barrier():
     """
     comm.Barrier()
 
-
-class call_pattern:
+class call_pattern():
     """
     This context manager calls the code within its block using the
     specified calling pattern.
@@ -61,9 +58,8 @@ class call_pattern:
     My rank is 0
 
     """
-
     def __init__(self, pattern="collective", returnobj=None):
-        if not isinstance(pattern, str):
+        if not isinstance(pattern,str):
             raise TypeError("`pattern` parameter must be of type `str`")
         pattern = pattern.lower()
         if pattern not in ("collective", "sequential"):
@@ -73,12 +69,15 @@ class call_pattern:
 
     def __enter__(self):
         if self.pattern == "sequential":
-            if rank != 0:
-                comm.recv(source=rank - 1, tag=333)
+            if rank!=0:
+                comm.recv(source=rank-1, tag=333)
         return self.returnobj
 
     def __exit__(self, *args):
         if self.pattern == "sequential":
-            dest = rank + 1
-            if dest < comm.size:
-                comm.send(None, dest=rank + 1, tag=333)
+            dest = rank+1
+            if dest<comm.size:
+                comm.send(None, dest=rank+1, tag=333)
+
+
+

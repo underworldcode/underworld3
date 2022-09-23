@@ -19,9 +19,9 @@ class Stokes:
 
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh          : underworld3.discretisation.Mesh, 
-                 velocityField : Optional[underworld3.discretisation.MeshVariable] =None,
-                 pressureField : Optional[underworld3.discretisation.MeshVariable] =None,
+                 mesh          : underworld3.mesh.Mesh, 
+                 velocityField : Optional[underworld3.mesh.MeshVariable] =None,
+                 pressureField : Optional[underworld3.mesh.MeshVariable] =None,
                  u_degree      : Optional[int]                           =2, 
                  p_degree      : Optional[int]                           =None,
                  solver_name   : Optional[str]                           ="stokes_",
@@ -142,8 +142,8 @@ class Stokes:
                 p_degree = u_degree - 1
 
             # create public velocity/pressure variables
-            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
-            self._p = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=mesh.dim, name="u", vtype=uw.VarType.VECTOR, degree=u_degree )
+            self._p = uw.mesh.MeshVariable( mesh=mesh, num_components=1,        name="p", vtype=uw.VarType.SCALAR, degree=p_degree )
         else:
             self._u = velocityField
             self._p = pressureField
