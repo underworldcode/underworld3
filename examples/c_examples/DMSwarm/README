@@ -1,7 +1,0 @@
-This is a small demo of how to wrap code using petsc4py.
-
-First cython code:
-    python3 setup.py build_ext --inplace
-
-Then run model demo.py
-    python3 demo.py
