@@ -9,7 +9,7 @@ import underworld3 as uw
 import underworld3.timing as timing
 import underworld3
 
-include "../petsc_extras.pxi"
+include "../cython/petsc_extras.pxi"
 
 # Make Cython aware of this type.
 cdef extern from "petsc.h" nogil:
@@ -104,10 +104,11 @@ class UnderworldFunction(sympy.Function):
                 component: int = 0, 
                 *args, **options):
         
-        if   vtype==uw.VarType.SCALAR:
-            fname = name
-        elif vtype==uw.VarType.VECTOR:
+        if vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {} }}".format(component)
+        else: # other types can manage their own component names
+            fname = name
+            
         ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), **options)
         # Grab weakref to meshvar.
         import weakref
@@ -120,6 +121,7 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{,"
         elif vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {},".format(component)
+
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
             # Grab weakref to var for derivative fn too.
@@ -193,6 +195,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     # 1. Extract UW variables.
     # Let's first collect all the meshvariables present in the expression.
     # Recurse the expression tree.
+
     varfns = set()
     def get_var_fns(exp):
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
@@ -205,7 +208,10 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
                                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
         else:
             # Recurse.
-            for arg in exp.args: get_var_fns(arg)
+            for arg in exp.args: 
+                get_var_fns(arg)
+
+
     get_var_fns(expr)
 
     if (len(varfns)==0) and (coords is None):
@@ -235,6 +241,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         # Now construct and perform the PETSc evaluate of these variables
         # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
         # TODO: Investigate whether it makes sense to default to global operations here.
+
         cdef DMInterpolationInfo ipInfo
         cdef PetscErrorCode ierr
         ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
@@ -246,12 +253,14 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         for var in vars:
             var_start_index[var] = dofcount
             dofcount += var.num_components
+
         ierr = DMInterpolationSetDof(ipInfo, dofcount); CHKERRQ(ierr)
 
         # Add interpolation points
         # Get c-pointer to data buffer
         # First grab copy, as we're unsure about the underlying array's 
         # memory layout
+
         coords = np.ascontiguousarray(coords)
         cdef double* coords_buff = <double*> coords.data
         ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
@@ -357,7 +366,7 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     # 6. Return results
     return results
 
-# Go ahead and substituate for the timed version.
+# Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
 # we can pass in the `class_name` parameter. 
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
