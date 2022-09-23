@@ -15,8 +15,8 @@ include "../petsc_extras.pxi"
 class Poisson:
     @timing.routine_timer_decorator
     def __init__(self, 
-                 mesh     : uw.discretisation.Mesh, 
-                 u_Field  : uw.discretisation.MeshVariable = None, 
+                 mesh     : uw.mesh.Mesh, 
+                 u_Field  : uw.mesh.MeshVariable = None, 
                  degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
@@ -45,7 +45,7 @@ class Poisson:
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
-            self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )
+            self._u = uw.mesh.MeshVariable( mesh=mesh, num_components=1, name="u_poisson", vtype=uw.VarType.SCALAR, degree=degree )
         else:
             self._u = u_Field
 

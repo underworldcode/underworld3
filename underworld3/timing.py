@@ -6,7 +6,7 @@
 ##  located at the project root, or contact the authors.                             ##
 ##                                                                                   ##
 ##~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~##
-"""
+'''
 This module implements some high level timing operations for Underworld,
 allowing users to determine how walltime is divided between different
 Underworld API calls.  Note that this module *only* records timing
@@ -30,7 +30,7 @@ Example
 >>> os.environ["UW_TIMING_ENABLE"] = "1"
 >>> import underworld as uw
 >>> uw.timing.start()
->>> someMesh = uw.discretisation.FeMesh_Cartesian()
+>>> someMesh = uw.mesh.FeMesh_Cartesian()
 >>> with someMesh.deform_mesh():
 ...     someMesh.data[0] = [0.1,0.1]
 >>> uw.timing.stop()
@@ -38,18 +38,16 @@ Example
 >>>                      # Commented out as not doctest friendly.
 >>> del os.environ["UW_TIMING_ENABLE"]  # remove to prevent timing for future doctests
 
-"""
+'''
 
 from collections import defaultdict as _dd
 import time as _time
 import inspect as _inspect
 from mpi4py import MPI
-
 RANK = MPI.COMM_WORLD.rank
 import os as _os
 
 timing = False
-
 
 def start():
     """
@@ -65,15 +63,11 @@ def start():
             timing = True
         else:
             import warnings
-
-            warnings.warn(
-                "Timing unable to start. You must set the `UW_TIMING_ENABLE` environment variable before "
-                "importing `underworld`. See `underworld.timing` module documentation for further info."
-            )
+            warnings.warn("Timing unable to start. You must set the `UW_TIMING_ENABLE` environment variable before "
+                        "importing `underworld`. See `underworld.timing` module documentation for further info.")
 
     global _starttime
     _starttime = _time.time()
-
 
 def stop():
     """
@@ -87,7 +81,6 @@ def stop():
         _endtime = _time.time()
         timing = False
 
-
 def reset():
     """
     Reset timing data. Note that this function calls
@@ -96,17 +89,15 @@ def reset():
     """
     stop()
     global _hit_count
-    _hit_count = _dd(lambda: [0, 0.0])
-
+    _hit_count = _dd(lambda: [0,0.])
 
 # go ahead and reset
 reset()
 
-
 def get_data(group_by="line_routine"):
     """
     Returns dict with timing data.
-
+    
     Parameters
     ----------
     group_by: str
@@ -119,41 +110,38 @@ def get_data(group_by="line_routine"):
         return
 
     # function to convert key into useful text
-    def linefunc(key):
+    def linefunc( key ):
         if key[1].startswith("<ipython-input-"):
             spltstr = key[1].split("-")
             no_cell = int(spltstr[2])
             no_line = key[2]
-            return "Cell: {:>3}  Line:{:>3}".format(no_cell, no_line)
+            return "Cell: {:>3}  Line:{:>3}".format(no_cell,no_line)
         else:
-            return "{}:{:>5}".format(key[1].split("/")[-1], key[2])
+            return "{}:{:>5}".format(key[1].split('/')[-1],key[2])
 
     if group_by == "line":
         keyfunc = linefunc
     elif group_by == "routine":
-        keyfunc = lambda key: key[0]
+        keyfunc = lambda key : key[0]
     elif group_by == "line_routine":
-        keyfunc = lambda key: "{}   {}".format(linefunc(key), key[0])
+        keyfunc = lambda key : "{}   {}".format(linefunc(key),key[0])
     else:
-        raise ValueError("'group_by' parameter should specify 'line', 'routine' 'line_routine'")
+        raise ValueError("'group_by' parameter should specify 'line', 'routine' 'line_routine'" )
 
     # regroup data
-    regrouped_dict = _dd(lambda: [0, 0.0])
+    regrouped_dict = _dd(lambda: [0,0.])
     for key, value in _hit_count.items():
-        data = regrouped_dict[(keyfunc(key), key[3])]
+        data = regrouped_dict[(keyfunc(key),key[3])]
         data[0] += value[0]
         data[1] += value[1]
 
     return regrouped_dict
 
-
-def print_table(
-    group_by="line_routine", sort_by="total", display_fraction=0.95, float_precision=".3f", output_file=None, **kwargs
-):
+def print_table(group_by="line_routine", sort_by="total", display_fraction=0.95, float_precision=".3f", output_file=None, **kwargs ):
     """
     Print timing results to stdout or to a provided file. Call this function
     stops timing.
-
+    
     Parameters
     ----------
     group_by: str
@@ -177,102 +165,89 @@ def print_table(
         return
 
     regrouped_dict = get_data(group_by)
-
+    
     # convert to list and get tot time
-    all_time = 0.0
+    all_time = 0.
     table_data = []
     for key, value in regrouped_dict.items():
-        row = [key[0], value[0], value[1], value[1] / value[0]]
+        row = [ key[0], value[0], value[1], value[1]/value[0] ]
         table_data.append(row)
-        if key[1] == 1:
+        if key[1]==1:
             all_time += value[1]
 
-    sort_col = {"total": 2, "average": 3}
+    sort_col = { "total":2, "average":3 }
     if sort_by not in sort_col.keys():
         raise ValueError("'sort_by' parameter should specify one of {}".format(sort_col.keys()))
-    table_data = sorted(table_data, key=lambda x: x[sort_col[sort_by]], reverse=True)
+    table_data = sorted(table_data, key= lambda x: x[sort_col[sort_by]], reverse=True)
+
 
     # max sure columns widths accommodate titles
     row_title = [group_by, "hits", "tot_time", "av_time"]
-    maxl = [0, 0, 0, 0]
-    for ii in range(0, 4):
-        maxl[ii] = max(maxl[ii], len(row_title[ii]))
+    maxl = [0,0,0,0]
+    for ii in range(0,4):
+        maxl[ii] = max(maxl[ii],len(row_title[ii]))
 
     # get index for cutoff, and also column widths
-    inc_time = 0.0
-    formatstr = "{0:" + float_precision + "}"
+    inc_time = 0.
+    formatstr = "{0:"+float_precision+"}"
     stop_row = 0
-    for index, row in enumerate(table_data):
+    for index,row in enumerate(table_data):
         inc_time += row[2]
         # calc string lengths of data
-        maxl[0] = max(maxl[0], len(row[0]))
-        maxl[1] = max(maxl[1], len("{}".format(row[1])))
-        maxl[2] = max(maxl[2], len(formatstr.format(row[2])))
-        maxl[3] = max(maxl[3], len(formatstr.format(row[3])))
+        maxl[0] = max(maxl[0],len(row[0]))
+        maxl[1] = max(maxl[1],len("{}".format(row[1])))
+        maxl[2] = max(maxl[2],len(formatstr.format(row[2])))
+        maxl[3] = max(maxl[3],len(formatstr.format(row[3])))
         stop_row = index
-        if inc_time / all_time >= display_fraction:
+        if inc_time/all_time >= display_fraction:
             break
-    stop_row = min(stop_row + 1, len(table_data))
+    stop_row = min(stop_row+1, len(table_data))
+
 
     # add a space between columns
-    for ii in range(0, len(maxl)):
+    for ii in range(0,len(maxl)):
         maxl[ii] += 1
 
-    footerrow = [
-        [None, None, None, None],
-        ["Total Time (UW3 API) :", None, all_time, None],
-        ["Total Time (Runtime) :", None, _endtime - _starttime, None],
-    ]
+    footerrow = [[ None,                     None, None, None],
+                 [ "Total Time (UW3 API) :", None,            all_time, None],
+                 [ "Total Time (Runtime) :", None, _endtime-_starttime, None]]
 
     try:
         from tabulate import tabulate
-
         have_tab = True
     except:
         have_tab = False
 
     try:  # try using tabulate
-        if False:  # _uw.utils._run_from_ipython():
+        if False: #_uw.utils._run_from_ipython():
             from IPython.display import HTML, display
-
-            display(
-                HTML(tabulate(table_data[0:stop_row] + footerrow, row_title, tablefmt="html", floatfmt=".3f", **kwargs))
-            )
+            display(HTML(tabulate( table_data[0:stop_row]+footerrow, row_title, tablefmt='html',floatfmt=".3f", **kwargs )))
         else:
-            tabstr = tabulate(table_data[0:stop_row] + footerrow, row_title, floatfmt=".3f", **kwargs)
+            tabstr = tabulate(table_data[0:stop_row]+footerrow,row_title,floatfmt=".3f", **kwargs)
             tabstr += "\n"
-    except:  # otherwise use homebake.. our hipster snowflake friends (and colleague) are not forgotten!
+    except: # otherwise use homebake.. our hipster snowflake friends (and colleague) are not forgotten!
         # add header
-        tabstr = (
-            "{}".format(row_title[0]).ljust(maxl[0])
-            + "{}".format(row_title[1]).rjust(maxl[1])
-            + "{}".format(row_title[2]).rjust(maxl[2])
-            + "{}".format(row_title[3]).rjust(maxl[3])
-            + "\n"
-        )
+        tabstr = "{}".format(row_title[0]).ljust(maxl[0]) + \
+                 "{}".format(row_title[1]).rjust(maxl[1]) + \
+                 "{}".format(row_title[2]).rjust(maxl[2]) + \
+                 "{}".format(row_title[3]).rjust(maxl[3]) + "\n"
         # add margin line
-        tabstr += "-" * (maxl[0] - 1) + "  "
-        tabstr += "-" * (maxl[1] - 1) + " "
-        tabstr += "-" * (maxl[2] - 1) + " "
-        tabstr += "-" * (maxl[3] - 1) + "\n"
+        tabstr += "-" * (maxl[0] -1) + "  "
+        tabstr += "-" * (maxl[1] -1) + " "
+        tabstr += "-" * (maxl[2] -1) + " "
+        tabstr += "-" * (maxl[3] -1) + "\n"
         # add data colums
         for row in table_data[0:stop_row]:
-            tabstr += (
-                "{}".format(row[0]).ljust(maxl[0])
-                + "{}".format(row[1]).rjust(maxl[1])
-                + formatstr.format(row[2]).rjust(maxl[2])
-                + formatstr.format(row[3]).rjust(maxl[3])
-                + "\n"
-            )
+            tabstr +="{}".format(row[0]).ljust(maxl[0]) + \
+                     "{}".format(row[1]).rjust(maxl[1]) + \
+                     formatstr.format(row[2]).rjust(maxl[2]) + \
+                     formatstr.format(row[3]).rjust(maxl[3]) + "\n"
         tabstr += "\n"
         for row in footerrow[1:]:
-            tabstr += (
-                "{}".format(row[0]).ljust(maxl[0])
-                + "".rjust(maxl[1])
-                + formatstr.format(row[2]).rjust(maxl[2])
-                + "".rjust(maxl[3])
-                + "\n"
-            )
+            tabstr +="{}".format(row[0]).ljust(maxl[0]) + \
+                     "".rjust(maxl[1]) + \
+                     formatstr.format(row[2]).rjust(maxl[2]) + \
+                     "".rjust(maxl[3]) + "\n"
     if output_file:
         with open(output_file, "w") as text_file:
             text_file.write(tabstr)
@@ -280,11 +255,11 @@ def print_table(
         print("")
         print(tabstr)
 
-
+              
 def _incrementDepth():
     """
     Manually increment depth counter.
-
+    
     This is sometimes needed to let this module know that
     we are inside the Underworld API. In particular, for
     StgCompoundComponents, we manually record construction
@@ -295,7 +270,6 @@ def _incrementDepth():
         global _currentDepth
         _currentDepth += 1
 
-
 def _decrementDepth():
     """
     Manually decrement depth counter.
@@ -304,11 +278,10 @@ def _decrementDepth():
         global _currentDepth
         _currentDepth -= 1
 
-
-def log_result(time, name, foffset=1):
+def log_result( time, name, foffset=1 ):
     """
     Allows the user to manually add entries to data.
-
+    
     Parameters
     ----------
     time: float
@@ -323,20 +296,17 @@ def log_result(time, name, foffset=1):
     global _currentDepth
     if timing:
         if _currentDepth < _maxdepth:
-            frame = _inspect.currentframe()
-            count = 0
+            frame =_inspect.currentframe()
+            count=0
             while count < foffset:
                 count += 1
                 frame = frame.f_back
-            f_info = _inspect.getframeinfo(frame, 0)
-            data = _hit_count[(name, f_info[0], f_info[1], _currentDepth + 1)]
-            data[0] += 1
-            data[1] += time
-
+            f_info = _inspect.getframeinfo(frame,0)
+            data = _hit_count[(name,f_info[0], f_info[1],_currentDepth+1)]
+            data[0]+=1
+            data[1]+=time
 
 _timedroutines = set()
-
-
 def routine_timer_decorator(routine, class_name=None):
     """
     This decorator replaces any routine with the timed equivalent.
@@ -345,9 +315,8 @@ def routine_timer_decorator(routine, class_name=None):
         return routine
 
     import inspect
-
     if class_name:
-        recname = class_name + "." + routine.__name__
+        recname = class_name+"."+routine.__name__
     else:
         recname = routine.__qualname__
 
@@ -356,15 +325,15 @@ def routine_timer_decorator(routine, class_name=None):
         if timing:
             _currentDepth += 1
             if _currentDepth <= _maxdepth:
-                frame = _inspect.currentframe().f_back  # get frame above this one
-                f_info = _inspect.getframeinfo(frame, 0)
+                frame =_inspect.currentframe().f_back # get frame above this one
+                f_info = _inspect.getframeinfo(frame,0)
                 ts = _time.time()
                 result = routine(*args, **kwargs)
                 # print(ts)
                 te = _time.time()
-                data = _hit_count[(recname, f_info[0], f_info[1], _currentDepth)]
-                data[0] += 1
-                data[1] += te - ts
+                data = _hit_count[(recname,f_info[0],f_info[1],_currentDepth)]
+                data[0]+= 1
+                data[1]+= (te - ts)
                 _currentDepth -= 1
                 return result
             _currentDepth -= 1
@@ -374,10 +343,8 @@ def routine_timer_decorator(routine, class_name=None):
     # the follow copies various attributes (signatures, docstrings etc) from the
     # wrapped function to the wrapper function
     import functools
-
-    functools.update_wrapper(timed, routine)
+    functools.update_wrapper(timed,routine)
     return timed
-
 
 def _class_timer_decorator(cls):
     """
@@ -385,16 +352,14 @@ def _class_timer_decorator(cls):
     methods with timed equivalents.
     """
     for attr in _inspect.getmembers(cls, _inspect.isfunction):
-        print("  " + attr[0])
+        print("  "+ attr[0])
         # if issubclass(cls, _uw._stgermain.StgCompoundComponent):  # metaclass captures constructor timing
         #     if attr[0] in ["__init__","__call__","__del__", "_setup", "__new__"]:
         #         continue
-        if attr[0] in [
-            "__del__",
-        ]:
-            continue  # don't wrap destructors
+        if attr[0] in ["__del__",]:
+            continue # don't wrap destructors
         if attr[1] in _timedroutines:
-            continue  # do not double wrap!
+            continue # do not double wrap!
         # if attr[0] not in cls.__dict__:
         #     continue # do not wrap attribs belonging to parents.. they will be wrapped when parent is processed.
         # if attr[0] == "convert":
@@ -420,26 +385,23 @@ def _class_timer_decorator(cls):
 # keep a global list of done classes and modules
 _donemods = set()
 _doneclss = set()
-
-
 def _add_timing_to_mod(mod):
     """
     This function walks the provided module, seeking out classes
     to replace via the _class_timer_decorator.
-
+    
     """
     if "UW_TIMING_ENABLE" not in _os.environ:
         return
 
     import inspect
-
     moddir = _os.path.dirname(inspect.getfile(mod))
     lendir = len(moddir)
 
     # first gather info
     mods = []
     for guy in dir(mod):
-        obj = getattr(mod, guy)
+        obj = getattr(mod,guy)
         # only wrap these
         if not (inspect.ismodule(obj) or inspect.isclass(obj) or inspect.ismethod(obj)):
             continue
@@ -451,7 +413,7 @@ def _add_timing_to_mod(mod):
             continue
         if objpath[0:lendir] != moddir:
             continue
-        if inspect.ismodule(obj):  # add list of submodules
+        if inspect.ismodule(obj): # add list of submodules
             if obj not in _donemods:
                 _donemods.add(obj)
                 mods.append(obj)
@@ -460,7 +422,7 @@ def _add_timing_to_mod(mod):
             if obj not in _doneclss:
                 timed_obj = _class_timer_decorator(obj)
                 print(guy)
-                setattr(mod, guy, timed_obj)
+                setattr(mod,guy,timed_obj)
                 _doneclss.add(obj)
 
     for mod in mods:
@@ -469,14 +431,12 @@ def _add_timing_to_mod(mod):
 
 
 if "UW_TIMING_AUTO" in _os.environ:
-    _os.environ["UW_TIMING_ENABLE"] = "1"
+    _os.environ["UW_TIMING_ENABLE"]="1"
     # Add handler for exit
     import atexit
-
     def exit_handler():
         stop()
-        print_table(display_fraction=1.0)
-
+        print_table( display_fraction=1.0 )
     atexit.register(exit_handler)
 
     # Start timing
