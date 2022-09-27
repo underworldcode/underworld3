@@ -19,7 +19,6 @@ import sympy
 from mpi4py import MPI
 
 
-
 # %%
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
@@ -32,7 +31,7 @@ inner_rtol = 1e-8
 expt_name = f"output/stinker_eta1e6_rho10"
 
 # Set the resolution.
-res = 32
+res = 16
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -58,10 +57,7 @@ nsteps = 10
 swarmGPC = 2
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0,0.0),
-                                              maxCoords=(1.0,1.0),
-                                              cellSize=1.0/res,
-                                              regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / res, regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(int(2*res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
 
@@ -86,7 +82,7 @@ stokes.add_dirichlet_bc(sol_vel, ["Left", "Right"], [0, 1])  # left/right: compo
 
 # %%
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
+material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4, proxy_continuous=True)
 swarm.populate(fill_param=4)
 
 # %%
@@ -144,15 +140,15 @@ pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
 pl = pv.Plotter(notebook=True)
 
+
 def plot_T_mesh(filename):
-    
+
     if not render:
         return
 
     import numpy as np
     import pyvista as pv
     import vtk
-
 
     mesh.vtk("tmpMsh.vtk")
     pvmesh = pv.read("tmpMsh.vtk")
@@ -168,23 +164,27 @@ def plot_T_mesh(filename):
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-        
     ## Plotting into existing pl (memory leak in panel code)
     pl.clear()
-        
+
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5,)
- 
-    pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.5,
+    )
 
+    pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
 
 
 # %%
 # stokes.viscosity =  viscosity
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
-stokes.saddle_preconditioner = 1.0 / (viscosity+stokes.penalty)
+stokes.saddle_preconditioner = 1.0 / viscosity
 
 
 # %%
@@ -215,24 +215,24 @@ while step < nstep:
     tSinker[step] = time
 
     ### solve stokes
-    stokes.solve()
+    stokes.solve(zero_init_guess=True)
     ### estimate dt
     dt = stokes.estimate_dt()
-    
+
     ## This way should be a bit safer in parallel where particles can move
     ## processors in the middle of the calculation if you are not careful
     ## PS - the function.evaluate needs fixing to take sympy.Matrix functions
-    
-    swarm.advection(stokes.u.sym, dt, corrector=False )
-    
-    ### get velocity on particles
-#     with swarm.access():
-#         vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
 
-#     ### advect swarm
-#     with swarm.access(swarm.particle_coordinates):
-#         swarm.particle_coordinates.data[:] += dt * vel_on_particles
-              
+    swarm.advection(stokes.u.sym, dt, corrector=False)
+
+    ### get velocity on particles
+    #     with swarm.access():
+    #         vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
+
+    #     ### advect swarm
+    #     with swarm.access(swarm.particle_coordinates):
+    #         swarm.particle_coordinates.data[:] += dt * vel_on_particles
+
     ### advect tracer
     vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
     tracer += dt * vel_on_tracer
@@ -242,10 +242,8 @@ while step < nstep:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
         plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 
-        
     step += 1
     time += dt
-    
 
 
 # %%

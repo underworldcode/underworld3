@@ -21,10 +21,7 @@ import sympy
 
 # -
 
-meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-    cellSize=1.0 / 24.0, qdegree=3
-)
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24.0, qdegree=3)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
@@ -54,16 +51,22 @@ delta_eta = 1.0e6
 
 viscosity_L = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_L)
-stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.0 
+stokes.constitutive_model.Parameters.viscosity=viscosity_L
+
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+stokes.penalty = 0.0
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
 stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
+# -
 
+
+stokes.constitutive_model.solver = stokes
+
+isinstance(Stokes, uw.systems.SNES_SaddlePoint)
 
 # +
 # Create a density structure / buoyancy force
@@ -85,13 +88,14 @@ k = 1.0
 h = 0.0
 
 adv_diff = uw.systems.AdvDiffusion(
-    meshbox, u_Field=t_soln, 
-    V_Field=v_soln, 
+    meshbox,
+    u_Field=t_soln,
+    V_Field=v_soln,
     solver_name="adv_diff",
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
+adv_diff.constitutive_model.Parameters.diffusivity=k
 
 adv_diff.theta = 0.5
 
@@ -100,9 +104,10 @@ adv_diff.theta = 0.5
 # Create a scalar function calculator that we can use to obtain viscosity etc
 
 scalar_projection = uw.systems.Projection(meshbox, visc)
-scalar_projection.uw_function = (0.1 + 10.0 / (1.0 + stokes._Einv2)) # stokes.constitutive_model.material_properties.viscosity
+scalar_projection.uw_function = 0.1 + 10.0 / (
+    1.0 + stokes._Einv2
+)  
 scalar_projection.smoothing = 1.0e-6
-
 
 
 # +
@@ -117,7 +122,7 @@ stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
 import sympy
 
-init_t = 0.9 * (0.05 * sympy.cos(sympy.pi*x) + sympy.cos(0.5*np.pi * y)) + 0.05
+init_t = 0.9 * (0.05 * sympy.cos(sympy.pi * x) + sympy.cos(0.5 * np.pi * y)) + 0.05
 
 adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
@@ -136,11 +141,11 @@ stokes.solve()
 
 viscosity_NL = viscosity_L * (0.1 + 10.0 / (1.0 + stokes._Einv2))
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_NL)
-
+stokes.constitutive_model.Parameters.viscosity=viscosity_NL
 stokes.saddle_preconditioner = 1 / viscosity_NL
 # -
+
+stokes.saddle_preconditioner
 
 stokes.solve(zero_init_guess=False)
 
@@ -173,7 +178,6 @@ if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
     import vtk
-
 
     meshbox.vtk("tmp_box_mesh.vtk")
     pvmesh = pv.read("tmp_box_mesh.vtk")
@@ -212,7 +216,6 @@ if uw.mpi.size == 1:
     with meshbox.access():
         point_cloud.point_data["T"] = t_soln.data.copy()
 
-
     ## PLOTTING
 
     pl.clear()
@@ -226,7 +229,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.5,
     )
-    
+
     pl.add_mesh(
         pvmesh,
         cmap="Greys",
@@ -243,15 +246,9 @@ if uw.mpi.size == 1:
     pl.remove_scalar_bar("T")
     pl.remove_scalar_bar("V")
     pl.remove_scalar_bar("eta")
-    
 
     # pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
     pl.show()
-
-
-# -
-
-
 
 
 # +
@@ -313,7 +310,6 @@ def plot_T_mesh(filename):
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
 
-
         ## PLOTTING
 
         pl.clear()
@@ -345,10 +341,7 @@ def plot_T_mesh(filename):
         pl.remove_scalar_bar("V")
         pl.remove_scalar_bar("eta")
 
-
-
         pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
-
 
 
 # +
@@ -374,7 +367,7 @@ for step in range(0, 250):
     # v_soln.save(savefile)
     # t_soln.save(savefile)
     # meshbox.generate_xdmf(savefile)
-    
+
 pass
 
 # -

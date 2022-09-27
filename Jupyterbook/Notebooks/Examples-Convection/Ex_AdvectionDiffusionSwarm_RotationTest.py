@@ -35,11 +35,14 @@ t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-swarm  = uw.swarm.Swarm(mesh=meshball)
+swarm = uw.swarm.Swarm(mesh=meshball)
 T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
 X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
 swarm.populate(fill_param=3)
 
+
+with swarm.access():
+    print(swarm.particle_coordinates.data.shape)
 
 # +
 # Create adv_diff object
@@ -55,12 +58,12 @@ delta_t = 1.0
 
 
 # +
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSwarm(
     meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff"  # not needed if coords is provided
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
+adv_diff.constitutive_model.Parameters.diffusivity=k
 
 
 # +

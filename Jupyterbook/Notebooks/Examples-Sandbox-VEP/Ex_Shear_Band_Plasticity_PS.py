@@ -100,7 +100,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x,y = mesh1.X
+x, y = mesh1.X
 
 # relative to the centre of the inclusion
 r = sympy.sqrt((x - 1.0) ** 2 + (y - 0.5) ** 2)
@@ -144,10 +144,9 @@ stokes = uw.systems.Stokes(
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.material_properties.viscosity
-stokes.penalty = 0.0 
+stokes.penalty = 0.0
 
 stokes.petsc_options["ksp_monitor"] = None
-
 
 
 # +
@@ -191,7 +190,6 @@ stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
 stokes.add_dirichlet_bc((vx_ps, vy_ps), ["top", "bottom", "left", "right"], (0, 1))
 
 
-
 # +
 # linear solve first
 
@@ -200,7 +198,7 @@ stokes.solve()
 # Now introduce the non-linearity once we have an initial strain rate
 
 tau_y = 5.0 + 0.5 * stokes.p.fn
-viscosity = sympy.Min(0.5*tau_y / stokes._Einv2, 1.0)
+viscosity = sympy.Min(0.5 * tau_y / stokes._Einv2, 1.0)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
 stokes.saddle_preconditioner = 1 / viscosity
 
@@ -308,6 +306,4 @@ pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
 
-3-4.654077083892794/2
-
-
+3 - 4.654077083892794 / 2

@@ -1,9 +1,20 @@
 CHANGES: Underworld3
 ====================
 
+
+2022-09-01
+----------
+
+Release 0.3.0 
+-------------
+
+ * Um
+
+
+
 2021-08-12
 ----------
-* Added kdtree functionality.
+* Added our own kdtree functionality.
 
 2021-03-12
 ----------

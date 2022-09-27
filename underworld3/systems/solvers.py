@@ -136,7 +136,7 @@ class SNES_Darcy(SNES_Scalar):
         self._f1 = self.F1 + self.darcy_flux
 
         # Flow calculation
-        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.uw_function = -self.darcy_flux
 
         return
 
@@ -198,7 +198,7 @@ class SNES_Darcy(SNES_Scalar):
         self._v_projector.petsc_options[
             "snes_type"
         ] = "newtontr"  ## newtonls seems to be problematic when the previous guess is available
-        self._v_projector.petsc_options["snes_rtol"] = 1.0e-3
+        self._v_projector.petsc_options["snes_rtol"] = 1.0e-5
         self._v_projector.petsc_options.delValue("ksp_monitor")
         self._v_projector.solve(zero_init_guess)
 

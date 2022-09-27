@@ -174,7 +174,7 @@ import sympy
 from sympy import Piecewise
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
 stokes.saddle_preconditioner = 1.0 / viscosity

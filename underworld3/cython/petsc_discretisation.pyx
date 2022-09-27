@@ -35,7 +35,7 @@ def petsc_dm_create_surface_submesh(incoming_dm, boundary_label, boundary_label_
         """
 
 
-        cdef DM dm = incoming_dm
+        cdef DM c_dm = incoming_dm
         cdef DM subdm
         cdef PetscDMLabel dmlabel
         cdef PetscInt value = boundary_label_value
@@ -43,7 +43,7 @@ def petsc_dm_create_surface_submesh(incoming_dm, boundary_label, boundary_label_
 
         subdm = PETSc.DM()
         
-        DMGetLabel(dm, "Boundary", &dmlabel)
+        DMGetLabel(c_dm.dm, "Boundary", &dmlabel)
         # DMPlexCreateSubmesh(dm.dm, dmlabel, value, markedFaces, &subdm.dm)
 
         return 
@@ -69,4 +69,17 @@ def petsc_dm_project_coordinates(incoming_dm, incoming_petsc_fe=None):
 
         return 
 
+def petsc_fe_create_default():
+
+        return
+
+def petsc_fe_create_sub_dm(incoming_dm, field_id):
+
+        cdef DM subdm = PETSc.DM()
+        cdef DM dm = incoming_dm
+        cdef PetscInt fields = field_id
+
+        ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+
+        return subdm
 

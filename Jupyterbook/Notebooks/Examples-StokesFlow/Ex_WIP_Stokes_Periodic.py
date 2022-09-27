@@ -118,7 +118,7 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # No slip boundary conditions
 stokes.add_dirichlet_bc((0.5, 0.0), ["Top"], (0, 1))

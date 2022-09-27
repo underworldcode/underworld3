@@ -174,7 +174,7 @@ stokes.petsc_options["ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # thermal buoyancy force
 buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
@@ -315,4 +315,3 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=50 / Rayleigh)
 
     pl.show(cpos="xy")
-

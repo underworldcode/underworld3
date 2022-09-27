@@ -34,10 +34,10 @@ meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
 
 # +
 # Test that the second one is skipped
-v_soln = uw.discretisation._MeshVariable(r"u", meshball, 2, degree=2)
 
 v_soln = uw.discretisation.MeshVariable(r"u", meshball, 2, degree=2)
-p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
+p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=False)
+p_cont = uw.discretisation.MeshVariable(r"p_c", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=3)
 maskr = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
 
@@ -79,7 +79,7 @@ vy = vtheta * sympy.cos(th)
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # There is a null space if there are no fixed bcs, so we'll do this:
 
@@ -90,6 +90,10 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 
 # -
 
+
+pressure_solver = uw.systems.Projection(meshball, p_cont)
+pressure_solver.uw_function = p_soln.sym[0]
+pressure_solver.smoothing = 1.0e-3
 
 t_init = 0.001 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
 t_init = sympy.cos(3 * th)
@@ -119,11 +123,16 @@ buoyancy_force -= 100000 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm
 stokes.bodyforce = unit_rvec * buoyancy_force
 
 # This may help the solvers - penalty in the preconditioner
-stokes._Ppre_fn = 1.0
+stokes.saddle_preconditioner = 1.0
 
 # -
 
 stokes.solve()
+
+# +
+# Pressure at mesh nodes
+
+pressure_solver.solve()
 
 # +
 # check the mesh if in a notebook / serial
@@ -145,7 +154,8 @@ if uw.mpi.size == 1:
     pvmesh = pv.read("tmp_ball.vtk")
 
     with meshball.access():
-        pvmesh.point_data["T"] = uw.function.evaluate(maskr.sym[0] * v_soln.sym.dot(unit_rvec), meshball.data)
+        pvmesh.point_data["V"] = uw.function.evaluate(maskr.sym[0] * v_soln.sym.dot(unit_rvec), meshball.data)
+        pvmesh.point_data["P"] = uw.function.evaluate(maskr.sym[0] * p_cont.sym[0], meshball.data)
 
     with meshball.access():
         usol = stokes.u.data
@@ -159,6 +169,11 @@ if uw.mpi.size == 1:
     pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh, cmap="coolwarm", edge_color="Black", scalars="P", show_edges=False, use_transparency=False, opacity=0.75
+    )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0003)
     pl.show(cpos="xy")
+# -
+
+

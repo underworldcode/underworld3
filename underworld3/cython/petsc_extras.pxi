@@ -38,7 +38,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
 
     PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
-    PetscErrorCode DMGetLabel(DM dm, const char name[], PetscDMLabel *label)
+    PetscErrorCode DMGetLabel(PetscDM dm, const char name[], PetscDMLabel *label)
 
     # These do not appear to be in the 3.17.2 release
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)

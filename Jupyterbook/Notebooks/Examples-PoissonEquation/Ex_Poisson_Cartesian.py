@@ -11,10 +11,8 @@ import sympy
 
 
 # %%
-from underworld3.utilities import _jitextension
-
-# %%
-mesh2 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24)
+mesh1 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24)
+mesh2 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24, regular=True)
 
 # mesh3 = uw.meshing.UnstructuredSimplexBox(
 # minCoords=(0.0,0.0,0.0),
@@ -23,8 +21,8 @@ mesh2 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 
 
 mesh = mesh2
 
-phi = uw.discretisation.MeshVariable(r"phi", mesh, 1, degree=2)
-scalar = uw.discretisation.MeshVariable(r"Theta", mesh, 1, degree=2)
+phi = uw.discretisation.MeshVariable(r"\phi", mesh, 1, degree=2)
+scalar = uw.discretisation.MeshVariable(r"\Theta", mesh, 1, degree=2)
 
 # %%
 # Create Poisson object
@@ -34,14 +32,11 @@ poisson = uw.systems.Poisson(mesh, u_Field=phi, solver_name="diffusion")
 # Constitutive law (diffusivity)
 
 poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=1)
+poisson.constitutive_model.Parameters.diffusivity = 1
 
 
 # %%
-poisson.constitutive_model
-
-# %%
-poisson.constitutive_model.c.shape
+poisson.constitutive_model.c
 
 # %%
 # Set some things
@@ -67,7 +62,7 @@ import numpy as np
 with mesh.access():
     mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.data)
     mesh_analytic_soln = uw.function.evaluate(1.0 - mesh.N.y, mesh.data)
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.1):
+    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
         raise RuntimeError("Unexpected values encountered.")
 
 # %%
@@ -121,7 +116,7 @@ x, y = mesh.X
 x0 = y0 = 1 / sympy.sympify(2)
 k = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2))
 
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=k)
+poisson.constitutive_model.Parameters.diffusivity=k
 
 # %%
 poisson.constitutive_model.flux(poisson._L)
@@ -200,7 +195,7 @@ display(poisson.f)
 # Linear solver first
 
 poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=1)
+poisson.constitutive_model.Parameters.diffusivity=1
 
 poisson.solve()
 
@@ -210,7 +205,7 @@ poisson.solve()
 
 grad_phi = mesh.vector.gradient(phi.sym)
 k = 5 + (grad_phi.dot(grad_phi)) / 2
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=k)
+poisson.constitutive_model.Parameters.diffusivity=k
 poisson.constitutive_model.c
 
 

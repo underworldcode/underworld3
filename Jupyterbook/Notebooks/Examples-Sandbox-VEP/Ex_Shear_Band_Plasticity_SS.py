@@ -32,11 +32,9 @@ if uw.mpi.rank == 0:
 
         geom.characteristic_length_max = csize
 
-        inclusion = geom.add_circle(
-            (0.0, 0.0, 0.0), radius, make_surface=False, mesh_size=csize_circle
-        )
+        inclusion = geom.add_circle((0.0, 0.0, 0.0), radius, make_surface=False, mesh_size=csize_circle)
         domain = geom.add_rectangle(
-            xmin=-width/2, ymin=-height/2, xmax=width/2, ymax=height/2, z=0, holes=[inclusion], mesh_size=csize
+            xmin=-width / 2, ymin=-height / 2, xmax=width / 2, ymax=height / 2, z=0, holes=[inclusion], mesh_size=csize
         )
 
         geom.add_physical(domain.surface.curve_loop.curves[0], label="bottom")
@@ -66,7 +64,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x,y = mesh1.X
+x, y = mesh1.X
 
 # relative to the centre of the inclusion
 r = sympy.sqrt((x - 1.0) ** 2 + (y - 0.5) ** 2)
@@ -100,7 +98,7 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.penalty = 0.0 
+stokes.penalty = 0.0
 stokes.petsc_options["ksp_monitor"] = None
 
 # Linear viscosity
@@ -164,7 +162,7 @@ stokes.solve()
 
 tau_y = 5.0 + 0.9 * stokes.p.fn
 
-viscosity = sympy.Max(sympy.Min(0.5*tau_y / stokes._Einv2, 1.0), 0.1)
+viscosity = sympy.Max(sympy.Min(0.5 * tau_y / stokes._Einv2, 1.0), 0.1)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
 stokes.saddle_preconditioner = 1 / viscosity
@@ -200,7 +198,6 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-
     mesh1.vtk("tmp_shear_inclusion.vtk")
     pvmesh = pv.read("tmp_shear_inclusion.vtk")
 
@@ -216,7 +213,7 @@ if uw.mpi.size == 1:
 
     v_vectors = np.zeros((mesh1.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh1.data)
-    pvmesh.point_data["V"] =  v_vectors / v_vectors.max()
+    pvmesh.point_data["V"] = v_vectors / v_vectors.max()
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v_soln.coords[...]
@@ -226,7 +223,7 @@ if uw.mpi.size == 1:
 
     # point sources at cell centres
 
-    subsample=10
+    subsample = 10
     points = np.zeros((mesh1._centroids[::subsample].shape[0], 3))
     points[:, 0] = mesh1._centroids[::subsample, 0]
     points[:, 1] = mesh1._centroids[::subsample, 1]
@@ -237,17 +234,21 @@ if uw.mpi.size == 1:
     pl = pv.Plotter(window_size=(500, 500))
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
-    pl.camera_position="xy"
-
+    pl.camera_position = "xy"
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", clim=[-2,2],
-        show_edges=True, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        clim=[-2, 2],
+        show_edges=True,
+        scalars="P",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)
-
 
     # pl.remove_scalar_bar("mag")
 
@@ -263,5 +264,3 @@ pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
 
 sympy.Min()
-
-

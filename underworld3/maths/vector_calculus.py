@@ -12,7 +12,7 @@ class mesh_vector_calculus:
         self.dim = self.mesh.dim
 
     def curl(self, matrix):
-        """
+        r"""
         \( \nabla \cross \mathbf{v} \)
 
         Returns the curl of a 3D vector field or the out-of-plane
@@ -29,7 +29,7 @@ class mesh_vector_calculus:
             return vector_curl.dot(self.mesh.N.k)
 
     def divergence(self, matrix):
-        """
+        r"""
         \( \nabla \cdot \mathbf{v} \)
         """
         vector = self.to_vector(matrix)
@@ -37,7 +37,7 @@ class mesh_vector_calculus:
         return scalar_div
 
     def gradient(self, scalar):
-        """
+        r"""
         $\nabla \phi$
         """
 

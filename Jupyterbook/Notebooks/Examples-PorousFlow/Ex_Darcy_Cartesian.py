@@ -20,10 +20,12 @@ import sympy
 options = PETSc.Options()
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(4.0, 1.0), cellSize=0.05)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), 
+                                         maxCoords=(4.0, 1.0), 
+                                         cellSize=0.05, qdegree=3)
 
-p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=3)
-v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
+v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 
 
 # %%
@@ -51,8 +53,6 @@ if uw.mpi.size == 1 and uw.is_notebook:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pv.start_xvfb()
-
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
 
@@ -66,14 +66,14 @@ if uw.mpi.size == 1 and uw.is_notebook:
 # Create Poisson object
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=1)
+darcy.constitutive_model.Parameters.diffusivity=1
 darcy.petsc_options.delValue("ksp_monitor")
 
 # %%
 # Set some things
 
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=k)
+darcy.constitutive_model.Parameters.diffusivity=k
 
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
@@ -82,24 +82,11 @@ darcy.add_dirichlet_bc(0.0, "Top")
 
 # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.smoothing = 1.0e-6
+darcy._v_projector.smoothing = 1.0e-3
 
 # %%
 # Solve time
 darcy.solve()
-
-# %%
-darcy._v_projector._U
-
-F0 = darcy.mesh.vector.to_matrix(darcy._v_projector._f0)
-F0
-
-# %%
-sympy.derive_by_array(F0, darcy._v_projector._U).reshape(2, 2)
-
-# %%
-# this is broken?
-# darcy._v_projector._GG1.reshape(2,4)
 
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
@@ -113,8 +100,6 @@ if uw.mpi.size == 1 and uw.is_notebook:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
-
-    pv.start_xvfb()
 
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
@@ -150,18 +135,19 @@ if uw.mpi.size == 1 and uw.is_notebook:
         integrator_type=45,
         integration_direction="both",
         max_steps=1000,
-        max_time=0.1,
+        max_time=0.2,
         initial_step_length=0.001,
         max_step_length=0.01,
     )
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="P", use_transparency=False, opacity=1.0
     )
+    
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
 
     pl.add_mesh(pvstream, line_width=10.0)
 

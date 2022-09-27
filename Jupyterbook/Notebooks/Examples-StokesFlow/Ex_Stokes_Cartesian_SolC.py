@@ -25,9 +25,13 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 # %%
+mesh.dm.getCoordinateDim()
+
+# %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity = 1
+
 
 # %%
 # Set some things
@@ -50,7 +54,7 @@ stokes.bodyforce = sympy.Matrix(
         ),
     ]
 )
-stokes._Ppre_fn = 1
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
@@ -130,16 +134,16 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 stokes.bodyforce = sympy.Matrix([0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)])
 viscosity_fn = sympy.Piecewise(
     (
-        1.0e12,
+        1.0e6,
         x > x_c,
     ),
     (1.0, True),
 )
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_fn)
-stokes.saddle_preconditioner = 1 / viscosity_fn
+stokes.constitutive_model.Parameters.viscosity=viscosity_fn
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.material_properties.viscosity
+stokes.constitutive_model.Parameters.viscosity
 
 # %%
 stokes.solve()

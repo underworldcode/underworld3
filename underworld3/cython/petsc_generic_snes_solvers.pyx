@@ -130,19 +130,32 @@ class SNES_Scalar:
         degree = self._u.degree
         mesh = self.mesh
 
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building dm for {self.name}")
+
         if mesh.qdegree < degree: 
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {degree} which is required by the {self.name} solver")
 
         self.dm = mesh.dm.clone()
 
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building FE / quadrature for {self.name}")
+
         # create private variables using standard quadrature order from the mesh
+        
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.is_setup = False
+
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building DS for {self.name}")
+
+        self.dm.createDS()
+
 
         return
 
@@ -426,7 +439,7 @@ class SNES_Vector:
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_monitor"] = None
-        self.petsc_options["ksp_type"] = "fgmres"
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
@@ -538,6 +551,7 @@ class SNES_Vector:
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         self.is_setup = False
+        self.dm.createDS()
 
         return
 
@@ -976,6 +990,8 @@ class SNES_Stokes:
             print(f"than {u_degree} which is required by the {self.name} solver")
 
         self.dm   = mesh.dm.clone()
+        self.dm.distribute()
+        self.dm.createDS()
       
         options = PETSc.Options()
         options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
@@ -986,14 +1002,15 @@ class SNES_Stokes:
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+        options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 
         self.is_setup = False
-        self.dm.clearDS()
-        self.dm.createDS()
+
 
         return
 
@@ -1035,6 +1052,7 @@ class SNES_Stokes:
     @property
     def constitutive_model(self):
         return self._constitutive_model
+        
     @constitutive_model.setter
     def constitutive_model(self, model):
         # Check / todo - is the model appropriate for SNES_SaddlePoint solvers ?
@@ -1234,6 +1252,7 @@ class SNES_Stokes:
             i_jac[fn] = index
 
         # set functions 
+
         self.dm.createDS()
         cdef DS ds = self.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[u_F0]], ext.fns_residual[i_res[u_F1]])
@@ -1270,6 +1289,8 @@ class SNES_Stokes:
 
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
+
+
         self.dm.setUp()
 
         self.dm.createClosureIndex(None)
@@ -1539,6 +1560,8 @@ class SNES_SaddlePoint:
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+        options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)        
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()

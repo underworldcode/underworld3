@@ -116,7 +116,11 @@ r_i = 0.5
 r_o = 1.0
 
 adv_diff = uw.systems.AdvDiffusion(
-    meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff", verbose=False,
+    meshball,
+    u_Field=t_soln,
+    V_Field=v_soln,
+    solver_name="adv_diff",
+    verbose=False,
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
@@ -200,7 +204,7 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
 
-    pl = pv.Plotter(window_size=(750,750))
+    pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 

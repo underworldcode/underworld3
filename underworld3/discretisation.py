@@ -100,6 +100,8 @@ class Mesh(_api_tools.Stateful):
             else:
                 raise RuntimeError("Mesh file %s has unknown format '%s'." % (plex_or_meshfile, ext[1:]))
 
+        self.dm.distribute()
+
         Mesh.mesh_instances += 1
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
@@ -339,14 +341,18 @@ class Mesh(_api_tools.Stateful):
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
+
             # set flag so variable status can be known elsewhere
             var._is_accessed = True
             # add to de-access list to rewind this later
             deaccess_list.append(var)
+
             # create & set vec
             var._set_vec(available=True)
+
             # grab numpy object, setting read only if necessary
             var._data = var.vec.array.reshape(-1, var.num_components)
+
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -370,6 +376,7 @@ class Mesh(_api_tools.Stateful):
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
                     # perform sync for any modified vars.
+
                     if var in writeable_vars:
                         indexset, subdm = self.mesh.dm.createSubDM(var.field_id)
 
@@ -514,11 +521,14 @@ class Mesh(_api_tools.Stateful):
         """
 
         dmold = self.dm.getCoordinateDM()
+        dmold.createDS()
+
         dmnew = dmold.clone()
 
         options = PETSc.Options()
         options["coordinterp_petscspace_degree"] = degree
         options["coordinterp_petscdualspace_lagrange_continuity"] = continuous
+        options["coordinterp_petscdualspace_lagrange_node_endpoints"] = False
 
         dmfe = PETSc.FE().createDefault(
             self.dim,
@@ -531,6 +541,7 @@ class Mesh(_api_tools.Stateful):
 
         dmnew.setField(0, dmfe)
         dmnew.createDS()
+
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
@@ -802,11 +813,11 @@ class _MeshVariable(_api_tools.Stateful):
         options = PETSc.Options()
         options.setValue(f"{name}_petscspace_degree", degree)
         options.setValue(f"{name}_petscdualspace_lagrange_continuity", continuous)
+        options.setValue(f"{name}_petscdualspace_lagrange_node_endpoints", False)  # only active if discontinuous
 
-        fe_factory = PETSc.FE()
         dim = self.mesh.dm.getDimension()
 
-        self.petsc_fe = fe_factory.createDefault(
+        self.petsc_fe = PETSc.FE().createDefault(
             dim,
             num_components,
             self.mesh.isSimplex,
@@ -817,6 +828,9 @@ class _MeshVariable(_api_tools.Stateful):
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id, self.petsc_fe)
+
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
 
         # create associated sympy function
         from underworld3.function import UnderworldFunction
@@ -914,34 +928,17 @@ class _MeshVariable(_api_tools.Stateful):
         """
         return self._sym
 
-    # @property
-    # def f(self) -> sympy.Basic:
-    #     """
-    #     The handle to the tensor view of this variable.
-    #     """
-    #    return self._f
-
     def _set_vec(self, available):
-        # cdef DM subdm = PETSc.DM()
-        # cdef DM dm = self.mesh.dm
-        # cdef PetscInt fields = self.field_id
-        # if self._lvec==None:
-        # Create a subdm for this variable.
-        # This allows us to generate a local vector.
-        #    ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
-
-        # This should achieve the same effect as the cython code above
 
         if self._lvec == None:
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+            # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
 
             self._lvec = subdm.createLocalVector()
             self._lvec.zeroEntries()  # not sure if required, but to be sure.
             self._gvec = subdm.createGlobalVector()
             self._gvec.setName(self.name)  # This is set for checkpointing.
             self._gvec.zeroEntries()
-
-        #    ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
 
         self._available = available
 
