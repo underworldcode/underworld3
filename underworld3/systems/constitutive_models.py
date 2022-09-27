@@ -257,9 +257,7 @@ class ViscousFlowModel(Constitutive_Model):
 
         @viscosity.setter
         def viscosity(inner_self, value: Union[float, sympy.Function]):
-            print("Viscosity setter", flush=True)
             inner_self._viscosity = value
-            print("solver re-setter", flush=True)
             inner_self._reset()
 
     def __init__(self, dim):

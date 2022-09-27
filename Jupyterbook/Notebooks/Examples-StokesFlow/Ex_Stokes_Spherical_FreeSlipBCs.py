@@ -83,7 +83,7 @@ import sympy
 
 
 # +
-meshball = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2)
+meshball = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2,)
 
 
 # -- OR --
@@ -165,10 +165,7 @@ s_norm, b_norm
 
 stokes = uw.systems.Stokes(meshball, velocityField=v_soln, pressureField=p_soln, verbose=False, solver_name="stokes")
 
-# stokes.petsc_options.delValue("ksp_monitor") # We can flip the default behaviour at some point
-stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options["ksp_rtol"] = 1.0e-3
-stokes.petsc_options["snes_monitor"] = None
+stokes.petsc_options["snes_rtol"] = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None

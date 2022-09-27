@@ -990,7 +990,6 @@ class SNES_Stokes:
             print(f"than {u_degree} which is required by the {self.name} solver")
 
         self.dm   = mesh.dm.clone()
-        self.dm.distribute()
         self.dm.createDS()
       
         options = PETSc.Options()
@@ -1370,19 +1369,25 @@ class SNES_Stokes:
         # Copy solution back into user facing variables
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
-                ## print("Copy field {} to user variables".format(name), flush=True)
+                ## print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)
 
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
+                
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
                 # derived from the sub-dm (as opposed to the var.vec local vector), else 
                 # failures can occur. 
+
                 clvec = lvec
                 csdm = sdm
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+
+                ## print(f"{uw.mpi.rank}:{name} has size {var.vec.array.shape} cf {lvec.array.shape}", flush=True)
+
+
                 # Now copy into the user vec.
                 var.vec.array[:] = lvec.array[:]
                 sdm.restoreLocalVec(lvec)

@@ -49,7 +49,7 @@ if build_mesh:
 
 
 # %%
-mesh1 = uw.discretisation.Mesh("meshes/notch_coarse.msh", simplex=True)
+mesh1 = uw.discretisation.Mesh("meshes/notch_coarse.msh", simplex=True, qdegree=3)
 mesh1.dm.view()
 
 
@@ -60,7 +60,8 @@ cellType = uw.discretisation.MeshVariable(r"C_c", mesh1, 1, degree=0, continuous
 
 # %%
 v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1)
+p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1, continuous=True)
+edot = uw.discretisation.MeshVariable(r"\dot\varepsilon", mesh1, 1, degree=1, continuous=True)
 
 # %% [markdown]
 # This is how we extract cell data from the mesh. We can map it to the swarm data structure
@@ -197,7 +198,7 @@ viscosity_L = sympy.Piecewise(
 )
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_L)
+stokes.constitutive_model.Parameters.viscosity=viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.0
 
@@ -210,19 +211,33 @@ stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 stokes.bodyforce = sympy.Matrix([0, -1])
 
 # %%
-# And a non-linear version ?
+strain_rate_calc = uw.systems.Projection(mesh1, edot)
+strain_rate_calc.uw_function = stokes._Einv2
+strain_rate_calc.smoothing = 1.0e-6
+
+# %%
 
 
 # %%
 # Check that this level-set approach is ok
 
-stokes._setup_terms()
-stokes._u_f1
-
-# %%
+# stokes._setup_terms()
+# stokes._u_f1
 
 # %%
 stokes.solve(zero_init_guess=True)
+
+# %%
+viscosity_NL = viscosity_L * (0.1 + 10.0 / (0.01 + stokes._Einv2))
+
+stokes.constitutive_model.Parameters.viscosity=viscosity_NL
+stokes.saddle_preconditioner = 1 / viscosity_NL
+
+# %%
+stokes.solve(zero_init_guess=False)
+
+# %%
+strain_rate_calc.solve()
 
 # %%
 # check the mesh if in a notebook / serial
@@ -248,6 +263,8 @@ if uw.mpi.size == 1:
     points = np.zeros((mesh1._centroids.shape[0], 3))
     points[:, 0] = mesh1._centroids[:, 0]
     points[:, 1] = mesh1._centroids[:, 1]
+    
+    pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
 
     with mesh1.access():
         usol = v_soln.data.copy()
@@ -258,7 +275,7 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((v_soln.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
 
     point_cloud = pv.PolyData(points)
 
@@ -268,11 +285,14 @@ if uw.mpi.size == 1:
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
+        scalars="edot",
         edge_color="Black",
         show_edges=True,
         use_transparency=False,
-        opacity=0.1,
+        clim=[0.4,1.0],
+        opacity=0.75,
     )
+    
     pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=2, opacity=0.66)
 
     pl.show(cpos="xy")

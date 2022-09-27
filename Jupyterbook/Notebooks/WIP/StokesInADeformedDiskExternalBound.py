@@ -257,7 +257,7 @@ stokes.petsc_options["snes_rtol"] = 1.0e-4
 
 viscosity = 0.0 + 1.0 * (mask.fn * 0.9 + 0.1)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1 / viscosity
 
 stokes.add_dirichlet_bc((0.0, 0.0), "Celestial_Sphere", (0, 1))
@@ -267,7 +267,7 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Celestial_Sphere", (0, 1))
 
 
 buoyancy_force = Rayleigh * gravity_fn * t_init * mask_fn
-buoyancy_force -= 100000.0 * v_soln.fn.dot(unit_rvec) * (mask_o + mask_i)
+buoyancy_force -= 1000000.0 * v_soln.fn.dot(unit_rvec) * (mask_o + mask_i)
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 
@@ -290,7 +290,7 @@ h = 0.0
 poisson_vr = uw.systems.Poisson(meshball, u_Field=vr_soln, solver_name="poisson_vr", verbose=False)
 
 poisson_vr.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-poisson_vr.constitutive_model.material_properties = poisson_vr.constitutive_model.Parameters(diffusivity=k)
+poisson_vr.constitutive_model.Parameters.diffusivity=k
 poisson_vr.f = h
 
 # v_r
@@ -345,7 +345,6 @@ if visuals and uw.mpi.size == 1:
     with meshball.access():
         usol = stokes.u.data.copy()
         vrsol = vr_soln.data.copy()
-        meshmask = uw.function.evaluate(mask.fn, meshball.data)
 
         # fs_res = uw.function.evaluate(fs_residual, meshball.data)
         print("usol - magnitude {}".format(np.sqrt((usol**2).mean())))
