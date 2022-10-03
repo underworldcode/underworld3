@@ -1,3 +1,5 @@
+
+
 from petsc4py.PETSc cimport DM,  PetscDM
 from petsc4py.PETSc cimport DS,  PetscDS
 from petsc4py.PETSc cimport Vec, PetscVec
@@ -8,9 +10,11 @@ from petsc4py.PETSc cimport DMLabel, PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
 
+
 from underworld3.cython.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
 from underworld3.cython.petsc_types cimport PetscErrorCode 
-from underworld3.cython.petsc_types cimport DMBoundaryConditionType
+from underworld3.cython.petsc_types cimport PetscDMBoundaryConditionType
+from underworld3.cython.petsc_types cimport PetscDMBoundaryType
 from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
 
@@ -45,4 +49,8 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     PetscErrorCode DMDestroy(PetscDM *dm)
 
+    # Changed recently: Commit 6858538e  
 
+    # More
+    PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
+    PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 

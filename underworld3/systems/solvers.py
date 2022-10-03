@@ -936,7 +936,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
         u_Star_fn=None,
-        degree: int = 2,
         theta: float = 0.5,
         solver_name: str = "",
         restore_points_func: Callable = None,
@@ -967,7 +966,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             # set up a projection solver
 
             self._u_star_projected = uw.discretisation.MeshVariable(
-                "uStar{}".format(self.instances), self.mesh, 1, degree=degree
+                r"u^{{*}}{}".format(self.instances), self.mesh, 1, degree=u_Field.degree
             )
             self._u_star_projector = uw.systems.solvers.SNES_Projection(self.mesh, self._u_star_projected)
 
@@ -976,8 +975,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             self._u_star_projector.uw_function = self._u_star_raw_fn
 
         # if we want u_star to satisfy the bcs then this will need to be
-        # a projection-mesh variable but it should be ok given these points
-        # are designed to land on the mesh
+        # a projection
 
         self._Lstar = self.mesh.vector.jacobian(self.u_star_fn)
         # sympy.derive_by_array(self.u_star_fn, self._X).reshape(self.mesh.dim)
@@ -989,13 +987,13 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         N = self.mesh.N
 
         # f0 residual term
-        self._f0 = self.F0 - self.f + (self.u.fn - self.u_star_fn) / self.delta_t
+        self._f0 = self.F0 - self.f + (self.u.sym - self.u_star_fn) / self.delta_t
 
         # f1 residual term
         self._f1 = (
             self.F1
-            + self.theta * self.constitutive_model.flux(self._L)
-            + (1.0 - self.theta) * self.constitutive_model.flux(self._Lstar)
+            + self.theta * self.constitutive_model.flux(self._L).T
+            + (1.0 - self.theta) * self.constitutive_model.flux(self._Lstar).T
         )
 
         return
@@ -1007,7 +1005,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     @property
     def u_star_fn(self):
         if self.projection:
-            return self._u_star_projected.fn
+            return self._u_star_projected.sym
         else:
             return self._u_star_raw_fn
 

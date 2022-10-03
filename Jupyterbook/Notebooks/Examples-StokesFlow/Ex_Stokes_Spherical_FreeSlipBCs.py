@@ -57,7 +57,7 @@ expt_name = "Stokes_Sphere_i"
 
 # Some gmsh issues, so we'll use a pre-built one
 mesh_file = "Sample_Meshes_Gmsh/test_mesh_sphere_at_res_005_c.msh"
-res = 0.15
+res = 0.075
 r_o = 1.0
 r_i = 0.5
 
@@ -309,6 +309,14 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=50 / Rayleigh)
+    pl.add_arrows(arrow_loc, arrow_length, mag=33 / Rayleigh)
+    pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
 
-    pl.show(cpos="xy")
+    # pl.show(cpos="xy")
+# -
+
+# ls 
+
+
+
+

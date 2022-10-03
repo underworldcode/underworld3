@@ -791,6 +791,10 @@ class _MeshVariable(_api_tools.Stateful):
 
         self.name = name
 
+        import re
+
+        self.clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+
         if vtype == None:
             if num_components == 1:
                 vtype = uw.VarType.SCALAR
@@ -811,9 +815,10 @@ class _MeshVariable(_api_tools.Stateful):
         self.continuous = continuous
 
         options = PETSc.Options()
-        options.setValue(f"{name}_petscspace_degree", degree)
-        options.setValue(f"{name}_petscdualspace_lagrange_continuity", continuous)
-        options.setValue(f"{name}_petscdualspace_lagrange_node_endpoints", False)  # only active if discontinuous
+        name0 = self.clean_name
+        options.setValue(f"{name0}_petscspace_degree", degree)
+        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
+        options.setValue(f"{name0}_petscdualspace_lagrange_node_endpoints", False)  # only active if discontinuous
 
         dim = self.mesh.dm.getDimension()
 
@@ -822,7 +827,7 @@ class _MeshVariable(_api_tools.Stateful):
             num_components,
             self.mesh.isSimplex,
             self.mesh.qdegree,
-            name + "_",
+            name0 + "_",
             PETSc.COMM_WORLD,
         )
 
@@ -892,7 +897,7 @@ class _MeshVariable(_api_tools.Stateful):
             Not currently supported. An optional index which
             might correspond to the timestep (for example).
         """
-        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
+        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WOsRLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
@@ -900,6 +905,7 @@ class _MeshVariable(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
+
         if name:
             oldname = self._gvec.getName()
             self._gvec.setName(name)
@@ -937,7 +943,7 @@ class _MeshVariable(_api_tools.Stateful):
             self._lvec = subdm.createLocalVector()
             self._lvec.zeroEntries()  # not sure if required, but to be sure.
             self._gvec = subdm.createGlobalVector()
-            self._gvec.setName(self.name)  # This is set for checkpointing.
+            self._gvec.setName(self.clean_name)  # This is set for checkpointing.
             self._gvec.zeroEntries()
 
         self._available = available

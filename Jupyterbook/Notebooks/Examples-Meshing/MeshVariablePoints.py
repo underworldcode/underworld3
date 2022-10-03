@@ -27,8 +27,26 @@ mesh1.dm.view()
 
 
 # %%
-# This always seems to fail in parallel
+petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
 
+# %%
+petsc_discretisation.petsc_dm_set_periodicity(mesh1.dm, (0.5,3.14159,0.0), (0.0,0.0,0.0), (1.0, 6.28, 0.0))
+
+# %%
+coodm = mesh1.dm.getCoordinateDM()
+coodm.view()
+mesh1.dm.localizeCoordinates()
+
+# %%
+mesh1.dm.view()
+
+# %%
+petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
+
+# %%
+0/0
+
+# %%
 dC0 = uw.discretisation.MeshVariable(r"dC_0", mesh1, 1, degree=0, continuous=False)
 dC1 = uw.discretisation.MeshVariable(r"dC_1", mesh1, 1, degree=1, continuous=False)
 dC2 = uw.discretisation.MeshVariable(r"dC_2", mesh1, 1, degree=2, continuous=False)

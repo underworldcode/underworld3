@@ -15,7 +15,7 @@ from underworld3 import function
 import numpy as np
 import sympy
 
-res = 0.2
+res = 0.1
 
 free_slip_upper = True
 
@@ -35,8 +35,8 @@ meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
 # +
 # Test that the second one is skipped
 
-v_soln = uw.discretisation.MeshVariable(r"u", meshball, 2, degree=2)
-p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=False)
+v_soln = uw.discretisation.MeshVariable(r"\mathbf{u}", meshball, 2, degree=2)
+p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable(r"p_c", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=3)
 maskr = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
@@ -63,8 +63,9 @@ r, th = meshball.CoordinateSystem.xR
 
 Rayleigh = 1.0e5
 
-hw = 1000.0
-surface_fn = sympy.exp(-((maskr.sym[0] - 1.0) ** 2) * hw)
+hw = 1000.0 / res
+surface_fn = sympy.exp(-((radius_fn - 1.0) ** 2) * hw)
+base_fn    = sympy.exp(-((radius_fn - 0.5) ** 2) * hw)
 
 
 # +
@@ -110,15 +111,22 @@ with meshball.access(maskr):
 
 t_mean = t_soln.mean()
 print(t_soln.min(), t_soln.max())
-# -
+# +
 I = uw.maths.Integral(meshball, surface_fn)
 s_norm = I.evaluate()
-s_norm
+display(s_norm)
+
+I.fn = base_fn
+b_norm = I.evaluate()
+display(b_norm)
+# -
+
+
 
 # +
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
-buoyancy_force -= 100000 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm
+buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * (surface_fn / s_norm + base_fn / b_norm)
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 

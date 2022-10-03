@@ -6,7 +6,8 @@ ctypedef double PetscReal
 ctypedef double PetscScalar
 ctypedef int    PetscErrorCode
 ctypedef int    PetscBool
-ctypedef int    DMBoundaryConditionType
+ctypedef int    PetscDMBoundaryConditionType
+ctypedef int    PetscDMBoundaryType
 
 ctypedef void(*PetscDSResidualFn)(PetscInt, PetscInt, PetscInt,
                             const PetscInt*, const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
