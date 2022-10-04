@@ -7,11 +7,13 @@ PetscErrorCode PetscDSAddBoundary_UW(DM dm, DMBoundaryConditionType type, const 
     PetscDS ds;
     DMGetDS(dm, &ds);
     return PetscDSAddBoundary(ds, type, name, labelname, field, numcomps, comps, bcFunc, bcFunc_t, numids, ids, ctx);
+
 #else
     DMLabel label;
     DMGetLabel(dm, labelname, &label);
     PetscInt bd;  // This is a return value that we do nothing with.
     return DMAddBoundary(dm, type, name, label, numids, ids, field, numcomps, comps, bcFunc, bcFunc_t, ctx, &bd);
+
 #endif
 }
 

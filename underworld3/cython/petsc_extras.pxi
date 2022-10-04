@@ -31,6 +31,7 @@ cdef CHKERRQ(PetscErrorCode ierr):
 cdef extern from "petsc_compat.h":
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
+    PetscErrorCode DMAddBoundary(PetscDM, DMBoundaryConditionType, const char name[], DMLabel label, PetscInt Nv, PetscInt values[], PetscInt field, PetscInt Nc, PetscInt comps[], void (*)(), void (*)(), void *ctx, PetscInt *bd)
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
@@ -50,7 +51,5 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMDestroy(PetscDM *dm)
 
     # Changed recently: Commit 6858538e  
-
-    # More
     PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
     PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 

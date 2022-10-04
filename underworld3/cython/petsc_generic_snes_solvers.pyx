@@ -1297,8 +1297,9 @@ class SNES_Stokes:
         self.snes.setDM(self.dm)
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setFromOptions()
-        cdef DM dm = self.dm
-        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
+
+        cdef DM c_dm = self.dm
+        DMPlexSetSNESLocalFEM(c_dm.dm, NULL, NULL, NULL)
 
         # Setup subdms here too.
         # These will be used to copy back/forth SNES solutions
@@ -1801,6 +1802,7 @@ class SNES_SaddlePoint:
 
         prim_field_list = [self.u, self.p]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
+
         # create indexes so that we don't rely on indices that can change
         i_res = {}
         for index,fn in enumerate(fns_residual):
@@ -1831,6 +1833,9 @@ class SNES_SaddlePoint:
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
+        cdef PetscInt c_bd = 0 # return value that we discard
+        cdef PetscDMLabel c_label
+        cdef PetscDMBoundaryConditionType c_bc_type 
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
@@ -1847,8 +1852,19 @@ class SNES_SaddlePoint:
                 else:
                     bc_type = 5
 
-                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
+                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 
+                0, comps_view.shape[0], <const PetscInt *> &comps_view[0],
+                <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
+                # labelname = str(boundary).encode('utf8')
+                # DMGetLabel(cdm.dm, labelname, &c_label)
+                # c_bc_type = bc_type
+
+                # DMAddBoundary(cdm.dm, bc_type,  labelname, <DMLabel> c_label, 
+                #         1, <const PetscInt *> &ind, 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], 
+                #         <void (*)()> ext.fns_bcs[index], NULL, NULL, &c_bd);
+
+
         self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)

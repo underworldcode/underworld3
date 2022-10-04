@@ -25,7 +25,6 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 # %%
-mesh.dm.getCoordinateDim()
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -40,9 +39,17 @@ from sympy import Piecewise
 
 x, y = mesh.CoordinateSystem.X
 
+res = 1 / n_els
+hw = 1000 / res
+surface_fn = sympy.exp(-((y - 1.0) ** 2) * hw)
+base_fn    = sympy.exp(-( y ** 2) * hw)
+right_fn   = sympy.exp(-((x - 1.0) ** 2) * hw)
+left_fn    = sympy.exp(-(x ** 2) * hw)
+
 eta_0 = 1.0
 x_c = 0.5
 f_0 = 1.0
+
 
 stokes.penalty = 0.0
 stokes.bodyforce = sympy.Matrix(
@@ -54,12 +61,17 @@ stokes.bodyforce = sympy.Matrix(
         ),
     ]
 )
+
+stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc((0.0, 0.0), ["Top", "Bottom"], 1)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
+# stokes.add_dirichlet_bc((0.0, 0.0), ["Top", "Bottom"], 1)  # top/bottom: components, function, markers
+# stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
+
 
 
 # %%

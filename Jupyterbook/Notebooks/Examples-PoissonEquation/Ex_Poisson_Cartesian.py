@@ -41,8 +41,13 @@ poisson.constitutive_model.c
 # %%
 # Set some things
 poisson.f = 0.0
-poisson.add_dirichlet_bc(1.0, "Bottom")
-poisson.add_dirichlet_bc(0.0, "Top")
+# poisson.add_dirichlet_bc(1.0, "Bottom")
+# poisson.add_dirichlet_bc(0.0, "Top")
+
+
+
+poisson.f = 
+
 
 # %%
 poisson._setup_terms()
