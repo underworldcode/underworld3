@@ -2,7 +2,7 @@ from typing import Optional, Tuple, Union
 from petsc4py import PETSc
 import underworld3 as uw 
 
-from cython cimport view  # comment this line to see what will happen
+# from cython cimport view  # comment this line to see what will happen
 import numpy as np
 
 from underworld3 import _api_tools
@@ -82,6 +82,10 @@ def petsc_fe_create_sub_dm(incoming_dm, field_id):
 
         return subdm
 
+
+## Todo !
+
+"""
 def petsc_dm_get_periodicity(incoming_dm):
 
         dim = incoming_dm.getDimension()
@@ -92,11 +96,8 @@ def petsc_dm_get_periodicity(incoming_dm):
         cdef PetscReal c_L[3]
         cdef DM dm = incoming_dm
 
-        # c_maxCell[:] = (-1,-1,-1)
-        # c_Lstart[:] = (-2,-2,-2)
-        # c_L[:]      = (-3,-3,-3)
 
-        ierr = DMGetPeriodicity(dm.dm, <PetscReal **> &c_maxCell[0], <PetscReal **> &c_Lstart[0], <PetscReal **> &c_L[0]); CHKERRQ(ierr)
+        ierr = DMGetPeriodicity(dm.dm, &c_maxCell[0], &c_Lstart[0],  &c_L[0]); CHKERRQ(ierr)
 
         maxCell = np.asarray(c_maxCell)
 
@@ -117,7 +118,6 @@ def petsc_dm_get_periodicity(incoming_dm):
         print(f"Ls x - {Lstartx}, y - {Lstarty}, z - {Lstartz}"  )
         print(f"L  x - {Lx}, y - {Ly}, z - {Lz}"  )
 
-
         return 
 
 
@@ -131,7 +131,6 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         cdef PetscReal c_Lstart[3]
         cdef PetscReal c_L[3]
 
-
         c_maxCell[:] = maxCell[:]
         c_Lstart[:] = Lstart[:]
         c_L[:]      = L[:]
@@ -139,34 +138,4 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         ierr = DMSetPeriodicity(c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
 
         return 
-
-"""
-# Todo: add types to this definition to make things more clear.
-def petsc_dm_add_boundary_condition(incoming_dm, bc_type, bcName, dmLabel, numVals, vals, field, numComps, comps, bcFunc):
-
-        cdef DM c_dm = incoming_dm
-        cdef DMLabel c_dmLabel = dmLabel
-        cdef PetscInt c_bd = 0 # return value that we discard
-
-        cdef int [::1] c_comps_view = comps
-        cdef int [::1] c_vals_view = vals
-
-        # cdef PetscInt c_numComps = numComps
-        # cdef PetscInt [::1] = comps # force view into numpy array 
-
-        # The time derivative function is NULL for the time being
-        # We only constrain field id 0
-
-        
-        DMAddBoundary(c_dm.dm, bc_type,  str(bcName).encode('utf8'), c_dmLabel, 
-                        numVals, &c_vals_view[0], 0, numComps, &c_comps_view[0], <void (*)()> bcFunc, NULL, NULL, &c_bd);
-
-
-#include "petscdm.h"          
-#include "petscdmlabel.h"     
-#include "petscds.h"     
-        # DMAddBoundary(DM dm, DMBoundaryConditionType type, const char name[], DMLabel label, PetscInt Nv, const PetscInt values[], PetscInt field, PetscInt Nc, const PetscInt comps[], void (*bcFunc)(void), void (*bcFunc_t)(void), void *ctx, PetscInt *bd)
-
-        return
-
 """

@@ -62,15 +62,15 @@ stokes.bodyforce = sympy.Matrix(
     ]
 )
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-# stokes.add_dirichlet_bc((0.0, 0.0), ["Top", "Bottom"], 1)  # top/bottom: components, function, markers
-# stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
+stokes.add_dirichlet_bc((0.0, 0.0), ["Top", "Bottom"], 1)  # top/bottom: components, function, markers
+stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
 
 
 
