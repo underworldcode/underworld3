@@ -32,7 +32,7 @@ def petsc_fvm_get_min_radius(mesh) -> double:
         return min_radius
 
 
-def petsc_dm_create_surface_submesh(incoming_dm, boundary_label, boundary_label_value, marked_faces=True) -> double:
+def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundary_label_value, marked_faces=True) -> double:
         """
         Wraps DMPlexCreateSubmesh
         """
@@ -120,6 +120,7 @@ def petsc_dm_get_periodicity(incoming_dm):
 
         return 
 
+"""
 
 def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
 
@@ -138,4 +139,4 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         ierr = DMSetPeriodicity(c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
 
         return 
-"""
+

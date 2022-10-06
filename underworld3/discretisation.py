@@ -897,7 +897,7 @@ class _MeshVariable(_api_tools.Stateful):
             Not currently supported. An optional index which
             might correspond to the timestep (for example).
         """
-        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WOsRLD)
+        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
