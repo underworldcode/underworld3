@@ -377,10 +377,15 @@ for step in range(0, 200):
         print("Timestep {}, dt {}".format(t_step, delta_t))
 
     # advect swarm
-    swarm.advection(v_soln.fn, delta_t)
+    swarm.advection(v_soln.sym, delta_t)
 
     if t_step < 10 or t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        
+        savefile = "output/swarm_rt_{}.h5".format(t_step)
+        mesh.save(savefile)
+        v_soln.save(savefile)
+        mesh.generate_xdmf(savefile)
 
     t_step += 1
 

@@ -142,12 +142,6 @@ class Xdmf:
         else:
             dof = f[1].shape[0]
             bs = 1
-
-        if dof > 1:
-            typeString = "Vector"
-        else:
-            typeString = "Scalar"
-
         fp.write(
             """\
         <Attribute
@@ -175,7 +169,7 @@ class Xdmf:
 """
             % (
                 f[0],
-                typeString,
+                self.typeMap[f[1].attrs["vector_field_type"]],
                 domain,
                 dof,
                 bs,
@@ -191,13 +185,7 @@ class Xdmf:
         return
 
     def writeFieldComponents(self, fp, numSteps, timestep, spaceDim, name, f, domain):
-        # vtype = f[1].attrs["vector_field_type"]
-
-        if f[1].shape[1] == spaceDim:
-            vtype = b"vector"
-        else:
-            vtype = b"tensor"
-
+        vtype = f[1].attrs["vector_field_type"]
         if len(f[1].shape) > 2:
             dof = f[1].shape[1]
             bs = f[1].shape[2]
@@ -248,15 +236,13 @@ class Xdmf:
         return
 
     def writeField(self, fp, numSteps, timestep, cellDim, spaceDim, name, f, domain):
-        # ctypes = ["tensor", "matrix"]
-        # if spaceDim == 2 or cellDim != spaceDim:
-        #     ctypes.append("vector")
-        # # if f[1].attrs["vector_field_type"] in ctypes:
-        # if f[1].shape[1] != 1:
-        #     self.writeFieldComponents(fp, numSteps, timestep, spaceDim, name, f, domain)
-        # else:
-
-        self.writeFieldSingle(fp, numSteps, timestep, spaceDim, name, f, domain)
+        ctypes = ["tensor", "matrix"]
+        if spaceDim == 2 or cellDim != spaceDim:
+            ctypes.append("vector")
+        if f[1].attrs["vector_field_type"] in ctypes:
+            self.writeFieldComponents(fp, numSteps, timestep, spaceDim, name, f, domain)
+        else:
+            self.writeFieldSingle(fp, numSteps, timestep, spaceDim, name, f, domain)
         return
 
     def writeSpaceGridFooter(self, fp):
@@ -369,21 +355,18 @@ def generateXdmf(hdfFilename, xdmfFilename=None):
     else:
         geomPath = "geometry"
         geom = h5["geometry"]
-
     if "viz" in h5 and "topology" in h5["viz"]:
         topoPath = "viz/topology"
         topo = h5["viz"]["topology"]
     else:
         topoPath = "topology"
         topo = h5["topology"]
-
     if "viz" in h5 and "hybrid_topology" in h5["viz"]:
         htopoPath = "viz/hybrid_topology"
         htopo = h5["viz"]["hybrid_topology"]
     else:
         htopoPath = None
         htopo = None
-
     vertices = geom["vertices"]
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
