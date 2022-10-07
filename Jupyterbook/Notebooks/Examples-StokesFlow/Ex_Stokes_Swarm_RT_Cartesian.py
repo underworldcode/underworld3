@@ -66,7 +66,7 @@ m_cont = uw.discretisation.MeshVariable(r"M_c", meshbox, 1, degree=1, continuous
 
 swarm = uw.swarm.Swarm(mesh=meshbox)
 material = uw.swarm.IndexSwarmVariable(r"M", swarm, indices=2, proxy_degree=1, proxy_continuous=False)
-swarm.populate(fill_param=4)
+swarm.populate(fill_param=3)
 
 
 # +
@@ -375,12 +375,13 @@ for step in range(0, 200):
 
     if t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
-    
-    savefile = "output/swarm_rt_ts{}.h5".format(t_step)
+        
+    # "Checkpoints"
+    savefile = "output/swarm_rt_{}.h5".format(t_step)
     meshbox.save(savefile)
     v_soln.save(savefile)
     meshbox.generate_xdmf(savefile)
-        
+
     t_step += 1
 
 # -

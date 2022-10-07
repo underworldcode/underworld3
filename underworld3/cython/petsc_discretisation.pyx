@@ -85,7 +85,7 @@ def petsc_fe_create_sub_dm(incoming_dm, field_id):
 
 ## Todo !
 
-"""
+""" 
 def petsc_dm_get_periodicity(incoming_dm):
 
         dim = incoming_dm.getDimension()
@@ -119,7 +119,6 @@ def petsc_dm_get_periodicity(incoming_dm):
         print(f"L  x - {Lx}, y - {Ly}, z - {Lz}"  )
 
         return 
-
 """
 
 def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
@@ -136,7 +135,7 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         c_Lstart[:] = Lstart[:]
         c_L[:]      = L[:]
 
-        ierr = DMSetPeriodicity(c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
+        ierr = DMSetPeriodicity( c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
 
         return 
 
