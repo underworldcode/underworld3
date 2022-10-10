@@ -147,6 +147,8 @@ class Xdmf:
             typeString = "Vector"
         else:
             typeString = "Scalar"
+            
+        # print(f"Field {name} - dof/bs: {dof}/{bs} type {typeString}", flush=True)
 
         fp.write(
             """\

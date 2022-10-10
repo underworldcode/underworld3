@@ -28,6 +28,7 @@ old
 underworld3.egg-info/*
 keep/*
 *.swp
+nohup.out
 
 # Jupyter Book build relics
 
