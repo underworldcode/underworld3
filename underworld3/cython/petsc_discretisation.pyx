@@ -122,20 +122,37 @@ def petsc_dm_get_periodicity(incoming_dm):
 """
 
 def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
+        """ 
+        Wrapper for PETSc DMSetPeriodicity:
+          - maxCell - Over distances greater than this, we can assume a point has crossed over to another sheet, when trying to localize cell coordinates. Pass NULL to remove such information.
+          - Lstart - If we assume the mesh is a torus, this is the start of each coordinate, or NULL for 0.0
+          - L - If we assume the mesh is a torus, this is the length of each coordinate, otherwise it is < 0.0
+        """
 
         dim = incoming_dm.getDimension()
-        
+
+        maxCell3 = np.zeros(3)
+        Lstart3 = np.zeros(3)
+        L3 = np.zeros(3)
+
+        for i in range(dim):
+                maxCell3[i] = maxCell[i]
+                Lstart3[i] = Lstart[i]
+                L3[i] = L[i]
+  
         cdef DM c_dm = incoming_dm
         cdef PetscInt c_dim = dim
         cdef PetscReal c_maxCell[3]
         cdef PetscReal c_Lstart[3]
         cdef PetscReal c_L[3]
 
-        c_maxCell[:] = maxCell[:]
-        c_Lstart[:] = Lstart[:]
-        c_L[:]      = L[:]
+        c_maxCell[:] = maxCell3[:]
+        c_Lstart[:] = Lstart3[:]
+        c_L[:]      = L3[:]
 
         ierr = DMSetPeriodicity( c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
+
+        incoming_dm.localizeCoordinates()
 
         return 
 

@@ -143,7 +143,7 @@ class Xdmf:
             dof = f[1].shape[0]
             bs = 1
 
-        if dof > 1:
+        if bs > 1:
             typeString = "Vector"
         else:
             typeString = "Scalar"
