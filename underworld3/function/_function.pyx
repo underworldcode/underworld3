@@ -46,10 +46,11 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
         return self._diff[argindex-1](*self.args)
 
     def _latex(self, printer, exp=None):
+
         if exp==None:
-            latexstr = r"%s(\mathbf{x})" % (type(self).__name__)
+            latexstr = fr"{type(self).__name__}(\mathbf{{\xi}})"
         else:
-            latexstr = r"%s^{%s}(\mathbf{x})" % (type(self).__name__,exp)
+            latexstr = r"%s^{%s}(\mathbf{\xi})" % (type(self).__name__,exp)
         return latexstr
 
 class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
@@ -344,6 +345,10 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     from sympy import lambdify
     from sympy.vector import CoordSys3D
     dim = coords.shape[1]
+
+
+    ## Careful - if we change the names of thebase-scalars for the mesh, this will need to be kept in sync
+
     N = CoordSys3D("N")
     r = N.base_scalars()[0:dim]
     if isinstance(subbedexpr, sympy.vector.Vector):

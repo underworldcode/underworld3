@@ -2,7 +2,6 @@ from xmlrpc.client import Boolean
 
 import sympy
 from sympy import sympify
-from sympy.vector import gradient, divergence
 
 from typing import Optional
 from petsc4py import PETSc
@@ -61,7 +60,7 @@ class SNES_Scalar:
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
-        self._L = self._u.sym.jacobian(self.mesh.X)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N)
 
         self.bcs = []
         self._constitutive_model = None
@@ -236,7 +235,6 @@ class SNES_Scalar:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
-        from sympy.vector import gradient
         import sympy
 
         N = self.mesh.N
@@ -462,7 +460,7 @@ class SNES_Vector:
         self._U = self._u.sym
 
         ## sympy.Matrix - gradient tensor   
-        self._L = self._u.sym.jacobian(self.mesh.X) # This works for vector / vector inputs
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) # This works for vector / vector inputs
 
 
         self.bcs = []
@@ -628,7 +626,6 @@ class SNES_Vector:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
-        from sympy.vector import gradient
         import sympy
 
         N = self.mesh.N
@@ -956,8 +953,8 @@ class SNES_Stokes:
         N = mesh.N
   
         ## sympy.Matrix - gradient tensors 
-        self._G = self._p.sym.jacobian(self.mesh.X)
-        self._L = self._u.sym.jacobian(self.mesh.X) 
+        self._G = self._p.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) 
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -1140,7 +1137,7 @@ class SNES_Stokes:
         cdim = self.mesh.cdim
         N = self.mesh.N
 
-        r = self.mesh.X[0]
+        r = self.mesh.CoordinateSystem.N[0]
 
         # Re-clone the dm before rebuilding everything
         self._build_dm_and_mesh_discretisation() 
@@ -1175,11 +1172,11 @@ class SNES_Stokes:
 
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self._u.sym).reshape(dim)
-        P = sympy.Array(self._p.sym)
+        P = sympy.Array(self._p.sym).reshape(1)
 
         G0 = sympy.derive_by_array(F0, U)
-        G1 = sympy.derive_by_array(F0, self._L)
-        G2 = sympy.derive_by_array(F1, U)
+        G1 = sympy.derive_by_array(F0, self._L)  
+        G2 = sympy.derive_by_array(F1, U) 
         G3 = sympy.derive_by_array(F1, self._L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
@@ -1188,9 +1185,9 @@ class SNES_Stokes:
         # i jk -> J KI (hence 201)
 
         self._uu_G0 = sympy.ImmutableMatrix(G0)
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(dim*dim,dim))
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim,dim*dim))
+        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)  ).reshape(dim,dim*dim))
+        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (1,0,2)  ).reshape(dim*dim,dim))   
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
@@ -1201,10 +1198,10 @@ class SNES_Stokes:
         G2 = sympy.derive_by_array(F1, P)
         G3 = sympy.derive_by_array(F1, self._G)
 
-        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))
-        self._up_G1 = sympy.ImmutableMatrix(G1.reshape(dim,dim))
-        self._up_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim))
-        self._up_G3 = sympy.ImmutableMatrix(G3.reshape(dim*dim,dim))
+        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
+        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)).reshape(dim,dim))  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,0,1)).reshape(dim,dim))  # ?
+        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim*dim))  # zeros
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
@@ -1212,11 +1209,11 @@ class SNES_Stokes:
 
         G0 = sympy.derive_by_array(FP0, U)
         G1 = sympy.derive_by_array(FP0, self._L)
-        # G2 = sympy.derive_by_array(FP0, U)
-        # G3 = sympy.derive_by_array(FP0, self._L)
+        # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 ! 
+        # G3 = sympy.derive_by_array(FP1, self._L)
 
-        self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))
-        self._pu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)).reshape(dim,dim))
+        self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
+        self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
         # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._p.sym).reshape(dim,dim))
         # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
 
@@ -1260,11 +1257,11 @@ class SNES_Stokes:
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
-        PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobian(              ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
+        PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
         cdef int ind=1
@@ -1481,10 +1478,10 @@ class SNES_SaddlePoint:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    # These two seem to be needed in petsc 3.17
         self.petsc_options["pc_use_amat"] = None                        # These two seem to be needed in petsc 3.17
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
@@ -1525,8 +1522,8 @@ class SNES_SaddlePoint:
         N = mesh.N
   
         ## sympy.Matrix - gradient tensors 
-        self._G = self._p.sym.jacobian(self.mesh.X)
-        self._L = self._u.sym.jacobian(self.mesh.X) 
+        self._G = self._p.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) 
 
         # this attrib records if we need to re-setup
         self.is_setup = False

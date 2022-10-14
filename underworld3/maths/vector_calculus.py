@@ -1,4 +1,5 @@
 import underworld3
+from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 import underworld3.timing as timing
 import sympy
 
@@ -82,6 +83,101 @@ class mesh_vector_calculus:
 
     def jacobian(self, vector):
 
-        jac = vector.diff(self.mesh.X).reshape(self.mesh.X.shape[1], vector.shape[1]).tomatrix().T
+        matrix_form = self.to_matrix(vector)
+
+        # jac = vector.diff(self.mesh.X).reshape(self.mesh.X.shape[1], vector.shape[1]).tomatrix().T
+        jac = matrix_form.jacobian(self.mesh.CoordinateSystem.N)
 
         return jac
+
+
+class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
+    """
+    mesh_vector_calculus module for div, grad, curl etc that apply in
+    native cylindrical coordinates
+    """
+
+    def __init__(self, mesh):
+
+        coordinate_type = mesh.CoordinateSystem.coordinate_type
+
+        # validation
+
+        if not (
+            coordinate_type == CoordinateSystemType.CYLINDRICAL2D_NATIVE
+            or coordinate_type == CoordinateSystemType.CYLINDRICAL3D_NATIVE
+        ):
+            print(f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not cylindrical")
+
+        super().__init__(mesh)
+
+    def divergence(self, matrix):
+        r"""
+        \( \nabla \cdot \mathbf{v} \)
+        """
+
+        r = self.mesh.CoordinateSystem.N[0]
+        t = self.mesh.CoordinateSystem.N[1]
+
+        V_r = matrix[0]
+        V_t = matrix[1]
+
+        div_V = V_r.diff(r) + V_r / r + V_t.diff(t) / r
+
+        if self.mesh.dim == 3:  # Or is this cdim ?
+            z = self.mesh.CoordinateSystem.N[2]
+            V_z = matrix[2]
+            div_V += v_z.diff(z)
+
+        return div_V
+
+    def gradient(self, scalar):
+        r"""
+        $\nabla \phi$
+        """
+
+        if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
+            scalar = scalar[0, 0]
+
+        grad_S = sympy.Matrix.zeros(1, self.mesh.dim)
+
+        r = self.mesh.CoordinateSystem.N[0]
+        t = self.mesh.CoordinateSystem.N[1]
+
+        grad_S[0] = scalar.diff(r)
+        grad_S[1] = scalar.diff(t) / r
+
+        if self.mesh.dim == 3:  # Or is this cdim ?
+            z = self.mesh.CoordinateSystem.N[2]
+
+            grad_S[2] = scalar.diff(z)
+
+        return grad_S
+
+    def curl(self, matrix):
+        r"""
+        $\nabla \phi$
+        """
+
+        r = self.mesh.CoordinateSystem.N[0]
+        t = self.mesh.CoordinateSystem.N[1]
+
+        matrix0 = self.to_matrix(matrix)
+        V_r = matrix0[0]
+        V_t = matrix0[1]
+
+        # if 2D, return a scalar of the out-of-plane curl
+
+        if self.mesh.dim == 2:
+            curl_V = V_t / r + V_t.diff(r) - V_r.diff(t) / r
+
+        else:
+            z = self.mesh.CoordinateSystem.N[2]
+            V_z = matrix0[2]
+            curl_V = sympy.Matrix.zeros(1, 3)
+
+            curl_V[0] = V_z.diff(t) / r - V_t.diff(z)
+            curl_V[1] = V_r.diff(z) - V_z.diff(r)
+            curl_V[2] = V_t / r + V_t.diff(r) - V_r.diff(t) / r
+
+        return curl_V

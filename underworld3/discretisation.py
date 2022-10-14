@@ -11,7 +11,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities import _api_tools
-from underworld3.coordinates import CoordinateSystem
+from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
 
 
@@ -109,23 +109,19 @@ class Mesh(_api_tools.Stateful):
 
         self._N = CoordSys3D("N")
 
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
+
+        self._N.x._latex_form = r"\mathrm{\xi_1}"
+        self._N.y._latex_form = r"\mathrm{\xi_2}"
+        self._N.z._latex_form = r"\mathrm{\xi_3}"
+        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
+        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
+        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_3}"
+
         # Now add the appropriate coordinate system for the mesh's natural geometry
+        # This step will usually over-write the defaults we just defined
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
-
-        # Tidy some of this printing. Note that this
-        # only changes the user interface printing, and
-        # switches out for simpler `BaseScalar` representations.
-        # For example, we now have "x" instead of "x_N". This makes
-        # Jupyter rendered Latex easier to digest, but depending on
-        # how we end up using Sympy coordinate systems it may be
-        # desirable to bring back the more verbose version.
-
-        self._N.x._latex_form = r"\mathrm{x}"
-        self._N.y._latex_form = r"\mathrm{y}"
-        self._N.z._latex_form = r"\mathrm{z}"
-        self._N.i._latex_form = r"\mathbf{\hat{i}}"
-        self._N.j._latex_form = r"\mathbf{\hat{j}}"
-        self._N.k._latex_form = r"\mathbf{\hat{k}}"
 
         try:
             self.isSimplex = self.dm.isSimplex()
@@ -167,7 +163,16 @@ class Mesh(_api_tools.Stateful):
         # in a bundle to avoid the mesh being required as an argument
         # since this could lead to things going out of sync
 
-        self.vector = uw.maths.vector_calculus(mesh=self)
+        if (
+            self.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D_NATIVE
+            or self.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL3D_NATIVE
+        ):
+            print("Mesh is cylindrical, using cylindrical div/grad/curl")
+            self.vector = uw.maths.vector_calculus_cylindrical(mesh=self)
+        else:
+            print(f"Mesh is not cylindrical {self.CoordinateSystem.type} / {self.CoordinateSystem.coordinate_type}")
+
+            self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()
 
@@ -424,9 +429,13 @@ class Mesh(_api_tools.Stateful):
         The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
         """
         N = self.N
-        r_vec = N.x * N.i + N.y * N.j
-        if self.cdim == 3:
-            r_vec += N.z * N.k
+
+        rvec = 0
+        N_s = N.base_scalars()
+        N_v = N.base_vectors()
+        for i in range(self.cdim):
+            r_vec += N_s[i] * N_v[i]
+
         return r_vec
 
     @property

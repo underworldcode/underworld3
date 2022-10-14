@@ -467,6 +467,8 @@ def Annulus(
     c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
     c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
 
+    # l1 = gmsh.model.geo.add_line(p5, p4)
+
     cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
 
     loops = [cl2] + loops
@@ -474,19 +476,16 @@ def Annulus(
     s = gmsh.model.geo.add_plane_surface(loops)
     gmsh.model.geo.synchronize()
     gmsh.model.mesh.embed(0, [p1], 2, s)
+    # gmsh.model.mesh.embed(1, [l1], 2, s)
 
     if radiusInner > 0.0:
         gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"], name="Lower")
-        # gmsh.model.setPhysicalName(1, boundaries["Lower"], "Lower")
     else:
         gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"], name="Centre")
-        # gmsh.model.setPhysicalName( 0, vertices["Centre"], "Centre")
 
     gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries["Upper"], name="Upper")
-    # gmsh.model.setPhysicalName(1, boundaries["Upper"], "Upper")
 
     gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
-    # gmsh.model.setPhysicalName(2, s, "Elements")
 
     gmsh.model.geo.synchronize()
 

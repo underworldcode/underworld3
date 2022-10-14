@@ -60,6 +60,8 @@ material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_compone
 swarm.populate(fill_param=2)
 
 
+
+
 with swarm.access(material):
     r = np.sqrt(
         swarm.particle_coordinates.data[:, 0] ** 2
@@ -93,6 +95,11 @@ viscosity = sympy.Piecewise((1.0, material.sym[0] < 0.0), (1.0, True))
 display(viscosity)
 
 # -
+
+with swarm.access():
+    print(material.data.max(), material.data.min())
+
+material._meshVar.stats()
 
 if False:
 
@@ -142,6 +149,8 @@ if False:
     # )
 
     pl.show(cpos="xy")
+
+
 # +
 stokes = uw.systems.Stokes(
     mesh,
@@ -179,6 +188,8 @@ with mesh.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
         sympy.sqrt(x**2 + y**2 + z**2), mesh.data
     )  # cf radius_fn which is 0->1
+
+
 
 
 stokes._setup_terms(verbose=False)
@@ -396,3 +407,7 @@ savefile = "output/swarm_rt.h5".format(step)
 mesh.save(savefile)
 v_soln.save(savefile)
 mesh.generate_xdmf(savefile)
+
+material
+
+

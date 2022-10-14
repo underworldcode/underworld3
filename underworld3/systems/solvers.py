@@ -282,14 +282,31 @@ class SNES_Stokes(SNES_Stokes):
 
         super().__init__(mesh, velocityField, pressureField, solver_name, verbose)
 
+        # User-facing operations are matrices / vectors by preference
+
+        # Depends on the geometry if DM coords are not cartesian
+        if self.mesh.CoordinateSystem.CartesianDM:
+            self._E = (self._L + self._L.transpose()) / 2
+        elif self.mesh.CoordinateSystem.type == "Cylindrical 2D Native":
+            r = self.mesh.CoordinateSystem.N[0]
+            vr = self._u.sym[0]
+            vt = self._u.sym[1]
+            self._E = self._L.copy()
+            self._E[0, 0] = self._L[0, 0]  # don't need this one !
+            self._E[1, 1] = self._L[1, 1] / r + vr / r
+            self._E[0, 1] = (self._L[0, 1] / r + self._L[1, 0] - vt / r) / 2
+            self._E[1, 0] = self._E[0, 1]
+
+        else:
+            # All the other ones ...
+            pass
+
+        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
+
         self._penalty = 0.0
         self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
         self._saddle_preconditioner = sympy.sympify(1)
         self._bodyforce = sympy.Matrix([0] * self.mesh.dim)
-
-        # User-facing operations are matrices / vectors by preference
-        self._E = (self._L + self._L.transpose()) / 2
-        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
 
         self._setup_problem_description = self.stokes_problem_description
 
@@ -338,7 +355,8 @@ class SNES_Stokes(SNES_Stokes):
 
     @property
     def div_u(self):
-        divergence = self.mesh.vector.divergence(self.u.sym)
+        E = self.strainrate
+        divergence = E.trace()
         return divergence
 
     @property
