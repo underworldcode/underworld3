@@ -107,7 +107,7 @@ class Mesh(_api_tools.Stateful):
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
 
-        self._N = CoordSys3D("N")
+        self._N = CoordSys3D(f"N{Mesh.mesh_instances}")
 
         # Tidy some of this printing without changing the
         # underlying vector names (as these are part of the code generation system)
@@ -852,6 +852,8 @@ class _MeshVariable(_api_tools.Stateful):
         if vtype == uw.VarType.SCALAR:
             self._sym = sympy.Matrix.zeros(1, 1)
             self._sym[0] = UnderworldFunction(name, self, vtype)(*self.mesh.r)
+            self._sym[0].mesh = self.mesh
+
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
@@ -860,6 +862,7 @@ class _MeshVariable(_api_tools.Stateful):
             # Matrix form (any number of components)
             for comp in range(num_components):
                 self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(*self.mesh.r)
+                self._sym[0, comp].mesh = self.mesh
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
             if num_components == mesh.dim:
@@ -872,6 +875,8 @@ class _MeshVariable(_api_tools.Stateful):
                 if len(varname) == num_components:
                     for comp in range(num_components):
                         self._sym[0, comp] = UnderworldFunction(varname[comp], self, vtype, comp)(*self.mesh.r)
+                        self._sym[0, comp].mesh = self.mesh
+
                 else:
                     raise RuntimeError("Please supply a list of names for all components of this vector")
             else:

@@ -665,7 +665,7 @@ class SNES_Vector:
         self._G0 = sympy.ImmutableMatrix(G0.reshape(dim,dim))
         self._G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
         self._G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(dim*dim,dim))
-        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim,dim*dim))
+        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim*dim))
 
         ##################
 
@@ -1147,9 +1147,9 @@ class SNES_Stokes:
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0)).reshape(dim)
-        F1  = sympy.Array(self._u_f1).reshape(dim,dim)
-        FP0 = sympy.Array(self._p_f0).reshape(1)
+        F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0))  #.reshape(dim)
+        F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
+        FP0 = sympy.Array(self._p_f0)# .reshape(1)
 
         # JIT compilation needs immutable, matrix input (not arrays)
         u_F0 = sympy.ImmutableDenseMatrix(F0)
@@ -1174,9 +1174,9 @@ class SNES_Stokes:
         U = sympy.Array(self._u.sym).reshape(dim)
         P = sympy.Array(self._p.sym).reshape(1)
 
-        G0 = sympy.derive_by_array(F0, U)
+        G0 = sympy.derive_by_array(F0, self._u.sym)
         G1 = sympy.derive_by_array(F0, self._L)  
-        G2 = sympy.derive_by_array(F1, U) 
+        G2 = sympy.derive_by_array(F1, self._u.sym)
         G3 = sympy.derive_by_array(F1, self._L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
@@ -1184,30 +1184,30 @@ class SNES_Stokes:
         # ij k -> KJ I (hence 210)
         # i jk -> J KI (hence 201)
 
-        self._uu_G0 = sympy.ImmutableMatrix(G0)
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)  ).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (1,0,2)  ).reshape(dim*dim,dim))   
+        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, (0,3,1,2)).reshape(dim,dim))
+        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (0,3,1,2)).reshape(dim,dim*dim))
+        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (0,3,1,2)).reshape(dim*dim,dim))   
         self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
         # U/P block (check permutations - hard to validate without a full collection of examples)
 
-        G0 = sympy.derive_by_array(F0, P)
+        G0 = sympy.derive_by_array(F0, self._p.sym)
         G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1, P)
+        G2 = sympy.derive_by_array(F1, self._p.sym)
         G3 = sympy.derive_by_array(F1, self._G)
 
         self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
-        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)).reshape(dim,dim))  # zero in stokes tests
-        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,0,1)).reshape(dim,dim))  # ?
-        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim*dim))  # zeros
+        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (0,3,1,2)).reshape(dim,dim))  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (0,3,1,2)).reshape(dim,dim))  # ?
+        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim))  # zeros
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(FP0, U)
+        G0 = sympy.derive_by_array(FP0, self._u.sym)
         G1 = sympy.derive_by_array(FP0, self._L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 ! 
         # G3 = sympy.derive_by_array(FP1, self._L)
@@ -1711,6 +1711,8 @@ class SNES_SaddlePoint:
         # residual terms
         self._setup_problem_description()
 
+        ## NOT THIS ONE !!
+
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
         F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0)).reshape(vdim)
@@ -1745,10 +1747,13 @@ class SNES_SaddlePoint:
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
         # Check permutations if vdim, dim are not equal
 
+        ## NOT THIS ONE !!
+
+
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(vdim,vdim*dim))
         self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(vdim*dim,vdim)) 
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(vdim*dim,vdim*dim))
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(vdim*dim,vdim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 

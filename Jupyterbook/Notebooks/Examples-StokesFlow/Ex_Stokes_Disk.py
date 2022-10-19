@@ -15,11 +15,11 @@ from underworld3 import function
 import numpy as np
 import sympy
 
-res = 0.1
+res = 0.2
 r_o = 2.0
 r_i = 1.0
 
-free_slip_upper = False
+free_slip_upper = True
 
 options = PETSc.Options()
 # options["help"] = None
@@ -38,7 +38,7 @@ meshball = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
 # Test that the second one is skipped
 
 v_soln = uw.discretisation.MeshVariable(r"\mathbf{u}", meshball, 2, degree=2)
-p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
+p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=False)
 p_cont = uw.discretisation.MeshVariable(r"p_c", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=3)
 maskr = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
@@ -53,7 +53,7 @@ import sympy
 
 radius_fn = meshball.CoordinateSystem.xR[0]
 unit_rvec = meshball.CoordinateSystem.unit_e_0
-gravity_fn = radius_fn / r_o
+gravity_fn = 1 # radius_fn / r_o
 
 # Some useful coordinate stuff
 
@@ -96,11 +96,11 @@ t_init = sympy.cos(3 * th)
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(t_init, t_soln.coords)
+    t_soln.data[:, 0] = uw.function.evaluate(t_init, coords=t_soln.coords, coord_sys=meshball.N)
     print(t_soln.data.min(), t_soln.data.max())
 
 with meshball.access(maskr):
-    maskr.data[:, 0] = uw.function.evaluate(r, maskr.coords)
+    maskr.data[:, 0] = uw.function.evaluate(r, coords=maskr.coords, coord_sys=meshball.N)
 
 # +
 I = uw.maths.Integral(meshball, surface_fn)
@@ -113,8 +113,8 @@ display(b_norm)
 # +
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
-# buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm 
-# buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn / b_norm 
+buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm 
+buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn / b_norm 
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 
@@ -152,7 +152,7 @@ if uw.mpi.size == 1:
     with meshball.access():
         pvmesh.point_data["V"] = uw.function.evaluate(v_soln.sym.dot(v_soln.sym), meshball.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evaluate(t_init, meshball.data)
+        pvmesh.point_data["T"] = uw.function.evaluate(t_init, meshball.data, coord_sys=meshball.N)
 
     with meshball.access():
         usol = stokes.u.data
@@ -167,19 +167,11 @@ if uw.mpi.size == 1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Grey", scalars="P", show_edges=True, use_transparency=False, opacity=0.75
+        pvmesh, cmap="coolwarm", edge_color="Grey", scalars="T", show_edges=True, use_transparency=False, opacity=0.75
     )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
     pl.show(cpos="xy")
 # -
 usol_rms = np.sqrt(usol[:,0]**2 + usol[:,1]**2).mean()
 usol_rms
-
-
-radius_fn
-
-gravity_fn
-
-meshball.N.base_vectors()
-
 
