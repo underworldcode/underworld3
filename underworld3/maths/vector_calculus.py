@@ -100,9 +100,13 @@ class mesh_vector_calculus:
 
         return matrix
 
-    def jacobian(self, vector):
+    def jacobian(self, matrix):
+        """Jacobian of a quantity (scalar, vector, matrix) wrt the natural mesh coordinates"""
 
-        matrix_form = self.to_matrix(vector)
+        if isinstance(matrix, sympy.vector.Vector):
+            matrix_form = self.to_matrix(matrix)
+        else:
+            matrix_form = matrix
 
         jac = matrix_form.jacobian(self.mesh.CoordinateSystem.N)
 
