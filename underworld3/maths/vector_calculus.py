@@ -81,11 +81,16 @@ class mesh_vector_calculus:
 
     def to_matrix(self, vector):
 
+        # Almost there ...
+
         if isinstance(vector, sympy.Matrix) and vector.shape == (1, self.dim):
             return vector
 
         if isinstance(vector, sympy.Matrix) and vector.shape == (self.dim, 1):
             return vector.T
+
+        if isinstance(vector, sympy.Matrix) and vector.shape == (1, 1):
+            return vector
 
         matrix = sympy.Matrix.zeros(1, self.dim)
         base_vectors = self.mesh.N.base_vectors()
