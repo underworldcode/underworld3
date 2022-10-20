@@ -301,6 +301,8 @@ class SNES_Stokes(SNES_Stokes):
             # All the other ones ...
             pass
 
+        self._E = self.mesh.vector.strain_tensor(self._u.sym)
+
         self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
 
         self._penalty = 0.0

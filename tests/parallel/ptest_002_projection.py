@@ -42,7 +42,7 @@ with mesh1.access(s_values):
 # Values on S2
 print(f"{uw.mpi.rank} - set values", flush=True)
 with mesh1.access(s_values):
-    s_values.data[:, 0] = uw.function.evaluate(s_fn, s_values.coords)
+    s_values.data[:, 0] = uw.function.evaluate(s_fn, s_values.coords, coord_sys=mesh1.N)
 
 print(f"{uw.mpi.rank} - solve projection", flush=True)
 scalar_projection.solve()

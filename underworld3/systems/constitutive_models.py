@@ -181,7 +181,7 @@ class Constitutive_Model:
         if rank == 2:
             flux = c * ddu.T
         else:  # rank==4
-            flux = sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (2, 3))
+            flux = sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (0, 1))
 
         return sympy.Matrix(flux)
 
@@ -410,12 +410,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self,
             eta_0: Union[float, sympy.Function] = 1,
             eta_1: Union[float, sympy.Function] = 1,
-            director: Union[sympy.Matrix, sympy.Function] = None,
+            director: Union[sympy.Matrix, sympy.Function] = sympy.Matrix([0, 0, 1]),
         ):
             inner_self._eta_0 = eta_0
             inner_self._eta_1 = eta_1
             inner_self._director = director
-            inner_self.constitutive_model_class = const_model
+            # inner_self.constitutive_model_class = const_model
 
         ## Note the inefficiency below if we change all these values one after the other
 

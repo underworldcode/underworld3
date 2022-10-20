@@ -13,8 +13,8 @@ import os
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 res = 0.1
-r_o = 3.0
-r_i = 1.0
+r_o = 1.0
+r_i = 0.5
 free_slip_upper = True
 
 # -
@@ -120,6 +120,8 @@ stokes.add_dirichlet_bc((0.0,0.0), "Lower", (0,1))
 # Check it ... 
 stokes.strainrate
 
+
+
 # +
 # Create Stokes object (x,y)
 
@@ -155,7 +157,7 @@ stokes.bodyforce = sympy.Matrix([Rayleigh * t_init, 0])
 
 # ----
 
-t_init_xy = sympy.cos(5 * meshball_xyz.CoordinateSystem.xR[1])
+t_init_xy = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0 
 stokes_xy.bodyforce = Rayleigh * t_init_xy * unit_rvec 
 stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_rvec
@@ -225,8 +227,8 @@ if uw.mpi.size == 1:
         pvmesh, cmap="coolwarm", edge_color="Grey", scalars="P", show_edges=True, use_transparency=False, opacity=0.75
     )
     
-    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.00001, color="Blue")
-    pl.add_arrows(arrow_loc+(0.01,0.01,0.0), arrow_length, mag=0.00001, color="Red")
+    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.0001, color="Blue")
+    pl.add_arrows(arrow_loc+(0.005,0.005,0.0), arrow_length, mag=0.0001, color="Red")
 
     pl.show(cpos="xy")
 # +
@@ -248,3 +250,8 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # 0.1
 # MEAN: 0.8601596694865591
 # MAX:  1.0587809789060159
+# -
+
+stokes
+
+

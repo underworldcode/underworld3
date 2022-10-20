@@ -107,21 +107,22 @@ class Mesh(_api_tools.Stateful):
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
 
+        # A unique set of vectors / names for each mesh instance
         self._N = CoordSys3D(f"N{Mesh.mesh_instances}")
 
-        # Tidy some of this printing without changing the
-        # underlying vector names (as these are part of the code generation system)
-
-        self._N.x._latex_form = r"\mathrm{\xi_1}"
-        self._N.y._latex_form = r"\mathrm{\xi_2}"
-        self._N.z._latex_form = r"\mathrm{\xi_3}"
-        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
-        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
-        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_3}"
+        self._N.x._latex_form = r"\mathrm{\xi_0}"
+        self._N.y._latex_form = r"\mathrm{\xi_1}"
+        self._N.z._latex_form = r"\mathrm{\xi_2}"
+        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_0}"
+        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
+        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
 
         # Now add the appropriate coordinate system for the mesh's natural geometry
         # This step will usually over-write the defaults we just defined
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
+
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
 
         try:
             self.isSimplex = self.dm.isSimplex()
@@ -167,11 +168,10 @@ class Mesh(_api_tools.Stateful):
             self.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D_NATIVE
             or self.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL3D_NATIVE
         ):
-            print("Mesh is cylindrical, using cylindrical div/grad/curl")
             self.vector = uw.maths.vector_calculus_cylindrical(mesh=self)
+        elif self.CoordinateSystem.coordinate_type == CoordinateSystemType.SPHERICAL_NATIVE:
+            self.vector = uw.maths.vector_calculus_spherical_lonlat(mesh=self)  ## Not yet complete or tested
         else:
-            print(f"Mesh is not cylindrical {self.CoordinateSystem.type} / {self.CoordinateSystem.coordinate_type}")
-
             self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()

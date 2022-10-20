@@ -6,10 +6,6 @@
 # Introduction to how the constitutive relationships in Underworld are formulated.
 #
 # %%
-from petsc4py import PETSc
-
-
-# %%
 import petsc4py
 from petsc4py import PETSc
 
@@ -59,33 +55,11 @@ stokes3 = uw.systems.Stokes(mesh3, velocityField=u3, pressureField=p3)
 stokes2
 
 # %%
-
-# %%
 ## Tests 
 
 # The following tests are implemented with pytest. 
 
 
-
-# %%
-ViscousFlow = uw.systems.constitutive_models.TransverseIsotropicFlowModel(3)
-ViscousFlow.material_properties = ViscousFlow.Parameters(eta_0=sympy.symbols(r"\eta_0"), 
-                                                         eta_1=sympy.symbols(r"\eta_0"), 
-                                                         director=sympy.Matrix([1,0,0]))
-
-
-# %%
-stokes3.constitutive_model = ViscousFlow
-
-# %%
-stokes3.constitutive_model.flux(stokes3._L)
-
-# %%
-ViscousFlow.material_properties = ViscousFlow.Parameters(eta_0=sympy.symbols(r"\eta_0"), 
-                                                         eta_1=sympy.symbols(r"\eta_0"), 
-                                                         director=sympy.Matrix([0,0,1]))
-
-stokes3.constitutive_model.flux(stokes3._E)
 
 # %% [markdown]
 # ## Introduction to constitutive models
@@ -207,11 +181,31 @@ stokes3.constitutive_model.flux(stokes3._E)
 #
 
 # %%
+epsdot = uw.maths.tensor.rank2_symmetric_sym("\\dot\\varepsilon", 2)
+display(epsdot)
+epsdot_vec = uw.maths.tensor.rank2_to_voigt(epsdot, 2)
+display(epsdot_vec)
+Pm = uw.maths.tensor.P_mandel[2]
+
+# %%
+I4 = uw.maths.tensor.rank4_identity(2)
+I4v = uw.maths.tensor.rank4_to_voigt(I4,2)
+I4m = uw.maths.tensor.rank4_to_mandel(I4,2)
+
+display(I4v)
+display(I4m)
+
+# %%
+## What does this show then ?
+
+display(Pm * Pm * epsdot_vec.T)
+display(Pm * I4v * Pm * epsdot_vec.T)
+
+# %%
 # This is the generic constitutive tensor with relevant symmetries for fluid mechanics problems
 
 c4sym = uw.maths.tensor.rank4_symmetric_sym('c', 2)
 display(c4sym)
-
 
 ## This is the mandel form of the constitutive matrix for constant viscosity
 
@@ -224,14 +218,6 @@ display(uw.maths.tensor.mandel_to_rank4(Ceta, 2))
 
 
 # %%
-I4 = uw.maths.tensor.rank4_identity(2)
-I4v = uw.maths.tensor.rank4_to_voigt(I4,2)
-I4m = uw.maths.tensor.rank4_to_mandel(I4,2)
-
-display(I4v)
-display(I4m)
-
-# %%
 Cv = uw.maths.tensor.rank4_to_voigt(c4sym,2)
 Cm = uw.maths.tensor.rank4_to_mandel(c4sym,2)
 
@@ -239,45 +225,54 @@ display(Cv)
 display(Cm)
 
 # %%
-epsdot = uw.maths.tensor.rank2_symmetric_sym("\\dot\\varepsilon", 2)
-epsdot
-epsdot_vec = uw.maths.tensor.rank2_to_voigt(epsdot, 2)
-epsdot_vec
-Pm = uw.maths.tensor.P_mandel[2]
-
-# %%
-Pm * Pm * epsdot_vec.T
-
-# %%
-Pm * I4v * Pm * epsdot_vec.T
-
-# %%
-d=2
-uw.maths.tensor.rank4_to_voigt(uw.maths.tensor.rank4_identity(d), d) 
-
-sympy.symarray('C',(d,d,d,d))
+d=3
+display(uw.maths.tensor.rank4_to_voigt(uw.maths.tensor.rank4_identity(d), d))
 sympy.Array(sympy.symarray('C',(d,d,d,d)))
 
 # %%
-Cmods = uw.systems.constitutive_models.TransverseIsotropicFlowModel(mesh2.dim)
-Cmods.material_properties = Cmods.Parameters(eta_0=sympy.symbols("\eta"), eta_1 = sympy.symbols("\eta")/2, director=sympy.Matrix((1,1,1))/sympy.sqrt(3))
-Cmods.C
+#@# This is how we use those things
+
+ViscousFlow = uw.systems.constitutive_models.TransverseIsotropicFlowModel(3)
+ViscousFlow.Parameters.eta_0=sympy.symbols(r"\eta_0")
+ViscousFlow.Parameters.eta_1=sympy.symbols(r"\eta_1")
+ViscousFlow.Parameters.director=sympy.Matrix([1,0,0]).T
+
+stokes3.constitutive_model = ViscousFlow
+display(stokes3.strainrate)
+display(stokes3.constitutive_model.flux(stokes3.strainrate))
 
 # %%
-Cmods.material_properties = Cmods.Parameters(eta_0=sympy.symbols("\eta"), eta_1 = sympy.symbols("\eta"), director=sympy.Matrix((1,1,1))/sympy.sqrt(3))
-Cmods.C
+ViscousFlow.Parameters.eta_0=sympy.symbols(r"\eta_0")
+ViscousFlow.Parameters.eta_1=sympy.symbols(r"\eta_0")
+ViscousFlow.Parameters.director=sympy.Matrix([1,0,0]) # Doesn't matter if the viscosity are the same
+
+stokes3.constitutive_model.flux(stokes3.strainrate)
 
 # %%
+Cmods = uw.systems.constitutive_models.TransverseIsotropicFlowModel(dim=3)
+Cmods.Parameters.eta_0=sympy.symbols(r"\eta_0")
+Cmods.Parameters.eta_1=sympy.symbols(r"\eta_1")
+
+Cmods.Parameters.director=sympy.Matrix([1,0,0]).T
+display(Cmods.C)
+
+Cmods.Parameters.director=sympy.Matrix([0,1,0]).T
+display(Cmods.C)
+
+# %%
+# Description / help is especially useful in notebook form
 Cmods
 
 # %%
 gradT = mesh2.vector.gradient(phi2.sym)
 Cmodp = uw.systems.constitutive_models.Constitutive_Model(mesh2.dim, 1)
+Cmodp
 
 
 # %%
-Cmodp.k = sympy.symbols("\\kappa")
-Cmodp.c
+Cmodp.Parameters.k = sympy.symbols("\\kappa")
+display(Cmodp.C)
+display(Cmodp.c)
 
 # %%
 Cmodp.flux(gradT)
@@ -287,29 +282,21 @@ Cmods.k = sympy.symbols("\\eta")
 Cmods.c
 
 # %%
-Cmods.flux(epsdot)
-
+Cmods
 
 # %%
 Cmodv = uw.systems.constitutive_models.ViscousFlowModel(2)
-Cmodv.material_properties = Cmodv.Parameters(viscosity=sympy.symbols("\eta_1"))
-
-# %%
+Cmodv.Parameters.viscosity = sympy.symbols(r"\eta")
 Cmodv
-
-# %%
 
 # %%
 Cmodv.flux(epsdot)
 
 # %%
-0/0
+# Cvisc = sympy.symbols(r'\eta') * uw.maths.tensor.rank4_identity(2)
+# Celas = sympy.symbols(r'\mu') * uw.maths.tensor.rank4_identity(2)
 
-# %%
-Cvisc = sympy.symbols(r'\eta') * uw.maths.tensor.rank4_identity(2)
-Celas = sympy.symbols(r'\mu') * uw.maths.tensor.rank4_identity(2)
-
-Cvisc + Celas
+# Cvisc + Celas
 
 # %%
 ## Equivalence test: define tensor explicitly or in canonical form with rotation

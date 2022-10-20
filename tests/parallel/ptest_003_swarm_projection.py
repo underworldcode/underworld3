@@ -35,7 +35,7 @@ scalar_projection.smoothing = 1.0e-6
 # Values on swarm
 print(f"{uw.mpi.rank} - define swarm values", flush=True)
 with swarm.access(sw_values):
-    sw_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data)
+    sw_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, coord_sys=mesh1.N)
 
 print(f"{uw.mpi.rank} - solve projection", flush=True)
 scalar_projection.solve()

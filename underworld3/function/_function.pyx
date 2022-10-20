@@ -47,10 +47,21 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
 
     def _latex(self, printer, exp=None):
 
+        try:
+            mesh=self.mesh
+            if not mesh.CoordinateSystem.CartesianDM:
+                coord_latex = r"\mathbf{r}"
+            else:
+                coord_latex = r"\mathbf{x}"
+        except:
+            print("No mesh info found")
+            coord_latex = r"\mathbf{x}"
+
         if exp==None:
-            latexstr = fr"{type(self).__name__}(\mathbf{{\xi}})"
+            latexstr = fr"{type(self).__name__}({coord_latex})"
         else:
-            latexstr = r"%s^{%s}(\mathbf{\xi})" % (type(self).__name__,exp)
+            latexstr = fr"{type(self).__name__}^{{ {exp} }}({coord_latex})"
+
         return latexstr
 
 class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
@@ -130,6 +141,9 @@ class UnderworldFunction(sympy.Function):
             diffcls.component = component
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
+
+        for diff_fn in ourcls._diff:
+            diff_fn.mesh = meshvar.mesh
 
         return ourcls
 
