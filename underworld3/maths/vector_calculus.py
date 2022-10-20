@@ -329,6 +329,8 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
 
         L = matrix.jacobian(self.mesh.CoordinateSystem.N)
         r = self.mesh.CoordinateSystem.N[0]
+        l1 = self.mesh.CoordinateSystem.N[1]
+        l2 = self.mesh.CoordinateSystem.N[2]
 
         V_r = matrix[0]
         V_l1 = matrix[1]

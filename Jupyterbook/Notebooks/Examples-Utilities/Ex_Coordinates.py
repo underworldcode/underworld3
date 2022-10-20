@@ -102,7 +102,7 @@ meshball.vector.gradient(PS.sym)
 
 meshball.vector.divergence(VS.sym)
 
-meshball.CoordinateSystem.N
+meshball.vector.strain_tensor(VS.sym)
 
 meshball.CoordinateSystem.CartesianDM
 
