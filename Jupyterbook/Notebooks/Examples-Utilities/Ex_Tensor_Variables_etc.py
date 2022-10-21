@@ -64,6 +64,8 @@ material.sym.diff(meshbox.CoordinateSystem.X)
 
 material.sym.jacobian(meshbox.X).T
 
+meshbox.vector.jacobian(material.sym).T
+
 v_soln.sym.jacobian(meshbox.CoordinateSystem.X)
 
 mat_density = np.array([1, 10, 100, 1000])

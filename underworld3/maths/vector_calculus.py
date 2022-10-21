@@ -267,7 +267,13 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         V_l1 = matrix[1]
         V_l2 = matrix[2]
 
-        div_V = V_r.diff(r) + 2 * V_r / r + V_l1.diff(l1) / (r * sympy.cos(l2)) + sympy.tan(l2) * V_l2.diff(l2) / r
+        div_V = (
+            V_r.diff(r)
+            + 2 * V_r / r
+            + V_l1.diff(l1) / (r * sympy.cos(l2))
+            - sympy.tan(l2) * V_l2 / r
+            + V_l2.diff(l2) / r
+        )
 
         return div_V
 
@@ -296,29 +302,22 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         $\nabla \cross \phi$ in spherical  (UGLY - return nothing for the moment)
         """
 
-        # r = self.mesh.CoordinateSystem.N[0]
-        # l1 = self.mesh.CoordinateSystem.N[1]
-        # l2 = self.mesh.CoordinateSystem.N[3]
+        r = self.mesh.CoordinateSystem.N[0]
+        l1 = self.mesh.CoordinateSystem.N[1]
+        l2 = self.mesh.CoordinateSystem.N[2]
 
-        # matrix0 = self.to_matrix(matrix)
-        # V_r = matrix0[0]
-        # V_t = matrix0[1]
+        matrix0 = self.to_matrix(matrix)
+        V_r = matrix[0]
+        V_l1 = matrix[1]
+        V_l2 = matrix[2]
 
-        # # if 2D, return a scalar of the out-of-plane curl
+        curl_V = sympy.Matrix.zeros(1, 3)
 
-        # if self.mesh.dim == 2:
-        #     curl_V = V_t / r + V_t.diff(r) - V_r.diff(t) / r
+        curl_V[0] = V_l1.diff(l2) / r - sympy.tan(l2) * V_l1 / r - V_l2.diff(l1) / (r * sympy.cos(l2))
+        curl_V[1] = V_l2.diff(r) + V_l2 / r - V_r.diff(l2) / r
+        curl_V[2] = V_r.diff(l1) / (r * sympy.cos(l2)) - V_l1.diff(r) - V_l1 / r
 
-        # else:
-        #     z = self.mesh.CoordinateSystem.N[2]
-        #     V_z = matrix0[2]
-        #     curl_V = sympy.Matrix.zeros(1, 3)
-
-        #     curl_V[0] = V_z.diff(t) / r - V_t.diff(z)
-        #     curl_V[1] = V_r.diff(z) - V_z.diff(r)
-        #     curl_V[2] = V_t / r + V_t.diff(r) - V_r.diff(t) / r
-
-        return None
+        return curl_V
 
     def strain_tensor(self, vector):
         """
