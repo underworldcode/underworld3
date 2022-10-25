@@ -430,7 +430,8 @@ class Mesh(_api_tools.Stateful):
         """
         N = self.N
 
-        rvec = 0
+        r_vec = sympy.vector.Vector.zero
+
         N_s = N.base_scalars()
         N_v = N.base_vectors()
         for i in range(self.cdim):
