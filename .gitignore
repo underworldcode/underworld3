@@ -64,4 +64,4 @@ tmp*vtk
 tmp*msh
 
 # Other
-
+*DS_Store
