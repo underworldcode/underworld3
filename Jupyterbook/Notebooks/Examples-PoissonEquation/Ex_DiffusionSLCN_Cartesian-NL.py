@@ -1,9 +1,9 @@
 # %% [markdown]
-# # Diffusion of a hot pipe
+# # Nonlinear diffusion of a hot pipe
 #
 # - Using the adv_diff solver.
 # - No advection as the velocity field is not updated (and set to 0).
-# - Benchmark comparison between 1D numerical solution and 2D UW model.
+# - Comparison between 1D numerical solution and 2D UW model.
 #
 
 # %%
@@ -26,9 +26,7 @@ sys.pushErrorHandler("traceback")
 
 
 # %%
-expt_name = f"output/stinker_eta1e6_rho10"
-
-# Set the resolution.
+### Set the resolution.
 res = 32
 
 xmin, xmax = 0., 1.
@@ -37,7 +35,7 @@ ymin, ymax = 0., 1.
 pipe_thickness = 0.4 ###
 
 # %%
-k0 = 1e-6  ### m2/s (thermal diffusivity)
+k0 = 1e-6  ### m2/s (diffusivity)
 l0 = 1e5   ### 100 km in m (length of box)
 time_scale = l0**2/k0 ### s
 time_scale_Myr = time_scale / (60*60*24*365.25*1e6)
@@ -45,7 +43,7 @@ time_scale_Myr = time_scale / (60*60*24*365.25*1e6)
 # %%
 # mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True)
 
-mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res*1.5), int(res*1.5)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
+mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
 
 
 # %%
@@ -61,6 +59,10 @@ tmax = 1.
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+k = uw.discretisation.MeshVariable("k", mesh, 1, degree=1)
+
+dTdY = uw.discretisation.MeshVariable(r"\partial T/ \partial \mathbf{y}", mesh, 1, degree=2)
+
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
     mesh,
@@ -70,9 +72,29 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-adv_diff.constitutive_model.Parameters.diffusivity = k
 
-adv_diff.theta = 0.5
+
+# %%
+delT = mesh.vector.gradient(T.sym)
+gradient = (delT.dot(delT))
+
+k_sym = ((delT.dot(delT)) / 2.)
+
+adv_diff.constitutive_model.Parameters.diffusivity = k_sym
+
+# %%
+k_model = uw.systems.Projection(mesh, k)
+k_model.uw_function = adv_diff.constitutive_model.Parameters.diffusivity
+k_model.smoothing = 1.0e-3
+### set diffusivity BCs
+# k_model.add_dirichlet_bc(0., ["Top", "Bottom"], components=0)
+
+
+def updateFields():
+    k_model.uw_function = adv_diff.constitutive_model.Parameters.diffusivity
+    k_model.solve(_force_setup=True)
+
+
 
 # %%
 ### fix temp of top and bottom walls
@@ -94,6 +116,8 @@ with mesh.access(T):
 
 # %%
 def plot_fig():
+    updateFields()
+    
     if uw.mpi.size == 1:
 
         import numpy as np
@@ -116,6 +140,7 @@ def plot_fig():
         with mesh.access():
             vsol = v.data.copy()
             pvmesh['T'] = T.data.copy()
+            pvmesh['k'] = uw.function.evaluate(k.sym[0], mesh.data)
 
         arrow_loc = np.zeros((v.coords.shape[0], 3))
         arrow_loc[:, 0:2] = v.coords[...]
@@ -129,7 +154,7 @@ def plot_fig():
 
         # pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
 
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="k",
                         use_transparency=False, opacity=0.95)
 
         # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
@@ -172,11 +197,18 @@ sample_points[:,1] = sample_y
 
 t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
+
 # %%
-### estimate the timestep based on diffusion only
-dt = (mesh.get_min_radius()**2 / k) ### dt = length squared / diffusivity
-# print(f'dt: {dt*time_scale_Myr} Myr')
-print(f'dt: {dt*time_scale_Myr}')
+def get_dt():
+    updateFields()
+    with mesh.access(k):
+        ### estimate the timestep based on diffusion only
+        dt = (mesh.get_min_radius()**2 / k.data[:,0].max()) ### dt = length squared / diffusivity
+        
+    # print(f'dt: {dt*time_scale_Myr} Myr')
+    print(f'dt: {dt*time_scale_Myr}')
+    
+    return dt
 
 
 # %%
@@ -220,6 +252,11 @@ time   = 0.
 nsteps = 21
 
 # %%
+adv_diff.petsc_options["ksp_rtol"] =  1.0e-8
+
+adv_diff.petsc_options["snes_rtol"]=  1.0e-8
+
+# %%
 # if uw.mpi.size == 1:
 #     ''' create figure to show the temp diffuses '''
 #     plt.figure(figsize=(9, 3))
@@ -239,13 +276,16 @@ while step < nsteps:
         ''' compare 1D and 2D models '''
         plt.figure()
         ### profile from UW
-        plt.plot(t1, sample_points[:,1], ls='-', c='red')
+        plt.plot(t1, sample_points[:,1], ls='-', c='red', label='2D nonlinear model')
         ### numerical solution
-        plt.plot(tempData, sample_points[:,1], ls=":", c='k')
+        plt.plot(tempData, sample_points[:,1], ls=":", c='k', label='1D linear model')
+        plt.legend()
         plt.show()
         
+    dt = get_dt()
+        
     ### 1D diffusion
-    tempData = diffusion_1D(sample_points=sample_points[:,1], tempProfile=tempData, k=k, model_dt=dt)
+    tempData = diffusion_1D(sample_points=sample_points[:,1], tempProfile=tempData, k=1., model_dt=dt)
     
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)
@@ -259,5 +299,9 @@ while step < nsteps:
 
 # %%
 plot_fig()
+
+# %%
+
+# %%
 
 # %%

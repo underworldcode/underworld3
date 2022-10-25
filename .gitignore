@@ -65,3 +65,5 @@ tmp*msh
 
 # Other
 *DS_Store
+Jupyterbook/.DS_Store
+Jupyterbook/Notebooks/.DS_Store
