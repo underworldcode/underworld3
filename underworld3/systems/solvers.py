@@ -59,7 +59,9 @@ class SNES_Poisson(SNES_Scalar):
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self._f1 = self.F1 + self.constitutive_model.flux(self._L).T  # self.k * (self._L)
+        self._f1 = (
+            self.F1 + self.constitutive_model.flux(self._L).T
+        )  # self.k * (self._L)
 
         return
 
@@ -173,7 +175,12 @@ class SNES_Darcy(SNES_Scalar):
         self._v = sympify(value)
 
     @timing.routine_timer_decorator
-    def solve(self, zero_init_guess: bool = True, timestep: float = None, _force_setup: bool = False):
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+    ):
         """
         Generates solution to constructed system.
 
@@ -303,10 +310,12 @@ class SNES_Stokes(SNES_Stokes):
 
         self._E = self.mesh.vector.strain_tensor(self._u.sym)
 
-        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace())  # scalar 2nd invariant
-
+        # scalar 2nd invariant (incompressible)
+        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace() / 2)
         self._penalty = 0.0
-        self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
+        self._constraints = sympy.Matrix(
+            (self.div_u,)
+        )  # by default, incompressibility constraint
         self._saddle_preconditioner = sympy.sympify(1)
         self._bodyforce = sympy.Matrix([0] * self.mesh.dim)
 
@@ -470,7 +479,9 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(self.mesh.dim, 1)
+        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(
+            self.mesh.dim, 1
+        )
 
         return
 
@@ -486,7 +497,9 @@ class SNES_Projection(SNES_Scalar):
         # F0 is left in place for the user to inject
         # non-linear constraints if required
 
-        self._f0 = self.F0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        self._f0 = (
+            self.F0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        )
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
@@ -567,7 +580,9 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(self.mesh.dim, self.mesh.dim)
+        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(
+            self.mesh.dim, self.mesh.dim
+        )
 
         return
 
@@ -583,13 +598,19 @@ class SNES_Vector_Projection(SNES_Vector):
         # F0 is left in place for the user to inject
         # non-linear constraints if required
 
-        self._f0 = self.F0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        self._f0 = (
+            self.F0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        )
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
         E = 0.5 * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T)  # ??
         self._f1 = (
-            self.F1 + self.smoothing * E + self.penalty * sympy.vector.divergence(self.u.fn) * sympy.eye(self.mesh.dim)
+            self.F1
+            + self.smoothing * E
+            + self.penalty
+            * sympy.vector.divergence(self.u.fn)
+            * sympy.eye(self.mesh.dim)
         )
 
         return
@@ -797,7 +818,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim)
 
         nswarm.dm.finalizeFieldRegister()
-        nswarm.dm.addNPoints(self._u.coords.shape[0] + 1)  # why + 1 ? That's the number of spots actually allocated
+        nswarm.dm.addNPoints(
+            self._u.coords.shape[0] + 1
+        )  # why + 1 ? That's the number of spots actually allocated
         cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         coords[...] = self._u.coords[...]
@@ -919,7 +942,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # Sample the field at these locations
 
         with nswarm.access(nT1):
-            nT1.data[...] = uw.function.evaluate(t_soln.sym[0], nswarm.data).reshape(-1, 1)
+            nT1.data[...] = uw.function.evaluate(t_soln.sym[0], nswarm.data).reshape(
+                -1, 1
+            )
 
         # restore coords
         with nswarm.access(nswarm.particle_coordinates):
@@ -988,7 +1013,9 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             self._u_star_projected = uw.discretisation.MeshVariable(
                 r"u^{{*}}{}".format(self.instances), self.mesh, 1, degree=u_Field.degree
             )
-            self._u_star_projector = uw.systems.solvers.SNES_Projection(self.mesh, self._u_star_projected)
+            self._u_star_projector = uw.systems.solvers.SNES_Projection(
+                self.mesh, self._u_star_projected
+            )
 
             # If we add smoothing, it should be small relative to actual diffusion (self.k)
             self._u_star_projector.smoothing = 0.0
@@ -1057,7 +1084,12 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self._theta = sympify(value)
 
     @timing.routine_timer_decorator
-    def solve(self, zero_init_guess: bool = True, timestep: float = None, _force_setup: bool = False):
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+    ):
         """
         Generates solution to constructed system.
 
@@ -1147,21 +1179,36 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self._u_star_raw_fn = velocityStar_fn
 
         if saddle_preconditioner is None:
-            self._saddle_preconditioner = 1.0 / (self.viscosity + self.rho / self.delta_t)
+            self._saddle_preconditioner = 1.0 / (
+                self.viscosity + self.rho / self.delta_t
+            )
         else:
             self._saddle_preconditioner = saddle_preconditioner
 
         ## Parent class will set up default values etc
         super().__init__(
-            mesh, velocityField, pressureField, u_degree, p_degree, p_continous, solver_name, verbose, penalty
+            mesh,
+            velocityField,
+            pressureField,
+            u_degree,
+            p_degree,
+            p_continous,
+            solver_name,
+            verbose,
+            penalty,
         )
 
         if projection:
             # set up a projection solver
             self._u_star_projected = uw.discretisation.MeshVariable(
-                "uStar{}".format(self.instances), self.mesh, self.mesh.dim, degree=u_degree
+                "uStar{}".format(self.instances),
+                self.mesh,
+                self.mesh.dim,
+                degree=u_degree,
             )
-            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(self.mesh, self._u_star_projected)
+            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh, self._u_star_projected
+            )
 
             # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
             self._u_star_projector.smoothing = 0.0
@@ -1173,14 +1220,19 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self.is_setup = False
         self.first_solve = True
 
-        self._Ustar = sympy.Array((self.u_star_fn.to_matrix(self.mesh.N))[0 : self.mesh.dim])
+        self._Ustar = sympy.Array(
+            (self.u_star_fn.to_matrix(self.mesh.N))[0 : self.mesh.dim]
+        )
         self._Lstar = sympy.derive_by_array(self._Ustar, self._X).transpose()
 
         # User-facing operations are matrices / vectors by preference but
         # self._L / _Lstar is a sympy.Array object
 
         self._Estar = (sympy.Matrix(self._Lstar) + sympy.Matrix(self._Lstar).T) / 2
-        self._Stress_star = self.constitutive_model.flux(self._Estar) - sympy.eye(self.mesh.dim) * self.p.fn
+        self._Stress_star = (
+            self.constitutive_model.flux(self._Estar)
+            - sympy.eye(self.mesh.dim) * self.p.fn
+        )
 
         return
 
@@ -1190,7 +1242,11 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         dim = self.mesh.dim
 
         # terms that become part of the weighted integral
-        self._u_f0 = self.UF0 - 1.0 * self.bodyforce + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
+        self._u_f0 = (
+            self.UF0
+            - 1.0 * self.bodyforce
+            + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
+        )
 
         # Integration by parts into the stiffness matrix
         self._u_f1 = (
@@ -1274,7 +1330,11 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         # (we might want to use v_star for checkpointing though)
 
         if self.projection and (not self.first_solve or _force_u_star_projection):
-            print("Solve Ustar projection, uwfn = {}".format(self._u_star_projector.uw_function))
+            print(
+                "Solve Ustar projection, uwfn = {}".format(
+                    self._u_star_projector.uw_function
+                )
+            )
             self._u_star_projector.petsc_options[
                 "snes_type"
             ] = "newtontr"  ## newtonls seems to be problematic when the previous guess is available

@@ -184,9 +184,9 @@ class SwarmVariable(_api_tools.Stateful):
             raise RuntimeError("Data must be accessed via the swarm `access()` context manager.")
         return self._data
 
-    @property
-    def fn(self):
-        return self._meshVar.fn
+    # @property
+    # def fn(self):
+    #     return self._meshVar.fn
 
     @property
     def sym(self):
@@ -599,7 +599,7 @@ class Swarm(_api_tools.Stateful):
         if corrector == True and not self._X0_uninitialised:
             with self.access(self.particle_coordinates):
                 v_at_Vpts = np.zeros_like(self.data)
-                
+
                 for d in range(self.dim):
                     v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
 
@@ -623,7 +623,7 @@ class Swarm(_api_tools.Stateful):
         # Mid point algorithm (2nd order)
         if order == 2:
             with self.access(self.particle_coordinates):
-            
+
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
@@ -661,8 +661,6 @@ class Swarm(_api_tools.Stateful):
 
                 # if (uw.mpi.rank == 0):
                 #     print("Update", flush=True)
-
- 
 
                 self.data[...] = new_coords
 
