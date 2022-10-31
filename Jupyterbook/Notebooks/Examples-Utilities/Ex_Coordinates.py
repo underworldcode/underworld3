@@ -151,15 +151,6 @@ display(curlgradPSs)
 
 #Note
 sympy.simplify(curlgradPSs)
-# -
-
-curl = meshball.vector.curl(VSs)
-curl[0]
-
-r,l1,l2 = mesh.N.base_scalars()
-sympy.simplify(((VSs[1] * sympy.cos(l2)).diff(l2) - VSs[2].diff(l1)) / (r * sympy.cos(l2)) - curl[0])
-
-sympy.simplify(curlgradPSs[0])
 
 # +
 # if uw.mpi.size == 1:
