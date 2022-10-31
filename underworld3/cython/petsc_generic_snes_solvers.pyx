@@ -304,12 +304,18 @@ class SNES_Scalar:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -702,12 +708,18 @@ class SNES_Vector:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -1237,6 +1249,9 @@ class SNES_Stokes:
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
 
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes: Jacobians complete, now compile", flush=True)
+
         prim_field_list = [self.u, self.p]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
         # create indexes so that we don't rely on indices that can change
@@ -1247,12 +1262,22 @@ class SNES_Stokes:
         for index,fn in enumerate(fns_jacobian):
             i_jac[fn] = index
 
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes: Compilation complete, Now set residuals", flush=True)
+
+
         # set functions 
 
+        self.dm.clearDS()
         self.dm.createDS()
+        
         cdef DS ds = self.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[u_F0]], ext.fns_residual[i_res[u_F1]])
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[p_F0]],                          NULL)
+
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes:                      Now set jacobians", flush=True)
+
         
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
@@ -1270,12 +1295,19 @@ class SNES_Stokes:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
@@ -1288,7 +1320,6 @@ class SNES_Stokes:
 
 
         self.dm.setUp()
-
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
@@ -1841,22 +1872,30 @@ class SNES_SaddlePoint:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
                     bc_type = 6
                 else:
                     bc_type = 5
+         
 
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 
-                0, comps_view.shape[0], <const PetscInt *> &comps_view[0],
-                <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
+                    0, comps_view.shape[0], <const PetscInt *> &comps_view[0],
+                    <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
                 # labelname = str(boundary).encode('utf8')
                 # DMGetLabel(cdm.dm, labelname, &c_label)
