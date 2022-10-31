@@ -18,11 +18,14 @@ mesh = UnstructuredSimplexBox(
 x, y = mesh.X
 
 s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+p_soln = uw.discretisation.MeshVariable("P0", mesh, 1, degree=0)
+p_dc = uw.discretisation.MeshVariable("Pdc", mesh, 1, degree=1, continuous=False)
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 s_values_0 = uw.swarm.SwarmVariable("Ss0", swarm, 1, proxy_degree=0)
 s_values = uw.swarm.SwarmVariable("Ss1", swarm, 1, proxy_degree=1)
 s_values_3 = uw.swarm.SwarmVariable("Ss3", swarm, 1, proxy_degree=3)
+
 
 swarm.populate(fill_param=3)
 
@@ -32,7 +35,7 @@ def test_integrate_constants():
     calculator = uw.maths.Integral(mesh, fn=1.0)
     value = calculator.evaluate()
 
-    assert abs(value - 1.0) < 100
+    assert abs(value - 1.0) < 0.001
 
     return
 
@@ -50,12 +53,12 @@ def test_integrate_sympy():
 def test_integrate_meshvar():
 
     with mesh.access(s_soln):
-        s_soln.data[:, 0] = np.cos(np.pi * s_soln.coords[:, 0])
+        s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_soln.sym[0])
     value = calculator.evaluate()
 
-    assert abs(value) < 0.001
+    assert abs(value - 2 / np.pi) < 0.001
 
     return
 
