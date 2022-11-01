@@ -57,7 +57,7 @@ jobs:
       - name: Build docs with pdoc
         shell: bash -l {0}
         run: |
-          VERSION=`python setup.py --version`
+          VERSION=`python3 setup.py --version`
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           # mkdir -p docs
           ./docs.sh

@@ -44,7 +44,9 @@ jobs:
       - name: Build docs with jupyterbook
         shell: bash -l {0}
         run: |
-          VERSION=`python setup.py --version`
+          VERSION=`python3 setup.py --version`
+          which python
+          which python3
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           cd Jupyterbook
           ./build-book.sh 
