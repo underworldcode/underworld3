@@ -17,34 +17,33 @@ on:
 
   workflow_dispatch:
 
-jobs:
+obs:
   deploy:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v2
-  
+      - uses: actions/checkout@v3
+
       - name: Cache build environment
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         env:
         # Increase this value to reset cache if etc/example-environment.yml has not changed
           CACHE_NUMBER: 0
-         with:
+        with:
           path: |
             /opt/homebrew
             ~/.cache/pip
-            
-          key: macos-jbdoc-conda-${{ env.CACHE_NUMBER }}
+          key: macos-underworld3-jbdocs
 
       - name: homebrew install dependencies
         run: |
           brew update
           brew install python@3.10
           brew install petsc 
-          brew install cython
           brew install gmsh
           brew install jupyter 
 
           pip3 install mpi4py h5py petsc4py
+          pip3 install pdoc3
 
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
@@ -52,6 +51,7 @@ jobs:
           VERSION=`python setup.py --version`
           pwd
           python3 setup.py develop
+          pip3 install -e .
 
 
       - name: Build docs with pdoc
@@ -59,9 +59,9 @@ jobs:
         run: |
           VERSION=`python setup.py --version`
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
-          mkdir -p docs
-          cd docs
-          pdoc --config latex_math=True --html -o api --force stripy
+          # mkdir -p docs
+          ./docs.sh
+
 
       # Here we can add an action to build the jupyter book to a different directory 
       # and then they can be uploaded together. The jupyter book can contain a link to the
@@ -74,5 +74,5 @@ jobs:
         with:
           deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
           destination_dir: docs/
-          publish_dir: docs/api/stripy
+          publish_dir: uw3_api_docs
 

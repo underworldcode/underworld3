@@ -31,8 +31,7 @@ jobs:
           path: |
             /opt/homebrew
             ~/.cache/pip
-            
-          key: macos-jbdoc-conda-${{ env.CACHE_NUMBER }}
+          key: macos-underworld3-jbdocs
 
       - name: homebrew install dependencies
         run: |
@@ -41,25 +40,13 @@ jobs:
           brew install petsc 
           brew install gmsh
           brew install jupyter 
-
-
-
-
-        # uses: conda-incubator/setup-miniconda@v2
-        # with:
-        #     miniconda-version: "latest"
-        #     auto-update-conda: true
-        #     environment-file: .github/workflows/resources/conda_jb_docs_environment.yml
-        #     activate-environment: conda-build-docs
-        #     python-version: 3.7
-        #     use-only-tar-bz2: true # IMPORTANT: This needs to be set for caching to work properly!
-  
+ 
       - name: Build docs with jupyterbook
         shell: bash -l {0}
         run: |
           VERSION=`python setup.py --version`
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
-          cd jupyterbook
+          cd Jupyterbook
           ./build-book.sh 
 
       # Note deploy key needs the ----BEGIN ... KEY---- lines too
