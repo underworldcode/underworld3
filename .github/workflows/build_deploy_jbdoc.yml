@@ -29,25 +29,23 @@ jobs:
           CACHE_NUMBER: 0
         with:
           path: |
-            /opt/homebrew
-            ~/.cache/pip
+          /opt/homebrew
+          ~/.cache/pip
           key: macos-underworld3-jbdocs
 
       - name: homebrew install dependencies
         run: |
           brew update
           brew install python@3.10
-          brew install petsc 
-          brew install gmsh
           brew install jupyter 
+
+          pip3 install jupyter-book
  
       - name: Build docs with jupyterbook
         shell: bash -l {0}
         run: |
-          VERSION=`python3 setup.py --version`
           which python
           which python3
-          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           cd Jupyterbook
           ./build-book.sh 
 

@@ -7,7 +7,7 @@ on:
   push:       # This is not really a great idea 
     branches:
       - main # (shouldn't happen - protected)
-      - development
+      # - development
 
   # workflow_run:
   #   workflows: ["Conda Deployment"]
@@ -38,9 +38,14 @@ jobs:
         run: |
           brew update
           brew install python@3.10
-          brew install petsc 
+          brew install cython
           brew install gmsh
           brew install jupyter 
+          brew install petsc 
+
+          PETSC_DIR=''
+          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
+
 
           pip3 install mpi4py h5py petsc4py
           pip3 install pdoc3
