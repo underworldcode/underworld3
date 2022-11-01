@@ -12,15 +12,15 @@ import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
 
-res = 0.1
+res = 0.075
 r_o = 1.0
-r_i = 0.5
+r_i = 0.2
 free_slip_upper = True
 
 # -
 
 
-meshball_xyz_tmp = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./meshball.msh")
+meshball_xyz_tmp = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./tmp_meshball.msh")
 
 
 xy_vec = meshball_xyz_tmp.dm.getCoordinates()
@@ -117,10 +117,9 @@ stokes.add_dirichlet_bc((0.0,0.0), "Lower", (0,1))
 #
 # $$ 2\dot\epsilon_{r\theta} = \frac{1}{r} \frac{\partial u_r}{\partial \theta} + \frac{\partial u_\theta}{\partial r} - \frac{u_\theta}{r} $$
 
-# Check it ... 
 stokes.strainrate
 
-
+stokes.stress
 
 # +
 # Create Stokes object (x,y)
@@ -191,7 +190,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pvmesh = pv.read("./meshball.msh")
+    pvmesh = pv.read("./tmp_meshball.msh")
 
     with meshball.access():
         pvmesh.point_data["V"] = uw.function.evaluate(v_soln.sym.dot(v_soln.sym), meshball.data)
@@ -226,8 +225,8 @@ if uw.mpi.size == 1:
         pvmesh, cmap="coolwarm", edge_color="Grey", scalars="P", show_edges=True, use_transparency=False, opacity=0.75
     )
     
-    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.0001, color="Blue")
-    pl.add_arrows(arrow_loc+(0.005,0.005,0.0), arrow_length, mag=0.0001, color="Red")
+    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.00005, color="Blue")
+    pl.add_arrows(arrow_loc+(0.005,0.005,0.0), arrow_length, mag=0.00005, color="Red")
 
     pl.show(cpos="xy")
 # +

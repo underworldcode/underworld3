@@ -35,7 +35,7 @@ cellSize = csize
 
 width = 3.0
 height = 1.0
-radius = 0.05
+radius = 0.1
 
 eta1 = 100
 eta2 = 10
@@ -470,3 +470,5 @@ if uw.mpi.size == 1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+# -
+
