@@ -1,5 +1,9 @@
 # %% [markdown]
-# # Periodic Mesh Example
+# # Periodic Mesh Example (WIP)
+#
+# This is a periodic, Cartesian mesh with the periodic bcs specified using gmsh itself.
+# Compare this to the Cylindrical Stokes example that has periodic coordinates in a mesh
+# that is continuously connected.
 
 # %% [markdown]
 # ## Generate Periodic mesh using GMSH

@@ -1,6 +1,6 @@
-# %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
+# %% [markdown]
+# # Stokes Benchmark SolCx
+#
 # %%
 # options = PETSc.Options()
 # options["help"] = None

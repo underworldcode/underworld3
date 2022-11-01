@@ -1,4 +1,4 @@
-# # Level-set based RT instability problem
+# # Rayleigh-Taylor (Level-set based) in the sphere
 #
 # If there are just two materials, then an efficient way to manage the interface tracking is through a "level-set" which tracks not just the material type, but the distance to the interface. The distance is a continuous quantity that is not degraded quickly by classical advection schemes. A particle-based level set also has advantages because the smooth signed-distance quantity can be projected to the mesh more accurately than a sharp condition function.
 

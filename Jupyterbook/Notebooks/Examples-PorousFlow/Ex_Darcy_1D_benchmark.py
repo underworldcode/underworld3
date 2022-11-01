@@ -13,6 +13,8 @@
 #     name: python3
 # ---
 
+# # Darcy flow (1d) using xy coordinates to define permeability distribution
+
 # +
 from petsc4py import PETSc
 import underworld3 as uw

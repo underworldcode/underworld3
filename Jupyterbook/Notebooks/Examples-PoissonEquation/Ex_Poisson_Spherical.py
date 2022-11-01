@@ -1,3 +1,6 @@
+# %% [markdown]
+# # Steady state diffusion in a hollow sphere
+
 # %%
 import pygmsh, meshio
 

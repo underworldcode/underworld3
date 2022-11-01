@@ -13,6 +13,10 @@
 #     name: python3
 # ---
 
+# # Darcy flow (1d) using swarm variable to define permeability
+#
+#
+
 # +
 from petsc4py import PETSc
 import underworld3 as uw

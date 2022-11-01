@@ -1,4 +1,4 @@
-# # Multiple materials
+# # Rayleigh Taylor - swarm materials
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
 # variable that consists of discrete level values (integers).

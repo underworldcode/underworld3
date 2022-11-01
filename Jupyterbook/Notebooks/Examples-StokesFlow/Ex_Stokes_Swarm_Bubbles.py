@@ -1,4 +1,4 @@
-# # Multiple materials
+# # Multiple materials - Drips and Blobs
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
 # variable that consists of discrete level values (integers).

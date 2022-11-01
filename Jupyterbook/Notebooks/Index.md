@@ -5,6 +5,10 @@ Typically, a markdown (`myst` format) file is used for text that is not going to
  - [Poisson using the generic solver class](Ex_Poisson_Cartesian_Generic)
  - [Using the projection solvers to evaluate functions](Ex_Project_Function)
 
+
+ - [Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.py](Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.py)
+
+
  <!-- - [Example1](Example1)
  - [Example2](Example2)
 

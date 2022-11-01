@@ -1,5 +1,5 @@
 # %% [markdown]
-# # Underworld Groundwater Flow Benchmark
+# # Underworld Groundwater Flow Benchmark 1
 #
 # See the Underworld2 example by Adam Beall.
 #

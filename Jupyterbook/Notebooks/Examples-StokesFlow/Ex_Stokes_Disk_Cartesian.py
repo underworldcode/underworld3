@@ -1,4 +1,4 @@
-# # Cylindrical Stokes
+# # Cylindrical Stokes (Cartesian formulation)
 #
 # Let the mesh deform to create a free surface. If we iterate on this, then it is almost exactly the same as the free-slip boundary condition (though there are potentially instabilities here).
 #
