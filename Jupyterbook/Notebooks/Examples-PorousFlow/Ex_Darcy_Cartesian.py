@@ -31,16 +31,16 @@ v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 # %%
 # Mesh deformation
 
-x = mesh.N.x
-y = mesh.N.y
+x,y = mesh.X
 
 h_fn = 1.0 + x * 0.2 / 4 + 0.04 * sympy.cos(2.0 * np.pi * x) * y
-new_coords = uw.function.evaluate(x * mesh.N.i + h_fn * y * mesh.N.j, mesh.data)
+
+new_coords = mesh.data.copy()
+new_coords[:,1] = uw.function.evaluate( h_fn * y, mesh.data, mesh.N)
 
 mesh.deform_mesh(new_coords=new_coords)
 
 # %%
-
 if uw.mpi.size == 1 and uw.is_notebook:
 
     import numpy as np
@@ -107,10 +107,10 @@ if uw.mpi.size == 1 and uw.is_notebook:
     with mesh.access():
         usol = v_soln.data.copy()
 
-    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.data)
-    pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.fn - (h_fn - y), mesh.data)
-    pvmesh.point_data["K"] = uw.function.evaluate(k, mesh.data)
-    pvmesh.point_data["S"] = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
+    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0], mesh.data, mesh.N)
+    pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.sym[0] - (h_fn - y), mesh.data, mesh.N)
+    pvmesh.point_data["K"] = uw.function.evaluate(k, mesh.data, mesh.N)
+    pvmesh.point_data["S"] = uw.function.evaluate(sympy.log(v_soln.sym.dot(v_soln.sym)), mesh.data, mesh.N)
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v_soln.coords[...]
@@ -164,5 +164,7 @@ print("Max horizontal velocity: {:4f}".format(max_vh))
 print("Max vertical velocity:   {:4f}".format(max_vv))
 print("Max pressure         :   {:4f}".format(max_p))
 
+
+# %%
 
 # %%
