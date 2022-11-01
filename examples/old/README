@@ -1,6 +1,0 @@
-Requirements to run:
-1) Use the 'debug_poisson' branch of underworld3, install with `pip install -e .`
-2) Run the 'debug' branch of petsc4py at underworldcode, install with `pip install .` (no '-e')
-
-Then execute:
-  mpirun -np 4 python pure_py_ss.py ; /usr/local/lib/petsc/bin/petsc_gen_xdmf.py sol.h5

@@ -11,6 +11,8 @@ maths.c
 swarm.c
 .env
 __pycache__
+/__pycache__
+**/__pycache__
 *.so
 examples/.ipynb_checkpoints/*
 examples/PoissonEq/poisson
@@ -22,11 +24,11 @@ examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
 build
 keep
-output*
 old
 underworld3.egg-info/*
 keep/*
-
+*.swp
+nohup.out
 
 # Jupyter Book build relics
 
@@ -36,12 +38,23 @@ Jupyterbook/static_slides
 *slideshows*
 Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
+package-lock.json
 
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
 
 .ipynb_checkpoints
+
+# Autobuilt documentation
+
+uw3_api_docs
+uw3_api_docs/*
+
+# pytest
+
+.pytest_cache/*
+
 
 # Visualisation artefacts
 
@@ -51,4 +64,6 @@ tmp*vtk
 tmp*msh
 
 # Other
-
+*DS_Store
+Jupyterbook/.DS_Store
+Jupyterbook/Notebooks/.DS_Store

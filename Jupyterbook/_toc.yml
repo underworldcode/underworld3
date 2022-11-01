@@ -20,26 +20,83 @@ parts:
       - file: Theory/LinearAlgebra
       - file: Theory/NonLinear
 
+  # - caption: Notebooks
+  #   chapters: 
+  #   - file: Notebooks/Index
 
-
-  - caption: Notebooks
+  - caption: "Notebooks"
     chapters:
-    - file: Notebooks/Index
+    - file: Notebooks/Index.md
+#
+    - file: Notebooks/Examples-PoissonEquation/Readme.md
       sections:
-      - file: Notebooks/Ex_Poisson_Cartesian_Generic
-      - file: Notebooks/Ex_Project_Function
-      
-  #     - file: Notebooks/Ex_Evaluate.py
-  #     - file: Notebooks/Ex_Poisson_Cartesian.py
-  #     - file: Notebooks/Ex_Poisson_Spherical.py
-  #     - file: Notebooks/Ex_Stokes_Cartesian_RT.py
-  #     - file: Notebooks/Ex_Stokes_Cartesian_SolC.py
-  #     - file: Notebooks/Ex_Stokes_Cartesian_SolNL.py
-  #     - file: Notebooks/Ex_Stokes_Cartesian_matField.py
-  #     - file: Notebooks/Ex_Stokes_Spherical.py
-  #     - file: Notebooks/Ex_Stokes_Spherical_WIP.py
-  #     - file: Notebooks/NEx_Stokes_pyvista_WIP.ipynb
+      - file: Notebooks/Examples-PoissonEquation/Ex_Poisson_Gradient_Recovery.py
+      - file: Notebooks/Examples-PoissonEquation/Ex_Poisson_Cartesian_Generic.py
+      - file: Notebooks/Examples-PoissonEquation/Ex_Poisson_Spherical.py
+      - file: Notebooks/Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian-NL.py
+      - file: Notebooks/Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian.py
+      - file: Notebooks/Examples-PoissonEquation/Ex_Poisson_Cartesian.py
 
+    - file: Notebooks/Examples-PorousFlow/Readme.md
+      sections:
+      - file:  Notebooks/Examples-PorousFlow/Ex_Darcy_1D_benchmark.py
+      - file:  Notebooks/Examples-PorousFlow/Ex_Darcy_1D_benchmark-Swarm.py
+      - file:  Notebooks/Examples-PorousFlow/Ex_Darcy_Cartesian.py
+
+    - file: Notebooks/Examples-StokesFlow/Readme.md
+      sections:
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Swarm_Bubbles.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Cartesian_SolNL.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Sinker.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Cartesian_SolC.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Disk_Cartesian.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Disk_CylCoords.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Spherical_FreeSlipBCs.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Swarm_RT_Cartesian.py
+      - file: Notebooks/Examples-StokesFlow/Ex_Stokes_Swarm_RT_Spherical.py
+      - file: Notebooks/Examples-StokesFlow/Ex_WIP_Stokes_Periodic.py
+              
+    - file: Notebooks/Examples-Convection/Readme.md
+      sections:
+      - file: Notebooks/Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.py
+      - file: Notebooks/Examples-Convection/Ex_AdvectionDiffusionSwarm_RotationTest.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_1_SLCN_Cartesian.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_2_SLCN_Cartesian-TdepVisc.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_3_SLCN_Cylindrical-TdepVisc.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_4_SLCN_Cartesian-NL.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_5_SLCN_Cartesian-Yield.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_Cartesian-Swarm.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_Cartesian_ThermoChem.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_Cylinder.py
+      - file: Notebooks/Examples-Convection/Ex_Convection_Disc_InternalHeat.py
+
+    - file: Notebooks/Examples-Sandbox-VEP/Readme.md
+      sections:
+      - file: Notebooks/Examples-Sandbox-VEP/Ex_Shear_Band_Notch_Benchmark.py
+      - file: Notebooks/Examples-Sandbox-VEP/Ex_Shear_Band_Plasticity_PS.py
+      - file: Notebooks/Examples-Sandbox-VEP/Ex_Shear_Band_Plasticity_SS.py
+      - file: Notebooks/Examples-Sandbox-VEP/Ex_Sheared_Layer_Test.py
+
+    - file: Notebooks/Examples-NavierStokes/Readme.md
+      sections:
+      - file: Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_1.py
+      - file: Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_1_ss.py
+      - file: Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_2.py
+      - file: Notebooks/Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere-StreakSwarm.py
+      - file: Notebooks/Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere.py
+      - file: Notebooks/Examples-NavierStokes/Ex_NavierStokesRotationTest.py
+      - file: Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_FreeSlipBCs-Coriolis.py
+      - file: Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis.py
+      - file: Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis_ss.py
+
+    - file: Notebooks/Examples-Utilities/Readme.md
+      sections:
+      - file: Notebooks/Examples-Utilities/Ex-ConstitutiveTensors.py
+      - file: Notebooks/Examples-Utilities/Ex_BCs_from_meshVariables.py
+      - file: Notebooks/Examples-Utilities/Ex_Coordinates.py
+      - file: Notebooks/Examples-Utilities/Ex_Integrals_on_Meshes.py
+      - file: Notebooks/Examples-Utilities/Ex_Projection_Function_Eval.py
+      - file: Notebooks/Examples-Utilities/Ex_Tensor_Variables_etc.py
 
 
   # - caption: Tutorials

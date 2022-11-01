@@ -2,7 +2,7 @@
 title: Underworld 3
 author: Louis Moresi 
 logo: Figures/AuWorldEQ.jpg
-exclude_patterns: ["README.md", "Notes/*", "Scripts/*", "Lectures/*.reveal.md"]
+exclude_patterns: ["README.md", "Notes/*", "Scripts/*", "Lectures/*.reveal.md", "*/WIP/*", "*/output/*", "*/Developers/*"]
 
 latex:
   latex_documents:
