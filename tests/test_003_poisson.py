@@ -1,4 +1,3 @@
-
 import pytest
 import underworld3 as uw
 
@@ -32,7 +31,7 @@ def test_poisson_boxmesh(mesh):
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-    poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=1)
+    poisson.constitutive_model.Parameters.diffusivity = 1
     poisson.f = 0.0
     poisson.add_dirichlet_bc(1.0, "Bottom")
     poisson.add_dirichlet_bc(0.0, "Top")
@@ -45,7 +44,7 @@ def test_poisson_sphere(mesh):
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-    poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=1)
+    poisson.constitutive_model.Parameters.diffusivity = 1
 
     poisson.f = 0.0
     poisson.add_dirichlet_bc(1.0, "Lower")

@@ -1,5 +1,6 @@
 ## This file has constitutive models that can be plugged into the SNES solvers
 
+from typing_extensions import Self
 import sympy
 from sympy import sympify
 from sympy.vector import gradient, divergence
@@ -11,7 +12,7 @@ from typing import NamedTuple, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_SaddlePoint
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint
 import underworld3.timing as timing
 
 
@@ -41,7 +42,11 @@ class Constitutive_Model:
     """
 
     @timing.routine_timer_decorator
-    def __init__(self, dim: int, u_dim: int):
+    def __init__(
+        self,
+        dim: int,
+        u_dim: int,
+    ):
 
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
@@ -54,6 +59,10 @@ class Constitutive_Model:
         self.dim = dim
         self.u_dim = u_dim
         self._solver = None
+
+        self.Parameters = self._Parameters()
+        self.Parameters._solver = None
+        self.Parameters._reset = self._reset
 
         self._material_properties = None
 
@@ -68,36 +77,48 @@ class Constitutive_Model:
 
         super().__init__()
 
-    class Parameters(NamedTuple):
+    class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
         """
 
-        k: Union[float, sympy.Function]
+        def __init__(inner_self, k=1):
+            inner_self._k = k
+            inner_self._solver = None
 
-    @property
-    def material_properties(self):
-        """The material properties corresponding the the values (functions) for
-        the `Parameters`"""
-        return self._material_properties
+        @property
+        def k(inner_self):
+            return inner_self._k
 
-    @material_properties.setter
-    def material_properties(self, properties):
+        @k.setter
+        def k(inner_self, value):
+            inner_self._k = value
+            inner_self._reset()
 
-        if isinstance(properties, self.Parameters):
-            self._material_properties = properties
-        else:
-            name = self.__class__.__name__
-            raise RuntimeError(f"Use {name}.material_properties = {name}.Parameters(...) ")
+        """
+        @property
+        def material_properties(self):
 
-        d = self.dim
-        self._build_c_tensor()
+            return self._material_properties
 
-        if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_SaddlePoint)):
-            self._solver.is_setup = False
+        @material_properties.setter
+        def material_properties(self, properties):
 
-        return
+            if isinstance(properties, self.Parameters):
+                self._material_properties = properties
+            else:
+                name = self.__class__.__name__
+                raise RuntimeError(f"Use {name}.material_properties = {name}.Parameters(...) ")
+
+            d = self.dim
+            self._build_c_tensor()
+
+            if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)):
+                self._solver.is_setup = False
+
+            return
+        """
 
     @property
     def solver(self):
@@ -107,8 +128,9 @@ class Constitutive_Model:
 
     @solver.setter
     def solver(self, solver_object):
-        if isinstance(solver_object, (SNES_Scalar, SNES_Vector, SNES_SaddlePoint)):
+        if isinstance(solver_object, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)):
             self._solver = solver_object
+            self.Parameters._solver = solver_object
             self._solver.is_setup = False
 
     ## Properties on all sub-classes
@@ -159,15 +181,24 @@ class Constitutive_Model:
         if rank == 2:
             flux = c * ddu.T
         else:  # rank==4
-            flux = sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (2, 3))
+            flux = sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (0, 1))
 
         return sympy.Matrix(flux)
+
+    def _reset(self):
+        d = self.dim
+        self._build_c_tensor()
+
+        if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)):
+            self._solver.is_setup = False
+
+        return
 
     def _build_c_tensor(self):
         """Return the identity tensor of appropriate rank (e.g. for projections)"""
 
         d = self.dim
-        self._c = uw.maths.tensor.rank4_identity(d)
+        self._c = self.Parameters.k * uw.maths.tensor.rank4_identity(d)
 
         return
 
@@ -211,11 +242,23 @@ class ViscousFlowModel(Constitutive_Model):
     ---
     """
 
-    class Parameters(NamedTuple):
-        """The viscous flow law relates stresses to velocity gradients through the *viscosity*
-        which is a scalar function of position or a fourth-rank tensor"""
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
 
-        viscosity: Union[float, sympy.Function]
+        def __init__(inner_self, viscosity: Union[float, sympy.Function] = 1):
+            inner_self._viscosity = viscosity
+
+        @property
+        def viscosity(inner_self):
+            return inner_self._viscosity
+
+        @viscosity.setter
+        def viscosity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._viscosity = value
+            inner_self._reset()
 
     def __init__(self, dim):
 
@@ -228,7 +271,7 @@ class ViscousFlowModel(Constitutive_Model):
         """For this constitutive law, we expect just a viscosity function"""
 
         d = self.dim
-        viscosity = self._material_properties.viscosity
+        viscosity = self.Parameters.viscosity
 
         try:
             self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
@@ -249,218 +292,7 @@ class ViscousFlowModel(Constitutive_Model):
         super()._ipython_display_()
 
         ## feedback on this instance
-        display(Latex(r"$\eta = $ " + sympy.sympify(self.material_properties.viscosity)._repr_latex_()))
-
-
-###
-
-
-class ViscousFlowModelCylinder(Constitutive_Model):
-    r"""
-    ```python
-    class ViscousFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    viscous_model = ViscousFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
-
-    where \( \eta \) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
-    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
-
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
-
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
-    ---
-    """
-
-    class Parameters(NamedTuple):
-        """The viscous flow law relates stresses to velocity gradients through the *viscosity*
-        which is a scalar function of position or a fourth-rank tensor"""
-
-        viscosity: Union[float, sympy.Function]
-
-    def __init__(self, R):
-        """dim is dimension, R is the position vector in r, theta"""
-
-        super().__init__(2, 2)
-
-        self.R = R
-
-        return
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        d = self.dim
-        viscosity = self._material_properties.viscosity
-
-        try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError("Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor")
-        return
-
-    def flux(
-        self,
-        ddu: sympy.Matrix = None,
-        ddu_dt: sympy.Matrix = None,
-        u: sympy.Matrix = None,  # may be needed in the case of cylindrical / spherical
-        u_dt: sympy.Matrix = None,
-    ):
-
-        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
-        (always uses the `c` form of the tensor). In general cases, the history of the gradients
-        may be required to evaluate the flux.
-        """
-
-        c = self.c
-        rank = len(c.shape)
-        r, t = self.R
-
-        gradient = sympy.Matrix.zeros(rows=2, cols=2)
-
-        gradient[0, 0] = ddu[0, 0]  # epsilon_rr
-        gradient[1, 1] = u[0] / r + ddu[1, 1] / r
-        gradient[0, 1] = (ddu[1, 0] - u[1] / r + ddu[0, 1] / r) / 2
-        gradient[1, 0] = gradient[0, 1]
-
-        # tensor multiplication
-
-        if rank == 2:
-            flux = c * gradient.T
-        else:  # rank==4
-            flux = sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(c, gradient), (3, 5)), (2, 3))
-
-        return sympy.Matrix(flux)
-
-    def _ipython_display_(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._ipython_display_()
-
-        ## feedback on this instance
-        display(Latex(r"$\eta = $ " + sympy.sympify(self.material_properties.viscosity)._repr_latex_()))
-
-
-###
-
-
-class ViscousFlowModelRotation(Constitutive_Model):  # Unlikely to work / Jacobians need to be wrt rotated coords
-    r"""
-    ```python
-    class ViscousFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    viscous_model = ViscousFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
-
-    where \( \eta \) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
-    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
-
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
-
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
-    ---
-    """
-
-    class Parameters(NamedTuple):
-        """The viscous flow law relates stresses to velocity gradients through the *viscosity*
-        which is a scalar function of position or a fourth-rank tensor"""
-
-        viscosity: Union[float, sympy.Function]
-
-    def __init__(self, Rot):
-        """dim is dimension, R is the position vector in r, theta"""
-
-        super().__init__(2, 2)
-
-        self.Rot = Rot
-
-        return
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        d = self.dim
-        viscosity = self._material_properties.viscosity
-
-        try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError("Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor")
-        return
-
-    def flux(
-        self,
-        ddu: sympy.Matrix = None,
-        ddu_dt: sympy.Matrix = None,
-        u: sympy.Matrix = None,  # may be needed in the case of cylindrical / spherical
-        u_dt: sympy.Matrix = None,
-    ):
-
-        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
-        (always uses the `c` form of the tensor). In general cases, the history of the gradients
-        may be required to evaluate the flux.
-        """
-
-        c = self.c
-        rank = len(c.shape)
-        R = self.Rot
-
-        gradient_xyz = R * ddu * R.T
-
-        # tensor multiplication
-
-        if rank == 2:
-            flux_xyz = c * gradient_xyz.T
-        else:  # rank==4
-            flux_xyz = sympy.tensorcontraction(
-                sympy.tensorcontraction(sympy.tensorproduct(c, gradient_xyz), (3, 5)), (2, 3)
-            )
-
-        flux = sympy.Matrix(flux_xyz)
-
-        return sympy.Matrix(flux)
-
-    def _ipython_display_(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._ipython_display_()
-
-        ## feedback on this instance
-        display(Latex(r"$\eta = $ " + sympy.sympify(self.material_properties.viscosity)._repr_latex_()))
+        display(Latex(r"$\eta = $ " + sympy.sympify(self.Parameters.viscosity)._repr_latex_()))
 
 
 ###
@@ -488,66 +320,26 @@ class DiffusionModel(Constitutive_Model):
     ---
     """
 
-    class Parameters(NamedTuple):
-        """-"""
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
 
-        diffusivity: Union[float, sympy.Function]
+        def __init__(
+            inner_self,
+            diffusivity: Union[float, sympy.Function] = 1,
+        ):
+            inner_self._diffusivity = diffusivity
 
-    def __init__(self, dim):
+        @property
+        def diffusivity(inner_self):
+            return inner_self._diffusivity
 
-        self.u_dim = 1
-        super().__init__(dim, self.u_dim)
-
-        return
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        d = self.dim
-        kappa = self._material_properties.diffusivity
-        self._c = sympy.Matrix.eye(d) * kappa
-
-        return
-
-    def _ipython_display_(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._ipython_display_()
-
-        ## feedback on this instance
-        display(Latex(r"$\kappa = $ " + sympy.sympify(self.material_properties.diffusivity)._repr_latex_()))
-
-        return
-
-
-class DiffusionModelS2(Constitutive_Model):
-    r"""
-    ```python
-    class DiffusionModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    diffusion_model = DiffusionModel(dim)
-    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-    scalar_solver.constititutive_model = diffusion_model
-    ```
-
-    SURFACE OF A SPHERE VERSION
-    $$ q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}  $$
-
-    where \( \kappa \) is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. Access the constitutive model using:
-
-    ```python
-    flux = diffusion_model.flux(gradient_matrix)
-    ```
-    ---
-    """
-
-    class Parameters(NamedTuple):
-        """-"""
-
-        diffusivity: Union[float, sympy.Function]
+        @diffusivity.setter
+        def diffusivity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._diffusivity = value
+            inner_self._reset()
 
     def __init__(self, dim):
 
@@ -560,11 +352,8 @@ class DiffusionModelS2(Constitutive_Model):
         """For this constitutive law, we expect just a diffusivity function"""
 
         d = self.dim
-        lon, lat = self.solver.mesh.X
-        kappa = self._material_properties.diffusivity
-        self._c = 1
-
-        sympy.Matrix.eye(d) * kappa
+        kappa = self.Parameters.diffusivity
+        self._c = sympy.Matrix.eye(d) * kappa
 
         return
 
@@ -574,7 +363,7 @@ class DiffusionModelS2(Constitutive_Model):
         super()._ipython_display_()
 
         ## feedback on this instance
-        display(Latex(r"$\kappa = $ " + sympy.sympify(self.material_properties.diffusivity)._repr_latex_()))
+        display(Latex(r"$\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()))
 
         return
 
@@ -611,16 +400,60 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
     ---
     """
 
-    class Parameters(NamedTuple):
-        """Transversely isotropic rheology -
-        - eta_0: normal viscosity
-        - eta_1: shear viscosity
-        - director: orientation of weak plane
-        See Sharples et al, 2015 for details"""
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
 
-        eta_0: Union[float, sympy.Function]
-        eta_1: Union[float, sympy.Function]
-        director: sympy.Matrix
+        def __init__(
+            inner_self,
+            eta_0: Union[float, sympy.Function] = 1,
+            eta_1: Union[float, sympy.Function] = 1,
+            director: Union[sympy.Matrix, sympy.Function] = sympy.Matrix([0, 0, 1]),
+        ):
+            inner_self._eta_0 = eta_0
+            inner_self._eta_1 = eta_1
+            inner_self._director = director
+            # inner_self.constitutive_model_class = const_model
+
+        ## Note the inefficiency below if we change all these values one after the other
+
+        @property
+        def eta_0(inner_self):
+            return inner_self._eta_0
+
+        @eta_0.setter
+        def eta_0(
+            inner_self,
+            value: Union[float, sympy.Function],
+        ):
+            inner_self._eta_0 = value
+            inner_self._reset()
+
+        @property
+        def eta_1(inner_self):
+            return inner_self._eta_1
+
+        @eta_1.setter
+        def eta_1(
+            inner_self,
+            value: Union[float, sympy.Function],
+        ):
+            inner_self._eta_1 = value
+            inner_self._reset()
+
+        @property
+        def director(inner_self):
+            return inner_self._director
+
+        @director.setter
+        def director(
+            inner_self,
+            value: Union[sympy.Matrix, sympy.Function],
+        ):
+            inner_self._director = value
+            inner_self._reset()
 
     def __init__(self, dim):
 
@@ -637,9 +470,9 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         d = self.dim
         dv = uw.maths.tensor.idxmap[d][0]
 
-        eta_0 = self._material_properties.eta_0
-        eta_1 = self._material_properties.eta_1
-        n = self._material_properties.director
+        eta_0 = self.Parameters.eta_0
+        eta_1 = self.Parameters.eta_1
+        n = self.Parameters.director
 
         Delta = eta_1 - eta_0
 
@@ -670,6 +503,6 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         super()._ipython_display_()
 
         ## feedback on this instance
-        display(Latex(r"$\eta_0 = $ " + sympy.sympify(self.material_properties.eta_0)._repr_latex_()))
-        display(Latex(r"$\eta_1 = $ " + sympy.sympify(self.material_properties.eta_1)._repr_latex_()))
-        display(Latex(r"$\hat{\mathbf{n}} = $ " + sympy.sympify(self.material_properties.director.T)._repr_latex_()))
+        display(Latex(r"$\eta_0 = $ " + sympy.sympify(self.Parameters.eta_0)._repr_latex_()))
+        display(Latex(r"$\eta_1 = $ " + sympy.sympify(self.Parameters.eta_1)._repr_latex_()))
+        display(Latex(r"$\hat{\mathbf{n}} = $ " + sympy.sympify(self.Parameters.director.T)._repr_latex_()))

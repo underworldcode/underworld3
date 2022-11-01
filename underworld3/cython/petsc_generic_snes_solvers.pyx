@@ -2,7 +2,6 @@ from xmlrpc.client import Boolean
 
 import sympy
 from sympy import sympify
-from sympy.vector import gradient, divergence
 
 from typing import Optional
 from petsc4py import PETSc
@@ -61,7 +60,7 @@ class SNES_Scalar:
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
-        self._L = self._u.sym.jacobian(self.mesh.X)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N)
 
         self.bcs = []
         self._constitutive_model = None
@@ -130,19 +129,32 @@ class SNES_Scalar:
         degree = self._u.degree
         mesh = self.mesh
 
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building dm for {self.name}")
+
         if mesh.qdegree < degree: 
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {degree} which is required by the {self.name} solver")
 
         self.dm = mesh.dm.clone()
 
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building FE / quadrature for {self.name}")
+
         # create private variables using standard quadrature order from the mesh
+        
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.is_setup = False
+
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building DS for {self.name}")
+
+        self.dm.createDS()
+
 
         return
 
@@ -223,7 +235,6 @@ class SNES_Scalar:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
-        from sympy.vector import gradient
         import sympy
 
         N = self.mesh.N
@@ -293,12 +304,18 @@ class SNES_Scalar:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -426,7 +443,7 @@ class SNES_Vector:
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_monitor"] = None
-        self.petsc_options["ksp_type"] = "fgmres"
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
@@ -449,7 +466,7 @@ class SNES_Vector:
         self._U = self._u.sym
 
         ## sympy.Matrix - gradient tensor   
-        self._L = self._u.sym.jacobian(self.mesh.X) # This works for vector / vector inputs
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) # This works for vector / vector inputs
 
 
         self.bcs = []
@@ -538,6 +555,7 @@ class SNES_Vector:
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         self.is_setup = False
+        self.dm.createDS()
 
         return
 
@@ -614,7 +632,6 @@ class SNES_Vector:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
-        from sympy.vector import gradient
         import sympy
 
         N = self.mesh.N
@@ -651,10 +668,12 @@ class SNES_Vector:
         # reshape to Matrix form
         # Make hashable (immutable)
 
+        permutation = (0,3,1,2)
+
         self._G0 = sympy.ImmutableMatrix(G0.reshape(dim,dim))
         self._G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
         self._G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(dim*dim,dim))
-        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim,dim*dim))
+        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
         ##################
 
@@ -691,12 +710,18 @@ class SNES_Vector:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -942,8 +967,8 @@ class SNES_Stokes:
         N = mesh.N
   
         ## sympy.Matrix - gradient tensors 
-        self._G = self._p.sym.jacobian(self.mesh.X)
-        self._L = self._u.sym.jacobian(self.mesh.X) 
+        self._G = self._p.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) 
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -976,6 +1001,7 @@ class SNES_Stokes:
             print(f"than {u_degree} which is required by the {self.name} solver")
 
         self.dm   = mesh.dm.clone()
+        self.dm.createDS()
       
         options = PETSc.Options()
         options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
@@ -986,14 +1012,15 @@ class SNES_Stokes:
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+        options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 
         self.is_setup = False
-        self.dm.clearDS()
-        self.dm.createDS()
+
 
         return
 
@@ -1035,6 +1062,7 @@ class SNES_Stokes:
     @property
     def constitutive_model(self):
         return self._constitutive_model
+        
     @constitutive_model.setter
     def constitutive_model(self, model):
         # Check / todo - is the model appropriate for SNES_SaddlePoint solvers ?
@@ -1123,7 +1151,7 @@ class SNES_Stokes:
         cdim = self.mesh.cdim
         N = self.mesh.N
 
-        r = self.mesh.X[0]
+        r = self.mesh.CoordinateSystem.N[0]
 
         # Re-clone the dm before rebuilding everything
         self._build_dm_and_mesh_discretisation() 
@@ -1133,9 +1161,9 @@ class SNES_Stokes:
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0)).reshape(dim)
-        F1  = sympy.Array(self._u_f1).reshape(dim,dim)
-        FP0 = sympy.Array(self._p_f0).reshape(1)
+        F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0))  #.reshape(dim)
+        F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
+        FP0 = sympy.Array(self._p_f0)# .reshape(1)
 
         # JIT compilation needs immutable, matrix input (not arrays)
         u_F0 = sympy.ImmutableDenseMatrix(F0)
@@ -1158,11 +1186,11 @@ class SNES_Stokes:
 
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self._u.sym).reshape(dim)
-        P = sympy.Array(self._p.sym)
+        P = sympy.Array(self._p.sym).reshape(1)
 
-        G0 = sympy.derive_by_array(F0, U)
-        G1 = sympy.derive_by_array(F0, self._L)
-        G2 = sympy.derive_by_array(F1, U)
+        G0 = sympy.derive_by_array(F0, self._u.sym)
+        G1 = sympy.derive_by_array(F0, self._L)  
+        G2 = sympy.derive_by_array(F1, self._u.sym)
         G3 = sympy.derive_by_array(F1, self._L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
@@ -1170,36 +1198,41 @@ class SNES_Stokes:
         # ij k -> KJ I (hence 210)
         # i jk -> J KI (hence 201)
 
-        self._uu_G0 = sympy.ImmutableMatrix(G0)
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(dim*dim,dim))
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(dim*dim,dim*dim))
+        # The indices need to be interleaved, but for symmetric problems
+        # there are lots of symmetries. This means we can find it hard to debug
+        # the required permutation for a non-symmetric problem 
+        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ?
+
+        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
+        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))   
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
         # U/P block (check permutations - hard to validate without a full collection of examples)
 
-        G0 = sympy.derive_by_array(F0, P)
+        G0 = sympy.derive_by_array(F0, self._p.sym)
         G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1, P)
+        G2 = sympy.derive_by_array(F1, self._p.sym)
         G3 = sympy.derive_by_array(F1, self._G)
 
-        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))
-        self._up_G1 = sympy.ImmutableMatrix(G1.reshape(dim,dim))
-        self._up_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim))
-        self._up_G3 = sympy.ImmutableMatrix(G3.reshape(dim*dim,dim))
+        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
+        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim,dim))  # ?
+        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim))  # zeros
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(FP0, U)
+        G0 = sympy.derive_by_array(FP0, self._u.sym)
         G1 = sympy.derive_by_array(FP0, self._L)
-        # G2 = sympy.derive_by_array(FP0, U)
-        # G3 = sympy.derive_by_array(FP0, self._L)
+        # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 ! 
+        # G3 = sympy.derive_by_array(FP1, self._L)
 
-        self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))
-        self._pu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,0,1)).reshape(dim,dim))
+        self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
+        self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
         # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._p.sym).reshape(dim,dim))
         # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
 
@@ -1223,6 +1256,9 @@ class SNES_Stokes:
         # will give incorrect results for non-linear problems.
         # note also that the order here is important.
 
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes: Jacobians complete, now compile", flush=True)
+
         prim_field_list = [self.u, self.p]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
         # create indexes so that we don't rely on indices that can change
@@ -1233,20 +1269,31 @@ class SNES_Stokes:
         for index,fn in enumerate(fns_jacobian):
             i_jac[fn] = index
 
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes: Compilation complete, Now set residuals", flush=True)
+
+
         # set functions 
+
+        self.dm.clearDS()
         self.dm.createDS()
+        
         cdef DS ds = self.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[u_F0]], ext.fns_residual[i_res[u_F1]])
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[p_F0]],                          NULL)
+
+        if self.verbose and uw.mpi.rank==0:
+            print(f"Stokes:                      Now set jacobians", flush=True)
+
         
         # TODO: check if there's a significant performance overhead in passing in 
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
-        PetscDSSetJacobian(              ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobian(              ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobian(              ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
+        PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 1,                                 NULL,                                 NULL, ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0,                                 NULL, ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
         cdef int ind=1
@@ -1255,12 +1302,19 @@ class SNES_Stokes:
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
@@ -1270,15 +1324,17 @@ class SNES_Stokes:
 
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
-        self.dm.setUp()
 
+
+        self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setFromOptions()
-        cdef DM dm = self.dm
-        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
+
+        cdef DM c_dm = self.dm
+        DMPlexSetSNESLocalFEM(c_dm.dm, NULL, NULL, NULL)
 
         # Setup subdms here too.
         # These will be used to copy back/forth SNES solutions
@@ -1349,19 +1405,25 @@ class SNES_Stokes:
         # Copy solution back into user facing variables
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
-                ## print("Copy field {} to user variables".format(name), flush=True)
+                ## print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)
 
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
+                
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
                 # derived from the sub-dm (as opposed to the var.vec local vector), else 
                 # failures can occur. 
+
                 clvec = lvec
                 csdm = sdm
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+
+                ## print(f"{uw.mpi.rank}:{name} has size {var.vec.array.shape} cf {lvec.array.shape}", flush=True)
+
+
                 # Now copy into the user vec.
                 var.vec.array[:] = lvec.array[:]
                 sdm.restoreLocalVec(lvec)
@@ -1454,10 +1516,10 @@ class SNES_SaddlePoint:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    # These two seem to be needed in petsc 3.17
         self.petsc_options["pc_use_amat"] = None                        # These two seem to be needed in petsc 3.17
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
 
@@ -1498,8 +1560,8 @@ class SNES_SaddlePoint:
         N = mesh.N
   
         ## sympy.Matrix - gradient tensors 
-        self._G = self._p.sym.jacobian(self.mesh.X)
-        self._L = self._u.sym.jacobian(self.mesh.X) 
+        self._G = self._p.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) 
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -1539,6 +1601,8 @@ class SNES_SaddlePoint:
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
         options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+        options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
         self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)        
         self.petsc_fe_p.setName("pressure")
         self.petsc_fe_p_id = self.dm.getNumFields()
@@ -1685,6 +1749,8 @@ class SNES_SaddlePoint:
         # residual terms
         self._setup_problem_description()
 
+        ## NOT THIS ONE !!
+
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
         F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0)).reshape(vdim)
@@ -1719,10 +1785,14 @@ class SNES_SaddlePoint:
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
         # Check permutations if vdim, dim are not equal
 
+        ## NOT THIS ONE !!
+
+        permutation = (0,3,1,2)
+
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(vdim,vdim*dim))
         self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(vdim*dim,vdim)) 
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (3,1,2,0)).reshape(vdim*dim,vdim*dim))
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(vdim*dim,vdim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
@@ -1773,6 +1843,7 @@ class SNES_SaddlePoint:
 
         prim_field_list = [self.u, self.p]
         cdef PtrContainer ext = getext(self.mesh, tuple(fns_residual), tuple(fns_jacobian), [x[1] for x in self.bcs], primary_field_list=prim_field_list, verbose=verbose)
+
         # create indexes so that we don't rely on indices that can change
         i_res = {}
         for index,fn in enumerate(fns_residual):
@@ -1803,24 +1874,46 @@ class SNES_SaddlePoint:
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
+        cdef PetscInt c_bd = 0 # return value that we discard
+        cdef PetscDMLabel c_label
+        cdef PetscDMBoundaryConditionType c_bc_type 
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
+            if uw.mpi.rank == 0 and self.verbose:
+                print("Setting bc {} ({})".format(index, bc.type))
+                print(" - components: {}".format(bc.components))
+                print(" - boundary:   {}".format(bc.boundaries))
+                print(" - fn:         {} ".format(bc.fn))
+
             for boundary in bc.boundaries:
-                if self.verbose:
-                    print("Setting bc {} ({})".format(index, bc.type))
-                    print(" - components: {}".format(bc.components))
-                    print(" - boundary:   {}".format(bc.boundaries))
-                    print(" - fn:         {} ".format(bc.fn))
+                label = self.dm.getLabel(boundary)
+                if not label:
+                    if self.verbose == True:
+                        print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    continue
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
                     bc_type = 6
                 else:
                     bc_type = 5
+         
 
-                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
+                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 
+                    0, comps_view.shape[0], <const PetscInt *> &comps_view[0],
+                    <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
+                # labelname = str(boundary).encode('utf8')
+                # DMGetLabel(cdm.dm, labelname, &c_label)
+                # c_bc_type = bc_type
+
+                # DMAddBoundary(cdm.dm, bc_type,  labelname, <DMLabel> c_label, 
+                #         1, <const PetscInt *> &ind, 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], 
+                #         <void (*)()> ext.fns_bcs[index], NULL, NULL, &c_bd);
+
+
         self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)

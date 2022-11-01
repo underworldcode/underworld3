@@ -25,7 +25,8 @@ options = PETSc.Options()
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), 
+                                         cellSize=0.05, qdegree=3)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -69,7 +70,7 @@ darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=1)
+darcy.constitutive_model.Parameters.diffusivity=1
 
 
 # +
@@ -90,7 +91,6 @@ initialPressure = -1.0 * y * max_pressure
 interfaceY = -0.26
 
 
-
 from sympy import Piecewise, ceiling, Abs
 
 k1 = 1.0
@@ -103,16 +103,16 @@ k2 = 1.0e-4
 # -
 
 with swarm.access(material):
-    material.data[swarm.data[:,1] >= interfaceY] = 0
-    
-    material.data[swarm.data[:,1]  < interfaceY] = 1 
+    material.data[swarm.data[:, 1] >= interfaceY] = 0
+
+    material.data[swarm.data[:, 1] < interfaceY] = 1
 
 # +
 mat_k = np.array([k1, k2])
 
 kFn = mat_k[0] * material.sym[0] + mat_k[1] * material.sym[1]
 
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFn)
+darcy.constitutive_model.Parameters.diffusivity=kFn
 
 # +
 # A smooth version
@@ -174,7 +174,6 @@ if uw.mpi.size == 1:
     points[:, 0] = mesh._centroids[:, 0]
     points[:, 1] = mesh._centroids[:, 1]
     point_cloud0 = pv.PolyData(points[::3])
-    
 
     v_vectors = np.zeros((mesh.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh.data)
@@ -190,19 +189,18 @@ if uw.mpi.size == 1:
         initial_step_length=0.001,
         max_step_length=0.01,
     )
-    
+
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
         points[:, 0] = swarm.data[:, 0]
         points[:, 1] = swarm.data[:, 1]
         points[:, 2] = 0.0
-        
+
     point_cloud1 = pv.PolyData(points)
-    
+
     with swarm.access():
         point_cloud1.point_data["M"] = material.data.copy()
         point_cloud1.point_data["K"] = uw.function.evaluate(kFn, swarm.data)
-
 
     pl = pv.Plotter()
 
@@ -219,7 +217,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.95,
     )
-        
+
     pl.add_mesh(pvstream, line_width=10.0)
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.005, opacity=0.75)
@@ -269,6 +267,3 @@ ax1.plot(pressure_analytic, ycoords, linewidth=3, linestyle="--", label="Analyti
 ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle="--", label="Analytic (no gravity)")
 ax1.grid("on")
 ax1.legend()
-# -
-
-

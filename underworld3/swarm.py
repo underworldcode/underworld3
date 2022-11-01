@@ -184,9 +184,9 @@ class SwarmVariable(_api_tools.Stateful):
             raise RuntimeError("Data must be accessed via the swarm `access()` context manager.")
         return self._data
 
-    @property
-    def fn(self):
-        return self._meshVar.fn
+    # @property
+    # def fn(self):
+    #     return self._meshVar.fn
 
     @property
     def sym(self):
@@ -595,14 +595,13 @@ class Swarm(_api_tools.Stateful):
         # ? how does this interact with the particle restoration function ?
 
         V_fn_matrix = self.mesh.vector.to_matrix(V_fn)
-        with self.access():
-            v_at_Vpts = np.zeros_like(self.data)
 
         if corrector == True and not self._X0_uninitialised:
             with self.access(self.particle_coordinates):
+                v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
 
                 corrected_position = X0.data + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
@@ -624,8 +623,11 @@ class Swarm(_api_tools.Stateful):
         # Mid point algorithm (2nd order)
         if order == 2:
             with self.access(self.particle_coordinates):
+
+                v_at_Vpts = np.zeros_like(self.data)
+
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
 
                 mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
 
@@ -636,17 +638,29 @@ class Swarm(_api_tools.Stateful):
 
                 self.data[...] = mid_pt_coords
 
+                # if (uw.mpi.rank == 0):
+                #     print("Updated mid point position", flush=True)
+
                 ## Let the swarm be updated, and then move the rest of the way
 
             with self.access(self.particle_coordinates):
+
+                v_at_Vpts = np.zeros_like(self.data)
+
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
+
+                # if (uw.mpi.rank == 0):
+                #     print("Re-launch from X0", flush=True)
 
                 new_coords = X0.data[...] + delta_t * v_at_Vpts
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
+
+                # if (uw.mpi.rank == 0):
+                #     print("Update", flush=True)
 
                 self.data[...] = new_coords
 

@@ -61,11 +61,12 @@ x, y = meshbox.CoordinateSystem.X
 
 v_soln = uw.discretisation.MeshVariable(r"U", meshbox, meshbox.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable(r"P", meshbox, 1, degree=1)
+m_cont = uw.discretisation.MeshVariable(r"M_c", meshbox, 1, degree=1, continuous=True)
 
 
 swarm = uw.swarm.Swarm(mesh=meshbox)
-material = uw.swarm.IndexSwarmVariable(r"M", swarm, indices=2, proxy_degree=1)
-swarm.populate(fill_param=10)
+material = uw.swarm.IndexSwarmVariable(r"M", swarm, indices=2, proxy_degree=1, proxy_continuous=False)
+swarm.populate(fill_param=3)
 
 
 # +
@@ -117,7 +118,6 @@ if render:
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
 
-
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
@@ -132,7 +132,7 @@ if render:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="M1",
+        scalars="rho",
         use_transparency=False,
         opacity=0.95,
     )
@@ -148,7 +148,7 @@ import sympy
 from sympy import Piecewise
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
 stokes.saddle_preconditioner = 1.0 / viscosity
@@ -170,6 +170,11 @@ stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
 
 
 # -
+
+m_solver = uw.systems.Projection(meshbox, m_cont)
+m_solver.uw_function = material.sym[1]
+m_solver.smoothing = 1.0e-3
+m_solver.solve()
 
 stokes.solve(zero_init_guess=True)
 
@@ -215,6 +220,7 @@ if uw.mpi.size == 1 and render:
 
     pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
     pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+    pvmesh.point_data["M"] = uw.function.evaluate(m_cont.sym[0], meshbox.data)
 
     velocity = np.zeros((meshbox.data.shape[0], 3))
     velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
@@ -250,45 +256,44 @@ if uw.mpi.size == 1 and render:
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
 
-    pl = pv.Plotter(window_size=(500,500))
-
-    # pl.add_mesh(pvmesh, "Gray",  "wireframe")
-    # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
+    pl = pv.Plotter(window_size=(500, 500))
 
     pl.add_mesh(pvstream, opacity=1.0)
-    pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
-
-    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=1, opacity=0.3)
+    pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="M", opacity=0.75)
+    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=3, opacity=0.5)
 
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
 
 
-# -
+# +
+import numpy as np
+import pyvista as pv
+import vtk
+
+pv.global_theme.background = "white"
+pv.global_theme.window_size = [750, 750]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = "pythreejs"
+pv.global_theme.smooth_shading = False
+pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+
+
+pl = pv.Plotter()
 
 
 def plot_mesh(filename):
 
     if uw.mpi.size == 1:
 
-        import numpy as np
-        import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
-        pv.global_theme.smooth_shading = False
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
         meshbox.vtk("tmp_box.vtk")
         pvmesh = pv.read("tmp_box.vtk")
 
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
         pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+        pvmesh.point_data["M"] = uw.function.evaluate(m_cont.sym[0], meshbox.data)
 
         velocity = np.zeros((meshbox.data.shape[0], 3))
         velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
@@ -297,10 +302,10 @@ def plot_mesh(filename):
         pvmesh.point_data["V"] = velocity
 
         # point sources at cell centres
-
-        cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
-        cpoints[:, 0] = meshbox._centroids[::4, 0]
-        cpoints[:, 1] = meshbox._centroids[::4, 1]
+        subsample = 3
+        cpoints = np.zeros((meshbox._centroids[::subsample].shape[0], 3))
+        cpoints[:, 0] = meshbox._centroids[::subsample, 0]
+        cpoints[:, 1] = meshbox._centroids[::subsample, 1]
         cpoint_cloud = pv.PolyData(cpoints)
 
         pvstream = pvmesh.streamlines_from_source(
@@ -324,29 +329,28 @@ def plot_mesh(filename):
         with swarm.access():
             spoint_cloud.point_data["M"] = material.data[...]
 
-        pl = pv.Plotter()
+        pl.clear()
 
         # pl.add_mesh(pvmesh, "Gray",  "wireframe")
         # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
-        pl.add_mesh(pvstream, opacity=0.33)
-        pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
+        pl.add_mesh(pvstream, opacity=1)
+        pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="M", opacity=0.75)
 
         pl.add_points(
-            spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=5, opacity=0.3
+            spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=3, opacity=0.3
         )
 
         pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("V")
-        pl.remove_scalar_bar("rho")
+        # pl.remove_scalar_bar("rho")
 
         pl.screenshot(filename="{}.png".format(filename), window_size=(1250, 1250), return_img=False)
 
-        pl.close()
-        pv.close_all()
-
         return
 
+
+# -
 
 t_step = 0
 
@@ -358,6 +362,7 @@ expt_name = "output/swarm_rt"
 for step in range(0, 200):
 
     stokes.solve(zero_init_guess=False)
+    m_solver.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
 
     # update swarm / swarm variables
@@ -366,10 +371,16 @@ for step in range(0, 200):
         print("Timestep {}, dt {}".format(t_step, delta_t))
 
     # advect swarm
-    swarm.advection(v_soln.fn, delta_t)
+    swarm.advection(v_soln.sym, delta_t)
 
     if t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        
+    # "Checkpoints"
+    savefile = "output/swarm_rt_{}.h5".format(t_step)
+    meshbox.save(savefile)
+    v_soln.save(savefile)
+    meshbox.generate_xdmf(savefile)
 
     t_step += 1
 

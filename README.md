@@ -133,7 +133,7 @@ PIC for composition
 ### Tasks
 
   - [x] Solver options - robust for viscosity contrasts, customisable and quick.
-  - [ ] Investigate generalising context managers. 
+  - [ ] Investigate generalising context managers
   - [ ] ~Proper quadratic mesh interpolations for deformed meshes.~
   - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
   - [ ] Further integrals/reduction operators on fields variables.

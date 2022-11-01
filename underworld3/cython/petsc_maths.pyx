@@ -5,6 +5,8 @@ import underworld3
 import underworld3.timing as timing
 from   underworld3.utilities._jitextension import getext
 
+from petsc4py import PETSc
+
 include "petsc_extras.pxi"
 
 cdef extern from "petsc.h" nogil:
@@ -67,40 +69,44 @@ class Integral:
         elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
+
+        self.dm = self.mesh.dm  # .clone()
+        mesh=self.mesh
+
+        # options = PETSc.Options()
+        # options.setValue("integral_private_petscspace_degree", 2) # for private variables
+        # self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "integral_private_", PETSc.COMM_WORLD,)
+        # self.petsc_fe_u_id = self.dm.getNumFields()
+        # self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+
+        # self.dm.createDS()
+        # self.dm.setUp()
+        # self.dm.createClosureIndex(None)
+        # self.dm.view()
+
+
         cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())
 
         # Pull out vec for variables, and go ahead with the integral
+
+        # self.lvec = self.dm.createLocalVec()
         self.mesh.update_lvec()
-        a_global = self.mesh.dm.getGlobalVec()
-        self.mesh.dm.localToGlobal(self.mesh.lvec, a_global)
+        a_global = self.dm.getGlobalVec()
+        self.dm.localToGlobal(self.mesh.lvec, a_global)
+
         cdef Vec cgvec
         cgvec = a_global
+   
 
-        # # Now, find var with the highest degree. We will then configure the integration 
-        # # to use this variable's quadrature object for all variables. 
-        # # This needs to be double checked.  
-        # deg = 0
-        # for key, var in self.mesh.vars.items():
-        #     if var.degree >= deg:
-        #         deg = var.degree
-        #         var_base = var
-
-        # quad_base = var_base.petsc_fe.getQuadrature()
-        # for fe in [var.petsc_fe for var in self.mesh.vars.values()]:
-        #     fe.setQuadrature(quad_base)
-        
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
-
-        cdef DM dm = self.mesh.dm
-        cdef DS ds = self.mesh.dm.getDS()
-        # Now set callback... note that we set the highest degree var_id (as determined
-        # above) for the second parameter. 
-        ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
-        
+        cdef DM dm = self.dm
+        cdef DS ds = self.dm.getDS()
         cdef PetscScalar val
+
+        # Now set callback... 
+        ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
         ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
-        self.mesh.dm.restoreGlobalVec(a_global)
+
+        self.dm.restoreGlobalVec(a_global)
 
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.

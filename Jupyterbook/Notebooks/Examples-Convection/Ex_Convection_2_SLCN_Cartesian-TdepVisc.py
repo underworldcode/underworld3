@@ -22,10 +22,7 @@ import sympy
 # -
 
 
-meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-    cellSize=1.0 / 32.0, qdegree=3
-)
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, qdegree=3)
 
 
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
@@ -53,22 +50,21 @@ stokes = Stokes(
 log10_delta_eta = 6
 delta_eta = 10**log10_delta_eta
 
-stokes.petsc_options["snes_rtol"] = 1/delta_eta
-stokes.petsc_options["snes_atol"] = 0.01 # Based on how the scaling works
+stokes.petsc_options["snes_rtol"] = 1 / delta_eta
+stokes.petsc_options["snes_atol"] = 0.01  # Based on how the scaling works
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
-stokes.penalty = 0.0 
+stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.penalty = 0.0
 
-stokes.saddle_preconditioner = 1.0 / (viscosity+stokes.penalty)
+stokes.saddle_preconditioner = 1.0 / viscosity 
 
 # Velocity boundary conditions
-stokes.add_dirichlet_bc((0.0,), "Top",   (1,))
+stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-stokes.add_dirichlet_bc((0.0,), "Left",  (0,))
+stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
-
 
 
 # +
@@ -108,7 +104,7 @@ adv_diff.theta = 0.5
 
 import sympy
 
-init_t = 0.9 * (0.05 * sympy.cos(sympy.pi*x) + sympy.cos(0.5*np.pi * y)) + 0.05
+init_t = 0.9 * (0.05 * sympy.cos(sympy.pi * x) + sympy.cos(0.5 * np.pi * y)) + 0.05
 
 adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
@@ -151,7 +147,6 @@ def plot_T_mesh(filename):
         import pyvista as pv
         import vtk
 
-
         meshbox.vtk("tmp_box_mesh.vtk")
         pvmesh = pv.read("tmp_box_mesh.vtk")
 
@@ -188,9 +183,8 @@ def plot_T_mesh(filename):
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
 
-            
         ## PLOTTING
-        
+
         pl.clear()
 
         pl.add_mesh(
@@ -215,6 +209,7 @@ def plot_T_mesh(filename):
 
         pvmesh.clear_data()
         pvmesh.clear_point_data()
+
 
 # -
 
@@ -313,6 +308,3 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     pl.show(cpos="xy")
-# -
-
-

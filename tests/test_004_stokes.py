@@ -42,7 +42,7 @@ def test_stokes_boxmesh(mesh):
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
     stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-    stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+    stokes.constitutive_model.Parameters.viscosity = 1
 
     if mesh.dim == 2:
         stokes.bodyforce = sympy.Matrix([0, x])
@@ -68,7 +68,7 @@ def test_stokes_sphere(mesh):
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
     stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-    stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+    stokes.constitutive_model.Parameters.viscosity = 1
 
     if mesh.dim == 2:
         stokes.bodyforce = sympy.Matrix([0, x])

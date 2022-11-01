@@ -27,6 +27,7 @@ options = PETSc.Options()
 import meshio
 
 meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
+x,y = meshball.X
 # -
 
 
@@ -35,11 +36,17 @@ t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-swarm  = uw.swarm.Swarm(mesh=meshball)
-T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
-X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
+swarm = uw.swarm.Swarm(mesh=meshball)
+T1 = uw.swarm.SwarmVariable(r"T^{(-\Delta t)}", swarm, 1)
+X1 = uw.swarm.SwarmVariable(r"X^{(-\Delta t)}", swarm, 2)
 swarm.populate(fill_param=3)
 
+
+with swarm.access():
+    print(swarm.particle_coordinates.data.shape)
+
+# check that the swarm variable works  as a continuous field as well 
+T1.sym.jacobian(meshball.X)
 
 # +
 # Create adv_diff object
@@ -55,13 +62,17 @@ delta_t = 1.0
 
 
 # +
-adv_diff = uw.systems.AdvDiffusion(
-    meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff"  # not needed if coords is provided
+adv_diff = uw.systems.AdvDiffusionSwarm(
+    meshball, u_Field=t_soln, u_Star_fn=T1.sym, 
+    solver_name="adv_diff_swarms"  # not needed if coords is provided
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
+adv_diff.constitutive_model.Parameters.diffusivity=k
+# -
 
+
+adv_diff._u_star_projector.uw_function
 
 # +
 # Create a density structure / buoyancy force
@@ -100,33 +111,24 @@ init_t = sympy.exp(-30.0 * (meshball.N.x**2 + (meshball.N.y - 0.75) ** 2))
 adv_diff.add_dirichlet_bc(0.0, "Lower")
 adv_diff.add_dirichlet_bc(0.0, "Upper")
 
-# with nswarm.access(nT1):
-#     nT1.data[...] = uw.function.evaluate(init_t, nswarm.particle_coordinates.data).reshape(-1,1)
-
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
+    
+with swarm.access(T1):
+    T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
 
 
 # +
-# We can over-ride the swarm-particle update routine since we can integrate
-# the velocity field by hand.
-
-with adv_diff._nswarm.access():
-    coords0 = adv_diff._nswarm.data.copy()
+# Validation - small timestep
 
 delta_t = 0.0001
+adv_diff.solve(timestep=delta_t)
+# -
 
-n_x = uw.function.evaluate(r * sympy.cos(th - delta_t * theta_dot), coords0)
-n_y = uw.function.evaluate(r * sympy.sin(th - delta_t * theta_dot), coords0)
 
-coords = np.empty_like(coords0)
-coords[:, 0] = n_x
-coords[:, 1] = n_y
-
-# delta_t will be baked in when this is defined ... so re-define it
-adv_diff.solve(timestep=delta_t)  # , coords=coords)
-
+adv_diff.F1
+adv_diff.constitutive_model.flux(adv_diff._L).T
 
 # +
 # check the mesh if in a notebook / serial
@@ -253,22 +255,14 @@ plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
 for step in range(1, 21):
 
-    # This shows how we over-rule the mid-point scheme that is provided
-    # by the adv_diff solver
-
-    with adv_diff._nswarm.access():
-        print(adv_diff._nswarm.data.shape)
-        coords0 = adv_diff._nswarm.data.copy()
-
-        n_x = uw.function.evaluate(r * sympy.cos(th - delta_t * theta_dot), coords0)
-        n_y = uw.function.evaluate(r * sympy.sin(th - delta_t * theta_dot), coords0)
-
-        coords = np.empty_like(coords0)
-        coords[:, 0] = n_x
-        coords[:, 1] = n_y
-
-    # delta_t will be baked in when this is defined ... so re-define it
-    adv_diff.solve(timestep=delta_t, coords=coords)
+    adv_diff.solve(timestep=delta_t) 
+    
+    # Update the swarm vallues
+    with swarm.access(T1):
+        T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+ 
+    # Update the swarm locations
+    swarm.advection(v_soln.sym, delta_t=delta_t) 
 
     # stats then loop
 

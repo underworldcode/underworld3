@@ -27,46 +27,6 @@ import numpy as np
 
 visuals = 1
 
-options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-
-# Is there some way to set the coordinate interpolation function space ?
-# options["coord_dm_default_quadrature_order"] = 2
-
-options["stokes_ksp_rtol"] = 1.0e-3
-# options["stokes_ksp_monitor"] = None
-options["stokes_snes_converged_reason"] = None
-# options["stokes_snes_monitor_short"] = None
-
-# options["stokes_snes_view"]=None
-# options["stokes_snes_test_jacobian"] = None
-
-# options["stokes_snes_max_it"] = 10
-# options["stokes_snes_rtol"] = 1.0e-4
-# options["stokes_snes_atol"] = 1.0e-6
-# options["stokes_pc_type"] = "fieldsplit"
-# options["stokes_pc_fieldsplit_type"] = "schur"
-# options["stokes_pc_fieldsplit_schur_factorization_type"] ="full"
-# options["stokes_pc_fieldsplit_schur_precondition"] = "a11"
-# options["stokes_fieldsplit_velocity_ksp_type"] = "fgmres"
-# options["stokes_fieldsplit_velocity_pc_type"] = "gamg"
-# options["stokes_fieldsplit_pressure_ksp_rtol"] = 1.e-5
-# options["stokes_fieldsplit_pressure_pc_type"] = "gamg"
-
-# Options directed at the poisson solver
-
-# options["poisson_vr_pc_type"]  = "svd"
-options["poisson_vr_ksp_rtol"] = 1.0e-2
-# options["poisson_vr_ksp_monitor_short"] = None
-# options["poisson_vr_snes_type"]  = "fas"
-options["poisson_vr_snes_converged_reason"] = None
-# options["poisson_vr_snes_monitor_short"] = None
-# options["poisson_vr_snes_view"]=None
-options["poisson_vr_snes_rtol"] = 1.0e-2
-options["poisson_vr_snes_atol"] = 1.0e-4
-
 import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
@@ -78,16 +38,15 @@ os.environ["SYMPY_USE_CACHE"] = "no"
 # Build this one by hand
 
 csize_local = res
-cell_size_lower = res * 1.5
+cell_size_lower = res
 cell_size_upper = res
 radius_outer = 1.0
-radius_inner = 0.0
+radius_inner = 0.5
 
 import pygmsh
 import meshio
 
 # Generate local mesh on rank 0
-
 
 if uw.mpi.rank == 0:
 
@@ -97,11 +56,15 @@ if uw.mpi.rank == 0:
         outer = geom.add_circle((0.0, 0.0, 0.0), radius_outer, make_surface=False, mesh_size=cell_size_upper)
 
         if radius_inner > 0.0:
-            inner = geom.add_circle((0.0, 0.0, 0.0), radius_inner, make_surface=False, mesh_size=cell_size_upper)
-            domain = geom.add_circle((0.0, 0.0, 0.0), radius_outer * 1.25, mesh_size=cell_size_upper, holes=[inner])
-            geom.add_physical(inner.curve_loop.curves, label="Centre")
+            inner = geom.add_circle((0.0, 0.0, 0.0), radius_inner, make_surface=False)
+            domain = geom.add_circle(
+                (0.0, 0.0, 0.0), radius_outer * 1.25, mesh_size=cell_size_upper * 1.2, holes=[inner]
+            )
+            geom.add_physical(inner.curve_loop.curves, label="Lower")
             for l in inner.curve_loop.curves:
-                geom.set_transfinite_curve(l, num_nodes=7, mesh_type="Progression", coeff=1.0)
+                geom.set_transfinite_curve(
+                    l, num_nodes=int(40 * radius_inner / radius_outer), mesh_type="Progression", coeff=1.0
+                )
 
         else:
             centre = geom.add_point((0.0, 0.0, 0.0), mesh_size=cell_size_lower)
@@ -124,21 +87,19 @@ if uw.mpi.rank == 0:
 
         geom.generate_mesh(dim=2, verbose=True)
         geom.save_geometry("ignore_celestial.msh")
-        geom.save_geometry("ignore_celestial.vtk")
 
 
-meshball = uw.meshes.MeshFromGmshFile(dim=2, degree=1, filename="ignore_celestial.msh", label_groups=[], simplex=True)
-
+meshball = uw.meshing.Mesh("ignore_celestial.msh", degree=1, simplex=True)
 # -
 
 
-meshball.meshio.remove_lower_dimensional_cells()
-meshball.meshio
+meshball.dm.view()
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
 t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
+
 vr_soln = uw.discretisation.MeshVariable("Vr", meshball, 1, degree=1)
 
 mask = uw.discretisation.MeshVariable("M", meshball, 1, degree=1)
@@ -170,12 +131,15 @@ mask_fn = 0.5 - 0.5 * sympy.tanh(1000.0 * (r_mesh.fn - 1.003))
 i_mask_fn = 0.5 - 0.5 * sympy.tanh(1000.0 * (r_mesh.fn - 0.997))
 sky_mask_fn = 1.0 - mask_fn
 
+
+hw = 1000.0
+mask_o = sympy.exp(-((r_mesh0.sym[0] - radius_outer) ** 2) * hw)
+mask_i = sympy.exp(-((r_mesh0.sym[0] - radius_inner) ** 2) * hw)
+
+
 # Some useful coordinate stuff
 
-x = meshball.N.x
-y = meshball.N.y
-# z = meshball.N.z
-
+x, y = meshball.X
 r = sympy.sqrt(x**2 + y**2)  # cf radius_fn which is 0->1
 th = sympy.atan2(y + 1.0e-5, x + 1.0e-5)
 
@@ -200,7 +164,7 @@ t_init = 0.001 * (sympy.exp(-5.0 * (x**2 + (y - 0.9) ** 2)) + sympy.exp(-10.0 * 
 # -
 
 
-swarm.populate(fill_param=8)
+swarm.populate(fill_param=3)
 
 with swarm.access(sv):
     sv.data[...] = uw.function.evaluate(t_init, swarm.particle_coordinates.data).reshape(-1, 1)
@@ -220,12 +184,13 @@ if visuals and MPI.COMM_WORLD.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
+    meshball.vtk("ignore_celestial.vtk")
     pvmesh = pv.read("ignore_celestial.vtk")
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_init**2, meshball.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_init**2 * mask_fn, meshball.data)
     pvmesh.point_data["T2"] = uw.function.evaluate(sv.fn**2, meshball.data)
     pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
 
@@ -236,17 +201,15 @@ if visuals and MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="DT",
+        scalars="T",
         use_transparency=False,
         opacity=0.5,
-        clim=[-5.0e-9, 5.0e-9],
     )
 
     pl.camera_position = "xy"
 
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")
-# -
 
 
 # +
@@ -280,19 +243,23 @@ vy = vtheta * sympy.cos(th)
 # +
 # Create Stokes object
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, u_degree=2, p_degree=1, solver_name="stokes")
+stokes = Stokes(
+    meshball,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    solver_name="stokes",
+)
 
 # just to test
 stokes.petsc_options["snes_rtol"] = 1.0e-4
-stokes.petsc_options["ksp_rtol"] = 1.0e-2
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-2
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-2
-
-
 # stokes.petsc_options.delValue("snes_monitor_short")
 # stokes.petsc_options.delValue("ksp_monitor")
 
-stokes.viscosity = 0.0 + 1.0 * (mask.fn * 0.9 + 0.1)
+viscosity = 0.0 + 1.0 * (mask.fn * 0.9 + 0.1)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.saddle_preconditioner = 1 / viscosity
+
 stokes.add_dirichlet_bc((0.0, 0.0), "Celestial_Sphere", (0, 1))
 # stokes.add_dirichlet_bc( (0.0, 0.0), "Centre" , (0,1))
 
@@ -300,16 +267,14 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Celestial_Sphere", (0, 1))
 
 
 buoyancy_force = Rayleigh * gravity_fn * t_init * mask_fn
-buoyancy_force -= Rayleigh * 100.0 * v_soln.fn.dot(unit_rvec) * surface_fn
+buoyancy_force -= 1000000.0 * v_soln.fn.dot(unit_rvec) * (mask_o + mask_i)
 
 stokes.bodyforce = unit_rvec * buoyancy_force
-
 
 # Define radial stress (Can't evaluate this with current function tools)
 ur = sympy.Matrix([[unit_rvec.dot(meshball.N.i), unit_rvec.dot(meshball.N.j)]])
 radial_stress = ur * stokes.stress * ur.T
 rs = radial_stress[0, 0]
-# -
 
 
 # +
@@ -322,17 +287,17 @@ rs = radial_stress[0, 0]
 k = 1.0
 h = 0.0
 
-poisson_vr = uw.systems.Poisson(
-    meshball, u_Field=vr_soln, solver_name="poisson_vr", degree=vr_soln.degree, verbose=False
-)
-poisson_vr.k = k
+poisson_vr = uw.systems.Poisson(meshball, u_Field=vr_soln, solver_name="poisson_vr", verbose=False)
+
+poisson_vr.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+poisson_vr.constitutive_model.Parameters.diffusivity=k
 poisson_vr.f = h
 
 # v_r
 vr_fn = v_soln.fn.dot(unit_rvec)
 
 poisson_vr.add_dirichlet_bc(0.0, "Celestial_Sphere")
-poisson_vr.add_dirichlet_bc(0.0, "Centre")
+poisson_vr.add_dirichlet_bc(0.0, "Lower")
 poisson_vr.add_dirichlet_bc(vr_fn, "Upper")
 
 fs_residual = vr_fn * radius_fn
@@ -351,11 +316,11 @@ stokes.solve()
 
 poisson_vr.solve(zero_init_guess=True)
 
-mask_mesh = uw.function.evaluate(mask.fn, meshball.data)
-vr_mesh = uw.function.evaluate(vr_soln.fn, meshball.data)
-err_mesh = uw.function.evaluate(surface_fn * vr_soln.fn, meshball.data)
+mask_mesh = uw.function.evaluate(mask.sym[0], meshball.data)
+vr_mesh = uw.function.evaluate(vr_soln.sym[0] * mask.sym[0], meshball.data)
+err_mesh = uw.function.evaluate(surface_fn * vr_soln.sym[0], meshball.data)
 norm_mesh = uw.function.evaluate(surface_fn, meshball.data)
-t_mesh = uw.function.evaluate(t_soln.fn, meshball.data)
+t_mesh = uw.function.evaluate(t_soln.sym[0] * mask.sym[0], meshball.data)
 
 
 # +
@@ -371,24 +336,22 @@ if visuals and uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 600]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pv.start_xvfb()
-
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    meshball.vtk("ignore_celestial.vtk")
+    pvmesh = pv.read("ignore_celestial.vtk")
 
     with meshball.access():
         usol = stokes.u.data.copy()
         vrsol = vr_soln.data.copy()
-        meshmask = uw.function.evaluate(mask.fn, meshball.data)
 
         # fs_res = uw.function.evaluate(fs_residual, meshball.data)
         print("usol - magnitude {}".format(np.sqrt((usol**2).mean())))
         print("vrsol - magnitude {}".format(np.sqrt((vrsol**2).mean())))
         # print("fs_residual - magnitude {}".format(np.sqrt((fs_res**2).mean())))
 
-    pvmesh.point_data["T"] = t_mesh
+    pvmesh.point_data["T"] = t_mesh * mask_mesh
     pvmesh.point_data["Vr"] = vr_mesh
     pvmesh.point_data["M"] = mask_mesh
     pvmesh.point_data["E"] = err_mesh
@@ -413,15 +376,15 @@ if visuals and uw.mpi.size == 1:
     arrow_length2 = np.zeros((vr_soln.coords.shape[0], 3))
     arrow_length2[:, 0:2] = vrsol * uw.function.evaluate(unit_rvec, vr_soln.coords)
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
+    pl.add_mesh(pvmesh, "LightGrey", "wireframe")
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="T", use_transparency=False, opacity="M"
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-1)
+    pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-1)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)
@@ -609,4 +572,3 @@ meshball.save(savefile)
 v_soln.save(savefile)
 t_soln.save(savefile)
 meshball.generate_xdmf(savefile)
-# -

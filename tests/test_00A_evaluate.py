@@ -29,34 +29,35 @@ def tensor_product(order, val1, val2):
 
 
 def test_non_uw_variable_constant():
-    result = fn.evaluate(sympy.sympify(1.5), coords)
+    mesh = uw.meshing.StructuredQuadBox()
+    result = fn.evaluate(sympy.sympify(1.5), coords, coord_sys=mesh.N)
     assert np.allclose(1.5, result, rtol=1e-05, atol=1e-08)
 
 
 def test_non_uw_variable_linear():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(mesh.r[0], coords)
+    result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N)
     assert np.allclose(x, result, rtol=1e-05, atol=1e-08)
 
 
 def test_non_uw_variable_sine():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(sympy.sin(mesh.r[1]), coords)
+    result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N)
     assert np.allclose(np.sin(y), result, rtol=1e-05, atol=1e-08)
 
 
 def test_single_scalar_variable():
     mesh = uw.meshing.StructuredQuadBox()
-    var = uw.discretisation.MeshVariable(varname="var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
+    var = uw.discretisation.MeshVariable(varname="scalar_var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
     with mesh.access(var):
         var.data[:] = 1.1
-    result = fn.evaluate(var.fn, coords)
+    result = fn.evaluate(var.sym[0], coords)
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
 
 
 def test_single_vector_variable():
     mesh = uw.meshing.StructuredQuadBox()
-    var = uw.discretisation.MeshVariable(varname="var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR)
+    var = uw.discretisation.MeshVariable(varname="vector_var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR)
     with mesh.access(var):
         var.data[:] = (1.1, 1.2)
     result = uw.function.evaluate(var.fn, coords)
@@ -138,7 +139,10 @@ def test_polynomial_mesh_var_degree():
 
     # Test that interpolated variables reproduce exactly polymial function of associated degree.
     for var in vars:
-        result = uw.function.evaluate(var.fn, coords)
+        result = uw.function.evaluate(
+            var.fn,
+            coords,
+        )
         assert np.allclose(tensor_product(var.degree, coords[:, 0], coords[:, 1]), result, rtol=1e-05, atol=1e-08)
 
 
@@ -153,7 +157,7 @@ def test_polynomial_sympy():
     mesh = uw.meshing.StructuredQuadBox()
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(tensor_product(degree, mesh.r[0], mesh.r[1]), coords),
+        uw.function.evaluate(tensor_product(degree, mesh.r[0], mesh.r[1]), coords, coord_sys=mesh.N),
         rtol=1e-05,
         atol=1e-08,
     )

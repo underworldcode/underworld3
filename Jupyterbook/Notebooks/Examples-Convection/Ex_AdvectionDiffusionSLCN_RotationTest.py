@@ -24,7 +24,6 @@ options = PETSc.Options()
 
 
 # +
-import meshio
 
 meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
 # -
@@ -61,7 +60,7 @@ adv_diff = uw.systems.AdvDiffusion(
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
+adv_diff.constitutive_model.Parameters.diffusivity=k
 
 
 # +
@@ -126,7 +125,7 @@ coords[:, 0] = n_x
 coords[:, 1] = n_y
 
 # delta_t will be baked in when this is defined ... so re-define it
-adv_diff.solve(timestep=delta_t)  # , coords=coords)
+adv_diff.solve(timestep=delta_t, coords=coords)
 
 
 # +
@@ -333,7 +332,7 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
     pl.add_points(
-        point_cloud, cmap="coolwarm", scalars="T", render_points_as_spheres=False, point_size=10, opacity=0.66
+        point_cloud, cmap="coolwarm", scalars="dT", render_points_as_spheres=False, point_size=10, opacity=0.66
     )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)

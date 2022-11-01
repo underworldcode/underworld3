@@ -27,10 +27,11 @@ mesh = Annulus(radiusInner=r_i, radiusOuter=r_o, cellSize=cell_size)
 
 t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
-
 # Create Poisson object
 poisson = Poisson(mesh, u_Field=t_soln)
-poisson.k = 1.0
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model.Parameters.diffusivity = 1
+
 poisson.f = f
 
 poisson.petsc_options["snes_rtol"] = 1.0e-6
@@ -39,11 +40,14 @@ poisson.petsc_options.delValue("ksp_rtol")
 
 
 # %%
+mesh.dm.view()
+
+# %%
 import sympy
 
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise((t_i, abs_r < 0.5 * (r_i + r_o)), (t_o, True))
-poisson.add_dirichlet_bc(bc, "All_dm_boundaries")
+poisson.add_dirichlet_bc(bc, ["Lower","Upper"])
 
 # %%
 poisson.solve()
@@ -66,9 +70,9 @@ if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.001):
     raise RuntimeError("Unexpected values encountered.")
 
 # %%
-poisson.k = 1.0 + 0.1 * poisson.u.fn**1.5
+poisson.constitutive_model.Parameters.diffusivity = 1.0 + 0.1 * poisson.u.fn**1.5
 poisson.f = 0.01 * poisson.u.fn**0.5
-poisson.solve(zero_init_guess=False, _force_setup=True)
+poisson.solve(zero_init_guess=False)
 
 # %%
 # Validate
@@ -84,7 +88,7 @@ if MPI.COMM_WORLD.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
     mesh.vtk("mesh_tmp.vtk")
@@ -123,7 +127,8 @@ t_soln_3d = uw.discretisation.MeshVariable("T", mesh_3d, 1, degree=2)
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
-poisson.k = k
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh_3d.dim)
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.f = f
 
 poisson.petsc_options["snes_rtol"] = 1.0e-6
@@ -135,7 +140,7 @@ import sympy
 
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise((t_i, abs_r < 0.5 * (r_i + r_o)), (t_o, True))
-poisson.add_dirichlet_bc(bc, "All_dm_boundaries")
+poisson.add_dirichlet_bc(bc, ["Lower","Upper"])
 
 # %%
 bc
@@ -174,7 +179,7 @@ if MPI.COMM_WORLD.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [500, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
     mesh_3d.vtk("mesh_tmp.vtk")
@@ -190,7 +195,7 @@ if MPI.COMM_WORLD.size == 1:
     pl = pv.Plotter()
 
     pl.add_mesh(
-        clipped, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="DT", use_transparency=False, opacity=1.0
+        clipped, cmap="coolwarm", edge_color="Grey", show_edges=True, scalars="T", use_transparency=False, opacity=1.0
     )
 
     pl.camera_position = "xy"

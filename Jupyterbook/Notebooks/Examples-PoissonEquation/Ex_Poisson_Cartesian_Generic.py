@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.14.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -43,12 +43,16 @@ poisson0.solve()
 # Here is the other way to solve this, using the `Poisson` class which does not much
 # more than add a template for the flux term.
 
+# +
 # Create Poisson object
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
-poisson.k = 1.0
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model.Parameters.diffusivity = 1.0
+
 poisson.f = 0.0
 poisson.add_dirichlet_bc(1.0, "Bottom")
 poisson.add_dirichlet_bc(0.0, "Top")
+# -
 
 # Solve time
 poisson.solve()
@@ -122,4 +126,4 @@ if MPI.COMM_WORLD.size == 1:
 # -
 
 
-t_soln.ijk
+

@@ -64,20 +64,16 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 stokes.add_dirichlet_bc(sol_vel, ["Top", "Bottom"], [0, 1])  # top/bottom: components, function, markers
 stokes.add_dirichlet_bc(sol_vel, ["Left", "Right"], [0, 1])  # left/right: components, function, markers
 
-stokes.petsc_options["ksp_rtol"] = 1.0e-6
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
-# stokes.petsc_options["snes_view"]=None
-# stokes.petsc_options["snes_test_jacobian"] = None
 stokes.petsc_options["snes_rtol"] = 1.0e-5
-# stokes.petsc_options["snes_max_it"] = 1
-# stokes.petsc_options["snes_linesearch_monitor"] = None
+
 
 
 # %%
@@ -98,10 +94,10 @@ alpha_by_two = 2 / r0 - 2
 viscosity = 2 * eta0 * inv2**alpha_by_two
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 stokes.penalty = 0.0
-stokes.saddle_preconditioner = 1.0 / viscosity
 stokes.solve(zero_init_guess=False)
 
 # %%
@@ -117,3 +113,5 @@ if rank == 0:
 
 if not np.allclose(rel_rms_diff, 0.00109, rtol=1.0e-2):
     raise RuntimeError("Solve did not produce expected result.")
+
+# %%

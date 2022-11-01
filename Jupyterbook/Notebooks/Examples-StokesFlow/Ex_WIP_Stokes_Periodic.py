@@ -63,7 +63,7 @@ gmsh.model.setPhysicalName(2, surface, "Elements")
 
 # %%
 gmsh.model.mesh.generate(2)
-gmsh.write("periodicx.msh")
+gmsh.write("tmp_periodicx.msh")
 gmsh.finalize()
 
 # %% [markdown]
@@ -79,7 +79,7 @@ options = PETSc.Options()
 
 
 # %%
-plex = PETSc.DMPlex().createFromFile("periodicx.msh")
+plex = PETSc.DMPlex().createFromFile("tmp_periodicx.msh")
 
 # %%
 for name, tag in boundaries.items():
@@ -118,7 +118,7 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # No slip boundary conditions
 stokes.add_dirichlet_bc((0.5, 0.0), ["Top"], (0, 1))
@@ -172,10 +172,8 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pv.start_xvfb()
-
     # mesh.vtk("ignore_periodic_mesh.vtk")
-    pvmesh = pv.read("periodicx.msh")
+    pvmesh = pv.read("tmp_periodicx.msh")
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 

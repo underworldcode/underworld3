@@ -29,7 +29,7 @@ r_i = 0.5
 elements = 7
 res = 1.0 / elements
 
-Rayleigh = 1.0e6 / (r_o-r_i)**3
+Rayleigh = 1.0e6 / (r_o - r_i) ** 3
 
 offset = 0.5 * res
 
@@ -60,6 +60,8 @@ material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_compone
 swarm.populate(fill_param=2)
 
 
+
+
 with swarm.access(material):
     r = np.sqrt(
         swarm.particle_coordinates.data[:, 0] ** 2
@@ -76,7 +78,7 @@ with swarm.access(material):
 x, y, z = mesh.CoordinateSystem.X
 ra, l1, l2 = mesh.CoordinateSystem.xR
 
-hw = 1000. / res
+hw = 1000.0 / res
 surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
 surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
 
@@ -86,13 +88,18 @@ base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 
 # +
 
-density = sympy.Piecewise( (0.0, material.sym[0] < 0.0), (1.0, True) )
+density = sympy.Piecewise((0.0, material.sym[0] < 0.0), (1.0, True))
 display(density)
 
-viscosity = sympy.Piecewise( (1.0, material.sym[0] < 0.0), (1.0, True) )
+viscosity = sympy.Piecewise((1.0, material.sym[0] < 0.0), (1.0, True))
 display(viscosity)
 
 # -
+
+with swarm.access():
+    print(material.data.max(), material.data.min())
+
+material._meshVar.stats()
 
 if False:
 
@@ -142,6 +149,8 @@ if False:
     # )
 
     pl.show(cpos="xy")
+
+
 # +
 stokes = uw.systems.Stokes(
     mesh,
@@ -157,7 +166,7 @@ stokes.petsc_options["snes_rtol"] = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 
 # buoyancy (magnitude)
 buoyancy = Rayleigh * density * (1 - surface_fn) * (1 - base_fn)
@@ -181,6 +190,8 @@ with mesh.access(meshr):
     )  # cf radius_fn which is 0->1
 
 
+
+
 stokes._setup_terms(verbose=False)
 
 stokes.solve(zero_init_guess=True)
@@ -202,7 +213,6 @@ if uw.mpi.size == 1 and render:
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [1.0, 1.0, 1.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
 
     # pv.start_xvfb()
 
@@ -250,9 +260,8 @@ if uw.mpi.size == 1 and render:
 
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
-        
-    contours = pvmesh.contour(isosurfaces=[0.0], scalars="M")
 
+    contours = pvmesh.contour(isosurfaces=[0.0], scalars="M")
 
     pl = pv.Plotter(window_size=(1000, 1000))
 
@@ -261,7 +270,7 @@ if uw.mpi.size == 1 and render:
 
     pl.add_mesh(pvstream, opacity=1.0)
     # pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
-   
+
     pl.add_mesh(contours, opacity=0.75, color="Yellow")
 
     # pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.3)
@@ -281,16 +290,15 @@ pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
 pl = pv.Plotter()
 
+
 def plot_mesh(filename):
 
     if uw.mpi.size != 1:
         return
-    
 
     import numpy as np
     import pyvista as pv
     import vtk
-
 
     mesh.vtk("tmp_box.vtk")
     pvmesh = pv.read("tmp_box.vtk")
@@ -335,11 +343,10 @@ def plot_mesh(filename):
 
     contours = pvmesh.contour(isosurfaces=[0.0], scalars="Mat")
 
-
     ## Plotting into existing pl (memory leak in pyvista)
     pl.clear()
 
-    pl.add_mesh(pvmesh, "Gray",  "wireframe")
+    pl.add_mesh(pvmesh, "Gray", "wireframe")
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
     pl.add_mesh(pvstream, opacity=0.33)
@@ -351,15 +358,16 @@ def plot_mesh(filename):
 
     pl.add_mesh(contours, opacity=0.75, color="Yellow")
 
-
     # pl.remove_scalar_bar("Mat")
     pl.remove_scalar_bar("V")
     # pl.remove_scalar_bar("rho")
-    
-    pl.camera_position = 'xz'
+
+    pl.camera_position = "xz"
     pl.screenshot(filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False)
 
     return
+
+
 # -
 
 t_step = 0
@@ -380,10 +388,15 @@ for step in range(0, 200):
         print("Timestep {}, dt {}".format(t_step, delta_t))
 
     # advect swarm
-    swarm.advection(v_soln.fn, delta_t)
+    swarm.advection(v_soln.sym, delta_t)
 
     if t_step < 10 or t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        
+        savefile = "output/swarm_rt_{}.h5".format(t_step)
+        mesh.save(savefile)
+        v_soln.save(savefile)
+        mesh.generate_xdmf(savefile)
 
     t_step += 1
 
@@ -394,5 +407,7 @@ savefile = "output/swarm_rt.h5".format(step)
 mesh.save(savefile)
 v_soln.save(savefile)
 mesh.generate_xdmf(savefile)
+
+material
 
 

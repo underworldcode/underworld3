@@ -110,7 +110,8 @@ stokes = Stokes(
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.viscosity = 1.0
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
@@ -386,4 +387,3 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
-# -

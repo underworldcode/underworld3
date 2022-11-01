@@ -20,15 +20,14 @@ import numpy as np
 import sympy
 
 
-
 # +
 # Parameters
 
 r_o = 1.0
 r_i = 0.5
-res = 1/24
+res = 1 / 24
 
-Rayleigh = 1.0e6 / (r_o-r_i)**3 
+Rayleigh = 1.0e6 / (r_o - r_i) ** 3
 
 log10_delta_eta = 4
 
@@ -47,11 +46,13 @@ pv.global_theme.smooth_shading = True
 
 # +
 meshdisc = uw.meshing.Annulus(
-    radiusOuter=r_o, radiusInner=r_i,
-    cellSize=float(res), qdegree=3,
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=float(res),
+    qdegree=3,
 )
 
-# 
+#
 meshdisc.vtk("tmp_ann_mesh.vtk")
 
 # -
@@ -101,25 +102,24 @@ stokes = Stokes(
 # T dependent visc
 delta_eta = 10**log10_delta_eta
 
-stokes.petsc_options["snes_rtol"] = 1/delta_eta
+stokes.petsc_options["snes_rtol"] = 1 / delta_eta
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshdisc.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
-stokes.penalty = 0.0 
+stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.penalty = 0.0
 
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 # Velocity boundary conditions
-stokes.add_dirichlet_bc((0.0,0.0), "Upper", (0,1))
+stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
 # stokes.add_dirichlet_bc((0.0,0.0), "Lower", (0,1))
 
 # Buoyancy force RHS plus free slip surface enforcement
-buoyancy_force = Rayleigh * t_soln.sym[0] * unit_rvec * (1.0-base_fn)
-penalty_terms  = 10000000 * free_slip_penalty_lower
+buoyancy_force = Rayleigh * t_soln.sym[0] * unit_rvec * (1.0 - base_fn)
+penalty_terms = 10000000 * free_slip_penalty_lower
 
 stokes.bodyforce = buoyancy_force - penalty_terms
-
 
 
 # +
@@ -147,7 +147,7 @@ adv_diff.theta = 0.5
 
 import sympy
 
-init_t = (0.9 + 0.05 * (sympy.cos(sympy.pi*th/2)) * sympy.cos(0.5*np.pi * (ra-r_i)/(r_o-r_i)))
+init_t = 0.9 + 0.05 * (sympy.cos(sympy.pi * th / 2)) * sympy.cos(0.5 * np.pi * (ra - r_i) / (r_o - r_i))
 
 adv_diff.add_dirichlet_bc(1.0, "Lower")
 adv_diff.add_dirichlet_bc(0.0, "Upper")
@@ -158,9 +158,7 @@ with meshdisc.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(init_t, t_soln.coords).reshape(-1, 1)
 
 with meshdisc.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2), meshdisc.data
-    )  # cf radius_fn which is 0->1
+    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshdisc.data)  # cf radius_fn which is 0->1
 # -
 
 # check the stokes solve is set up and that it converges
@@ -187,9 +185,9 @@ if uw.mpi.size == 1:
     velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshdisc.data)
 
     velocity_0s = np.zeros((meshdisc.data.shape[0], 3))
-    velocity_0s[:, 0] = meshdisc.data[:,0]
-    velocity_0s[:, 1] = meshdisc.data[:,1]
-    
+    velocity_0s[:, 0] = meshdisc.data[:, 0]
+    velocity_0s[:, 1] = meshdisc.data[:, 1]
+
     pvmesh.point_data["V"] = velocity
 
     points = np.zeros((t_soln.coords.shape[0], 3))
@@ -222,10 +220,10 @@ if uw.mpi.size == 1:
     )
 
     pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshdisc.data)
-    
-    pl = pv.Plotter(window_size=(750,750))
 
-    pl.add_mesh(pvmesh,'Gray', 'wireframe')
+    pl = pv.Plotter(window_size=(750, 750))
+
+    pl.add_mesh(pvmesh, "Gray", "wireframe")
 
     # pl.add_mesh(
     #     pvmesh, cmap="coolwarm", edge_color="Black",
@@ -240,10 +238,6 @@ if uw.mpi.size == 1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-
-
-
-# -
 
 
 # +
@@ -436,6 +430,3 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     pl.show(cpos="xy")
-# -
-
-

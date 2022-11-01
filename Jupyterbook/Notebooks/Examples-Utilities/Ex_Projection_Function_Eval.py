@@ -30,17 +30,28 @@ from underworld3.meshing import UnstructuredSimplexBox
 
 meshbox = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
 
+import meshio
+
+mesh2 = meshio.read(filename="../Examples-StokesFlow/tmp_ball.vtk")
+meshio.write(filename="tmp_ball.msh", mesh=mesh2)
+
 # +
 import sympy
 
 # Some useful coordinate stuff
 
-x = meshbox.N.x
-y = meshbox.N.y
-z = meshbox.N.z
+x, y = meshbox.X
 # -
 
+meshbox.dm.createDS()
+
+
 s_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=2)
+
+s_soln._set_vec(s_soln._available)
+
+meshbox.dm.getNumFields()
+
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 
 s_fn = sympy.cos(5.0 * sympy.pi * x) * sympy.cos(5.0 * sympy.pi * y)
@@ -58,9 +69,13 @@ swarm.populate(fill_param=3)
 # -
 
 
+meshbox.dm.getNumFields()
+
+
 scalar_projection = uw.systems.Projection(meshbox, s_soln)
 scalar_projection.uw_function = s_values.sym
 scalar_projection.smoothing = 1.0e-6
+
 
 # +
 vector_projection = uw.systems.Vector_Projection(meshbox, v_soln)
@@ -75,6 +90,8 @@ vector_projection.add_dirichlet_bc(v_fn, "Right", (0, 1))
 vector_projection.add_dirichlet_bc(v_fn, "Top", (0, 1))
 vector_projection.add_dirichlet_bc(v_fn, "Bottom", (0, 1))
 # -
+
+s_soln._lvec is None
 
 with swarm.access(s_values, v_values, iv_values):
     s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data)

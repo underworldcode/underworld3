@@ -1,4 +1,4 @@
-# # Multiple materials
+# # Examples with General Mesh variable manipulation
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
 # variable that consists of discrete level values (integers).
@@ -23,7 +23,7 @@ import sympy
 
 # -
 
-meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 100.0)
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
 meshbox.dm.view()
 
 # +
@@ -31,8 +31,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x = meshbox.N.x
-y = meshbox.N.y
+x,y = meshbox.CoordinateSystem.X
 # -
 
 
@@ -40,7 +39,7 @@ v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
 
 
-sympy.diff(v_soln.fn, x)
+sympy.diff(v_soln.sym, x)
 
 swarm = uw.swarm.Swarm(mesh=meshbox)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
@@ -59,28 +58,30 @@ with swarm.access(material):
         material.data[inside] = m
 
 
-material.f
 
-sympy.derive_by_array(material.f, meshbox.X)
 
-material.f.jacobian(meshbox.X).T
+material.sym.diff(meshbox.CoordinateSystem.X)
 
-sympy.derive_by_array(v_soln.sym, meshbox.X)
+material.sym.jacobian(meshbox.X).T
+
+meshbox.vector.jacobian(material.sym).T
+
+v_soln.sym.jacobian(meshbox.CoordinateSystem.X)
 
 mat_density = np.array([1, 10, 100, 1000])
 density = (
-    mat_density[0] * material.f[0]
-    + mat_density[1] * material.f[1]
-    + material.f[2] * mat_density[2]
-    + mat_density[3] * material.f[3]
+      mat_density[0] * material.sym[0]
+    + mat_density[1] * material.sym[1]
+    + mat_density[2] * material.sym[2] 
+    + mat_density[3] * material.sym[3]
 )
 
 mat_viscosity = np.array([1, 10, 100, 1000])
 viscosity = (
-    mat_viscosity[0] * material.f[0]
-    + mat_viscosity[1] * material.f[1]
-    + mat_viscosity[2] * material.f[2]
-    + mat_viscosity[3] * material.f[3]
+      mat_viscosity[0] * material.sym[0]
+    + mat_viscosity[1] * material.sym[1]
+    + mat_viscosity[2] * material.sym[2]
+    + mat_viscosity[3] * material.sym[3]
 )
 
 # +
@@ -107,10 +108,10 @@ with swarm.access():
 point_cloud = pv.PolyData(points)
 
 with meshbox.access():
-    pvmesh.point_data["M0"] = uw.function.evaluate(material.f[0], meshbox.data)
-    pvmesh.point_data["M1"] = uw.function.evaluate(material.f[1], meshbox.data)
-    pvmesh.point_data["M2"] = uw.function.evaluate(material.f[2], meshbox.data)
-    pvmesh.point_data["M3"] = uw.function.evaluate(material.f[3], meshbox.data)
+    pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.data)
+    pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
+    pvmesh.point_data["M2"] = uw.function.evaluate(material.sym[2], meshbox.data)
+    pvmesh.point_data["M3"] = uw.function.evaluate(material.sym[3], meshbox.data)
     pvmesh.point_data["M"] = (
         1.0 * pvmesh.point_data["M1"] + 2.0 * pvmesh.point_data["M2"] + 3.0 * pvmesh.point_data["M3"]
     )
@@ -455,4 +456,3 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
-# -

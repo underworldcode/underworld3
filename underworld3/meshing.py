@@ -18,6 +18,7 @@ def UnstructuredSimplexBox(
     degree: int = 1,
     qdegree: int = 2,
     regular: bool = False,
+    filename=None,
 ):
 
     """
@@ -73,7 +74,9 @@ def UnstructuredSimplexBox(
         gmsh.model.setPhysicalName(2, surface, "Elements")
 
         if regular:
-            gmsh.model.mesh.set_transfinite_surface(surface, cornerTags=[p1, p2, p3, p4])
+            gmsh.model.mesh.set_transfinite_surface(
+                surface, cornerTags=[p1, p2, p3, p4]
+            )
 
     else:
 
@@ -137,6 +140,8 @@ def UnstructuredSimplexBox(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(dim)
         gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
         gmsh.finalize()
         plex = PETSc.DMPlex().createFromFile(fp.name)
 
@@ -151,7 +156,13 @@ def UnstructuredSimplexBox(
 
     plex.removeLabel("Face Sets")
 
-    return Mesh(plex, degree=degree, qdegree=qdegree, coordinate_system_type=CoordinateSystemType.CARTESIAN)
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        filename=filename,
+    )
 
 
 def StructuredQuadBox(
@@ -160,6 +171,7 @@ def StructuredQuadBox(
     maxCoords: Optional[Tuple[float, float, float]] = None,
     degree: int = 1,
     qdegree: int = 2,
+    filename=None,
 ):
 
     """
@@ -225,11 +237,21 @@ def StructuredQuadBox(
 
         nx, ny = elementRes
 
-        gmsh.model.mesh.set_transfinite_curve(tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(tag=l2, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(tag=l3, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(tag=l4, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_surface(tag=surface, arrangement="Left", cornerTags=[p1, p2, p3, p4])
+        gmsh.model.mesh.set_transfinite_curve(
+            tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            tag=l2, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            tag=l3, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            tag=l4, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=surface, arrangement="Left", cornerTags=[p1, p2, p3, p4]
+        )
         gmsh.model.mesh.set_recombine(2, surface)
 
     else:
@@ -284,25 +306,61 @@ def StructuredQuadBox(
 
         nx, ny, nz = elementRes
 
-        gmsh.model.mesh.set_transfinite_curve(l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l2, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l3, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l4, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l5, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l6, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l8, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l9, numNodes=nz + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l10, numNodes=nz + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l11, numNodes=nz + 1, meshType="Progression", coef=1.0)
-        gmsh.model.mesh.set_transfinite_curve(l12, numNodes=nz + 1, meshType="Progression", coef=1.0)
+        gmsh.model.mesh.set_transfinite_curve(
+            l1, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l2, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l3, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l4, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l5, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l6, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l7, numNodes=nx + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l8, numNodes=ny + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l9, numNodes=nz + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l10, numNodes=nz + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l11, numNodes=nz + 1, meshType="Progression", coef=1.0
+        )
+        gmsh.model.mesh.set_transfinite_curve(
+            l12, numNodes=nz + 1, meshType="Progression", coef=1.0
+        )
 
-        gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1, p2, p4, p3])
-        gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p5, p6, p8, p7])
-        gmsh.model.mesh.set_transfinite_surface(tag=front, arrangement="Left", cornerTags=[p1, p2, p6, p5])
-        gmsh.model.mesh.set_transfinite_surface(tag=back, arrangement="Left", cornerTags=[p3, p4, p8, p7])
-        gmsh.model.mesh.set_transfinite_surface(tag=right, arrangement="Left", cornerTags=[p2, p6, p8, p4])
-        gmsh.model.mesh.set_transfinite_surface(tag=left, arrangement="Left", cornerTags=[p5, p1, p3, p7])
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=bottom, arrangement="Left", cornerTags=[p1, p2, p4, p3]
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=top, arrangement="Left", cornerTags=[p5, p6, p8, p7]
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=front, arrangement="Left", cornerTags=[p1, p2, p6, p5]
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=back, arrangement="Left", cornerTags=[p3, p4, p8, p7]
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=right, arrangement="Left", cornerTags=[p2, p6, p8, p4]
+        )
+        gmsh.model.mesh.set_transfinite_surface(
+            tag=left, arrangement="Left", cornerTags=[p5, p1, p3, p7]
+        )
 
         gmsh.model.mesh.set_recombine(2, front)
         gmsh.model.mesh.set_recombine(2, back)
@@ -311,7 +369,9 @@ def StructuredQuadBox(
         gmsh.model.mesh.set_recombine(2, right)
         gmsh.model.mesh.set_recombine(2, left)
 
-        gmsh.model.mesh.set_transfinite_volume(volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7])
+        gmsh.model.mesh.set_transfinite_volume(
+            volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7]
+        )
 
         # Add Physical groups
         for name, tag in boundaries.items():
@@ -325,6 +385,8 @@ def StructuredQuadBox(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(dim)
         gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
         gmsh.finalize()
         plex = PETSc.DMPlex().createFromFile(fp.name)
 
@@ -339,7 +401,13 @@ def StructuredQuadBox(
 
     plex.removeLabel("Face Sets")
 
-    return Mesh(plex, degree=degree, qdegree=qdegree, coordinate_system_type=CoordinateSystemType.CARTESIAN)
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        filename=filename,
+    )
 
 
 def SphericalShell(
@@ -348,6 +416,7 @@ def SphericalShell(
     cellSize: float = 0.1,
     degree: int = 1,
     qdegree: int = 2,
+    filename=None,
 ):
 
     boundaries = {"Lower": 1, "Upper": 2}
@@ -366,7 +435,9 @@ def SphericalShell(
 
     if radiusInner > 0.0:
         ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
-        gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
+        gmsh.model.occ.cut(
+            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
+        )
 
     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
     gmsh.model.occ.synchronize()
@@ -376,16 +447,22 @@ def SphericalShell(
 
     if radiusInner > 0.0:
         outerSurface, innerSurface = surfaces
-        gmsh.model.addPhysicalGroup(innerSurface[0], [innerSurface[1]], boundaries["Lower"])
+        gmsh.model.addPhysicalGroup(
+            innerSurface[0], [innerSurface[1]], boundaries["Lower"]
+        )
         gmsh.model.setPhysicalName(innerSurface[1], boundaries["Lower"], "Lower")
-        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], boundaries["Upper"])
+        gmsh.model.addPhysicalGroup(
+            outerSurface[0], [outerSurface[1]], boundaries["Upper"]
+        )
         gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
         gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
         gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
 
     else:
         outerSurface = surfaces[0]
-        gmsh.model.addPhysicalGroup(outerSurface[0], [outerSurface[1]], boundaries["Upper"])
+        gmsh.model.addPhysicalGroup(
+            outerSurface[0], [outerSurface[1]], boundaries["Upper"]
+        )
         gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
         gmsh.model.addPhysicalGroup(volume[0], [volume[1]], volume[1])
         gmsh.model.setPhysicalName(volume[1], volume[1], "Elements")
@@ -398,6 +475,8 @@ def SphericalShell(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(3)
         gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
         gmsh.finalize()
         plex = PETSc.DMPlex().createFromFile(fp.name)
 
@@ -424,7 +503,13 @@ def SphericalShell(
 
     plex.removeLabel("Vertex Sets")
 
-    return Mesh(plex, degree=degree, qdegree=qdegree, coordinate_system_type=CoordinateSystemType.SPHERICAL)
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        filename=filename,
+    )
 
 
 def Annulus(
@@ -434,6 +519,7 @@ def Annulus(
     centre: bool = False,
     degree: int = 1,
     qdegree: int = 2,
+    filename=None,
 ):
 
     boundaries = {"Lower": 1, "Upper": 2}
@@ -467,6 +553,8 @@ def Annulus(
     c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
     c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
 
+    # l1 = gmsh.model.geo.add_line(p5, p4)
+
     cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
 
     loops = [cl2] + loops
@@ -474,19 +562,16 @@ def Annulus(
     s = gmsh.model.geo.add_plane_surface(loops)
     gmsh.model.geo.synchronize()
     gmsh.model.mesh.embed(0, [p1], 2, s)
+    # gmsh.model.mesh.embed(1, [l1], 2, s)
 
     if radiusInner > 0.0:
         gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"], name="Lower")
-        # gmsh.model.setPhysicalName(1, boundaries["Lower"], "Lower")
     else:
         gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"], name="Centre")
-        # gmsh.model.setPhysicalName( 0, vertices["Centre"], "Centre")
 
     gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries["Upper"], name="Upper")
-    # gmsh.model.setPhysicalName(1, boundaries["Upper"], "Upper")
 
     gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
-    # gmsh.model.setPhysicalName(2, s, "Elements")
 
     gmsh.model.geo.synchronize()
 
@@ -494,8 +579,8 @@ def Annulus(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(2)
         gmsh.write(fp.name)
-        gmsh.write("tmp.msh")
-
+        if filename:
+            gmsh.write(filename)
         gmsh.finalize()
         plex = PETSc.DMPlex().createFromFile(fp.name)
 
@@ -521,7 +606,13 @@ def Annulus(
 
     plex.removeLabel("Vertex Sets")
 
-    return Mesh(plex, degree=degree, qdegree=qdegree, coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D)
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        filename=filename,
+    )
 
 
 def CubedSphere(
@@ -531,6 +622,7 @@ def CubedSphere(
     degree: int = 1,
     qdegree: int = 2,
     simplex: bool = False,
+    filename=None,
 ):
 
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
@@ -596,11 +688,21 @@ def CubedSphere(
     gmsh.model.geo.addVolume([1], tag=1)
 
     # Make copies
-    gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi / 2.0)
-    gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi)
-    gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0 * np.pi / 2.0)
-    gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, np.pi / 2.0)
-    gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -np.pi / 2.0)
+    gmsh.model.geo.rotate(
+        gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi / 2.0
+    )
+    gmsh.model.geo.rotate(
+        gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi
+    )
+    gmsh.model.geo.rotate(
+        gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0 * np.pi / 2.0
+    )
+    gmsh.model.geo.rotate(
+        gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, np.pi / 2.0
+    )
+    gmsh.model.geo.rotate(
+        gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -np.pi / 2.0
+    )
 
     gmsh.model.geo.synchronize()
 
@@ -628,6 +730,8 @@ def CubedSphere(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(3)
         gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
         gmsh.finalize()
         plex = PETSc.DMPlex().createFromFile(fp.name)
 
@@ -647,4 +751,5 @@ def CubedSphere(
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        filename=filename,
     )

@@ -3,7 +3,7 @@
 
 [project]
 name = "Underworld3"
-version = "0.3"
+version = "0.4"
 authors = [
   { name="Prof Diablo", email="diablo@underworldcode.org" },
 ]

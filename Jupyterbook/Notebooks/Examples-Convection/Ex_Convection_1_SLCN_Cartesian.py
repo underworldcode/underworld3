@@ -88,7 +88,7 @@ stokes = Stokes(
 
 viscosity = 1
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 # Velocity boundary conditions

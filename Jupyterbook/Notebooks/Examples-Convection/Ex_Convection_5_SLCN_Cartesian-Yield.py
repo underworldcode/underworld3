@@ -1,8 +1,8 @@
 # # Non-linear viscosity convection, Cartesian domain (benchmark)
 #
-# This is a convection example with a yield stress but no strain softening. This can be one of the more challenging problems from a solver point of view because the structure of the non-linear response does not get locked into the solution by localisation. 
+# This is a convection example with a yield stress but no strain softening. This can be one of the more challenging problems from a solver point of view because the structure of the non-linear response does not get locked into the solution by localisation.
 #
-# This example demonstrates that the `sympy.Piecewise` description of the viscosity upon yielding is differentiable and can be used to construct Jacobians. 
+# This example demonstrates that the `sympy.Piecewise` description of the viscosity upon yielding is differentiable and can be used to construct Jacobians.
 
 # +
 import petsc4py
@@ -17,10 +17,7 @@ import sympy
 
 # -
 
-meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-    cellSize=1.0 / 24.0, qdegree=3
-)
+meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24.0, qdegree=3)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
@@ -30,9 +27,6 @@ t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3)
 
 visc = uw.discretisation.MeshVariable(r"\eta(\dot\varepsilon)", meshbox, 1, degree=2)
 tau_inv = uw.discretisation.MeshVariable(r"|\tau|", meshbox, 1, degree=2)
-# -
-
-
 
 
 # +
@@ -55,9 +49,9 @@ delta_eta = 1.0e6
 
 viscosity_L = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_L)
+stokes.constitutive_model.Parameters.viscosity=viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.0 
+stokes.penalty = 0.0
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
@@ -86,13 +80,14 @@ k = 1.0
 h = 0.0
 
 adv_diff = uw.systems.AdvDiffusion(
-    meshbox, u_Field=t_soln, 
-    V_Field=v_soln, 
+    meshbox,
+    u_Field=t_soln,
+    V_Field=v_soln,
     solver_name="adv_diff",
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
+adv_diff.constitutive_model.Parameters.diffusivity=k
 
 adv_diff.theta = 0.5
 
@@ -101,11 +96,13 @@ adv_diff.theta = 0.5
 # Create scalar function evaluators that we can use to obtain viscosity / stress
 
 viscosity_evaluation = uw.systems.Projection(meshbox, visc)
-viscosity_evaluation.uw_function = (0.1 + 10.0 / (1.0 + stokes._Einv2)) # stokes.constitutive_model.material_properties.viscosity
+viscosity_evaluation.uw_function = 0.1 + 10.0 / (
+    1.0 + stokes._Einv2
+)  # stokes.constitutive_model.material_properties.viscosity
 viscosity_evaluation.smoothing = 1.0e-3
-# 
+#
 stress_inv_evaluation = uw.systems.Projection(meshbox, tau_inv)
-stress_inv_evaluation.uw_function = 2.0 * stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
+stress_inv_evaluation.uw_function = 2.0 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
 stress_inv_evaluation.smoothing = 1.0e-3
 
 
@@ -121,7 +118,7 @@ stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
 import sympy
 
-init_t = 0.9 * (0.05 * sympy.cos(sympy.pi*x) + sympy.cos(0.5*np.pi * y)) + 0.05
+init_t = 0.9 * (0.05 * sympy.cos(sympy.pi * x) + sympy.cos(0.5 * np.pi * y)) + 0.05
 
 adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
@@ -138,15 +135,13 @@ stokes.solve()
 # +
 # Now make the viscosity non-linear
 
-tau_Y = 1.0e5 * (1 + 100 * (1-y))
+tau_Y = 1.0e5 * (1 + 100 * (1 - y))
 
-viscosity_NL = sympy.Piecewise( 
-    ( viscosity_L, 2 * viscosity_L * stokes._Einv2 < tau_Y),
-    ( tau_Y / (2 * stokes._Einv2), True)  )
+viscosity_NL = sympy.Piecewise(
+    (viscosity_L, 2 * viscosity_L * stokes._Einv2 < tau_Y), (tau_Y / (2 * stokes._Einv2), True)
+)
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity_NL)
-
+stokes.constitutive_model.Parameters.viscosity=viscosity_NL
 stokes.saddle_preconditioner = 1 / viscosity_NL
 # -
 
@@ -160,11 +155,9 @@ adv_diff.solve(timestep=0.01 * stokes.estimate_dt())
 viscosity_evaluation.solve()
 stress_inv_evaluation.solve()
 
-# +
 with meshbox.access():
     print(visc.min(), visc.max())
     print(tau_inv.min(), tau_inv.max())
-
 
 
 # +
@@ -179,14 +172,13 @@ pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-pl = pv.Plotter(window_size=(750,750))
+pl = pv.Plotter(window_size=(750, 750))
 
 if uw.mpi.size == 1:
 
     import numpy as np
     import pyvista as pv
     import vtk
-
 
     meshbox.vtk("tmp_box_mesh.vtk")
     pvmesh = pv.read("tmp_box_mesh.vtk")
@@ -227,7 +219,6 @@ if uw.mpi.size == 1:
     with meshbox.access():
         point_cloud.point_data["T"] = t_soln.data.copy()
 
-
     ## PLOTTING
 
     pl.clear()
@@ -241,7 +232,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.75,
     )
-    
+
     pl.add_mesh(
         pvmesh,
         cmap="Greys",
@@ -257,9 +248,6 @@ if uw.mpi.size == 1:
 
     # pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
     pl.show()
-
-
-# -
 
 
 # +
@@ -296,7 +284,6 @@ def plot_T_mesh(filename):
         pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], meshbox.data)
         pvmesh.point_data["tau"] = uw.function.evaluate(tau_inv.sym[0], meshbox.data)
 
-
         # point sources at cell centres
 
         subsample = 10
@@ -324,12 +311,11 @@ def plot_T_mesh(filename):
         with meshbox.access():
             point_cloud.point_data["T"] = t_soln.data.copy()
 
-
         ## PLOTTING
 
         pl.clear()
-        
-        pl.camera_position="xy"
+
+        pl.camera_position = "xy"
 
         pl.add_mesh(
             pvmesh,
@@ -351,15 +337,14 @@ def plot_T_mesh(filename):
         )
 
         pl.add_mesh(pvstream, opacity=0.5)
-        
+
         for key in pvmesh.point_data.keys():
             try:
                 pl.remove_scalar_bar(key)
             except KeyError:
                 pass
-                
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
 
+        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
 
 
 # +
@@ -385,7 +370,7 @@ for step in range(0, 250):
     # v_soln.save(savefile)
     # t_soln.save(savefile)
     # meshbox.generate_xdmf(savefile)
-    
+
 pass
 
 # -

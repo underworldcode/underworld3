@@ -57,7 +57,7 @@ expt_name = "Stokes_Sphere_i"
 
 # Some gmsh issues, so we'll use a pre-built one
 mesh_file = "Sample_Meshes_Gmsh/test_mesh_sphere_at_res_005_c.msh"
-res = 0.15
+res = 0.075
 r_o = 1.0
 r_i = 0.5
 
@@ -83,7 +83,7 @@ import sympy
 
 
 # +
-meshball = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2)
+meshball = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2,)
 
 
 # -- OR --
@@ -165,16 +165,13 @@ s_norm, b_norm
 
 stokes = uw.systems.Stokes(meshball, velocityField=v_soln, pressureField=p_soln, verbose=False, solver_name="stokes")
 
-# stokes.petsc_options.delValue("ksp_monitor") # We can flip the default behaviour at some point
-stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options["ksp_rtol"] = 1.0e-3
-stokes.petsc_options["snes_monitor"] = None
+stokes.petsc_options["snes_rtol"] = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model.Parameters.viscosity=1
 
 # thermal buoyancy force
 buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
@@ -312,7 +309,14 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=50 / Rayleigh)
+    pl.add_arrows(arrow_loc, arrow_length, mag=33 / Rayleigh)
+    pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
 
-    pl.show(cpos="xy")
+    # pl.show(cpos="xy")
+# -
+
+# ls 
+
+
+
 

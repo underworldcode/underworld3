@@ -46,10 +46,22 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
         return self._diff[argindex-1](*self.args)
 
     def _latex(self, printer, exp=None):
+
+        try:
+            mesh=self.mesh
+            if not mesh.CoordinateSystem.CartesianDM:
+                coord_latex = r"\mathbf{r}"
+            else:
+                coord_latex = r"\mathbf{x}"
+        except:
+            print("No mesh info found")
+            coord_latex = r"\mathbf{x}"
+
         if exp==None:
-            latexstr = r"%s(\mathbf{x})" % (type(self).__name__)
+            latexstr = fr"{type(self).__name__}({coord_latex})"
         else:
-            latexstr = r"%s^{%s}(\mathbf{x})" % (type(self).__name__,exp)
+            latexstr = fr"{type(self).__name__}^{{ {exp} }}({coord_latex})"
+
         return latexstr
 
 class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
@@ -130,10 +142,13 @@ class UnderworldFunction(sympy.Function):
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
 
+        for diff_fn in ourcls._diff:
+            diff_fn.mesh = meshvar.mesh
+
         return ourcls
 
 
-def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
+def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None ):
     """
     Evaluate a given expression at a list of coordinates. 
 
@@ -147,6 +162,8 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
         Sympy expression requiring evaluation.
     coords: numpy.ndarray
         Numpy array of coordinates to evaluate expression at. 
+    coord_sys: mesh.N vector coordinate system
+
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented. 
@@ -196,10 +213,14 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     # Let's first collect all the meshvariables present in the expression.
     # Recurse the expression tree.
 
+
+
     varfns = set()
     def get_var_fns(exp):
+
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
             raise RuntimeError("Derivative functions are not handled yet unfortunately.")
+            
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         if isUW: 
             varfns.add(exp)
@@ -211,8 +232,23 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
             for arg in exp.args: 
                 get_var_fns(arg)
 
+        return
 
     get_var_fns(expr)
+
+    mesh = None
+    for varfn in varfns:
+
+        if mesh is None:
+            mesh = varfn.mesh
+        else:
+            if mesh != varfn.mesh:
+                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
+
+    # print("Expression depends upon")
+    # for varfn in varfns:
+    #     print(f"   - {varfn.name}")
+    # print("-------")
 
     if (len(varfns)==0) and (coords is None):
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -344,7 +380,21 @@ def evaluate( expr, np.ndarray coords=None, other_arguments=None ):
     from sympy import lambdify
     from sympy.vector import CoordSys3D
     dim = coords.shape[1]
-    N = CoordSys3D("N")
+
+
+    ## Careful - if we change the names of thebase-scalars for the mesh, this will need to be kept in sync
+
+    if coord_sys is not None:
+        N = coord_sys
+    elif mesh is None:
+        N = CoordSys3D("N")
+    else:
+        N = mesh.N
+        
+    # print(f'Base vectors / scalars, mesh: \"{mesh}\"')
+    # print(f" - {N.base_scalars()}")
+    # print(f" - {N.base_vectors()}")
+
     r = N.base_scalars()[0:dim]
     if isinstance(subbedexpr, sympy.vector.Vector):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]

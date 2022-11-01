@@ -21,7 +21,6 @@ options = PETSc.Options()
 # options.getAll()
 
 
-
 # +
 import meshio
 
@@ -313,4 +312,3 @@ for step in range(0, 20):
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name, ts))
 
     ts += 1
-

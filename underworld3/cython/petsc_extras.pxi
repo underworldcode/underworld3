@@ -1,3 +1,5 @@
+
+
 from petsc4py.PETSc cimport DM,  PetscDM
 from petsc4py.PETSc cimport DS,  PetscDS
 from petsc4py.PETSc cimport Vec, PetscVec
@@ -8,9 +10,12 @@ from petsc4py.PETSc cimport DMLabel, PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
 
+
 from underworld3.cython.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
 from underworld3.cython.petsc_types cimport PetscErrorCode 
 from underworld3.cython.petsc_types cimport DMBoundaryConditionType
+from underworld3.cython.petsc_types cimport PetscDMBoundaryConditionType
+from underworld3.cython.petsc_types cimport PetscDMBoundaryType
 from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
 
@@ -27,6 +32,7 @@ cdef CHKERRQ(PetscErrorCode ierr):
 cdef extern from "petsc_compat.h":
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, const PetscInt *,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
+    # PetscErrorCode DMAddBoundary(PetscDM, DMBoundaryConditionType, const char name[], DMLabel label, PetscInt Nv, PetscInt values[], PetscInt field, PetscInt Nc, PetscInt comps[], void (*)(), void (*)(), void *ctx, PetscInt *bd)
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
@@ -38,11 +44,13 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
 
     PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
-    PetscErrorCode DMGetLabel(DM dm, const char name[], PetscDMLabel *label)
+    PetscErrorCode DMGetLabel(PetscDM dm, const char name[], PetscDMLabel *label)
 
     # These do not appear to be in the 3.17.2 release
     PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     PetscErrorCode DMDestroy(PetscDM *dm)
 
-
+    # Changed recently: Commit 6858538e  
+    # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
+    PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 

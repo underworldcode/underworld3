@@ -9,7 +9,8 @@ import numpy as np
 import sympy
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                         cellSize=1.0 / 32.0, qdegree=3)
 
 mesh.dm.view()
 
@@ -41,24 +42,30 @@ gradT_projector.add_dirichlet_bc(0, ["Left", "Right"], components=0)
 
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
+
+# %%
 poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
 
 # Non-linear diffusivity
 
 delT = mesh.vector.gradient(t_soln.sym)
 k = 5 + (delT.dot(delT)) / 2
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=k)
+
+poisson.constitutive_model.Parameters.diffusivity = k
 display(poisson.constitutive_model.c)
 
 # projector for diffusivity (though we can just switch the rhs for the gradient object
 
 diffusivity = uw.systems.Projection(mesh, kappa)
-diffusivity.uw_function = sympy.Matrix([poisson.constitutive_model.material_properties.diffusivity])
+diffusivity.uw_function = sympy.Matrix([poisson.constitutive_model.Parameters.diffusivity])
 diffusivity.add_dirichlet_bc(k, ["Top", "Bottom", "Left", "Right"], components=0)
 diffusivity.smoothing = 1.0e-3
 
 
 # %%
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model.Parameters.diffusivity = 1
+poisson.constitutive_model.Parameters.diffusivity
 
 # %%
 display(gradT_projector.uw_function)
@@ -78,13 +85,16 @@ poisson.add_dirichlet_bc(abs_r2, ["Bottom", "Top", "Right", "Left"])
 
 # %%
 # Linear model - starting guess
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=1)
-poisson.solve()
+poisson.constitutive_model.Parameters.diffusivity = 1
+poisson.solve(zero_init_guess=True)
 
 # %%
 # Solve time
-poisson.constitutive_model.material_properties = poisson.constitutive_model.Parameters(diffusivity=k)
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.solve(zero_init_guess=False)
+
+# %%
+poisson.constitutive_model
 
 # %%
 gradT_projector.solve()
@@ -120,9 +130,6 @@ with mesh.access():
     #     raise RuntimeError("Unexpected values encountered.")
 
 # %%
-poisson._G3
-
-# %%
 # Validate
 
 from mpi4py import MPI
@@ -143,7 +150,7 @@ if MPI.COMM_WORLD.size == 1:
     pvmesh = pv.read("tmp_mesh.vtk")
 
     with mesh.access():
-        pvmesh.point_data["T"] = mesh_numerical_soln
+        # pvmesh.point_data["T"] = mesh_numerical_soln
         pvmesh.point_data["dTdY"] = uw.function.evaluate(dTdY.sym[0], mesh.data)
         pvmesh.point_data["dTdY1"] = uw.function.evaluate(gradT.sym[1], mesh.data)
         pvmesh.point_data["kappa"] = uw.function.evaluate(kappa.sym[0], mesh.data)
@@ -156,7 +163,7 @@ if MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=False,
-        scalars="dTdY1",
+        scalars="kappa1",
         use_transparency=False,
         opacity=0.5,
     )

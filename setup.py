@@ -11,7 +11,9 @@ import petsc4py
 if os.environ.get("CC") is None:
     import warnings
 
-    warnings.warn("CC environment variable not set. Using mpi4py's compiler configuration")
+    warnings.warn(
+        "CC environment variable not set. Using mpi4py's compiler configuration"
+    )
     # Get CC from mpi4py
     import mpi4py
 
@@ -22,9 +24,12 @@ if os.environ.get("CC") is None:
 from petsc4py import PETSc
 
 petscVer = PETSc.Sys().getVersion()
-if petscVer[0] != 3 or petscVer[1] < 16:
+print(f"Petsc version: {petscVer[0]}.{petscVer[1]}.{petscVer[2]} ", flush=True)
+
+if petscVer[0] != 3 or petscVer[1] < 18:
     msg = (
-        f"Minimum compatible version of petsc is 3.16.0, detected version " f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
+        f"Minimum compatible version of petsc is 3.18.0, detected version "
+        f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
     )
     raise RuntimeError(msg)
 
@@ -48,7 +53,10 @@ def configure():
     from os.path import join, isdir
 
     if PETSC_ARCH and isdir(join(PETSC_DIR, PETSC_ARCH)):
-        INCLUDE_DIRS += [join(PETSC_DIR, PETSC_ARCH, "include"), join(PETSC_DIR, "include")]
+        INCLUDE_DIRS += [
+            join(PETSC_DIR, PETSC_ARCH, "include"),
+            join(PETSC_DIR, "include"),
+        ]
         LIBRARY_DIRS += [join(PETSC_DIR, PETSC_ARCH, "lib")]
     else:
         if PETSC_ARCH:
@@ -143,13 +151,15 @@ extensions = [
 setup(
     name="underworld3",
     packages=find_packages(),
-    package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "petsc/*.pxd", "petsc/*.h"]},
+    package_data={
+        "underworld3": ["*.pxd", "*.h", "function/*.h", "petsc/*.pxd", "petsc/*.h"]
+    },
     ext_modules=cythonize(
         extensions,
         compiler_directives={"language_level": "3"},  # or "2" or "3str"
         build_dir="build",
         annotate=True,
-        gdb_debug=True,
+        # gdb_debug=True,
         include_path=[petsc4py.get_include()],
     ),
 )

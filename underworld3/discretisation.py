@@ -11,7 +11,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities import _api_tools
-from underworld3.coordinates import CoordinateSystem
+from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
 
 
@@ -49,6 +49,8 @@ def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=Non
     gmsh.model.add("Model")
     gmsh.open(filename)
 
+    ## What about cells and vertices ?
+
     physical_groups = {}
     for dim, tag in gmsh.model.get_physical_groups():
 
@@ -63,6 +65,50 @@ def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=Non
             indexSet = gmsh_plex.getStratumIS(elem, tag)
             if indexSet:
                 label.insertIS(indexSet, 1)
+            indexSet.destroy()
+
+    # cell sets / face sets / vertex sets by numerical tag (by hand for the case where  gmsh has no physical groups)
+
+    if cellSets is not None:
+        for cellSet in cellSets:
+            label_name = cellSet["name"]
+            label_id = cellSet["id"]
+
+            gmsh_plex.createLabel(label_name)
+            label = gmsh_plex.getLabel(label_name)
+            indexSet = gmsh_plex.getStratumIS("Cell Sets", label_id)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            else:
+                gmsh_plex.removeLabel(label_name)
+            indexSet.destroy()
+
+    if faceSets is not None:
+        for faceSet in faceSets:
+            label_name = faceSet["name"]
+            label_id = faceSet["id"]
+
+            gmsh_plex.createLabel(label_name)
+            label = gmsh_plex.getLabel(label_name)
+            indexSet = gmsh_plex.getStratumIS("Face Sets", label_id)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            else:
+                gmsh_plex.removeLabel(label_name)
+            indexSet.destroy()
+
+    if vertexSets is not None:
+        for vertexSet in vertexSets:
+            label_name = vertexSet["name"]
+            label_id = vertexSet["id"]
+
+            gmsh_plex.createLabel(label_name)
+            label = gmsh_plex.getLabel(label_name)
+            indexSet = gmsh_plex.getStratumIS("Vertex Sets", label_id)
+            if indexSet:
+                label.insertIS(indexSet, 1)
+            else:
+                gmsh_plex.removeLabel(label_name)
             indexSet.destroy()
 
     gmsh.finalize()
@@ -82,6 +128,10 @@ class Mesh(_api_tools.Stateful):
         simplex=True,
         coordinate_system_type=None,
         qdegree=2,
+        cellSets=None,
+        vertexSets=None,
+        faceSets=None,
+        filename=None,
         *args,
         **kwargs,
     ):
@@ -94,36 +144,41 @@ class Mesh(_api_tools.Stateful):
             name = plex_or_meshfile
             basename, ext = os.path.splitext(plex_or_meshfile)
 
+            # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
-                self.dm = _from_gmsh(plex_or_meshfile, comm)
-
+                self.dm = _from_gmsh(
+                    plex_or_meshfile, comm, cellSets, faceSets, vertexSets
+                )
             else:
-                raise RuntimeError("Mesh file %s has unknown format '%s'." % (plex_or_meshfile, ext[1:]))
+                raise RuntimeError(
+                    "Mesh file %s has unknown format '%s'."
+                    % (plex_or_meshfile, ext[1:])
+                )
+
+        self.filename = filename
+        self.dm.distribute()
 
         Mesh.mesh_instances += 1
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
 
-        self._N = CoordSys3D("N")
+        # A unique set of vectors / names for each mesh instance
+        self._N = CoordSys3D(f"N{Mesh.mesh_instances}")
+
+        self._N.x._latex_form = r"\mathrm{\xi_0}"
+        self._N.y._latex_form = r"\mathrm{\xi_1}"
+        self._N.z._latex_form = r"\mathrm{\xi_2}"
+        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_0}"
+        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
+        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
 
         # Now add the appropriate coordinate system for the mesh's natural geometry
+        # This step will usually over-write the defaults we just defined
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
 
-        # Tidy some of this printing. Note that this
-        # only changes the user interface printing, and
-        # switches out for simpler `BaseScalar` representations.
-        # For example, we now have "x" instead of "x_N". This makes
-        # Jupyter rendered Latex easier to digest, but depending on
-        # how we end up using Sympy coordinate systems it may be
-        # desirable to bring back the more verbose version.
-
-        self._N.x._latex_form = r"\mathrm{x}"
-        self._N.y._latex_form = r"\mathrm{y}"
-        self._N.z._latex_form = r"\mathrm{z}"
-        self._N.i._latex_form = r"\mathbf{\hat{i}}"
-        self._N.j._latex_form = r"\mathbf{\hat{j}}"
-        self._N.k._latex_form = r"\mathbf{\hat{k}}"
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
 
         try:
             self.isSimplex = self.dm.isSimplex()
@@ -165,7 +220,22 @@ class Mesh(_api_tools.Stateful):
         # in a bundle to avoid the mesh being required as an argument
         # since this could lead to things going out of sync
 
-        self.vector = uw.maths.vector_calculus(mesh=self)
+        if (
+            self.CoordinateSystem.coordinate_type
+            == CoordinateSystemType.CYLINDRICAL2D_NATIVE
+            or self.CoordinateSystem.coordinate_type
+            == CoordinateSystemType.CYLINDRICAL3D_NATIVE
+        ):
+            self.vector = uw.maths.vector_calculus_cylindrical(mesh=self)
+        elif (
+            self.CoordinateSystem.coordinate_type
+            == CoordinateSystemType.SPHERICAL_NATIVE
+        ):
+            self.vector = uw.maths.vector_calculus_spherical_lonlat(
+                mesh=self
+            )  ## Not yet complete or tested
+        else:
+            self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()
 
@@ -197,7 +267,9 @@ class Mesh(_api_tools.Stateful):
         # mesh coordinates to other mesh coordinates.
 
         options = PETSc.Options()
-        options.setValue("meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree)
+        options.setValue(
+            "meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree
+        )
 
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim,
@@ -278,7 +350,9 @@ class Mesh(_api_tools.Stateful):
         of all the mesh variables.
         """
         if self._stale_lvec:
-            raise RuntimeError("Mesh `lvec` needs to be updated using the update_lvec()` method.")
+            raise RuntimeError(
+                "Mesh `lvec` needs to be updated using the update_lvec()` method."
+            )
         return self._lvec
 
     def __del__(self):
@@ -339,14 +413,18 @@ class Mesh(_api_tools.Stateful):
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
+
             # set flag so variable status can be known elsewhere
             var._is_accessed = True
             # add to de-access list to rewind this later
             deaccess_list.append(var)
+
             # create & set vec
             var._set_vec(available=True)
+
             # grab numpy object, setting read only if necessary
             var._data = var.vec.array.reshape(-1, var.num_components)
+
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -370,6 +448,7 @@ class Mesh(_api_tools.Stateful):
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
                     # perform sync for any modified vars.
+
                     if var in writeable_vars:
                         indexset, subdm = self.mesh.dm.createSubDM(var.field_id)
 
@@ -417,9 +496,14 @@ class Mesh(_api_tools.Stateful):
         The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
         """
         N = self.N
-        r_vec = N.x * N.i + N.y * N.j
-        if self.cdim == 3:
-            r_vec += N.z * N.k
+
+        r_vec = sympy.vector.Vector.zero
+
+        N_s = N.base_scalars()
+        N_v = N.base_vectors()
+        for i in range(self.cdim):
+            r_vec += N_s[i] * N_v[i]
+
         return r_vec
 
     @property
@@ -503,7 +587,9 @@ class Mesh(_api_tools.Stateful):
         if key in self._coord_array:
             return self._coord_array[key]
         else:
-            self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
+            self._coord_array[key] = self._get_coords_for_basis(
+                var.degree, var.continuous
+            )
             return self._coord_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
@@ -514,11 +600,14 @@ class Mesh(_api_tools.Stateful):
         """
 
         dmold = self.dm.getCoordinateDM()
+        dmold.createDS()
+
         dmnew = dmold.clone()
 
         options = PETSc.Options()
         options["coordinterp_petscspace_degree"] = degree
         options["coordinterp_petscdualspace_lagrange_continuity"] = continuous
+        options["coordinterp_petscdualspace_lagrange_node_endpoints"] = False
 
         dmfe = PETSc.FE().createDefault(
             self.dim,
@@ -531,6 +620,7 @@ class Mesh(_api_tools.Stateful):
 
         dmnew.setField(0, dmfe)
         dmnew.createDS()
+
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
@@ -586,7 +676,9 @@ class Mesh(_api_tools.Stateful):
                 # because we cast from this type in  `_function.evaluate` to construct
                 # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
                 # will cause bugs that are difficult to find.
-                self._indexMap = numpy.array(tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64)
+                self._indexMap = numpy.array(
+                    tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
+                )
 
         closest_points, dist, found = self._index.find_closest_point(coords)
 
@@ -717,7 +809,9 @@ def MeshVariable(
         name = varname
 
     if mesh._accessed:
-        print("It is not possible to add new variables to a mesh after existing variables have been accessed")
+        print(
+            "It is not possible to add new variables to a mesh after existing variables have been accessed"
+        )
         print("Variable {name} has NOT been added")
         return
 
@@ -780,6 +874,10 @@ class _MeshVariable(_api_tools.Stateful):
 
         self.name = name
 
+        import re
+
+        self.clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+
         if vtype == None:
             if num_components == 1:
                 vtype = uw.VarType.SCALAR
@@ -791,7 +889,9 @@ class _MeshVariable(_api_tools.Stateful):
                 )
 
         if not isinstance(vtype, uw.VarType):
-            raise ValueError("'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`.")
+            raise ValueError(
+                "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
+            )
 
         self.vtype = vtype
         self.mesh = mesh
@@ -800,23 +900,29 @@ class _MeshVariable(_api_tools.Stateful):
         self.continuous = continuous
 
         options = PETSc.Options()
-        options.setValue(f"{name}_petscspace_degree", degree)
-        options.setValue(f"{name}_petscdualspace_lagrange_continuity", continuous)
+        name0 = self.clean_name
+        options.setValue(f"{name0}_petscspace_degree", degree)
+        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
+        options.setValue(
+            f"{name0}_petscdualspace_lagrange_node_endpoints", False
+        )  # only active if discontinuous
 
-        fe_factory = PETSc.FE()
         dim = self.mesh.dm.getDimension()
 
-        self.petsc_fe = fe_factory.createDefault(
+        self.petsc_fe = PETSc.FE().createDefault(
             dim,
             num_components,
             self.mesh.isSimplex,
             self.mesh.qdegree,
-            name + "_",
+            name0 + "_",
             PETSc.COMM_WORLD,
         )
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id, self.petsc_fe)
+
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
 
         # create associated sympy function
         from underworld3.function import UnderworldFunction
@@ -824,6 +930,8 @@ class _MeshVariable(_api_tools.Stateful):
         if vtype == uw.VarType.SCALAR:
             self._sym = sympy.Matrix.zeros(1, 1)
             self._sym[0] = UnderworldFunction(name, self, vtype)(*self.mesh.r)
+            self._sym[0].mesh = self.mesh
+
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
@@ -831,24 +939,37 @@ class _MeshVariable(_api_tools.Stateful):
 
             # Matrix form (any number of components)
             for comp in range(num_components):
-                self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(*self.mesh.r)
+                self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(
+                    *self.mesh.r
+                )
+                self._sym[0, comp].mesh = self.mesh
 
             # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
             if num_components == mesh.dim:
                 self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
                 # self.mesh.vector.to_vector(self._sym)
 
-        elif vtype == uw.VarType.COMPOSITE:  # This is just to allow full control over the names of the components
+        elif (
+            vtype == uw.VarType.COMPOSITE
+        ):  # This is just to allow full control over the names of the components
             self._sym = sympy.Matrix.zeros(1, num_components)
             if isinstance(varname, list):
                 if len(varname) == num_components:
                     for comp in range(num_components):
-                        self._sym[0, comp] = UnderworldFunction(varname[comp], self, vtype, comp)(*self.mesh.r)
+                        self._sym[0, comp] = UnderworldFunction(
+                            varname[comp], self, vtype, comp
+                        )(*self.mesh.r)
+                        self._sym[0, comp].mesh = self.mesh
+
                 else:
-                    raise RuntimeError("Please supply a list of names for all components of this vector")
+                    raise RuntimeError(
+                        "Please supply a list of names for all components of this vector"
+                    )
             else:
                 for comp in range(num_components):
-                    self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(*self.mesh.r)
+                    self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(
+                        *self.mesh.r
+                    )
 
         super().__init__()
 
@@ -860,7 +981,9 @@ class _MeshVariable(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def save(self, filename: str, name: Optional[str] = None, index: Optional[int] = None):
+    def save(
+        self, filename: str, name: Optional[str] = None, index: Optional[int] = None
+    ):
         """
         Append variable data to the specified mesh hdf5
         data file. The file must already exist.
@@ -886,6 +1009,7 @@ class _MeshVariable(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # PetscViewerHDF5PushTimestepping(cviewer)
             # viewer.setTimestep(index)
+
         if name:
             oldname = self._gvec.getName()
             self._gvec.setName(name)
@@ -914,34 +1038,17 @@ class _MeshVariable(_api_tools.Stateful):
         """
         return self._sym
 
-    # @property
-    # def f(self) -> sympy.Basic:
-    #     """
-    #     The handle to the tensor view of this variable.
-    #     """
-    #    return self._f
-
     def _set_vec(self, available):
-        # cdef DM subdm = PETSc.DM()
-        # cdef DM dm = self.mesh.dm
-        # cdef PetscInt fields = self.field_id
-        # if self._lvec==None:
-        # Create a subdm for this variable.
-        # This allows us to generate a local vector.
-        #    ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
-
-        # This should achieve the same effect as the cython code above
 
         if self._lvec == None:
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+            # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
 
             self._lvec = subdm.createLocalVector()
             self._lvec.zeroEntries()  # not sure if required, but to be sure.
             self._gvec = subdm.createGlobalVector()
-            self._gvec.setName(self.name)  # This is set for checkpointing.
+            self._gvec.setName(self.clean_name)  # This is set for checkpointing.
             self._gvec.zeroEntries()
-
-        #    ierr = DMDestroy(&subdm.dm);CHKERRQ(ierr)
 
         self._available = available
 
@@ -957,7 +1064,9 @@ class _MeshVariable(_api_tools.Stateful):
         The corresponding PETSc local vector for this variable.
         """
         if not self._available:
-            raise RuntimeError("Vector must be accessed via the mesh `access()` context manager.")
+            raise RuntimeError(
+                "Vector must be accessed via the mesh `access()` context manager."
+            )
         return self._lvec
 
     @property
@@ -971,7 +1080,9 @@ class _MeshVariable(_api_tools.Stateful):
         mesh `access()` context manager.
         """
         if self._data is None:
-            raise RuntimeError("Data must be accessed via the mesh `access()` context manager.")
+            raise RuntimeError(
+                "Data must be accessed via the mesh `access()` context manager."
+            )
         return self._data
 
     def min(self) -> Union[float, tuple]:
@@ -984,7 +1095,9 @@ class _MeshVariable(_api_tools.Stateful):
         if self.num_components == 1:
             return self._gvec.min()
         else:
-            return tuple([self._gvec.strideMin(i)[1] for i in range(self.num_components)])
+            return tuple(
+                [self._gvec.strideMin(i)[1] for i in range(self.num_components)]
+            )
 
     def max(self) -> Union[float, tuple]:
         """
@@ -996,7 +1109,9 @@ class _MeshVariable(_api_tools.Stateful):
         if self.num_components == 1:
             return self._gvec.max()
         else:
-            return tuple([self._gvec.strideMax(i)[1] for i in range(self.num_components)])
+            return tuple(
+                [self._gvec.strideMax(i)[1] for i in range(self.num_components)]
+            )
 
     def sum(self) -> Union[float, tuple]:
         """
@@ -1032,7 +1147,12 @@ class _MeshVariable(_api_tools.Stateful):
         if self.num_components == 1:
             return self._gvec.norm(norm_type)
         else:
-            return tuple([self._gvec.strideNorm(i, norm_type) for i in range(self.num_components)])
+            return tuple(
+                [
+                    self._gvec.strideNorm(i, norm_type)
+                    for i in range(self.num_components)
+                ]
+            )
 
     def mean(self) -> Union[float, tuple]:
         """
@@ -1046,7 +1166,9 @@ class _MeshVariable(_api_tools.Stateful):
             return self._gvec.sum() / vecsize
         else:
             vecsize = self._gvec.getSize() / self.num_components
-            return tuple([self._gvec.strideSum(i) / vecsize for i in range(self.num_components)])
+            return tuple(
+                [self._gvec.strideSum(i) / vecsize for i in range(self.num_components)]
+            )
 
     def stats(self):
         """
@@ -1066,7 +1188,9 @@ class _MeshVariable(_api_tools.Stateful):
         """
 
         if self.num_components > 1:
-            raise NotImplementedError("stats not available for multi-component variables")
+            raise NotImplementedError(
+                "stats not available for multi-component variables"
+            )
 
         #       This uses a private work MeshVariable and the various norms defined there but
         #       could either be simplified to just use petsc vectors, or extended to

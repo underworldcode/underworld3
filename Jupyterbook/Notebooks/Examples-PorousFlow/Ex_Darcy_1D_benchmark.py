@@ -25,7 +25,7 @@ options = PETSc.Options()
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=3)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -69,7 +69,7 @@ darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=1)
+darcy.constitutive_model.Parameters.diffusivity=1
 
 
 # +
@@ -94,7 +94,7 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 # A smooth version
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
-darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFunc)
+darcy.constitutive_model.Parameters.diffusivity=kFunc
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
 
@@ -126,8 +126,6 @@ if uw.mpi.size == 1:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
-
-    pv.start_xvfb()
 
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
@@ -178,7 +176,6 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.005, opacity=0.75)
 
     pl.show(cpos="xy")
-# -
 
 
 # +
@@ -188,7 +185,6 @@ xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
 pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
-# -
 
 
 # +
@@ -225,3 +221,5 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle="--", label="Ana
 ax1.grid("on")
 ax1.legend()
 # -
+
+

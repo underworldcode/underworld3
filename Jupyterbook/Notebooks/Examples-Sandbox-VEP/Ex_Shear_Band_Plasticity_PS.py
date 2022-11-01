@@ -100,16 +100,17 @@ import sympy
 
 # Some useful coordinate stuff
 
-x,y = mesh1.X
+x, y = mesh1.X
 
 # relative to the centre of the inclusion
-r = sympy.sqrt((x - 1.0) ** 2 + (y - 0.5) ** 2)
-th = sympy.atan2(y - 0.5, x - 1.0)
+r = sympy.sqrt(x ** 2 + y ** 2)
+th = sympy.atan2(y,x)
 
 # need a unit_r_vec equivalent
 
-inclusion_rvec = mesh1.rvec - 1.0 * mesh1.N.i - 0.5 * mesh1.N.j
+inclusion_rvec = mesh1.X
 inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
+inclusion_unit_rvec = mesh1.vector.to_matrix(inclusion_unit_rvec)
 
 # Pure shear flow
 
@@ -124,8 +125,8 @@ p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1)
 
 vorticity = uw.discretisation.MeshVariable("omega", mesh1, 1, degree=1)
 strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=1)
-dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=1)
-node_viscosity = uw.discretisation.MeshVariable("eta", mesh1, 1, degree=1)
+dev_stress_inv2  = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=1)
+node_viscosity   = uw.discretisation.MeshVariable("eta", mesh1, 1, degree=1)
 r_inc = uw.discretisation.MeshVariable("R", mesh1, 1, degree=1)
 
 
@@ -142,30 +143,30 @@ stokes = uw.systems.Stokes(
 
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.material_properties.viscosity
-stokes.penalty = 0.0 
+stokes.constitutive_model.Parameters.viscosity = 1
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+stokes.penalty = 0.0
 
 stokes.petsc_options["ksp_monitor"] = None
 
 
-
 # +
-
-nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2)
+nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2, solver_name="edot_II")
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "top", 0)
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "bottom", 0)
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
 nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
-nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2)
-nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
+nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
+
+S = stokes.stress_deviator
+nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace())/2)) - p_soln.sym[0]
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
-nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity)
-nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
+nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity, solver_name="visc")
+nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.smoothing = 1.0e-3
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
@@ -180,16 +181,13 @@ stokes.penalty = 0.0
 stokes.bodyforce = 1.0e-32 * mesh1.N.i
 
 hw = 1000.0 / res
-with mesh1.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evaluate(r, mesh1.data)
-
-surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
+surface_defn_fn = sympy.exp(-(((r - radius) / radius) ** 2) * hw)
+stokes.bodyforce -= 1.0e6 * surface_defn_fn * v_soln.sym.dot(inclusion_unit_rvec) * inclusion_unit_rvec
 
 # Velocity boundary conditions
 
-stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
+# stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
 stokes.add_dirichlet_bc((vx_ps, vy_ps), ["top", "bottom", "left", "right"], (0, 1))
-
 
 
 # +
@@ -199,32 +197,34 @@ stokes.solve()
 # +
 # Now introduce the non-linearity once we have an initial strain rate
 
-tau_y = 5.0 + 0.5 * stokes.p.fn
-viscosity = sympy.Min(0.5*tau_y / stokes._Einv2, 1.0)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+mu = 0.25
+tau_y = sympy.Max(3.5 + mu * stokes.p.sym[0], 0.1)
+viscosity = sympy.Min(tau_y / (2 * stokes._Einv2 + 0.01), 1.0)
+# viscosity = 100 * (0.01 + stokes._Einv2)
+stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / viscosity
-
-stokes.solve(zero_init_guess=False)
-# -
-
-
-nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
-nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
 
 
 # +
-# from petsc4py import PETSc
-# opt = PETSc.Options()
-# opt.getAll()
+# Approach the required value by shifting the parameters
+
+for i in range(5):
+    mu = 0.25
+    C = 2.5 + (1 - i/4) * 1.0
+    print(f"Mu - {mu}, C = {C}")
+    tau_y = sympy.Max(C + mu * stokes.p.sym[0], 0.1)
+    viscosity = sympy.Min(tau_y / (2 * stokes._Einv2 + 0.01), 1.0)
+    # viscosity = 100 * (0.01 + stokes._Einv2)
+    stokes.constitutive_model.Parameters.viscosity = viscosity
+    stokes.saddle_preconditioner = 1 / viscosity
+    stokes.solve(zero_init_guess=False)
 # -
 
-nodal_strain_rate_inv2.solve()
-
-nodal_visc_calc.uw_function = stokes.constitutive_model.material_properties.viscosity
+nodal_tau_inv2.uw_function = stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+nodal_tau_inv2.solve()
+nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.solve()
-
-nodal_tau_inv2.uw_function = stokes.constitutive_model.material_properties.viscosity * stokes._Einv2
-nodal_tau_inv2.solve(_force_setup=True)
+nodal_strain_rate_inv2.solve()
 
 
 # +
@@ -249,11 +249,11 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     with mesh1.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), mesh1.data)
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh1.data)
-        pvmesh.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.fn, mesh1.data)
-        pvmesh.point_data["Str"] = uw.function.evaluate(dev_stress_inv2.fn, mesh1.data)
-        pvmesh.point_data["Visc"] = uw.function.evaluate(node_viscosity.fn, mesh1.data)
+        pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.sym.dot(v_soln.sym)), mesh1.data)
+        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
+        pvmesh.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym[0], mesh1.data)
+        pvmesh.point_data["Visc"] = uw.function.evaluate(node_viscosity.sym[0], mesh1.data)
+        pvmesh.point_data["Str"] = uw.function.evaluate(dev_stress_inv2.sym[0], mesh1.data)
 
     v_vectors = np.zeros((mesh1.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh1.data)
@@ -288,7 +288,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="Str",
+        scalars="Edot",
         use_transparency=False,
         opacity=1.0,
     )  # clim=[0.0,1.0])
@@ -300,14 +300,5 @@ if uw.mpi.size == 1:
 
     pl.show()
 # -
-pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max()
-
-pvmesh.point_data["P"].min(), pvmesh.point_data["P"].max()  # cf 4.26
-
-pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
-
-pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
-
-3-4.654077083892794/2
 
 
