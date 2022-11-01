@@ -17,7 +17,7 @@ on:
 
   workflow_dispatch:
 
-obs:
+jobs:
   deploy:
     runs-on: macos-latest
     steps:
@@ -62,10 +62,8 @@ obs:
           # mkdir -p docs
           ./docs.sh
 
-
-      # Here we can add an action to build the jupyter book to a different directory 
-      # and then they can be uploaded together. The jupyter book can contain a link to the
-      # API docs.
+      # There is an action to build the jupyter book to a different directory 
+      # and then they can be uploaded side by side
 
       # Note deploy key needs the ----BEGIN ... KEY---- lines too
       - name: Deploy
