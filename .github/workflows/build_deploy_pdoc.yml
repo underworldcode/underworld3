@@ -1,0 +1,78 @@
+name: API docs / pdoc3 
+
+# We should trigger this from an upload event. Note that pdoc requires us to import the 
+# built code, so this is a building test as well as documentation deployment
+
+on:
+  push:       # This is not really a great idea 
+    branches:
+      - main # (shouldn't happen - protected)
+      - development
+
+  # workflow_run:
+  #   workflows: ["Conda Deployment"]
+  #   branches: [master]
+  #   types: 
+  #     - completed
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+  
+      - name: Cache build environment
+        uses: actions/cache@v1
+        env:
+        # Increase this value to reset cache if etc/example-environment.yml has not changed
+          CACHE_NUMBER: 0
+         with:
+          path: |
+            /opt/homebrew
+            ~/.cache/pip
+            
+          key: macos-jbdoc-conda-${{ env.CACHE_NUMBER }}
+
+      - name: homebrew install dependencies
+        run: |
+          brew update
+          brew install python@3.10
+          brew install petsc 
+          brew install cython
+          brew install gmsh
+          brew install jupyter 
+
+          pip3 install mpi4py h5py petsc4py
+
+      - name: Install underworld3 from most recent upload
+        shell: bash -l {0}
+        run: |
+          VERSION=`python setup.py --version`
+          pwd
+          python3 setup.py develop
+
+
+      - name: Build docs with pdoc
+        shell: bash -l {0}
+        run: |
+          VERSION=`python setup.py --version`
+          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
+          mkdir -p docs
+          cd docs
+          pdoc --config latex_math=True --html -o api --force stripy
+
+      # Here we can add an action to build the jupyter book to a different directory 
+      # and then they can be uploaded together. The jupyter book can contain a link to the
+      # API docs.
+
+      # Note deploy key needs the ----BEGIN ... KEY---- lines too
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        
+        with:
+          deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
+          destination_dir: docs/
+          publish_dir: docs/api/stripy
+
