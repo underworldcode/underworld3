@@ -131,6 +131,7 @@ class Mesh(_api_tools.Stateful):
         cellSets=None,
         vertexSets=None,
         faceSets=None,
+        filename=None,
         *args,
         **kwargs,
     ):
@@ -143,17 +144,18 @@ class Mesh(_api_tools.Stateful):
             name = plex_or_meshfile
             basename, ext = os.path.splitext(plex_or_meshfile)
 
+            # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
                 self.dm = _from_gmsh(
                     plex_or_meshfile, comm, cellSets, faceSets, vertexSets
                 )
-
             else:
                 raise RuntimeError(
                     "Mesh file %s has unknown format '%s'."
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        self.filename = filename
         self.dm.distribute()
 
         Mesh.mesh_instances += 1

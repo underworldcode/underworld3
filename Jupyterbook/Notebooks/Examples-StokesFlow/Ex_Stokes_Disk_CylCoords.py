@@ -20,7 +20,7 @@ free_slip_upper = True
 # -
 
 
-meshball_xyz_tmp = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
+meshball_xyz_tmp = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./meshball.msh")
 
 
 xy_vec = meshball_xyz_tmp.dm.getCoordinates()
@@ -191,8 +191,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    meshball_xyz.vtk("tmp.vtk")
-    pvmesh = pv.read("tmp.vtk")
+    pvmesh = pv.read("./meshball.msh")
 
     with meshball.access():
         pvmesh.point_data["V"] = uw.function.evaluate(v_soln.sym.dot(v_soln.sym), meshball.data)

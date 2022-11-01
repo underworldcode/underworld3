@@ -668,10 +668,12 @@ class SNES_Vector:
         # reshape to Matrix form
         # Make hashable (immutable)
 
+        permutation = (0,3,1,2)
+
         self._G0 = sympy.ImmutableMatrix(G0.reshape(dim,dim))
         self._G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(dim,dim*dim))
         self._G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(dim*dim,dim))
-        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim*dim))
+        self._G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
         ##################
 
@@ -1196,10 +1198,15 @@ class SNES_Stokes:
         # ij k -> KJ I (hence 210)
         # i jk -> J KI (hence 201)
 
-        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, (0,3,1,2)).reshape(dim,dim))
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (0,3,1,2)).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (0,3,1,2)).reshape(dim*dim,dim))   
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim*dim))
+        # The indices need to be interleaved, but for symmetric problems
+        # there are lots of symmetries. This means we can find it hard to debug
+        # the required permutation for a non-symmetric problem 
+        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ?
+
+        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
+        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))   
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
@@ -1211,9 +1218,9 @@ class SNES_Stokes:
         G3 = sympy.derive_by_array(F1, self._G)
 
         self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
-        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (0,3,1,2)).reshape(dim,dim))  # zero in stokes tests
-        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (0,3,1,2)).reshape(dim,dim))  # ?
-        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(dim*dim,dim))  # zeros
+        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim,dim))  # ?
+        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim))  # zeros
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
@@ -1780,11 +1787,12 @@ class SNES_SaddlePoint:
 
         ## NOT THIS ONE !!
 
+        permutation = (0,3,1,2)
 
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, (2,1,0)  ).reshape(vdim,vdim*dim))
         self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, (2,1,0)  ).reshape(vdim*dim,vdim)) 
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, (0,3,1,2)).reshape(vdim*dim,vdim*dim))
+        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(vdim*dim,vdim*dim))
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
