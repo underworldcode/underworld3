@@ -7,7 +7,7 @@ on:
   push:       # This is not really a great idea 
     branches:
       - main # (shouldn't happen - protected)
-      # - development
+      - development
 
   # workflow_run:
   #   workflows: ["Conda Deployment"]
@@ -31,6 +31,7 @@ jobs:
         with:
           path: |
             /opt/homebrew
+            ~/.petsc
             ~/.cache/pip
           key: macos-underworld3-jbdocs
 
@@ -40,14 +41,11 @@ jobs:
           brew install python@3.10
           brew install cython
           brew install gmsh
-          brew install jupyter 
           brew install petsc 
 
-          PETSC_DIR=''
-          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
-
-
-          pip3 install mpi4py h5py petsc4py
+          brew info petsc
+          
+          pip3 install mpi4py h5py 
           pip3 install pdoc3
 
       - name: Install underworld3 from most recent upload
