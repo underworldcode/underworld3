@@ -43,6 +43,9 @@ jobs:
           brew install cython
           brew install gmsh
 
+          pip3 install cython numpy
+
+
       - name: install / build / test petsc
         run: |
           git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
@@ -52,10 +55,8 @@ jobs:
 
       - name: install petsc4py etc
         run: |
-          pip3 install numpy
           pip3 install mpi4py h5py 
           pip3 install pdoc3
-          pip3 install cython
           # pip3 install petsc4py
 
 
