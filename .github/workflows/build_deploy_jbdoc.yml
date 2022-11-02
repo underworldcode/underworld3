@@ -39,7 +39,6 @@ jobs:
           brew install python@3.10
           brew install node
           brew install jupyter 
-
           pip3 install jupyter-book
           
           ## Do we need reveal-md / node stuff in here ?
@@ -50,7 +49,7 @@ jobs:
           which python
           which python3
           cd Jupyterbook
-          ./build-book.sh 
+          ./build_book.sh 
 
       # Note deploy key needs the ----BEGIN ... KEY---- lines too
 
