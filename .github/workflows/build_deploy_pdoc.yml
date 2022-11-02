@@ -44,7 +44,7 @@ jobs:
           brew install petsc
           brew install gmsh
 
-          export PETSC_DIR = "/usr/local/Cellar/petsc/3.18.1/lib"
+          export PETSC_DIR="/usr/local/Cellar/petsc/3.18.1/lib"
 
           pip3 install cython numpy
           pip3 install mpi4py h5py 
