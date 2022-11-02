@@ -45,15 +45,17 @@ jobs:
           cd Jupyterbook
           ./build_book.sh 
 
-      # Note deploy key needs the ----BEGIN ... KEY---- lines too
 
       ## Always deploy to version directory
-      - name: Deploy
+      - name: Deploy JB
         uses: peaceiris/actions-gh-pages@v3
         
         with:
-          deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
-          destination_dir: ${{ env.VERSION }}
+          # deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ${GITHUB_REF##*/}   # The dest dir is identified by branch 
           publish_dir: jupyterbook/_build/html
+          
+
 
  
