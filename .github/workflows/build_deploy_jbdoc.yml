@@ -31,7 +31,7 @@ jobs:
           path: |
             /opt/homebrew
             ~/.cache/pip
-          key: macos-underworld3-jbdocs-${{CACHE_NUMBER}}
+          key: macos-underworld3-jbdocs-${{env.CACHE_NUMBER}}
 
       - name: homebrew install dependencies
         run: |
