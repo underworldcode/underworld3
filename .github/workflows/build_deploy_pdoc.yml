@@ -19,7 +19,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: macos-latest
+    runs-on: macos-12
     steps:
       - uses: actions/checkout@v3
 
@@ -34,7 +34,7 @@ jobs:
             /usr/local/Cellar
             ~/petsc
             ~/.cache/pip
-          key: macos-underworld3-jbdocs
+          key: macos-underworld3-jbdocs-${{env.CACHE_NUMBER}}
 
       - name: homebrew install dependencies
         run: |
@@ -49,8 +49,7 @@ jobs:
           pip3 install cython numpy
           pip3 install mpi4py h5py 
           pip3 install pdoc3
-
-          pip3 install petsc4py --no-binary :all:
+          pip3 install petsc4py
 
 
 
