@@ -6,11 +6,10 @@ dependencies:
   - numpy
   - nodejs
   - cython
-  - petsc
+  - petsc=3.18.0
   - mpi4py
   - h5py
   - petsc4py
   - gmsh
+  - pdoc3
   - pip
-  - pip:
-    - pdoc3
