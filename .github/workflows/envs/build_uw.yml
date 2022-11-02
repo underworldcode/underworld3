@@ -1,0 +1,13 @@
+name: uw3
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - nodejs
+  - cython
+  - petsc
+  - gmsh
+  - pip
+  - pip:
+    - mpi4py
