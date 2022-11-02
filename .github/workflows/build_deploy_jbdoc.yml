@@ -8,12 +8,6 @@ on:
       - main 
       - development
 
-  # workflow_run:
-  #   workflows: ["Conda Deployment"]
-  #   branches: [master]
-  #   types: 
-  #     - completed
-
   workflow_dispatch:
 
 jobs:
@@ -53,7 +47,7 @@ jobs:
         with:
           # deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          destination_dir: ${GITHUB_REF##*/}   # The dest dir is identified by branch 
+          destination_dir: ${{ github.ref_name }}    # The dest dir is identified by branch 
           publish_dir: jupyterbook/_build/html
           
 
