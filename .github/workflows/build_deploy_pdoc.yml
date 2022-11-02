@@ -45,7 +45,13 @@ jobs:
           brew install petsc 
 
           brew info petsc  # /usr/local/Cellar/petsc/3.18.1 (7,221 files, 61.3MB) 
+
+          echo "ls /usr/local/Cellar/petsc/3.18.1 - "
           ls /usr/local/Cellar/petsc/3.18.1
+
+          echo "ls /usr/local/Cellar/petsc/3.18.1/lib - "
+          ls /usr/local/Cellar/petsc/3.18.1/lib
+
           
           pip3 install mpi4py h5py 
           pip3 install pdoc3
@@ -54,7 +60,7 @@ jobs:
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
         run: |
-          VERSION=`python setup.py --version`
+          VERSION=`python3 setup.py --version`
           python3 setup.py develop
           pip3 install -e .
 
