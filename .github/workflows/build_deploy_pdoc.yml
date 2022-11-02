@@ -41,6 +41,7 @@ jobs:
           brew update
           brew install python@3.10
           brew install cython
+          brew install numpy
           brew install gmsh
           brew install petsc 
 
@@ -52,10 +53,13 @@ jobs:
           echo "ls /usr/local/Cellar/petsc/3.18.1/lib - "
           ls /usr/local/Cellar/petsc/3.18.1/lib
 
-          
+          export PETSC_DIR = "/usr/local/Cellar/petsc/3.18.1/lib"
+          export PETSC_ARCH = ""
+ 
           pip3 install mpi4py h5py 
           pip3 install pdoc3
           pip3 install cython
+          pip3 install petsc4py
 
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
