@@ -32,7 +32,7 @@ jobs:
           path: |
             /opt/homebrew
             /usr/local/Cellar
-            ~/.petsc
+            ~/petsc
             ~/.cache/pip
           key: macos-underworld3-jbdocs
 
@@ -43,23 +43,23 @@ jobs:
           brew install cython
           brew install numpy
           brew install gmsh
-          brew install petsc 
+          brew install mpich
 
-          brew info petsc  # /usr/local/Cellar/petsc/3.18.1 (7,221 files, 61.3MB) 
-
-          echo "ls /usr/local/Cellar/petsc/3.18.1 - "
-          ls /usr/local/Cellar/petsc/3.18.1
-
-          echo "ls /usr/local/Cellar/petsc/3.18.1/lib - "
-          ls /usr/local/Cellar/petsc/3.18.1/lib
-
-          export PETSC_DIR="/usr/local/Cellar/petsc/3.18.1/lib"
-          export PETSC_ARCH=""
- 
           pip3 install mpi4py h5py 
           pip3 install pdoc3
           pip3 install cython
-          pip3 install petsc4py
+          # pip3 install petsc4py
+
+      - name: install / build / test petsc
+        run: |
+          git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
+          cd petsc
+          export PETSC_ARCH=""
+          ./config/configure.py --with-debugging=0 --with-petsc4py=1 
+          make PETSC_DIR=~/petsc PETSC_ARCH="" all
+
+
+
 
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
