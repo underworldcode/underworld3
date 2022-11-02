@@ -29,17 +29,20 @@ jobs:
           CACHE_NUMBER: 0
         with:
           path: |
-          /opt/homebrew
-          ~/.cache/pip
-          key: macos-underworld3-jbdocs
+            /opt/homebrew
+            ~/.cache/pip
+          key: macos-underworld3-jbdocs-${{CACHE_NUMBER}}
 
       - name: homebrew install dependencies
         run: |
           brew update
           brew install python@3.10
+          brew install node
           brew install jupyter 
 
           pip3 install jupyter-book
+          
+          ## Do we need reveal-md / node stuff in here ?
  
       - name: Build docs with jupyterbook
         shell: bash -l {0}
