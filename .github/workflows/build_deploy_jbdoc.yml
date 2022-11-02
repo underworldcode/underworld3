@@ -40,6 +40,7 @@ jobs:
           brew install node
           brew install jupyter 
           pip3 install jupyter-book
+          pip3 install jupytext
           
           ## Do we need reveal-md / node stuff in here ?
  
