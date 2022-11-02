@@ -41,23 +41,22 @@ jobs:
           brew update
           brew install python@3.10
           brew install cython
-          brew install numpy
           brew install gmsh
-          brew install hdf5
-          brew install openmpi
-
-          pip3 install mpi4py h5py 
-          pip3 install pdoc3
-          pip3 install cython
-          # pip3 install petsc4py
 
       - name: install / build / test petsc
         run: |
           git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
           cd petsc
-          ./config/configure.py --with-debugging=0 --with-petsc4py=1 
+          ./config/configure.py --with-debugging=0 --with-petsc4py=1 --download-hdf5=1 --with-hdf5
           make PETSC_DIR=~/petsc all
 
+      - name: install petsc4py etc
+        run: |
+          pip3 install numpy
+          pip3 install mpi4py h5py 
+          pip3 install pdoc3
+          pip3 install cython
+          # pip3 install petsc4py
 
 
 
