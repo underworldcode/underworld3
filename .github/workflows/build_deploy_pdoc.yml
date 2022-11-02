@@ -51,7 +51,7 @@ jobs:
           git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
           cd petsc
           ./config/configure.py --with-debugging=0 --with-petsc4py=1 --download-hdf5=1 --with-hdf5
-          make PETSC_DIR=~/petsc all
+          make PETSC_DIR=/Users/runner/work/underworld3/underworld3/petsc PETSC_ARCH=arch-darwin-c-opt all
 
       - name: install petsc4py etc
         run: |
@@ -89,3 +89,8 @@ jobs:
           destination_dir: docs/
           publish_dir: uw3_api_docs
 
+        with:
+          # deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ${{ github.ref_name }}_api    # The dest dir is identified by branch 
+          publish_dir: uw3_api_docs
