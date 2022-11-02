@@ -31,6 +31,7 @@ jobs:
         with:
           path: |
             /opt/homebrew
+            /usr/local/Cellar
             ~/.petsc
             ~/.cache/pip
           key: macos-underworld3-jbdocs
@@ -43,16 +44,17 @@ jobs:
           brew install gmsh
           brew install petsc 
 
-          brew info petsc
+          brew info petsc  # /usr/local/Cellar/petsc/3.18.1 (7,221 files, 61.3MB) 
+          ls /usr/local/Cellar/petsc/3.18.1
           
           pip3 install mpi4py h5py 
           pip3 install pdoc3
+          pip3 install cython
 
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
         run: |
           VERSION=`python setup.py --version`
-          pwd
           python3 setup.py develop
           pip3 install -e .
 
