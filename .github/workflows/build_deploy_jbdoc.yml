@@ -21,34 +21,23 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v3
-  
-      - name: Cache build environment
-        uses: actions/cache@v3
-        env:
-        # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
+      - uses: actions/setup-python@v4
         with:
-          path: |
-            /opt/homebrew
-            ~/.cache/pip
-          key: macos-underworld3-jbdocs-${{env.CACHE_NUMBER}}
+          python-version: '3.10'
+          cache: 'pip' # caching pip dependencies
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
 
-      - name: homebrew install dependencies
+      - name: install jupyterbook dependencies
         run: |
-          brew update
-          brew install python@3.10
-          brew install node
-          brew install jupyter 
           pip3 install jupyter-book
           pip3 install jupytext
           
-          ## Do we need reveal-md / node stuff in here ?
- 
       - name: Build docs with jupyterbook
         shell: bash -l {0}
         run: |
-          which python
-          which python3
           cd Jupyterbook
           ./build_book.sh 
 
