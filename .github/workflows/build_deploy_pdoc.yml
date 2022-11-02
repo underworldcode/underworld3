@@ -43,6 +43,8 @@ jobs:
           brew install cython
           brew install numpy
           brew install gmsh
+          brew install hdf5
+          brew install openmpi
 
           pip3 install mpi4py h5py 
           pip3 install pdoc3
