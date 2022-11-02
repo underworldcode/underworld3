@@ -53,9 +53,8 @@ jobs:
         run: |
           git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
           cd petsc
-          export PETSC_ARCH=""
           ./config/configure.py --with-debugging=0 --with-petsc4py=1 
-          make PETSC_DIR=~/petsc PETSC_ARCH="" all
+          make PETSC_DIR=~/petsc all
 
 
 
