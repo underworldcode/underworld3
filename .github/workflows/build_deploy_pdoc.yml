@@ -53,8 +53,8 @@ jobs:
           echo "ls /usr/local/Cellar/petsc/3.18.1/lib - "
           ls /usr/local/Cellar/petsc/3.18.1/lib
 
-          export PETSC_DIR = "/usr/local/Cellar/petsc/3.18.1/lib"
-          export PETSC_ARCH = ""
+          export PETSC_DIR="/usr/local/Cellar/petsc/3.18.1/lib"
+          export PETSC_ARCH=""
  
           pip3 install mpi4py h5py 
           pip3 install pdoc3
