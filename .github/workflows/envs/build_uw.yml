@@ -7,7 +7,10 @@ dependencies:
   - nodejs
   - cython
   - petsc
+  - mpi4py
+  - h5py
+  - petsc4py
   - gmsh
   - pip
   - pip:
-    - mpi4py
+    - pdoc3
