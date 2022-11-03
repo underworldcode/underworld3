@@ -29,62 +29,23 @@ jobs:
           environment-file: ./.github/workflows/envs/build_uw.yml
           cache-downloads: true
 
-
-
-      # - name: Cache build environment
-      #   uses: actions/cache@v3
-      #   env:
-      #   # Increase this value to reset cache if etc/example-environment.yml has not changed
-      #     CACHE_NUMBER: 0
-      #   with:
-      #     path: |
-      #       /opt/homebrew
-      #       /usr/local/Cellar
-      #       ~/petsc
-      #       ~/.cache/pip
-      #    key: macos-underworld3-jbdocs-${{env.CACHE_NUMBER}}
-
-      # - name: homebrew install dependencies
-      #   run: |
-      #     brew update
-      #     brew install python@3.10
-      #     brew install cython
-      #     brew install petsc
-      #     brew install gmsh
-
-          # export PETSC_DIR="/usr/local/Cellar/petsc/3.18.1/lib"
-
-          # pip3 install cython numpy
-          # pip3 install mpi4py h5py 
-          # pip3 install pdoc3
-          # pip3 install petsc4py
-
-
-
-      # - name: install / build / test petsc from source
-      #   run: |
-      #     git clone -b release https://gitlab.com/petsc/petsc.git petsc && true  # use it if it is there
-      #     cd petsc
-      #     ./config/configure.py --with-debugging=0 --with-petsc4py=1 --download-hdf5=1 --with-hdf5
-      #     make PETSC_DIR=/Users/runner/work/underworld3/underworld3/petsc PETSC_ARCH=arch-darwin-c-opt all
-
    
       - name: Install underworld3 from most recent upload
         shell: bash -l {0}
         run: |
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
-          # python3 setup.py develop
-          # pip3 install -e .
+          python3 setup.py develop
+          pip3 install -e .
 
 
-      # - name: Build docs with pdoc
-      #   shell: bash -l {0}
-      #   run: |
-      #     VERSION=`python3 setup.py --version`
-      #     echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
-      #     # mkdir -p docs
-      #     ./docs.sh
+      - name: Build docs with pdoc
+        shell: bash -l {0}
+        run: |
+          VERSION=`python3 setup.py --version`
+          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
+          # mkdir -p docs
+          ./docs.sh
 
       # There is an action to build the jupyter book to a different directory 
       # and then they can be uploaded side by side
