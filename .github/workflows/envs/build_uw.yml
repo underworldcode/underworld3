@@ -11,9 +11,8 @@ dependencies:
   - petsc=3.18.0
   - mpi4py
   - h5py
-  - petsc4py
   - gmsh
   - pdoc3
+  - pytest
   - pip
-  # - pip:
-  #     - petsc4py
+
