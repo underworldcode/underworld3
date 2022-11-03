@@ -20,7 +20,7 @@ jobs:
       - name: Install Conda environment with Micromamba
         uses: mamba-org/provision-with-micromamba@main
         with:
-          environment-file: ./.github/workflows/envs/build_uw.yml
+          environment-file: ./.github/workflows/envs/build_uw_docs.yml
           cache-downloads: true
 
       # the following may be needed if conda-forge is out of date

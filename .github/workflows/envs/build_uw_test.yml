@@ -12,5 +12,6 @@ dependencies:
   - h5py
   - gmsh
   - pytest
+  - ipython # needed for "display" functionality (should be optional !)
   - pip
 
