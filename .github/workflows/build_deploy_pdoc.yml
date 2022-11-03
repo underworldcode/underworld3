@@ -29,20 +29,21 @@ jobs:
           environment-file: ./.github/workflows/envs/build_uw.yml
           cache-downloads: true
 
-      - name: Interogate conda
+      - name: Add compatible petsc4py
         shell: bash -l {0}
         run: |
-          echo "/home/runner/micromamba-root/envs/uw3"
-          ls /home/runner/micromamba-root/envs/uw3
-          echo "/home/runner/micromamba-root/envs/uw3/lib"
-          ls /home/runner/micromamba-root/envs/uw3/lib
-          echo "/home/runner/micromamba-root/envs/uw3/include"
-          ls /home/runner/micromamba-root/envs/uw3/include
-
           export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
           pip3 install petsc4py
 
+      - name: Build UW3
+        shell: bash -l {0}
+        run: |
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
+          VERSION=`python3 setup.py --version`
+          echo "UW - version " ${VERSION}
 
+          python3 setup.py develop
+          pip3 install -e .
 
    
       # - name: Install underworld3 from most recent upload
