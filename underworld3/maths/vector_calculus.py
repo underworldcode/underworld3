@@ -14,7 +14,7 @@ class mesh_vector_calculus:
 
     def curl(self, matrix):
         r"""
-        \( \nabla \cross \mathbf{v} \)
+        \( \nabla \times \mathbf{v} \)
 
         Returns the curl of a 3D vector field or the out-of-plane
         component of a 2D vector field
@@ -129,7 +129,9 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
             coordinate_type == CoordinateSystemType.CYLINDRICAL2D_NATIVE
             or coordinate_type == CoordinateSystemType.CYLINDRICAL3D_NATIVE
         ):
-            print(f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not cylindrical")
+            print(
+                f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not cylindrical"
+            )
 
         super().__init__(mesh)
 
@@ -250,7 +252,9 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         # validation
 
         if not coordinate_type == CoordinateSystemType.SPHERICAL_NATIVE:
-            print(f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not spherical")
+            print(
+                f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not spherical"
+            )
 
         super().__init__(mesh)
 
@@ -299,7 +303,7 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
 
     def curl(self, matrix):
         r"""
-        $\nabla \cross \phi$ in spherical  (UGLY - return nothing for the moment)
+        $\nabla \times \phi$ in spherical
         """
 
         r = self.mesh.CoordinateSystem.N[0]
@@ -313,7 +317,11 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
 
         curl_V = sympy.Matrix.zeros(1, 3)
 
-        curl_V[0] = V_l1.diff(l2) / r - sympy.tan(l2) * V_l1 / r - V_l2.diff(l1) / (r * sympy.cos(l2))
+        curl_V[0] = (
+            V_l1.diff(l2) / r
+            - sympy.tan(l2) * V_l1 / r
+            - V_l2.diff(l1) / (r * sympy.cos(l2))
+        )
         curl_V[1] = V_l2.diff(r) + V_l2 / r - V_r.diff(l2) / r
         curl_V[2] = V_r.diff(l1) / (r * sympy.cos(l2)) - V_l1.diff(r) - V_l1 / r
 
@@ -343,11 +351,15 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         # E_00, E_22 and E_02 are unchanged from Cartesian
 
         E[0, 0] = L[0, 0]
-        E[1, 1] = (L[1, 1] + V_r * sympy.cos(l2) + V_l2 * sympy.sin(l2)) / (r * sympy.cos(l2))
+        E[1, 1] = (L[1, 1] + V_r * sympy.cos(l2) + V_l2 * sympy.sin(l2)) / (
+            r * sympy.cos(l2)
+        )
         E[2, 2] = (L[2, 2] + V_r) / r
 
         E[1, 0] = E[0, 1] = (L[0, 1] / (r * sympy.cos(l2)) + L[1, 0] - V_l1 / r) / 2
         E[2, 0] = E[0, 2] = (L[0, 2] / r + L[2, 0] - V_l2 / r) / 2
-        E[1, 2] = E[2, 1] = (L[1, 2] + L[2, 1] / sympy.cos(l2) - V_l1 * sympy.tan(l2)) / (2 * r)
+        E[1, 2] = E[2, 1] = (
+            L[1, 2] + L[2, 1] / sympy.cos(l2) - V_l1 * sympy.tan(l2)
+        ) / (2 * r)
 
         return E
