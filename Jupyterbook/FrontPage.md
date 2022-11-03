@@ -1,21 +1,22 @@
 
 # The Underworld Geodynamics Platform
 
+![](./Figures/SocialShare.png)
+
 ## A parallel, python, particle-in-cell, finite-element code for Geodynamics
 
-```{figure} ./Figures/MansoursNightmare.png
----
-width: 50mm
-name: democratic-republic-of-uw
-figclass: margin
----
+```{margin} 
+![](./Figures/MansoursNightmare.png)
 
-Come into the garden, Maud <br>
-For the black bat night has flown <br>
-Come into the garden, Maud <br>
-I am here at the gate alone; <br>
-And the woodbine spices are wafted abroad, <br>
-And the musk of the rose is blown. <br>
+<small>
+Come into the garden, Maud </br>
+Come into the garden, Maud </br>
+I am here at the gate alone; </br>
+And the woodbine spices are wafted abroad, </br>
+And the musk of the rose is blown. </br>
+</br>
+Alfred, Lord Tennyson
+</small>
 ```
 
 Underworld is a python-friendly geodynamics code which provides a programmable and flexible front end to all the functionality of the code running in a parallel HPC environment. This gives significant advantages to the user, with access to the power of python libraries for setup of complex problems, analysis at runtime, problem steering, and coupling of multiple problems. Underworld is integrated with the literate programming environment of the jupyter notebook system for tutorials and as a teaching tool for solid Earth geoscience.
@@ -26,7 +27,10 @@ Underworld is an open-source, particle-in-cell finite element code tuned for lar
 
   - [Underworld Blog](https://www.underworldcode.org/articles)
   - [Underworld on Github](https://github.com/underworldcode/underworld3)
-
+  - [Underworld documentation](https://underworldcode.github.io/underworld3/main)
+  - [Underworld api documentation](https://underworldcode.github.io/underworld3/main_api)
+  - [Underworld beta documentation](https://underworldcode.github.io/underworld3)
+  
 
 ### Governance
 
