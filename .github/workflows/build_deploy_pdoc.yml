@@ -9,12 +9,6 @@ on:
       - main # Occurs on protected branch through PR
       - development
 
-  # workflow_run:
-  #   workflows: ["Conda Deployment"]
-  #   branches: [master]
-  #   types: 
-  #     - completed
-
   workflow_dispatch:
 
 jobs:
@@ -33,13 +27,13 @@ jobs:
       - name: Add compatible petsc4py
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
           pip3 install petsc4py --upgrade
 
       - name: Build UW3
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 

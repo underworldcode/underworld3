@@ -1,0 +1,16 @@
+name: uw3_docs
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - mpich-mpicc
+  - mpich-mpicxx
+  - cython
+  - petsc=3.18.0
+  - mpi4py
+  - h5py
+  - gmsh
+  - pdoc3
+  - pip
+

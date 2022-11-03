@@ -1,4 +1,4 @@
-name: API docs / pdoc3 
+name: Build and test UW3
 
 # We should trigger this from an upload event. Note that pdoc requires us to import the 
 # built code, so this is a building test as well as documentation deployment
@@ -22,20 +22,20 @@ jobs:
       - name: Install Conda environment with Micromamba
         uses: mamba-org/provision-with-micromamba@main
         with:
-          environment-file: ./.github/workflows/envs/build_uw.yml
+          environment-file: ./.github/workflows/envs/build_uw_test.yml
           cache-downloads: true
 
       # the following may be needed if conda-forge is out of date
       - name: Add compatible petsc4py
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
           pip3 install petsc4py --upgrade
 
       - name: Build UW3
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3"
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
