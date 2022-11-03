@@ -6,7 +6,7 @@ on:
   push:   # We publish the beta docs as well
     branches: 
       - main 
-      - development
+    #   - development
 
   workflow_dispatch:
 

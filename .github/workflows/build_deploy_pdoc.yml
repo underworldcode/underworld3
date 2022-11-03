@@ -7,7 +7,7 @@ on:
   push:       # This is not really a great idea 
     branches:
       - main # (shouldn't happen - protected)
-    #   - development
+      - development
 
   # workflow_run:
   #   workflows: ["Conda Deployment"]
