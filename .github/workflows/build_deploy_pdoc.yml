@@ -29,23 +29,34 @@ jobs:
           environment-file: ./.github/workflows/envs/build_uw.yml
           cache-downloads: true
 
+      - name: Interogate conda
+        shell: bash -l {0}
+        run: |
+          echo "/home/runner/micromamba-root/envs/uw3"
+          ls /home/runner/micromamba-root/envs/uw3
+          echo "/home/runner/micromamba-root/envs/uw3/lib"
+          ls /home/runner/micromamba-root/envs/uw3/lib
+
+
+
+
    
-      - name: Install underworld3 from most recent upload
-        shell: bash -l {0}
-        run: |
-          VERSION=`python3 setup.py --version`
-          echo "UW - version " ${VERSION}
-          python3 setup.py develop
-          pip3 install -e .
+      # - name: Install underworld3 from most recent upload
+      #   shell: bash -l {0}
+      #   run: |
+      #     VERSION=`python3 setup.py --version`
+      #     echo "UW - version " ${VERSION}
+      #     python3 setup.py develop
+      #     pip3 install -e .
 
 
-      - name: Build docs with pdoc
-        shell: bash -l {0}
-        run: |
-          VERSION=`python3 setup.py --version`
-          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
-          # mkdir -p docs
-          ./docs.sh
+      # - name: Build docs with pdoc
+      #   shell: bash -l {0}
+      #   run: |
+      #     VERSION=`python3 setup.py --version`
+      #     echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
+      #     # mkdir -p docs
+      #     ./docs.sh
 
       # There is an action to build the jupyter book to a different directory 
       # and then they can be uploaded side by side

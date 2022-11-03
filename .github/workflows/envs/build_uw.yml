@@ -13,5 +13,5 @@ dependencies:
   - gmsh
   - pdoc3
   - pip
-  - pip:
-      - petsc4py
+  # - pip:
+  #     - petsc4py
