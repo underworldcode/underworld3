@@ -1,0 +1,61 @@
+name: API docs / pdoc3 
+
+# We should trigger this from an upload event. Note that pdoc requires us to import the 
+# built code, so this is a building test as well as documentation deployment
+
+on:
+  push:      
+    branches:
+      - main # Occurs on protected branch through PR
+      - development
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Conda environment with Micromamba
+        uses: mamba-org/provision-with-micromamba@main
+        with:
+          environment-file: ./.github/workflows/envs/build_uw_docs.yml
+          cache-downloads: true
+          cache-env: true
+
+      # the following may be needed if conda-forge is out of date
+      - name: Add compatible petsc4py
+        shell: bash -l {0}
+        run: |
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
+          pip3 install petsc4py --upgrade
+
+      - name: Build UW3
+        shell: bash -l {0}
+        run: |
+          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
+          VERSION=`python3 setup.py --version`
+          echo "UW - version " ${VERSION}
+
+          python3 setup.py develop
+          pip3 install -e .
+
+      - name: Build docs with pdoc
+        shell: bash -l {0}
+        run: |
+          VERSION=`python3 setup.py --version`
+          echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
+          # mkdir -p docs
+          ./docs.sh
+
+      # There is an action to build the jupyter book to a different directory 
+      # and then they can be uploaded side by side
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ${{ github.ref_name }}_api    # The dest dir is identified by branch 
+          publish_dir: uw3_api_docs/underworld3
