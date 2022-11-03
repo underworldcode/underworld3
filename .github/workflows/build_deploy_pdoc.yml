@@ -22,6 +22,7 @@ jobs:
         with:
           environment-file: ./.github/workflows/envs/build_uw_docs.yml
           cache-downloads: true
+          cache-env: true
 
       # the following may be needed if conda-forge is out of date
       - name: Add compatible petsc4py

@@ -13,5 +13,6 @@ dependencies:
   - gmsh
   - pytest
   - ipython # needed for "display" functionality (should be optional !)
+  - pyvista # flagged in some tests (should not be needed for tests !)
   - pip
 
