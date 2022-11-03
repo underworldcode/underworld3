@@ -5,6 +5,7 @@ dependencies:
   - python=3.10
   - numpy
   - nodejs
+  - mpich-mpicc
   - cython
   - petsc
   - mpi4py

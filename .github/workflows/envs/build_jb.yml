@@ -1,0 +1,11 @@
+name: jbook
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - nodejs
+  - jupyter-core
+  - jupytext
+  - pip
+    - jupyter-book

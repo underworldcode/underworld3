@@ -50,12 +50,12 @@ jobs:
       # There is an action to build the jupyter book to a different directory 
       # and then they can be uploaded side by side
 
-      # Note deploy key needs the ----BEGIN ... KEY---- lines too
-      # - name: Deploy
-      #   uses: peaceiris/actions-gh-pages@v3
+      Note deploy key needs the ----BEGIN ... KEY---- lines too
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
         
-      #   with:
-      #     # deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
-      #     github_token: ${{ secrets.GITHUB_TOKEN }}
-      #     destination_dir: ${{ github.ref_name }}_api    # The dest dir is identified by branch 
-      #     publish_dir: uw3_api_docs
+        with:
+          # deploy_key: ${{ secrets.GH_PAGES_DEPLOY_PR_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ${{ github.ref_name }}_api    # The dest dir is identified by branch 
+          publish_dir: uw3_api_docs
