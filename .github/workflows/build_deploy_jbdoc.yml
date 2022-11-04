@@ -3,10 +3,11 @@ name: API docs / jupyterbook
 # We should trigger this from an upload event 
 
 on:
-  push:   # We publish the beta docs as well
+  push:   # We publish the beta docs as well - but on a different url (by branch name)
     branches: 
       - main 
-    #   - development
+      - development
+
 
   workflow_dispatch:
 

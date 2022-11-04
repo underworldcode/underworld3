@@ -1,4 +1,4 @@
-## Exercises
+# Exercises
 
 Add questions to include in the JB ... don't add answers because a private repo
 cannot be clones to jupyterhub with nbgitpuller. 

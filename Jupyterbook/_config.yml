@@ -15,15 +15,17 @@ html:
   comments:
     hypothesis: true
 
-parse:
-  myst_extended_syntax: true
-
 sphinx:
   config:
     html_show_copyright: false
     mathjax_path: https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
     # html_extra_path: ['Figures/Movies']
+    nb_custom_formats:
+      .py:
+        - jupytext.reads
+        - fmt: py
 
+parse:
     myst_enable_extensions: 
     - amsmath
     - colon_fence
@@ -35,10 +37,10 @@ sphinx:
     - smartquotes
     - substitution
 
-    nb_custom_formats:
-        .py:
-            - jupytext.reads
-            - fmt: py
+  # nb_custom_formats:
+  #         .py:
+  #             - jupytext.reads
+  #             - fmt: py
 
 repository:
   url    : https://github.com/underworldcode/underworld3  # Online location of this book
@@ -54,7 +56,6 @@ execute:
   #   - File.ipynb
   execute_notebooks: 'off'
   allow_errors : true # If `False`, when a code cell raises an error the execution is stopped, otherwise all cells are always run.
-
 
 bibtex_bibfiles:
    - UnderworldManual.bib

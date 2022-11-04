@@ -1,40 +1,42 @@
----
+
 # The Underworld Geodynamics Platform
+
+![](./Figures/SocialShare.png)
 
 ## A parallel, python, particle-in-cell, finite-element code for Geodynamics
 
-Underworld is a python-friendly geodynamics code which provides a programmable and flexible front end to all the functionality of the code running in a parallel HPC environment. This gives significant advantages to the user, with access to the power of python libraries for setup of complex problems, analysis at runtime, problem steering, and coupling of multiple problems. Underworld is integrated with the literate programming environment of the jupyter notebook system for tutorials and as a teaching tool for solid Earth geoscience.
+```{margin} 
+![](./Figures/MansoursNightmare.png)
 
-````{sidebar} Underworld 3
-Image
-```{figure} Figures/MansoursNightmare.png
-width: 50mm
-name: democratic-republic-of-uw
----
-Come into the garden, Maud <br>
-For the black bat night has flown <br>
-Come into the garden, Maud <br>
-I am here at the gate alone; <br>
-And the woodbine spices are wafted abroad, <br>
-And the musk of the rose is blown. <br>
+<small>
+Come into the garden, Maud </br>
+Come into the garden, Maud </br>
+I am here at the gate alone; </br>
+And the woodbine spices are wafted abroad, </br>
+And the musk of the rose is blown. </br>
+</br>
+Alfred, Lord Tennyson
+</small>
 ```
 
-````
-
+Underworld is a python-friendly geodynamics code which provides a programmable and flexible front end to all the functionality of the code running in a parallel HPC environment. This gives significant advantages to the user, with access to the power of python libraries for setup of complex problems, analysis at runtime, problem steering, and coupling of multiple problems. Underworld is integrated with the literate programming environment of the jupyter notebook system for tutorials and as a teaching tool for solid Earth geoscience.
 
 Underworld is an open-source, particle-in-cell finite element code tuned for large-scale geodynamics simulations. The numerical algorithms allow the tracking of history information through the high-strain deformation associated with fluid flow (for example, transport of the stress tensor in a viscoelastic, convecting medium, or the advection of fine-scale damage parameters by the large-scale flow). The finite element mesh can be static or dynamic, but it is not constrained to move in lock-step with the evolving geometry of the fluid. This hybrid approach is very well suited to complex fluids which is how the solid Earth behaves on a geological timescale.
 
 #### Links
 
   - [Underworld Blog](https://www.underworldcode.org/articles)
-  - [Underworld on Github](https://github.com/underworldcode)
-
+  - [Underworld on Github](https://github.com/underworldcode/underworld3)
+  - [Underworld documentation](https://underworldcode.github.io/underworld3/main)
+  - [Underworld api documentation](https://underworldcode.github.io/underworld3/main_api)
+  - [Underworld beta documentation](https://underworldcode.github.io/underworld3)
+  
 
 ### Governance
 
 Underworld is funded by AuScope which is part of the Australian Government's NCRIS initiative to provide community research infrastructure (please see www.auscope.org.au for more information).
 
-The Underworld development team is based in Australia at the Australian National University, the University of Melbourne and at Monash University and is led by Louis Moresi.
+The Underworld development team is based in Australia at the Australian National University, the University of Sydney and at Monash University and is led by Louis Moresi (ANU).
 
 All development is overseen by a steering committee drawn from the supporting organisations and representatives from the Underworld community.
 
