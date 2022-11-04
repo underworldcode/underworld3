@@ -1,5 +1,17 @@
-#!/usr/bin/env python
-# coding: utf-8
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
 # %% [markdown]
 # # Creating a mesh (and checking the labels)
 #
@@ -30,7 +42,9 @@ mesh1.dm.view()
 petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
 
 # %%
-petsc_discretisation.petsc_dm_set_periodicity(mesh1.dm, (0.5,3.14159,0.0), (0.0,0.0,0.0), (1.0, 6.28, 0.0))
+petsc_discretisation.petsc_dm_set_periodicity(
+    mesh1.dm, (0.5, 3.14159, 0.0), (0.0, 0.0, 0.0), (1.0, 6.28, 0.0)
+)
 
 # %%
 coodm = mesh1.dm.getCoordinateDM()
@@ -44,7 +58,7 @@ mesh1.dm.view()
 petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
 
 # %%
-0/0
+0 / 0
 
 # %%
 dC0 = uw.discretisation.MeshVariable(r"dC_0", mesh1, 1, degree=0, continuous=False)
@@ -98,7 +112,19 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.5,
     )
-    pl.add_points(point_cloud, color="Red", render_points_as_spheres=True, point_size=5, opacity=0.66)
-    pl.add_points(point_cloud2, color="Blue", render_points_as_spheres=True, point_size=5, opacity=0.66)
+    pl.add_points(
+        point_cloud,
+        color="Red",
+        render_points_as_spheres=True,
+        point_size=5,
+        opacity=0.66,
+    )
+    pl.add_points(
+        point_cloud2,
+        color="Blue",
+        render_points_as_spheres=True,
+        point_size=5,
+        opacity=0.66,
+    )
 
     pl.show(cpos="xy")

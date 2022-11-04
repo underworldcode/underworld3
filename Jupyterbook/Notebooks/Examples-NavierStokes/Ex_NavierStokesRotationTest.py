@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Navier Stokes test: boundary driven ring with step change in boundary conditions
 #
 # This should develop a boundary layer with sqrt(t) growth rate
@@ -25,7 +40,13 @@ options = PETSc.Options()
 import meshio
 
 meshball = uw.meshes.SphericalShell(
-    dim=2, radius_inner=0.5, radius_outer=1.0, cell_size=0.075, cell_size_lower=0.05, degree=1, verbose=False
+    dim=2,
+    radius_inner=0.5,
+    radius_outer=1.0,
+    cell_size=0.075,
+    cell_size_lower=0.05,
+    degree=1,
+    verbose=False,
 )
 
 
@@ -34,7 +55,9 @@ meshball = uw.meshes.SphericalShell(
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 
 # Some useful coordinate stuff
@@ -191,7 +214,13 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0, 20.0])
     pl.add_mesh(pvstream)
     pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-2, opacity=0.75)
-    pl.add_points(point_cloud, color="Black", render_points_as_spheres=True, point_size=0.5, opacity=0.33)
+    pl.add_points(
+        point_cloud,
+        color="Black",
+        render_points_as_spheres=True,
+        point_size=0.5,
+        opacity=0.33,
+    )
 
     # pl.remove_scalar_bar("T")
     pl.remove_scalar_bar("mag")
@@ -234,7 +263,9 @@ def plot_V_mesh(filename):
 
         with meshball.access():
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
-            pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, meshball.data)
+            pvmesh.point_data["Omega"] = uw.function.evaluate(
+                vorticity.fn, meshball.data
+            )
 
         with meshball.access():
             usol = v_soln.data.copy()
@@ -261,7 +292,13 @@ def plot_V_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
 
-        pl.add_points(point_cloud, color="Black", render_points_as_spheres=True, point_size=2, opacity=0.66)
+        pl.add_points(
+            point_cloud,
+            color="Black",
+            render_points_as_spheres=True,
+            point_size=2,
+            opacity=0.66,
+        )
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
         pl.add_mesh(
@@ -274,14 +311,20 @@ def plot_V_mesh(filename):
             opacity=0.5,
         )
 
-        pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0, 20.0])
+        pl.add_mesh(
+            pvmesh, cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0, 20.0]
+        )
 
         scale_bar_items = list(pl.scalar_bars.keys())
 
         for scalar in scale_bar_items:
             pl.remove_scalar_bar(scalar)
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
         # pl.show()
 

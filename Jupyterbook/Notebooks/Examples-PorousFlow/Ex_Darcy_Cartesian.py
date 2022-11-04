@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Underworld Groundwater Flow Benchmark 1
 #
@@ -20,9 +35,9 @@ import sympy
 options = PETSc.Options()
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), 
-                                         maxCoords=(4.0, 1.0), 
-                                         cellSize=0.05, qdegree=3)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(4.0, 1.0), cellSize=0.05, qdegree=3
+)
 
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
@@ -31,12 +46,12 @@ v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 # %%
 # Mesh deformation
 
-x,y = mesh.X
+x, y = mesh.X
 
 h_fn = 1.0 + x * 0.2 / 4 + 0.04 * sympy.cos(2.0 * np.pi * x) * y
 
 new_coords = mesh.data.copy()
-new_coords[:,1] = uw.function.evaluate( h_fn * y, mesh.data, mesh.N)
+new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.data, mesh.N)
 
 mesh.deform_mesh(new_coords=new_coords)
 
@@ -58,7 +73,13 @@ if uw.mpi.size == 1 and uw.is_notebook:
 
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+    )
 
     pl.show(cpos="xy")
 
@@ -66,14 +87,14 @@ if uw.mpi.size == 1 and uw.is_notebook:
 # Create Poisson object
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.Parameters.diffusivity=1
+darcy.constitutive_model.Parameters.diffusivity = 1
 darcy.petsc_options.delValue("ksp_monitor")
 
 # %%
 # Set some things
 
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
-darcy.constitutive_model.Parameters.diffusivity=k
+darcy.constitutive_model.Parameters.diffusivity = k
 
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
@@ -108,9 +129,13 @@ if uw.mpi.size == 1 and uw.is_notebook:
         usol = v_soln.data.copy()
 
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0], mesh.data, mesh.N)
-    pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.sym[0] - (h_fn - y), mesh.data, mesh.N)
+    pvmesh.point_data["dP"] = uw.function.evaluate(
+        p_soln.sym[0] - (h_fn - y), mesh.data, mesh.N
+    )
     pvmesh.point_data["K"] = uw.function.evaluate(k, mesh.data, mesh.N)
-    pvmesh.point_data["S"] = uw.function.evaluate(sympy.log(v_soln.sym.dot(v_soln.sym)), mesh.data, mesh.N)
+    pvmesh.point_data["S"] = uw.function.evaluate(
+        sympy.log(v_soln.sym.dot(v_soln.sym)), mesh.data, mesh.N
+    )
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v_soln.coords[...]
@@ -142,11 +167,16 @@ if uw.mpi.size == 1 and uw.is_notebook:
 
     pl = pv.Plotter()
 
-
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=False,
+        scalars="P",
+        use_transparency=False,
+        opacity=1.0,
     )
-    
+
     pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
 
     pl.add_mesh(pvstream, line_width=10.0)

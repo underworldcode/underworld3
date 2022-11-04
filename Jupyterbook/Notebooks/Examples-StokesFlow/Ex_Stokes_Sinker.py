@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Multiple materials - Linear stokes sinker
 #
@@ -57,7 +72,9 @@ nsteps = 10
 swarmGPC = 2
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / res, regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / res, regular=False
+)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(int(2*res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
 
@@ -76,8 +93,12 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 ### No slip (?)
 sol_vel = sympy.Matrix([0, 0])
 
-stokes.add_dirichlet_bc(sol_vel, ["Top", "Bottom"], [0, 1])  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(sol_vel, ["Left", "Right"], [0, 1])  # left/right: components, function, markers
+stokes.add_dirichlet_bc(
+    sol_vel, ["Top", "Bottom"], [0, 1]
+)  # top/bottom: components, function, markers
+stokes.add_dirichlet_bc(
+    sol_vel, ["Left", "Right"], [0, 1]
+)  # left/right: components, function, markers
 
 
 # %%
@@ -177,12 +198,14 @@ def plot_T_mesh(filename):
         opacity=0.5,
     )
 
-    pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+    pl.screenshot(
+        filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False
+    )
 
 
 # %%
 # stokes.viscosity =  viscosity
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
 stokes.saddle_preconditioner = 1.0 / viscosity
 
@@ -249,7 +272,11 @@ while step < nstep:
 # %%
 if uw.mpi.rank == 0:
     print("Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
-    print("Final position:   t = {0:.3f}, y = {1:.3f}".format(tSinker[nsteps - 1], ySinker[nsteps - 1]))
+    print(
+        "Final position:   t = {0:.3f}, y = {1:.3f}".format(
+            tSinker[nsteps - 1], ySinker[nsteps - 1]
+        )
+    )
 
     import matplotlib.pyplot as pyplot
 

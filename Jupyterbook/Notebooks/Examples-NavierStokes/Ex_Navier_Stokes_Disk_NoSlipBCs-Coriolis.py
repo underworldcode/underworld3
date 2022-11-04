@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Cylindrical Stokes with Coriolis term (out of plane)
 
 # +
@@ -16,7 +31,9 @@ expt_name = "NS_flow_coriolis_disk"
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True)
+meshball = uw.meshes.SphericalShell(
+    dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
+)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
@@ -42,7 +59,9 @@ swarm.populate(fill_param=4)
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 gravity_fn = radius_fn
 
@@ -81,7 +100,9 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     solver_name="navier_stokes",
 )
 
-navier_stokes.petsc_options.delValue("ksp_monitor")  # We can flip the default behaviour at some point
+navier_stokes.petsc_options.delValue(
+    "ksp_monitor"
+)  # We can flip the default behaviour at some point
 navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
 navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
@@ -95,14 +116,19 @@ navier_stokes.theta = 0.5
 navier_stokes.penalty = 0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-32 * meshball.N.i
-navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t)
+navier_stokes._Ppre_fn = 1.0 / (
+    navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t
+)
 
 # Velocity boundary conditions
 
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Centre", (0, 1))
 
-v_theta = navier_stokes.theta * navier_stokes.u.fn + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
+v_theta = (
+    navier_stokes.theta * navier_stokes.u.fn
+    + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
+)
 # -
 
 t_init = sympy.cos(3 * th)
@@ -166,10 +192,21 @@ def plot_V_mesh(filename):
         pl.camera.SetPosition(0.0001, 0.0001, 4.0)
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe')
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+        pl.add_mesh(
+            pvmesh,
+            cmap="coolwarm",
+            edge_color="Black",
+            show_edges=True,
+            use_transparency=False,
+            opacity=0.5,
+        )
         pl.add_arrows(arrow_loc, arrow_length, mag=0.2)
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 2560), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(2560, 2560),
+            return_img=False,
+        )
 
         pl.close()
 
@@ -270,7 +307,14 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.2)
 
     pl.show(cpos="xy")

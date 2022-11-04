@@ -5,20 +5,6 @@
 
 ## A parallel, python, particle-in-cell, finite-element code for Geodynamics
 
-```{margin} 
-![](./Figures/MansoursNightmare.png)
-
-<small>
-Come into the garden, Maud </br>
-Come into the garden, Maud </br>
-I am here at the gate alone; </br>
-And the woodbine spices are wafted abroad, </br>
-And the musk of the rose is blown. </br>
-</br>
-Alfred, Lord Tennyson
-</small>
-```
-
 Underworld is a python-friendly geodynamics code which provides a programmable and flexible front end to all the functionality of the code running in a parallel HPC environment. This gives significant advantages to the user, with access to the power of python libraries for setup of complex problems, analysis at runtime, problem steering, and coupling of multiple problems. Underworld is integrated with the literate programming environment of the jupyter notebook system for tutorials and as a teaching tool for solid Earth geoscience.
 
 Underworld is an open-source, particle-in-cell finite element code tuned for large-scale geodynamics simulations. The numerical algorithms allow the tracking of history information through the high-strain deformation associated with fluid flow (for example, transport of the stress tensor in a viscoelastic, convecting medium, or the advection of fine-scale damage parameters by the large-scale flow). The finite element mesh can be static or dynamic, but it is not constrained to move in lock-step with the evolving geometry of the fluid. This hybrid approach is very well suited to complex fluids which is how the solid Earth behaves on a geological timescale.

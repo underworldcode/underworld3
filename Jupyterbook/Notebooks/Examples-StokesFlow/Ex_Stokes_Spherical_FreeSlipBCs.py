@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # Stokes flow in a Spherical Domain
 #
 #
@@ -83,7 +98,12 @@ import sympy
 
 
 # +
-meshball = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2,)
+meshball = uw.meshing.SphericalShell(
+    radiusInner=r_i,
+    radiusOuter=r_o,
+    cellSize=res,
+    qdegree=2,
+)
 
 
 # -- OR --
@@ -106,7 +126,9 @@ meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.X / (radius_fn)
 gravity_fn = radius_fn
 
@@ -163,15 +185,23 @@ s_norm, b_norm
 # +
 # Create NS object
 
-stokes = uw.systems.Stokes(meshball, velocityField=v_soln, pressureField=p_soln, verbose=False, solver_name="stokes")
+stokes = uw.systems.Stokes(
+    meshball,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    verbose=False,
+    solver_name="stokes",
+)
 
 stokes.petsc_options["snes_rtol"] = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
+    meshball.dim
+)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 # thermal buoyancy force
 buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
@@ -231,7 +261,9 @@ for i in range(10):
     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
     print(
-        "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(i, x_ns, y_ns, z_ns, null_space_err)
+        "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
+            i, x_ns, y_ns, z_ns, null_space_err
+        )
     )
 
     with meshball.access(v_soln):
@@ -289,7 +321,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data)
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
-    pvmesh.point_data["S"] = uw.function.evaluate(v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data)
+    pvmesh.point_data["S"] = uw.function.evaluate(
+        v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
+    )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[...] = stokes.u.coords[...]
@@ -303,7 +337,13 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.add_axes()
 
     pl.add_mesh(
-        clipped, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S", use_transparency=False, opacity=1.0
+        clipped,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="S",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
@@ -315,8 +355,4 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.show(cpos="xy")
 # -
 
-# ls 
-
-
-
-
+# ls

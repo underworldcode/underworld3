@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Cylindrical Stokes with Coriolis term (out of plane)
 
 # +
@@ -16,7 +31,9 @@ expt_name = "NS_FS_flow_coriolis_disk_500_iii"
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.075, degree=1, verbose=False)
+meshball = uw.meshes.SphericalShell(
+    dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.075, degree=1, verbose=False
+)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
@@ -44,7 +61,9 @@ swarm.populate(fill_param=4)
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 gravity_fn = radius_fn
 
@@ -85,7 +104,9 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     solver_name="navier_stokes",
 )
 
-navier_stokes.petsc_options.delValue("ksp_monitor")  # We can flip the default behaviour at some point
+navier_stokes.petsc_options.delValue(
+    "ksp_monitor"
+)  # We can flip the default behaviour at some point
 navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
 navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
 navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
@@ -110,7 +131,10 @@ free_slip_penalty = 1.0e4 * Rayleigh * v_soln.fn.dot(unit_rvec) * unit_rvec * su
 # navier_stokes.add_dirichlet_bc( (0.0, 0.0), "Upper",  (0,1))
 # navier_stokes.add_dirichlet_bc( (0.0, 0.0), "Centre", (0,1))
 
-v_theta = navier_stokes.theta * navier_stokes.u.fn + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
+v_theta = (
+    navier_stokes.theta * navier_stokes.u.fn
+    + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
+)
 
 # -
 
@@ -122,7 +146,9 @@ t_init = sympy.cos(3 * th)
 
 # +
 with meshball.access(r):
-    r.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.data)  # cf radius_fn which is 0->1
+    r.data[:, 0] = uw.function.evaluate(
+        sympy.sqrt(x**2 + y**2), meshball.data
+    )  # cf radius_fn which is 0->1
 
 # Write density into a variable for saving
 
@@ -202,7 +228,11 @@ def plot_V_mesh(filename):
         )
         pl.add_arrows(arrow_loc, arrow_length, mag=0.03)
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 2560), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(2560, 2560),
+            return_img=False,
+        )
 
         pl.close()
 
@@ -220,7 +250,9 @@ vorticity.fn
 for step in range(0, 10):
 
     Omega_0 = 50.0 * min(ts / 10, 1.0)
-    Coriolis = 2.0 * Omega_0 * navier_stokes.rho * sympy.vector.cross(meshball.N.k, v_theta)
+    Coriolis = (
+        2.0 * Omega_0 * navier_stokes.rho * sympy.vector.cross(meshball.N.k, v_theta)
+    )
 
     navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
     navier_stokes.bodyforce -= free_slip_penalty
@@ -241,7 +273,9 @@ for step in range(0, 10):
         v_soln_1.data[...] = v_soln.data[...]
 
     with swarm.access(v_star):
-        v_star.data[...] = 0.5 * uw.function.evaluate(v_soln.fn, swarm.data) + 0.5 * v_star.data[...]
+        v_star.data[...] = (
+            0.5 * uw.function.evaluate(v_soln.fn, swarm.data) + 0.5 * v_star.data[...]
+        )
 
     swarm.advection(v_soln.fn, delta_t=delta_t, corrector=False)
 
@@ -320,7 +354,13 @@ if uw.mpi.size == 1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="Om", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="Om",
+        use_transparency=False,
+        opacity=0.5,
     )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.05)
 
@@ -328,7 +368,9 @@ if uw.mpi.size == 1:
 # -
 
 
-meshball.stats(sympy.vector.cross(Omega, v_soln.fn).dot(sympy.vector.cross(Omega, v_soln.fn)))
+meshball.stats(
+    sympy.vector.cross(Omega, v_soln.fn).dot(sympy.vector.cross(Omega, v_soln.fn))
+)
 
 meshball.stats(v_soln.fn.dot(v_rbm_z))
 

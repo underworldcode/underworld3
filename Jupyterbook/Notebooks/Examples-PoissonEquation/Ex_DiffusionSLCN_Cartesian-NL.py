@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Nonlinear diffusion of a hot pipe
 #
@@ -29,21 +44,23 @@ sys.pushErrorHandler("traceback")
 ### Set the resolution.
 res = 32
 
-xmin, xmax = 0., 1.
-ymin, ymax = 0., 1.
+xmin, xmax = 0.0, 1.0
+ymin, ymax = 0.0, 1.0
 
-pipe_thickness = 0.4 ###
+pipe_thickness = 0.4  ###
 
 # %%
 k0 = 1e-6  ### m2/s (diffusivity)
-l0 = 1e5   ### 100 km in m (length of box)
-time_scale = l0**2/k0 ### s
-time_scale_Myr = time_scale / (60*60*24*365.25*1e6)
+l0 = 1e5  ### 100 km in m (length of box)
+time_scale = l0**2 / k0  ### s
+time_scale_Myr = time_scale / (60 * 60 * 24 * 365.25 * 1e6)
 
 # %%
 # mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True)
 
-mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
+mesh = uw.meshing.StructuredQuadBox(
+    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
+)
 
 
 # %%
@@ -53,7 +70,7 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(
 k = 1.0
 
 tmin = 0.5
-tmax = 1.
+tmax = 1.0
 
 # Create an adv
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -61,7 +78,9 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 k = uw.discretisation.MeshVariable("k", mesh, 1, degree=1)
 
-dTdY = uw.discretisation.MeshVariable(r"\partial T/ \partial \mathbf{y}", mesh, 1, degree=2)
+dTdY = uw.discretisation.MeshVariable(
+    r"\partial T/ \partial \mathbf{y}", mesh, 1, degree=2
+)
 
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
@@ -76,9 +95,9 @@ adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh
 
 # %%
 delT = mesh.vector.gradient(T.sym)
-gradient = (delT.dot(delT))
+gradient = delT.dot(delT)
 
-k_sym = ((delT.dot(delT)) / 2.)
+k_sym = (delT.dot(delT)) / 2.0
 
 adv_diff.constitutive_model.Parameters.diffusivity = k_sym
 
@@ -95,7 +114,6 @@ def updateFields():
     k_model.solve(_force_setup=True)
 
 
-
 # %%
 ### fix temp of top and bottom walls
 adv_diff.add_dirichlet_bc(0.5, "Bottom")
@@ -103,21 +121,24 @@ adv_diff.add_dirichlet_bc(0.5, "Top")
 
 
 # %%
-maxY = mesh.data[:,1].max()
-minY = mesh.data[:,1].min()
+maxY = mesh.data[:, 1].max()
+minY = mesh.data[:, 1].min()
 
 with mesh.access(T):
     T.data[...] = tmin
-    
-    pipePosition = ((maxY-minY) - pipe_thickness)/2.
 
-    T.data[(mesh.data[:,1] >= (mesh.data[:,1].min()+pipePosition)) & (mesh.data[:,1] <= (mesh.data[:,1].max()-pipePosition))] = tmax
+    pipePosition = ((maxY - minY) - pipe_thickness) / 2.0
+
+    T.data[
+        (mesh.data[:, 1] >= (mesh.data[:, 1].min() + pipePosition))
+        & (mesh.data[:, 1] <= (mesh.data[:, 1].max() - pipePosition))
+    ] = tmax
 
 
 # %%
 def plot_fig():
     updateFields()
-    
+
     if uw.mpi.size == 1:
 
         import numpy as np
@@ -139,8 +160,8 @@ def plot_fig():
 
         with mesh.access():
             vsol = v.data.copy()
-            pvmesh['T'] = T.data.copy()
-            pvmesh['k'] = uw.function.evaluate(k.sym[0], mesh.data)
+            pvmesh["T"] = T.data.copy()
+            pvmesh["k"] = uw.function.evaluate(k.sym[0], mesh.data)
 
         arrow_loc = np.zeros((v.coords.shape[0], 3))
         arrow_loc[:, 0:2] = v.coords[...]
@@ -154,8 +175,15 @@ def plot_fig():
 
         # pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
 
-        pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="k",
-                        use_transparency=False, opacity=0.95)
+        pl.add_mesh(
+            pvmesh,
+            cmap="coolwarm",
+            edge_color="Black",
+            show_edges=True,
+            scalars="k",
+            use_transparency=False,
+            opacity=0.95,
+        )
 
         # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
         #               use_transparency=False, opacity=0.5)
@@ -176,24 +204,27 @@ def plot_fig():
         # pl.add_points(pdata)
 
         pl.show(cpos="xy")
-        
+
         # return vsol
-        
+
+
 plot_fig()
 
 # %%
 ### Vertical profile across the centre of the box
 
 ### y coords to sample
-sample_y = np.arange(mesh.data[:,1].min(),mesh.data[:,1].max(), mesh.get_min_radius()) ### Vertical profile
+sample_y = np.arange(
+    mesh.data[:, 1].min(), mesh.data[:, 1].max(), mesh.get_min_radius()
+)  ### Vertical profile
 
 ### x coords to sample
 # sample_x = np.repeat(mesh.data[:,0].min(), sample_y.shape[0]) ### LHS wall
-sample_x = np.zeros_like(sample_y) ### centre of the box
+sample_x = np.zeros_like(sample_y)  ### centre of the box
 
 sample_points = np.empty((sample_x.shape[0], 2))
-sample_points[:,0] = sample_x
-sample_points[:,1] = sample_y
+sample_points[:, 0] = sample_x
+sample_points[:, 1] = sample_y
 
 t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
@@ -203,11 +234,13 @@ def get_dt():
     updateFields()
     with mesh.access(k):
         ### estimate the timestep based on diffusion only
-        dt = (mesh.get_min_radius()**2 / k.data[:,0].max()) ### dt = length squared / diffusivity
-        
+        dt = (
+            mesh.get_min_radius() ** 2 / k.data[:, 0].max()
+        )  ### dt = length squared / diffusivity
+
     # print(f'dt: {dt*time_scale_Myr} Myr')
-    print(f'dt: {dt*time_scale_Myr}')
-    
+    print(f"dt: {dt*time_scale_Myr}")
+
     return dt
 
 
@@ -219,25 +252,25 @@ def diffusion_1D(sample_points, tempProfile, k, model_dt):
     dx = sample_points[1] - sample_points[0]
 
     dt = 0.5 * (dx**2 / k)
-    
-    ''' max time of model '''
+
+    """ max time of model """
     total_time = model_dt
-    
-    ''' get min of 1D and 2D model '''
+
+    """ get min of 1D and 2D model """
     time_1DModel = min(model_dt, dt)
-    
-    ''' determine number of its '''
-    nts = math.ceil(total_time/time_1DModel)
-    
-    ''' get dt of 1D model '''
+
+    """ determine number of its """
+    nts = math.ceil(total_time / time_1DModel)
+
+    """ get dt of 1D model """
     final_dt = total_time / nts
-    
+
     for i in range(nts):
-        qT = -k * np.diff(T)/dx
-        dTdt = -np.diff(qT)/dx
-        T[1:-1] += dTdt*final_dt
-        
-    return T   
+        qT = -k * np.diff(T) / dx
+        dTdt = -np.diff(qT) / dx
+        T[1:-1] += dTdt * final_dt
+
+    return T
 
 
 # %%
@@ -245,56 +278,56 @@ def diffusion_1D(sample_points, tempProfile, k, model_dt):
 tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
 # %%
-step   = 0
-time   = 0.
+step = 0
+time = 0.0
 
 # %%
 nsteps = 21
 
 # %%
-adv_diff.petsc_options["ksp_rtol"] =  1.0e-8
+adv_diff.petsc_options["ksp_rtol"] = 1.0e-8
 
-adv_diff.petsc_options["snes_rtol"]=  1.0e-8
+adv_diff.petsc_options["snes_rtol"] = 1.0e-8
 
 # %%
 # if uw.mpi.size == 1:
 #     ''' create figure to show the temp diffuses '''
 #     plt.figure(figsize=(9, 3))
 #     plt.plot(t0, sample_points[:,1], ls=':')
-    
+
 
 while step < nsteps:
-    ### print some stuff    
-    if uw.mpi.rank==0:
+    ### print some stuff
+    if uw.mpi.rank == 0:
         # print(f"Step: {str(step).rjust(3)}, time: {time*time_scale_Myr:6.2f} [MYr]")
         print(f"Step: {str(step).rjust(3)}, time: {time:6.5f}")
-        
+
     ### 1D profile from underworld
     t1 = uw.function.evaluate(adv_diff.u.fn, sample_points)
-        
+
     if uw.mpi.size == 1 and step % 10 == 0:
-        ''' compare 1D and 2D models '''
+        """compare 1D and 2D models"""
         plt.figure()
         ### profile from UW
-        plt.plot(t1, sample_points[:,1], ls='-', c='red', label='2D nonlinear model')
+        plt.plot(t1, sample_points[:, 1], ls="-", c="red", label="2D nonlinear model")
         ### numerical solution
-        plt.plot(tempData, sample_points[:,1], ls=":", c='k', label='1D linear model')
+        plt.plot(tempData, sample_points[:, 1], ls=":", c="k", label="1D linear model")
         plt.legend()
         plt.show()
-        
+
     dt = get_dt()
-        
+
     ### 1D diffusion
-    tempData = diffusion_1D(sample_points=sample_points[:,1], tempProfile=tempData, k=1., model_dt=dt)
-    
+    tempData = diffusion_1D(
+        sample_points=sample_points[:, 1], tempProfile=tempData, k=1.0, model_dt=dt
+    )
+
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)
-    
 
-        
-    step +=1
-    time +=dt
-        
+    step += 1
+    time += dt
+
 # plt.show()
 
 # %%

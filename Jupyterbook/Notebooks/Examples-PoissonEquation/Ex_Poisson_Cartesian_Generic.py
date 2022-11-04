@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# # Poisson Equation
+# # Poisson Equation (generic)
 #
 # First we show how this works using the generic class and then the minor differences for
 # the `Poisson` class
@@ -25,7 +25,9 @@ import sympy
 
 from underworld3.meshing import UnstructuredSimplexBox
 
-mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=True, cellSize=1.0 / 32)
+mesh = UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=True, cellSize=1.0 / 32
+)
 
 t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 t_soln0 = uw.discretisation.MeshVariable("T0", mesh, 1, degree=1)
@@ -115,7 +117,13 @@ if MPI.COMM_WORLD.size == 1:
     pl = pv.Plotter(notebook=True)
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="DT", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="DT",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     pl.camera_position = "xy"
@@ -124,6 +132,3 @@ if MPI.COMM_WORLD.size == 1:
 
 
 # -
-
-
-

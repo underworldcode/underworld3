@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Rayleigh-Taylor (Level-set based) in the sphere
 #
 # If there are just two materials, then an efficient way to manage the interface tracking is through a "level-set" which tracks not just the material type, but the distance to the interface. The distance is a continuous quantity that is not degraded quickly by classical advection schemes. A particle-based level set also has advantages because the smooth signed-distance quantity can be projected to the mesh more accurately than a sharp condition function.
@@ -45,7 +60,9 @@ offset = 0.5 * res
 
 # or
 
-mesh = uw.meshing.SphericalShell(radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2)
+mesh = uw.meshing.SphericalShell(
+    radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2
+)
 
 # -
 
@@ -58,8 +75,6 @@ meshr = uw.discretisation.MeshVariable(r"r", mesh, 1, degree=1)
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_components=1)
 swarm.populate(fill_param=2)
-
-
 
 
 with swarm.access(material):
@@ -127,7 +142,9 @@ if False:
     with mesh.access():
         pvmesh.point_data["M"] = uw.function.evaluate(material.sym[0], mesh.data)
         pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), mesh.data)
+        pvmesh.point_data["visc"] = uw.function.evaluate(
+            sympy.log(viscosity), mesh.data
+        )
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
@@ -136,7 +153,14 @@ if False:
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    pl.add_points(point_cloud, cmap="coolwarm", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.5)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        scalars="M",
+        render_points_as_spheres=True,
+        point_size=2,
+        opacity=0.5,
+    )
 
     # pl.add_mesh(
     #     pvmesh,
@@ -166,7 +190,7 @@ stokes.petsc_options["snes_rtol"] = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
 buoyancy = Rayleigh * density * (1 - surface_fn) * (1 - base_fn)
@@ -188,8 +212,6 @@ with mesh.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
         sympy.sqrt(x**2 + y**2 + z**2), mesh.data
     )  # cf radius_fn which is 0->1
-
-
 
 
 stokes._setup_terms(verbose=False)
@@ -363,7 +385,9 @@ def plot_mesh(filename):
     # pl.remove_scalar_bar("rho")
 
     pl.camera_position = "xz"
-    pl.screenshot(filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False)
+    pl.screenshot(
+        filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False
+    )
 
     return
 
@@ -392,7 +416,7 @@ for step in range(0, 200):
 
     if t_step < 10 or t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
-        
+
         savefile = "output/swarm_rt_{}.h5".format(t_step)
         mesh.save(savefile)
         v_soln.save(savefile)
@@ -409,5 +433,3 @@ v_soln.save(savefile)
 mesh.generate_xdmf(savefile)
 
 material
-
-

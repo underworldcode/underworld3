@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Shear bands around a circular inclusion in a simple shear flow
 #
 # No slip conditions
@@ -32,9 +47,17 @@ if uw.mpi.rank == 0:
 
         geom.characteristic_length_max = csize
 
-        inclusion = geom.add_circle((0.0, 0.0, 0.0), radius, make_surface=False, mesh_size=csize_circle)
+        inclusion = geom.add_circle(
+            (0.0, 0.0, 0.0), radius, make_surface=False, mesh_size=csize_circle
+        )
         domain = geom.add_rectangle(
-            xmin=-width / 2, ymin=-height / 2, xmax=width / 2, ymax=height / 2, z=0, holes=[inclusion], mesh_size=csize
+            xmin=-width / 2,
+            ymin=-height / 2,
+            xmax=width / 2,
+            ymax=height / 2,
+            z=0,
+            holes=[inclusion],
+            mesh_size=csize,
         )
 
         geom.add_physical(domain.surface.curve_loop.curves[0], label="bottom")
@@ -67,8 +90,8 @@ import sympy
 x, y = mesh1.X
 
 # relative to the centre of the inclusion
-r = sympy.sqrt(x ** 2 + y ** 2)
-th = sympy.atan2(y,x)
+r = sympy.sqrt(x**2 + y**2)
+th = sympy.atan2(y, x)
 
 # need a unit_r_vec equivalent
 
@@ -77,12 +100,11 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 inclusion_unit_rvec = mesh1.vector.to_matrix(inclusion_unit_rvec)
 
 
-
 # +
 v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1, continuous=False)
 p_cont = uw.discretisation.MeshVariable("Pc", mesh1, 1, degree=1, continuous=True)
-p_null = uw.discretisation.MeshVariable(r"P2",  mesh1, 1, degree=1, continuous=True)
+p_null = uw.discretisation.MeshVariable(r"P2", mesh1, 1, degree=1, continuous=True)
 
 vorticity = uw.discretisation.MeshVariable("omega", mesh1, 1, degree=1)
 strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=1)
@@ -113,7 +135,9 @@ stokes.petsc_options["snes_atol"] = 0.001
 
 
 # +
-nodal_strain_rate_inv2 = uw.systems.Projection(mesh1, strain_rate_inv2, solver_name="edot_II")
+nodal_strain_rate_inv2 = uw.systems.Projection(
+    mesh1, strain_rate_inv2, solver_name="edot_II"
+)
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "top", 0)
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "bottom", 0)
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
@@ -122,7 +146,9 @@ nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
 S = stokes.stress_deviator
-nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace())/2)) - p_soln.sym[0]
+nodal_tau_inv2.uw_function = (
+    sympy.simplify(sympy.sqrt(((S**2).trace()) / 2)) - p_soln.sym[0]
+)
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -182,7 +208,9 @@ for i in range(steps):
 # -
 
 
-nodal_tau_inv2.uw_function = stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+nodal_tau_inv2.uw_function = (
+    stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+)
 nodal_tau_inv2.solve()
 nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.solve()
@@ -213,9 +241,13 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     with mesh1.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), mesh1.data)
+        pvmesh.point_data["Vmag"] = uw.function.evaluate(
+            sympy.sqrt(v_soln.fn.dot(v_soln.fn)), mesh1.data
+        )
         pvmesh.point_data["P"] = uw.function.evaluate(p_cont.fn, mesh1.data)
-        pvmesh.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.fn, mesh1.data)
+        pvmesh.point_data["Edot"] = uw.function.evaluate(
+            strain_rate_inv2.fn, mesh1.data
+        )
         pvmesh.point_data["Str"] = uw.function.evaluate(dev_stress_inv2.fn, mesh1.data)
         pvmesh.point_data["Visc"] = uw.function.evaluate(node_viscosity.fn, mesh1.data)
 
@@ -237,7 +269,9 @@ if uw.mpi.size == 1:
     points[:, 1] = mesh1._centroids[::subsample, 1]
     point_cloud = pv.PolyData(points)
 
-    pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", integration_direction="both", max_steps=100)
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", integration_direction="both", max_steps=100
+    )
 
     pl = pv.Plotter(window_size=(2000, 500))
 
@@ -249,7 +283,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Grey",
         show_edges=True,
-        clim=[1.0,2.0],
+        clim=[1.0, 2.0],
         scalars="Edot",
         use_transparency=False,
         opacity=1.0,
@@ -269,5 +303,3 @@ pvmesh.point_data["P"].min(), pvmesh.point_data["P"].max()  # cf 4.26
 pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
-
-

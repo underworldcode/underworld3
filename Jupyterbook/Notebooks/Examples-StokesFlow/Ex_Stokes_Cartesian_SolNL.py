@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Non-linear Stokes benchmark
 
@@ -32,12 +47,18 @@ options["snes_rtol"] = 1.0e-7
 
 # %%
 n_els = 32
-mesh = uw.meshing.StructuredQuadBox(elementRes=(n_els, n_els), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+mesh = uw.meshing.StructuredQuadBox(
+    elementRes=(n_els, n_els), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
+)
 
 # %%
 # NL problem
 # Create solution functions
-from underworld3.function.analytic import AnalyticSolNL_velocity, AnalyticSolNL_bodyforce, AnalyticSolNL_viscosity
+from underworld3.function.analytic import (
+    AnalyticSolNL_velocity,
+    AnalyticSolNL_bodyforce,
+    AnalyticSolNL_viscosity,
+)
 
 x, y = mesh.X
 
@@ -67,16 +88,19 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model.Parameters.viscosity = 1
 
-stokes.add_dirichlet_bc(sol_vel, ["Top", "Bottom"], [0, 1])  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(sol_vel, ["Left", "Right"], [0, 1])  # left/right: components, function, markers
+stokes.add_dirichlet_bc(
+    sol_vel, ["Top", "Bottom"], [0, 1]
+)  # top/bottom: components, function, markers
+stokes.add_dirichlet_bc(
+    sol_vel, ["Left", "Right"], [0, 1]
+)  # left/right: components, function, markers
 
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_rtol"] = 1.0e-5
-
 
 
 # %%
@@ -97,7 +121,7 @@ alpha_by_two = 2 / r0 - 2
 viscosity = 2 * eta0 * inv2**alpha_by_two
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 stokes.penalty = 0.0

@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Navier Stokes test: flow around a circular inclusion (2D)
 #
 # http://www.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/flow/dfg_benchmark1_re20.html
@@ -44,9 +59,17 @@ if uw.mpi.rank == 0:
 
         geom.characteristic_length_max = csize
 
-        inclusion = geom.add_circle((0.2, 0.2, 0.0), radius, make_surface=False, mesh_size=csize_circle)
+        inclusion = geom.add_circle(
+            (0.2, 0.2, 0.0), radius, make_surface=False, mesh_size=csize_circle
+        )
         domain = geom.add_rectangle(
-            xmin=0.0, ymin=0.0, xmax=width, ymax=height, z=0, holes=[inclusion], mesh_size=csize
+            xmin=0.0,
+            ymin=0.0,
+            xmax=width,
+            ymax=height,
+            z=0,
+            holes=[inclusion],
+            mesh_size=csize,
         )
 
         geom.add_physical(domain.surface.curve_loop.curves[0], label="bottom")
@@ -184,7 +207,9 @@ navier_stokes.theta = 0.5
 navier_stokes.penalty = 0.0
 navier_stokes.viscosity = 1.0
 navier_stokes.bodyforce = 1.0e-32 * pipemesh.N.i
-navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t)
+navier_stokes._Ppre_fn = 1.0 / (
+    navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t
+)
 
 
 hw = 1000.0 / res
@@ -250,9 +275,13 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     with pipemesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data)
+        pvmesh.point_data["Vmag"] = uw.function.evaluate(
+            sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data
+        )
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate(
+            (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+        )
 
     v_vectors = np.zeros((pipemesh.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -271,7 +300,9 @@ if uw.mpi.size == 1:
     points[:, 1] = pipemesh._centroids[:, 1]
     point_cloud = pv.PolyData(points)
 
-    pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", integration_direction="both", max_steps=100)
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", integration_direction="both", max_steps=100
+    )
 
     pl = pv.Plotter()
 
@@ -334,8 +365,12 @@ def plot_V_mesh(filename):
 
         with pipemesh.access():
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-            pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
-            pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
+            pvmesh.point_data["dVy"] = uw.function.evaluate(
+                (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+            )
+            pvmesh.point_data["Omega"] = uw.function.evaluate(
+                vorticity.fn, pipemesh.data
+            )
 
         with pipemesh.access():
             usol = v_soln.data.copy()
@@ -372,7 +407,13 @@ def plot_V_mesh(filename):
 
         pl.add_mesh(pvstream)
 
-        pl.add_points(point_cloud, color="Black", render_points_as_spheres=True, point_size=5, opacity=0.5)
+        pl.add_points(
+            point_cloud,
+            color="Black",
+            render_points_as_spheres=True,
+            point_size=5,
+            opacity=0.5,
+        )
 
         pl.camera.SetPosition(0.75, 0.2, 1.5)
         pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
@@ -382,7 +423,11 @@ def plot_V_mesh(filename):
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(2560, 1280),
+            return_img=False,
+        )
 
         pl.close()
 
@@ -404,7 +449,10 @@ for step in range(0, 250):
     navier_stokes.solve(timestep=dt_ns, zero_init_guess=False)
 
     with swarm.access(v_star):
-        v_star.data[...] = phi * uw.function.evaluate(v_soln.fn, swarm.data) + (1.0 - phi) * v_star.data
+        v_star.data[...] = (
+            phi * uw.function.evaluate(v_soln.fn, swarm.data)
+            + (1.0 - phi) * v_star.data
+        )
 
     # update passive swarm
 
@@ -414,9 +462,9 @@ for step in range(0, 250):
     passive_swarm.dm.addNPoints(npoints)
     with passive_swarm.access(passive_swarm.particle_coordinates):
         for i in range(npoints):
-            passive_swarm.particle_coordinates.data[-1 : -(npoints + 1) : -1, :] = np.array(
-                [0.0, 0.195] + 0.01 * np.random.random((npoints, 2))
-            )
+            passive_swarm.particle_coordinates.data[
+                -1 : -(npoints + 1) : -1, :
+            ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
     # update integration swarm
 
@@ -485,9 +533,13 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     with pipemesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data)
+        pvmesh.point_data["Vmag"] = uw.function.evaluate(
+            sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data
+        )
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate(
+            (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+        )
         pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
 
     v_vectors = np.zeros((pipemesh.data.shape[0], 3))
