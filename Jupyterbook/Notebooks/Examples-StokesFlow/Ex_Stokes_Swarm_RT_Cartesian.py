@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Rayleigh Taylor - swarm materials
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
@@ -65,7 +80,9 @@ m_cont = uw.discretisation.MeshVariable(r"M_c", meshbox, 1, degree=1, continuous
 
 
 swarm = uw.swarm.Swarm(mesh=meshbox)
-material = uw.swarm.IndexSwarmVariable(r"M", swarm, indices=2, proxy_degree=1, proxy_continuous=False)
+material = uw.swarm.IndexSwarmVariable(
+    r"M", swarm, indices=2, proxy_degree=1, proxy_continuous=False
+)
 swarm.populate(fill_param=3)
 
 
@@ -74,8 +91,12 @@ with swarm.access(material):
     material.data[...] = 0
 
 with swarm.access(material):
-    perturbation = offset + amplitude * np.cos(k * swarm.particle_coordinates.data[:, 0])
-    material.data[:, 0] = np.where(perturbation > swarm.particle_coordinates.data[:, 1], lightIndex, denseIndex)
+    perturbation = offset + amplitude * np.cos(
+        k * swarm.particle_coordinates.data[:, 0]
+    )
+    material.data[:, 0] = np.where(
+        perturbation > swarm.particle_coordinates.data[:, 1], lightIndex, denseIndex
+    )
 
 material.sym
 # -
@@ -116,7 +137,9 @@ if render:
         pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.data)
         pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+        pvmesh.point_data["visc"] = uw.function.evaluate(
+            sympy.log(viscosity), meshbox.data
+        )
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
@@ -141,27 +164,35 @@ if render:
 # +
 # Create Stokes object
 
-stokes = uw.systems.Stokes(meshbox, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = uw.systems.Stokes(
+    meshbox, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
+)
 
 # Set some things
 import sympy
 from sympy import Piecewise
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc((0.0, 0.0), ["Bottom", "Top"], 1)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
+stokes.add_dirichlet_bc(
+    (0.0, 0.0), ["Bottom", "Top"], 1
+)  # top/bottom: components, function, markers
+stokes.add_dirichlet_bc(
+    (0.0, 0.0), ["Left", "Right"], 0
+)  # left/right: components, function, markers
 
 
 # +
 stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options["snes_atol"] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
+stokes.petsc_options[
+    "snes_atol"
+] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
@@ -259,8 +290,22 @@ if uw.mpi.size == 1 and render:
     pl = pv.Plotter(window_size=(500, 500))
 
     pl.add_mesh(pvstream, opacity=1.0)
-    pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="M", opacity=0.75)
-    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=3, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="Blues_r",
+        edge_color="Gray",
+        show_edges=True,
+        scalars="M",
+        opacity=0.75,
+    )
+    pl.add_points(
+        spoint_cloud,
+        cmap="Reds_r",
+        scalars="M",
+        render_points_as_spheres=True,
+        point_size=3,
+        opacity=0.5,
+    )
 
     # pl.add_points(pdata)
 
@@ -292,7 +337,9 @@ def plot_mesh(filename):
         pvmesh = pv.read("tmp_box.vtk")
 
         pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+        pvmesh.point_data["visc"] = uw.function.evaluate(
+            sympy.log(viscosity), meshbox.data
+        )
         pvmesh.point_data["M"] = uw.function.evaluate(m_cont.sym[0], meshbox.data)
 
         velocity = np.zeros((meshbox.data.shape[0], 3))
@@ -335,17 +382,33 @@ def plot_mesh(filename):
         # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
         pl.add_mesh(pvstream, opacity=1)
-        pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="M", opacity=0.75)
+        pl.add_mesh(
+            pvmesh,
+            cmap="Blues_r",
+            edge_color="Gray",
+            show_edges=True,
+            scalars="M",
+            opacity=0.75,
+        )
 
         pl.add_points(
-            spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=3, opacity=0.3
+            spoint_cloud,
+            cmap="Reds_r",
+            scalars="M",
+            render_points_as_spheres=True,
+            point_size=3,
+            opacity=0.3,
         )
 
         pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("V")
         # pl.remove_scalar_bar("rho")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1250, 1250), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1250, 1250),
+            return_img=False,
+        )
 
         return
 
@@ -375,7 +438,7 @@ for step in range(0, 200):
 
     if t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
-        
+
     # "Checkpoints"
     savefile = "output/swarm_rt_{}.h5".format(t_step)
     meshbox.save(savefile)

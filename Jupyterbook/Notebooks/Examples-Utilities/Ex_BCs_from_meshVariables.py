@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Cylindrical 2D Diffusion
 
 # +
@@ -93,19 +108,29 @@ if PETSc.Comm.size == 1:
     meshbox.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
 
-    clipped_stack = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(-1, -1, 0), invert=False)
+    clipped_stack = pvmesh.clip(
+        origin=(0.0, 0.0, 0.0), normal=(-1, -1, 0), invert=False
+    )
 
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Blue', 'wireframe' )
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+    )
     pl.show()
 
 
 # +
 # Create Poisson object
 
-poisson = uw.systems.Poisson(mesh, u_Field=t_soln, solver_name="poisson", degree=3, verbose=True)
+poisson = uw.systems.Poisson(
+    mesh, u_Field=t_soln, solver_name="poisson", degree=3, verbose=True
+)
 poisson.k = k
 poisson.f = 0.0
 
@@ -155,7 +180,13 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Blue', 'wireframe' )
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+    )
     pl.show(cpos="xy")
 # -
 savefile = "output/poisson_cyindrical_2d.h5"

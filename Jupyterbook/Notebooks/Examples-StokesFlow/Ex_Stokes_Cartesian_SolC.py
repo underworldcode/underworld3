@@ -1,6 +1,20 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Stokes Benchmark SolCx
-#
 # %%
 # options = PETSc.Options()
 # options["help"] = None
@@ -17,14 +31,14 @@ import numpy as np
 
 # %%
 n_els = 16
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20, qdegree=2)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20, qdegree=2
+)
 
 
 # %%
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
-
-# %%
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -42,9 +56,9 @@ x, y = mesh.CoordinateSystem.X
 res = 1 / n_els
 hw = 1000 / res
 surface_fn = sympy.exp(-((y - 1.0) ** 2) * hw)
-base_fn    = sympy.exp(-( y ** 2) * hw)
-right_fn   = sympy.exp(-((x - 1.0) ** 2) * hw)
-left_fn    = sympy.exp(-(x ** 2) * hw)
+base_fn = sympy.exp(-(y**2) * hw)
+right_fn = sympy.exp(-((x - 1.0) ** 2) * hw)
+left_fn = sympy.exp(-(x**2) * hw)
 
 eta_0 = 1.0
 x_c = 0.5
@@ -69,9 +83,12 @@ stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosit
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc((0.0, 0.0), ["Top", "Bottom"], 1)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc((0.0, 0.0), ["Left", "Right"], 0)  # left/right: components, function, markers
-
+stokes.add_dirichlet_bc(
+    (0.0, 0.0), ["Top", "Bottom"], 1
+)  # top/bottom: components, function, markers
+stokes.add_dirichlet_bc(
+    (0.0, 0.0), ["Left", "Right"], 0
+)  # left/right: components, function, markers
 
 
 # %%
@@ -90,7 +107,7 @@ stokes.petsc_options["snes_max_it"] = 10
 stokes.solve()
 
 # %% [markdown]
-# ## Visualise it !
+# ### Visualise it !
 #
 #
 
@@ -131,7 +148,13 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.add_axes()
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="V", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="V",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     pl.add_arrows(arrow_loc, arrow_length, mag=3)
@@ -143,7 +166,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 # # SolCx from the same setup
 
 # %%
-stokes.bodyforce = sympy.Matrix([0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)])
+stokes.bodyforce = sympy.Matrix(
+    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)]
+)
 viscosity_fn = sympy.Piecewise(
     (
         1.0e6,
@@ -151,7 +176,7 @@ viscosity_fn = sympy.Piecewise(
     ),
     (1.0, True),
 )
-stokes.constitutive_model.Parameters.viscosity=viscosity_fn
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # %%
@@ -197,7 +222,13 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.add_axes()
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="V", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="V",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",

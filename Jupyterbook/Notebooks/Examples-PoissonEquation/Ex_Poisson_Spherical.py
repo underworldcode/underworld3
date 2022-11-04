@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # # Steady state diffusion in a hollow sphere
 
@@ -50,7 +65,7 @@ import sympy
 
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise((t_i, abs_r < 0.5 * (r_i + r_o)), (t_o, True))
-poisson.add_dirichlet_bc(bc, ["Lower","Upper"])
+poisson.add_dirichlet_bc(bc, ["Lower", "Upper"])
 
 # %%
 poisson.solve()
@@ -105,7 +120,13 @@ if MPI.COMM_WORLD.size == 1:
     pl = pv.Plotter()
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T2", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="T2",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     pl.camera_position = "xy"
@@ -143,7 +164,7 @@ import sympy
 
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.Piecewise((t_i, abs_r < 0.5 * (r_i + r_o)), (t_o, True))
-poisson.add_dirichlet_bc(bc, ["Lower","Upper"])
+poisson.add_dirichlet_bc(bc, ["Lower", "Upper"])
 
 # %%
 bc
@@ -198,7 +219,13 @@ if MPI.COMM_WORLD.size == 1:
     pl = pv.Plotter()
 
     pl.add_mesh(
-        clipped, cmap="coolwarm", edge_color="Grey", show_edges=True, scalars="T", use_transparency=False, opacity=1.0
+        clipped,
+        cmap="coolwarm",
+        edge_color="Grey",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     pl.camera_position = "xy"

@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Cylindrical Stokes (Cartesian formulation)
 #
 # Let the mesh deform to create a free surface. If we iterate on this, then it is almost exactly the same as the free-slip boundary condition (though there are potentially instabilities here).
@@ -53,7 +68,7 @@ import sympy
 
 radius_fn = meshball.CoordinateSystem.xR[0]
 unit_rvec = meshball.CoordinateSystem.unit_e_0
-gravity_fn = 1 # radius_fn / r_o
+gravity_fn = 1  # radius_fn / r_o
 
 # Some useful coordinate stuff
 
@@ -64,16 +79,20 @@ Rayleigh = 1.0e5
 
 hw = 1000.0 / res
 surface_fn = sympy.exp(-((radius_fn - r_o) ** 2) * hw)
-base_fn    = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
+base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 
 
 # +
 # Create Stokes object
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = Stokes(
+    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
+)
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
+    meshball.dim
+)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 # There is a null space if there are no fixed bcs, so we'll do this:
 
@@ -96,11 +115,15 @@ t_init = sympy.cos(3 * th)
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(t_init, coords=t_soln.coords, coord_sys=meshball.N)
+    t_soln.data[:, 0] = uw.function.evaluate(
+        t_init, coords=t_soln.coords, coord_sys=meshball.N
+    )
     print(t_soln.data.min(), t_soln.data.max())
 
 with meshball.access(maskr):
-    maskr.data[:, 0] = uw.function.evaluate(r, coords=maskr.coords, coord_sys=meshball.N)
+    maskr.data[:, 0] = uw.function.evaluate(
+        r, coords=maskr.coords, coord_sys=meshball.N
+    )
 
 # +
 I = uw.maths.Integral(meshball, surface_fn)
@@ -113,8 +136,8 @@ display(b_norm)
 # +
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
-buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm 
-buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn / b_norm 
+buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm
+buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn / b_norm
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 
@@ -150,9 +173,13 @@ if uw.mpi.size == 1:
     pvmesh = pv.read("tmp_ball.vtk")
 
     with meshball.access():
-        pvmesh.point_data["V"] = uw.function.evaluate(v_soln.sym.dot(v_soln.sym), meshball.data)
+        pvmesh.point_data["V"] = uw.function.evaluate(
+            v_soln.sym.dot(v_soln.sym), meshball.data
+        )
         pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evaluate(t_init, meshball.data, coord_sys=meshball.N)
+        pvmesh.point_data["T"] = uw.function.evaluate(
+            t_init, meshball.data, coord_sys=meshball.N
+        )
 
     with meshball.access():
         usol = stokes.u.data
@@ -167,11 +194,16 @@ if uw.mpi.size == 1:
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Grey", scalars="T", show_edges=True, use_transparency=False, opacity=0.75
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Grey",
+        scalars="T",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.75,
     )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
     pl.show(cpos="xy")
 # -
-usol_rms = np.sqrt(usol[:,0]**2 + usol[:,1]**2).mean()
+usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_rms
-

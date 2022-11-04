@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # +
 import petsc4py
 from petsc4py import PETSc
@@ -20,27 +35,27 @@ free_slip_upper = True
 meshdisc_xyz = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
 
 mesh = meshdisc_xyz
-PXs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0:mesh.dim])
-VXs = sympy.Matrix.zeros(1,mesh.dim)
+PXs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0 : mesh.dim])
+VXs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
-    VXs[i] = sympy.Function(fr"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0:mesh.dim])
+    VXs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0 : mesh.dim])
 display(PXs)
 display(VXs)
 # -
 
-# ## Symbolic forms v. mesh variables 
+# ## Symbolic forms v. mesh variables
 #
 # Mesh variables are `sympy.Function` objects that have the additional property of carrying data that allows them to be interploated to any point on a mesh and numerically differentiated (once).
 #
 # The symbolic forms allow us to undertake all the manipulations and simplifications available in sympy which are not all available for mesh variables (such as higher-order derivatives).
 #
-# For example, we can demonstrate some vector calculus results which we can use while we develop our equation systems. We can substitute for the mesh variables later if we choose. 
+# For example, we can demonstrate some vector calculus results which we can use while we develop our equation systems. We can substitute for the mesh variables later if we choose.
 
 # +
 gradPXs = meshdisc_xyz.vector.gradient(PXs)
 display(gradPXs)
 
-divgradPXs =  meshdisc_xyz.vector.divergence(gradPXs)
+divgradPXs = meshdisc_xyz.vector.divergence(gradPXs)
 display(divgradPXs)
 
 curlgradPXs = meshdisc_xyz.vector.curl(gradPXs)
@@ -56,19 +71,23 @@ xy = xy_vec.array.reshape(-1, 2)
 dmplex = meshball_xyz_tmp.dm.clone()
 rtheta = np.empty_like(xy)
 rtheta[:, 0] = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
-rtheta[:, 1] = np.arctan2(xy[:, 1] + 1.0e-16, xy[:, 0] + 1.0e-16) 
+rtheta[:, 1] = np.arctan2(xy[:, 1] + 1.0e-16, xy[:, 0] + 1.0e-16)
 rtheta_vec = xy_vec.copy()
 rtheta_vec.array[...] = rtheta.reshape(-1)[...]
 dmplex.setCoordinates(rtheta_vec)
 meshball_xyz_tmp.vtk("tmp_disk.vtk")
-del(meshball_xyz_tmp)
+del meshball_xyz_tmp
 
-meshdisc = uw.meshing.Mesh(dmplex, coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE)
-uw.cython.petsc_discretisation.petsc_dm_set_periodicity(meshdisc.dm, 
-                                                        [0.0,1.0], [0.0,0.0], [0.0,2*np.pi])
+meshdisc = uw.meshing.Mesh(
+    dmplex,
+    coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+)
+uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+    meshdisc.dm, [0.0, 1.0], [0.0, 0.0], [0.0, 2 * np.pi]
+)
 
 
-## Add some mesh variables (Vector and scalar) 
+## Add some mesh variables (Vector and scalar)
 
 VC = uw.discretisation.MeshVariable(r"U^c", meshdisc, 2, degree=2)
 PC = uw.discretisation.MeshVariable(r"P^c", meshdisc, 1, degree=1)
@@ -76,10 +95,10 @@ PC = uw.discretisation.MeshVariable(r"P^c", meshdisc, 1, degree=1)
 ## Create some symbolic equivalents
 
 mesh = meshdisc
-PCs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0:mesh.dim])
-VCs = sympy.Matrix.zeros(1,mesh.dim)
+PCs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0 : mesh.dim])
+VCs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
-    VCs[i] = sympy.Function(fr"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0:mesh.dim])
+    VCs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0 : mesh.dim])
 display(PCs)
 display(VCs)
 
@@ -87,7 +106,7 @@ display(VCs)
 gradPCs = meshdisc.vector.gradient(PCs)
 display(gradPCs)
 
-divgradPCs =  meshdisc.vector.divergence(gradPCs)
+divgradPCs = meshdisc.vector.divergence(gradPCs)
 display(divgradPCs)
 
 curlgradPCs = meshdisc.vector.curl(gradPCs)
@@ -98,7 +117,9 @@ display(curlgradPCs)
 
 ## NOTE: this only works if numElements is an odd number
 
-meshball_xyz_tmp = uw.meshing.CubedSphere(radiusOuter=r_o, radiusInner=r_i, numElements=7, simplex=True)
+meshball_xyz_tmp = uw.meshing.CubedSphere(
+    radiusOuter=r_o, radiusInner=r_i, numElements=7, simplex=True
+)
 
 xyz_vec = meshball_xyz_tmp.dm.getCoordinates()
 xyz = xyz_vec.array.reshape(-1, 3)
@@ -106,22 +127,27 @@ dmplex = meshball_xyz_tmp.dm.clone()
 
 rl1l2 = np.empty_like(xyz)
 rl1l2[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
-rl1l2[:, 1] = np.arctan2(xyz[:, 1], xyz[:, 0]) 
-rl1l2[:, 2] = np.arctan2(np.sqrt(xyz[:, 0]**2 + xyz[:, 1]**2), xyz[:,2]) - np.pi / 2
+rl1l2[:, 1] = np.arctan2(xyz[:, 1], xyz[:, 0])
+rl1l2[:, 2] = (
+    np.arctan2(np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2), xyz[:, 2]) - np.pi / 2
+)
 
 rl1l2_vec = xyz_vec.copy()
 rl1l2_vec.array[...] = rl1l2.reshape(-1)[...]
 dmplex.setCoordinates(rl1l2_vec)
 
 meshball_xyz_tmp.vtk("tmp_sphere.vtk")
-del(meshball_xyz_tmp)
+del meshball_xyz_tmp
 
-meshball = uw.meshing.Mesh(dmplex, coordinate_system_type=uw.coordinates.CoordinateSystemType.SPHERICAL_NATIVE)
-uw.cython.petsc_discretisation.petsc_dm_set_periodicity(meshball.dm, 
-                                                        [0.0,6.28,0.0], [0.0,0.0,0.0], [0.0,2*np.pi,0.0])
+meshball = uw.meshing.Mesh(
+    dmplex, coordinate_system_type=uw.coordinates.CoordinateSystemType.SPHERICAL_NATIVE
+)
+uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+    meshball.dm, [0.0, 6.28, 0.0], [0.0, 0.0, 0.0], [0.0, 2 * np.pi, 0.0]
+)
 
 
-## Add some mesh variables (Vector and scalar) 
+## Add some mesh variables (Vector and scalar)
 
 VS = uw.discretisation.MeshVariable(r"U^s", meshball, 3, degree=2)
 PS = uw.discretisation.MeshVariable(r"P^s", meshball, 1, degree=1)
@@ -130,9 +156,9 @@ PS = uw.discretisation.MeshVariable(r"P^s", meshball, 1, degree=1)
 
 mesh = meshball
 PSs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars())
-VSs = sympy.Matrix.zeros(1,mesh.dim)
+VSs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
-    VSs[i] = sympy.Function(fr"\mathcal{{V}}_{i}")(*mesh.N.base_scalars())
+    VSs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars())
 display(PSs)
 display(VSs)
 
@@ -143,13 +169,13 @@ display(gradPSs)
 divVSs = meshball.vector.divergence(VSs)
 display(divVSs)
 
-divgradPSs =  meshball.vector.divergence(gradPSs)
+divgradPSs = meshball.vector.divergence(gradPSs)
 display(divgradPSs)
 
 curlgradPSs = meshball.vector.curl(gradPSs)
 display(curlgradPSs)
 
-#Note
+# Note
 sympy.simplify(curlgradPSs)
 
 # +
@@ -166,7 +192,7 @@ sympy.simplify(curlgradPSs)
 #     pv.global_theme.smooth_shading = True
 
 #     pvmesh = pv.read("tmp_sphere.vtk")
-    
+
 #     pl = pv.Plotter(window_size=(750, 750))
 
 #     pl.add_mesh(pvmesh,'Black', 'wireframe')
@@ -194,11 +220,6 @@ gradPSs
 divVSs
 
 
-
-
-
-
-
 gradPs = meshball.vector.gradient(PS.sym)
 gradPs
 
@@ -217,5 +238,3 @@ PS.sym
 sympy.simplify(meshball.vector.divergence(meshball.vector.gradient(P)))
 
 meshball.N.base_vectors()
-
-

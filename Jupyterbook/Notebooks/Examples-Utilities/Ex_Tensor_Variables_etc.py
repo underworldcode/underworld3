@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Examples with General Mesh variable manipulation
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
@@ -23,7 +38,9 @@ import sympy
 
 # -
 
-meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
+meshbox = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0
+)
 meshbox.dm.view()
 
 # +
@@ -31,7 +48,7 @@ import sympy
 
 # Some useful coordinate stuff
 
-x,y = meshbox.CoordinateSystem.X
+x, y = meshbox.CoordinateSystem.X
 # -
 
 
@@ -58,8 +75,6 @@ with swarm.access(material):
         material.data[inside] = m
 
 
-
-
 material.sym.diff(meshbox.CoordinateSystem.X)
 
 material.sym.jacobian(meshbox.X).T
@@ -70,15 +85,15 @@ v_soln.sym.jacobian(meshbox.CoordinateSystem.X)
 
 mat_density = np.array([1, 10, 100, 1000])
 density = (
-      mat_density[0] * material.sym[0]
+    mat_density[0] * material.sym[0]
     + mat_density[1] * material.sym[1]
-    + mat_density[2] * material.sym[2] 
+    + mat_density[2] * material.sym[2]
     + mat_density[3] * material.sym[3]
 )
 
 mat_viscosity = np.array([1, 10, 100, 1000])
 viscosity = (
-      mat_viscosity[0] * material.sym[0]
+    mat_viscosity[0] * material.sym[0]
     + mat_viscosity[1] * material.sym[1]
     + mat_viscosity[2] * material.sym[2]
     + mat_viscosity[3] * material.sym[3]
@@ -113,7 +128,9 @@ with meshbox.access():
     pvmesh.point_data["M2"] = uw.function.evaluate(material.sym[2], meshbox.data)
     pvmesh.point_data["M3"] = uw.function.evaluate(material.sym[3], meshbox.data)
     pvmesh.point_data["M"] = (
-        1.0 * pvmesh.point_data["M1"] + 2.0 * pvmesh.point_data["M2"] + 3.0 * pvmesh.point_data["M3"]
+        1.0 * pvmesh.point_data["M1"]
+        + 2.0 * pvmesh.point_data["M2"]
+        + 3.0 * pvmesh.point_data["M3"]
     )
 
     pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
@@ -131,7 +148,13 @@ pl = pv.Plotter(notebook=True)
 
 
 pl.add_mesh(
-    pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="visc", use_transparency=False, opacity=0.95
+    pvmesh,
+    cmap="coolwarm",
+    edge_color="Black",
+    show_edges=False,
+    scalars="visc",
+    use_transparency=False,
+    opacity=0.95,
 )
 
 
@@ -160,7 +183,9 @@ with meshbox.access(t_0, t_soln):
     t_soln.data[...] = t_0.data[...]
 
 with swarm.access(T1):
-    T1.data[...] = uw.function.evaluate(init_t, swarm.particle_coordinates.data).reshape(-1, 1)
+    T1.data[...] = uw.function.evaluate(
+        init_t, swarm.particle_coordinates.data
+    ).reshape(-1, 1)
 
 # +
 # Create Stokes object
@@ -220,9 +245,13 @@ if uw.mpi.size == 1 and ad.projection:
     with meshbox.access():
         usol = stokes.u.data.copy()
 
-    pvmesh.point_data["mT1"] = uw.function.evaluate(ad._u_star_projected.fn, meshbox.data)
+    pvmesh.point_data["mT1"] = uw.function.evaluate(
+        ad._u_star_projected.fn, meshbox.data
+    )
     pvmesh.point_data["T1"] = uw.function.evaluate(T1.fn, meshbox.data)
-    pvmesh.point_data["dT1"] = uw.function.evaluate(T1.fn - ad._u_star_projected.fn, meshbox.data)
+    pvmesh.point_data["dT1"] = uw.function.evaluate(
+        T1.fn - ad._u_star_projected.fn, meshbox.data
+    )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -235,7 +264,13 @@ if uw.mpi.size == 1 and ad.projection:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT1", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="dT1",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-4, opacity=0.5)
@@ -327,7 +362,11 @@ def plot_T_mesh(filename):
         pl.remove_scalar_bar("T")
         # pl.remove_scalar_bar("T1")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1250, 1250), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1250, 1250),
+            return_img=False,
+        )
         # pl.show()
         pl.close()
 
@@ -441,7 +480,12 @@ if uw.mpi.size == 1:
     #             )
 
     pl.add_points(
-        swarm_point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=2.5, opacity=0.5, clim=[0.0, 1.0]
+        swarm_point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=2.5,
+        opacity=0.5,
+        clim=[0.0, 1.0],
     )
 
     pl.add_mesh(

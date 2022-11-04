@@ -1,7 +1,24 @@
-# %% [markdown]
-# # Poisson Cartesian
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# # Poisson Equation (simple)
 #
-# Linear and non-linear diffusion equation
+# First we show how this works using the generic class and then the minor differences for
+# the `Poisson` class
+#
+# ## Generic scalar solver class
+
 
 # %%
 from petsc4py import PETSc

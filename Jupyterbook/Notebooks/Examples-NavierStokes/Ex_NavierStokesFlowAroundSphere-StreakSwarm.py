@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # # Navier Stokes test: flow around a circular inclusion (2D)
 #
 # Should be able to reproduce vortex shedding if free slip bc on the inner circle.
@@ -31,10 +46,18 @@ if uw.mpi.rank == 0:
         p0 = geom.add_point((0.2, csize, 0.0), mesh_size=csize)
         p1 = geom.add_point((0.2, 1.0 - csize, 0.0), mesh_size=csize)
 
-        inclusion = geom.add_circle((1.0, 0.5, 0.0), radius, make_surface=False, mesh_size=csize_circle)
+        inclusion = geom.add_circle(
+            (1.0, 0.5, 0.0), radius, make_surface=False, mesh_size=csize_circle
+        )
         line = geom.add_line(p0=p0, p1=p1)
         domain = geom.add_rectangle(
-            xmin=0.0, ymin=0.0, xmax=width, ymax=height, z=0, holes=[inclusion], mesh_size=csize
+            xmin=0.0,
+            ymin=0.0,
+            xmax=width,
+            ymax=height,
+            z=0,
+            holes=[inclusion],
+            mesh_size=csize,
         )
 
         geom.in_surface(line, domain.surface)
@@ -56,7 +79,9 @@ if uw.mpi.rank == 0:
 # -
 
 
-pipemesh = uw.meshes.MeshFromGmshFile(dim=2, degree=1, filename="ns_pipe_flow.msh", label_groups=[], simplex=True)
+pipemesh = uw.meshes.MeshFromGmshFile(
+    dim=2, degree=1, filename="ns_pipe_flow.msh", label_groups=[], simplex=True
+)
 pipemesh.dm.view()
 
 # +
@@ -86,9 +111,22 @@ if uw.mpi.size == 1:
     point_cloud = pv.PolyData(points)
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
 
-    pl.add_points(point_cloud, color="Blue", render_points_as_spheres=True, point_size=2, opacity=1.0)
+    pl.add_points(
+        point_cloud,
+        color="Blue",
+        render_points_as_spheres=True,
+        point_size=2,
+        opacity=1.0,
+    )
 
     pl.show(cpos="xy")
 
@@ -207,13 +245,22 @@ surface_fn = surface_defn
 
 if Free_Slip:
     navier_stokes.bodyforce -= (
-        1.0e5 * Vb * navier_stokes.rho * v_soln.fn.dot(inclusion_unit_rvec) * surface_fn * inclusion_unit_rvec
+        1.0e5
+        * Vb
+        * navier_stokes.rho
+        * v_soln.fn.dot(inclusion_unit_rvec)
+        * surface_fn
+        * inclusion_unit_rvec
     )
     navier_stokes._Ppre_fn = 1.0 / (
-        navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t + 1.0e5 * Vb * surface_fn
+        navier_stokes.viscosity
+        + navier_stokes.rho / navier_stokes.delta_t
+        + 1.0e5 * Vb * surface_fn
     )
     # navier_stokes._Ppre_fn = 1.0 / (navier_stokes.viscosity )
-    navier_stokes._u_star_projector.UF0 = surf.fn * (navier_stokes._u_star_projector.u.fn - v_soln.fn)
+    navier_stokes._u_star_projector.UF0 = surf.fn * (
+        navier_stokes._u_star_projector.u.fn - v_soln.fn
+    )
 
 else:
     navier_stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
@@ -235,9 +282,9 @@ nodal_vorticity_from_v.solve()
 with pipemesh.access(v_stokes, v_soln):
     v_stokes.data[...] = v_soln.data[...]
     v_soln.data[...] += Vb / 100 * np.random.random(size=v_soln.data.shape)
-    v_soln.data[...] *= 1.0 + 0.1 * np.cos(v_soln.coords[:, 1].reshape(-1, 1) * np.pi) * (
-        1.0 - uw.function.evaluate(surface_fn, v_soln.coords).reshape(-1, 1)
-    )
+    v_soln.data[...] *= 1.0 + 0.1 * np.cos(
+        v_soln.coords[:, 1].reshape(-1, 1) * np.pi
+    ) * (1.0 - uw.function.evaluate(surface_fn, v_soln.coords).reshape(-1, 1))
 
 
 with swarm.access(v_star, remeshed, X_0):
@@ -279,7 +326,9 @@ if uw.mpi.size == 1:
     with pipemesh.access():
         pvmesh.point_data["S"] = uw.function.evaluate(surface_fn, pipemesh.data)
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate(
+            (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+        )
 
     v_vectors = np.zeros((pipemesh.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
@@ -298,7 +347,9 @@ if uw.mpi.size == 1:
     points[:, 1] = pipemesh._centroids[:, 1]
     point_cloud = pv.PolyData(points)
 
-    pvstream = pvmesh.streamlines_from_source(point_cloud, vectors="V", integration_direction="both", max_steps=100)
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", integration_direction="both", max_steps=100
+    )
 
     pl = pv.Plotter()
 
@@ -310,7 +361,13 @@ if uw.mpi.size == 1:
     #             )
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="P",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
@@ -355,8 +412,12 @@ def plot_V_mesh(filename):
 
         with pipemesh.access():
             pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-            pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
-            pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
+            pvmesh.point_data["dVy"] = uw.function.evaluate(
+                (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+            )
+            pvmesh.point_data["Omega"] = uw.function.evaluate(
+                vorticity.fn, pipemesh.data
+            )
 
         with pipemesh.access():
             usol = v_soln.data.copy()
@@ -393,13 +454,23 @@ def plot_V_mesh(filename):
 
         pl.add_mesh(pvstream)
 
-        pl.add_points(point_cloud, color="Black", render_points_as_spheres=True, point_size=5, opacity=0.5)
+        pl.add_points(
+            point_cloud,
+            color="Black",
+            render_points_as_spheres=True,
+            point_size=5,
+            opacity=0.5,
+        )
 
         pl.remove_scalar_bar("Omega")
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 2560), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(2560, 2560),
+            return_img=False,
+        )
 
         pl.close()
 
@@ -429,7 +500,10 @@ for step in range(0, 250):
     phi = delta_t / dt_ns
 
     with swarm.access(v_star):
-        v_star.data[...] = phi * uw.function.evaluate(v_soln.fn, swarm.data) + (1.0 - phi) * v_star.data
+        v_star.data[...] = (
+            phi * uw.function.evaluate(v_soln.fn, swarm.data)
+            + (1.0 - phi) * v_star.data
+        )
 
     # update passive swarm
 
@@ -439,9 +513,9 @@ for step in range(0, 250):
     passive_swarm.dm.addNPoints(npoints)
     with passive_swarm.access(passive_swarm.particle_coordinates):
         for i in range(npoints):
-            passive_swarm.particle_coordinates.data[-1 : -(npoints + 1) : -1, :] = np.array(
-                [0.0, 0.475] + 0.05 * np.random.random((npoints, 2))
-            )
+            passive_swarm.particle_coordinates.data[
+                -1 : -(npoints + 1) : -1, :
+            ] = np.array([0.0, 0.475] + 0.05 * np.random.random((npoints, 2)))
 
     # update integration swarm
 
@@ -507,7 +581,9 @@ if uw.mpi.size == 1:
 
     with pipemesh.access():
         pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
-        pvmesh.point_data["dVy"] = uw.function.evaluate((v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data)
+        pvmesh.point_data["dVy"] = uw.function.evaluate(
+            (v_soln.fn - v_stokes.fn).dot(pipemesh.N.j), pipemesh.data
+        )
         pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, pipemesh.data)
 
     v_vectors = np.zeros((pipemesh.data.shape[0], 3))
@@ -558,7 +634,13 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    pl.add_points(swarm_point_cloud, color="Black", render_points_as_spheres=True, point_size=0.5, opacity=0.66)
+    pl.add_points(
+        swarm_point_cloud,
+        color="Black",
+        render_points_as_spheres=True,
+        point_size=0.5,
+        opacity=0.66,
+    )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream)

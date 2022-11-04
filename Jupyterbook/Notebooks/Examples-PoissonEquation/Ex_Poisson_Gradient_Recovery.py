@@ -1,5 +1,21 @@
-# %% [markdown]
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
 # # Poisson Equation with flux recovery
+#
+#
+# ## Generic scalar solver class
 
 # %%
 # To add a new cell, type '# %%'
@@ -12,8 +28,9 @@ import numpy as np
 import sympy
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
-                                         cellSize=1.0 / 32.0, qdegree=3)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, qdegree=3
+)
 
 mesh.dm.view()
 
@@ -22,9 +39,13 @@ mesh.dm.view()
 # mesh variables
 
 t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
-dTdY = uw.discretisation.MeshVariable(r"\partial T/ \partial \mathbf{y}", mesh, 1, degree=2)
+dTdY = uw.discretisation.MeshVariable(
+    r"\partial T/ \partial \mathbf{y}", mesh, 1, degree=2
+)
 kappa = uw.discretisation.MeshVariable(r"\kappa", mesh, 1, degree=2)
-gradT = uw.discretisation.MeshVariable(r"\nabla\left[T\right]", mesh, mesh.dim, degree=2)
+gradT = uw.discretisation.MeshVariable(
+    r"\nabla\left[T\right]", mesh, mesh.dim, degree=2
+)
 
 
 # %%
@@ -60,7 +81,9 @@ display(poisson.constitutive_model.c)
 # projector for diffusivity (though we can just switch the rhs for the gradient object
 
 diffusivity = uw.systems.Projection(mesh, kappa)
-diffusivity.uw_function = sympy.Matrix([poisson.constitutive_model.Parameters.diffusivity])
+diffusivity.uw_function = sympy.Matrix(
+    [poisson.constitutive_model.Parameters.diffusivity]
+)
 diffusivity.add_dirichlet_bc(k, ["Top", "Bottom", "Left", "Right"], components=0)
 diffusivity.smoothing = 1.0e-3
 
@@ -157,7 +180,9 @@ if MPI.COMM_WORLD.size == 1:
         pvmesh.point_data["dTdY"] = uw.function.evaluate(dTdY.sym[0], mesh.data)
         pvmesh.point_data["dTdY1"] = uw.function.evaluate(gradT.sym[1], mesh.data)
         pvmesh.point_data["kappa"] = uw.function.evaluate(kappa.sym[0], mesh.data)
-        pvmesh.point_data["kappa1"] = uw.function.evaluate(5 + gradT.sym[0] ** 2 + gradT.sym[1] ** 2, mesh.data)
+        pvmesh.point_data["kappa1"] = uw.function.evaluate(
+            5 + gradT.sym[0] ** 2 + gradT.sym[1] ** 2, mesh.data
+        )
 
     pl = pv.Plotter()
 
@@ -183,7 +208,9 @@ if MPI.COMM_WORLD.size == 1:
 
 # %%
 with mesh.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(sympy.sin(mesh.N.x * np.pi), poisson.u.coords)
+    t_soln.data[:, 0] = uw.function.evaluate(
+        sympy.sin(mesh.N.x * np.pi), poisson.u.coords
+    )
 
 gradient.solve()
 
@@ -214,7 +241,9 @@ if MPI.COMM_WORLD.size == 1:
     pvmesh = pv.read("tmp_mesh.vtk")
 
     with mesh.access():
-        pvmesh.point_data["dTdy"] = uw.function.evaluate(gradient.u.fn - np.pi * sympy.cos(mesh.N.x * np.pi), mesh.data)
+        pvmesh.point_data["dTdy"] = uw.function.evaluate(
+            gradient.u.fn - np.pi * sympy.cos(mesh.N.x * np.pi), mesh.data
+        )
 
     pl = pv.Plotter()
 

@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+
 # %% [markdown]
 # ''Non-linear Stokes Sinker''
 # ======
@@ -64,7 +79,10 @@ swarmGPC = 2
 def uw2_stokesSinker():
 
     mesh = uw2.mesh.FeMesh_Cartesian(
-        elementType=("Q1/dQ0"), elementRes=(int(res), int(res)), minCoord=(-1.0, 0.0), maxCoord=(1.0, 1.0)
+        elementType=("Q1/dQ0"),
+        elementRes=(int(res), int(res)),
+        minCoord=(-1.0, 0.0),
+        maxCoord=(1.0, 1.0),
     )
 
     velocityField = mesh.add_variable(nodeDofCount=2)
@@ -75,13 +93,17 @@ def uw2_stokesSinker():
 
     # Create the swarm and an advector associated with it
     swarm = uw2.swarm.Swarm(mesh=mesh)
-    advector = uw2.systems.SwarmAdvector(swarm=swarm, velocityField=velocityField, order=2)
+    advector = uw2.systems.SwarmAdvector(
+        swarm=swarm, velocityField=velocityField, order=2
+    )
 
     # Add a data variable which will store an index to determine material.
     materialIndex = swarm.add_variable(dataType="int", count=1)
 
     # Create a layout object that will populate the swarm across the whole domain.
-    swarmLayout = uw2.swarm.layouts.PerCellGaussLayout(swarm=swarm, gaussPointCount=swarmGPC)
+    swarmLayout = uw2.swarm.layouts.PerCellGaussLayout(
+        swarm=swarm, gaussPointCount=swarmGPC
+    )
     # swarmLayout = uw2.swarm.layouts.PerCellSpaceFillerLayout( swarm=swarm, particlesPerCell=swarmFill )
 
     # Go ahead and populate the swarm.
@@ -100,7 +122,9 @@ def uw2_stokesSinker():
 
     # build a tracer swarm with one particle
     tracerSwarm = uw2.swarm.Swarm(mesh)
-    advector_tracer = uw2.systems.SwarmAdvector(swarm=tracerSwarm, velocityField=velocityField, order=2)
+    advector_tracer = uw2.systems.SwarmAdvector(
+        swarm=tracerSwarm, velocityField=velocityField, order=2
+    )
 
     # build a numpy array with one particle, specifying it's exact location
     coord_array = np.array(object=(x_pos, y_pos), ndmin=2)
@@ -115,20 +139,32 @@ def uw2_stokesSinker():
     fig1.show()
 
     # The yeilding of the BG material is dependent on the SR.
-    strainRate_2ndInvariant = fn.tensor.second_invariant(fn.tensor.symmetric(velocityField.fn_gradient))
+    strainRate_2ndInvariant = fn.tensor.second_invariant(
+        fn.tensor.symmetric(velocityField.fn_gradient)
+    )
 
     # vonMises = (Cohesion_BG / (2.*((strainRate_2ndInvariant+1.0e-20)*ref_SR))) / ref_viscosity
 
     vonMises = Cohesion / (2.0 * ((strainRate_2ndInvariant + 1.0e-20)))
 
-    viscoplasticBG = fn.exception.SafeMaths(fn.misc.min(fn.misc.max(fn.misc.min(vonMises, viscBG), eta_min), eta_max))
+    viscoplasticBG = fn.exception.SafeMaths(
+        fn.misc.min(fn.misc.max(fn.misc.min(vonMises, viscBG), eta_min), eta_max)
+    )
 
     # Here we set a viscosity value of '1.' for both materials
-    mappingDictViscosity = {materialLightIndex: viscoplasticBG, materialHeavyIndex: viscSphere}
+    mappingDictViscosity = {
+        materialLightIndex: viscoplasticBG,
+        materialHeavyIndex: viscSphere,
+    }
     # Create the viscosity map function.
-    viscosityMapFn = fn.branching.map(fn_key=materialIndex, mapping=mappingDictViscosity)
+    viscosityMapFn = fn.branching.map(
+        fn_key=materialIndex, mapping=mappingDictViscosity
+    )
     # Here we set a density of '0.' for the lightMaterial, and '1.' for the heavymaterial.
-    mappingDictDensity = {materialLightIndex: densityBG, materialHeavyIndex: densitySphere}
+    mappingDictDensity = {
+        materialLightIndex: densityBG,
+        materialHeavyIndex: densitySphere,
+    }
     # Create the density map function.
     densityFn = fn.branching.map(fn_key=materialIndex, mapping=mappingDictDensity)
 
@@ -139,7 +175,9 @@ def uw2_stokesSinker():
     iWalls = mesh.specialSets["MinI_VertexSet"] + mesh.specialSets["MaxI_VertexSet"]
     jWalls = mesh.specialSets["MinJ_VertexSet"] + mesh.specialSets["MaxJ_VertexSet"]
 
-    freeslipBC = uw2.conditions.DirichletCondition(variable=velocityField, indexSetsPerDof=(iWalls, jWalls))
+    freeslipBC = uw2.conditions.DirichletCondition(
+        variable=velocityField, indexSetsPerDof=(iWalls, jWalls)
+    )
 
     noslipBC = uw2.conditions.DirichletCondition(
         variable=velocityField, indexSetsPerDof=(iWalls + jWalls, iWalls + jWalls)
@@ -161,7 +199,9 @@ def uw2_stokesSinker():
     # Optional solver settings
 
     top = mesh.specialSets["MaxJ_VertexSet"]
-    surfaceArea = uw2.utils.Integral(fn=1.0, mesh=mesh, integrationType="surface", surfaceIndexSet=top)
+    surfaceArea = uw2.utils.Integral(
+        fn=1.0, mesh=mesh, integrationType="surface", surfaceIndexSet=top
+    )
     surfacePressureIntegral = uw2.utils.Integral(
         fn=pressureField, mesh=mesh, integrationType="surface", surfaceIndexSet=top
     )
@@ -172,7 +212,9 @@ def uw2_stokesSinker():
         (p0,) = surfacePressureIntegral.evaluate()
         offset = p0 / area
         if rank == 0:
-            print("Zeroing pressure using mean upper surface pressure {}".format(offset))
+            print(
+                "Zeroing pressure using mean upper surface pressure {}".format(offset)
+            )
         pressureField.data[:] -= offset
 
     vdotv = fn.math.dot(velocityField, velocityField)
@@ -221,8 +263,14 @@ def uw2_stokesSinker():
         time += dt
 
     if uw2.mpi.rank == 0:
-        print("Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker0[0]))
-        print("Final position:   t = {0:.3f}, y = {1:.3f}".format(tSinker[nsteps - 1], ySinker0[nsteps - 1]))
+        print(
+            "Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker0[0])
+        )
+        print(
+            "Final position:   t = {0:.3f}, y = {1:.3f}".format(
+                tSinker[nsteps - 1], ySinker0[nsteps - 1]
+            )
+        )
 
         uw2.utils.matplotlib_inline()
         import matplotlib.pyplot as pyplot
@@ -262,14 +310,18 @@ def uw3_stokesSinker(render=True):
     options["snes_converged_reason"] = None
     options["snes_monitor_short"] = None
 
-    mesh = uw3.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0))
+    mesh = uw3.meshing.StructuredQuadBox(
+        elementRes=(int(res), int(res)), minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0)
+    )
 
     v = uw3.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw3.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
     stokes = uw3.systems.Stokes(mesh, velocityField=v, pressureField=p)
 
-    stokes.constitutive_model = uw3.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+    stokes.constitutive_model = uw3.systems.constitutive_models.ViscousFlowModel(
+        mesh.dim
+    )
 
     ### free slip.
     ### note with petsc we always need to provide a vector of correct cardinality.
@@ -279,8 +331,12 @@ def uw3_stokesSinker(render=True):
     ### No slip (?)
     sol_vel = sympy.Matrix([0, 0])
 
-    stokes.add_dirichlet_bc(sol_vel, ["Top", "Bottom"], [0, 1])  # top/bottom: components, function, markers
-    stokes.add_dirichlet_bc(sol_vel, ["Left", "Right"], [0, 1])  # left/right: components, function, markers
+    stokes.add_dirichlet_bc(
+        sol_vel, ["Top", "Bottom"], [0, 1]
+    )  # top/bottom: components, function, markers
+    stokes.add_dirichlet_bc(
+        sol_vel, ["Left", "Right"], [0, 1]
+    )  # left/right: components, function, markers
 
     swarm = uw3.swarm.Swarm(mesh=mesh)
     material = uw3.swarm.IndexSwarmVariable("M", swarm, indices=4)
@@ -300,7 +356,9 @@ def uw3_stokesSinker(render=True):
 
         for i in range(blob.shape[0]):
             cx, cy, r, m = blob[i, :]
-            inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+            inside = (swarm.data[:, 0] - cx) ** 2 + (
+                swarm.data[:, 1] - cy
+            ) ** 2 < r**2
             material.data[inside] = m
 
     tracer = numpy.zeros(shape=(1, 2))
@@ -314,7 +372,9 @@ def uw3_stokesSinker(render=True):
 
     mat_viscosity = np.array([viscoPlastic_BG, viscSphere])
 
-    viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
+    viscosityMat = (
+        mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
+    )
 
     viscosity = sympy.Max(sympy.Min(viscosityMat, eta_max), eta_min)
 
@@ -393,7 +453,9 @@ def uw3_stokesSinker(render=True):
 
     #### initial linear solve
     stokes.viscosity = 1.0
-    stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1.0)
+    stokes.constitutive_model.material_properties = (
+        stokes.constitutive_model.Parameters(viscosity=1.0)
+    )
     # stokes.bodyforce =  -1* 1e-32 * mesh.N.j
     stokes.bodyforce = -1 * density * mesh.N.j
     # stokes.petsc_options["snes_type"]  = "ksponly"
@@ -401,7 +463,9 @@ def uw3_stokesSinker(render=True):
 
     ### add in NL viscosity
     stokes.viscosity = viscosity
-    stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=viscosity)
+    stokes.constitutive_model.material_properties = (
+        stokes.constitutive_model.Parameters(viscosity=viscosity)
+    )
     stokes.bodyforce = -1 * density * mesh.N.j
 
     while step < nsteps:
@@ -412,13 +476,17 @@ def uw3_stokesSinker(render=True):
             ymin = tracer[:, 1].min()
             ySinker[step] = ymin
             tSinker[step] = time
-            print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")  # , vrms {vrms_val:.3e}")
+            print(
+                f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}"
+            )  # , vrms {vrms_val:.3e}")
 
         ### estimate dt
         dt = stokes.estimate_dt()
 
         with swarm.access():
-            vel_on_particles = uw3.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
+            vel_on_particles = uw3.function.evaluate(
+                stokes.u.fn, swarm.particle_coordinates.data
+            )
 
         ### advect swarm
         with swarm.access(swarm.particle_coordinates):
@@ -435,8 +503,14 @@ def uw3_stokesSinker(render=True):
         time += dt
 
     if uw3.mpi.rank == 0:
-        print("Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
-        print("Final position:   t = {0:.3f}, y = {1:.3f}".format(tSinker[nsteps - 1], ySinker[nsteps - 1]))
+        print(
+            "Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0])
+        )
+        print(
+            "Final position:   t = {0:.3f}, y = {1:.3f}".format(
+                tSinker[nsteps - 1], ySinker[nsteps - 1]
+            )
+        )
 
         uw2.utils.matplotlib_inline()
         import matplotlib.pyplot as pyplot
