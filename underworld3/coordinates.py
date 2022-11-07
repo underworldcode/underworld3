@@ -60,7 +60,11 @@ class CoordinateSystem:
 
     """
 
-    def __init__(self, mesh, system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN):
+    def __init__(
+        self,
+        mesh,
+        system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN,
+    ):
 
         self.mesh = mesh
         self.coordinate_type = system
@@ -205,15 +209,28 @@ class CoordinateSystem:
             # l1 is longitude, l2 is latitude
             rl1 = self._R[1]
             rl2 = self._R[2]
-            self._xRotN_sym = sympy.Matrix(
+            self._rRotN_sym = sympy.Matrix(
                 [
-                    [+sympy.cos(rl1) * sympy.cos(rl2), +sympy.sin(rl1) * sympy.cos(rl2), sympy.sin(rl2)],
-                    [-sympy.sin(rl1) * sympy.cos(rl2), +sympy.cos(rl1) * sympy.cos(rl2), 0],
-                    [-sympy.cos(rl1) * sympy.sin(rl2), -sympy.cos(rl1) * sympy.sin(rl2), sympy.cos(rl2)],
+                    [
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        +sympy.sin(rl1) * sympy.cos(rl2),
+                        sympy.sin(rl2),
+                    ],
+                    [
+                        -sympy.sin(rl1) * sympy.cos(rl2),
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        0,
+                    ],
+                    [
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        sympy.cos(rl2),
+                    ],
                 ]
             )
 
-            self._xRot = self._xRotN_sym.subs([(rl1, l1), (rl2, l2)])
+            self._rRotN = self._rRotN_sym.subs((rl1, l1), (rl2, l2))
+            self._xRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:
             self.type = "Spherical Native"
@@ -239,9 +256,21 @@ class CoordinateSystem:
             rl2 = self._R[2]
             self._Rot = sympy.Matrix(
                 [
-                    [+sympy.cos(rl1) * sympy.cos(rl2), +sympy.sin(rl1) * sympy.cos(rl2), sympy.sin(rl2)],
-                    [-sympy.sin(rl1) * sympy.cos(rl2), +sympy.cos(rl1) * sympy.cos(rl2), 0],
-                    [-sympy.cos(rl1) * sympy.sin(rl2), -sympy.cos(rl1) * sympy.sin(rl2), sympy.cos(rl2)],
+                    [
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        +sympy.sin(rl1) * sympy.cos(rl2),
+                        sympy.sin(rl2),
+                    ],
+                    [
+                        -sympy.sin(rl1) * sympy.cos(rl2),
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        0,
+                    ],
+                    [
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        sympy.cos(rl2),
+                    ],
                 ]
             )
 

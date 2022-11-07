@@ -1,12 +1,16 @@
 # Index of Sample notebooks
 
-Typically, a markdown (`myst` format) file is used for text that is not going to be executed as a notebook. 
+Typically, a markdown (`myst` format) file is used for text that is not going to be executed as a notebook. Notebooks are organised into a number of folders:
 
- - [Poisson using the generic solver class](Ex_Poisson_Cartesian_Generic)
- - [Using the projection solvers to evaluate functions](Ex_Project_Function)
-
-
- - [Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.py](Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.py)
+ - Examples-Convection
+ - Examples-Meshing
+ - Examples-NavierStokes
+ - Examples-PoissonEquation
+ - Examples-PorousFlow
+ - Examples-Sandbox-VEP
+ - Examples-StokesFlow
+ - Examples-UW-2to3
+ - Examples-Utilities
 
 
  <!-- - [Example1](Example1)
@@ -27,3 +31,13 @@ Typically, a markdown (`myst` format) file is used for text that is not going to
 
 Any packages that you need to have installed by `conda` or `pip` should be included in the `conda_packages.yml` file in the root directory of the repository. You can also specify packages for the `apt get` system if they cannot be installed by `conda`. 
 
+
+```python
+
+
+
+```
+
+```python
+
+```
