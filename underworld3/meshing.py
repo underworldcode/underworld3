@@ -522,7 +522,7 @@ def Annulus(
     filename=None,
 ):
 
-    boundaries = {"Lower": 1, "Upper": 2}
+    boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
 
     vertices = {"Centre": 10}
 
@@ -593,8 +593,6 @@ def Annulus(
         else:
             plex.removeLabel(name)
 
-    plex.removeLabel("Face Sets")
-
     for name, tag in vertices.items():
         plex.createLabel(name)
         label = plex.getLabel(name)
@@ -604,7 +602,130 @@ def Annulus(
         else:
             plex.removeLabel(name)
 
-    plex.removeLabel("Vertex Sets")
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        filename=filename,
+    )
+
+
+def AnnulusFixedStars(
+    radiusFixedStars: float = 1.5,
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.5,
+    cellSize: float = 0.1,
+    cellSize_FS: float = 0.2,
+    centre: bool = False,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+):
+
+    boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
+    vertices = {"Centre": 10}
+
+    import gmsh
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.model.add("AnnulusFS")
+
+    p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+
+    loops = []
+
+    if radiusInner > 0.0:
+        p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
+        p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
+
+        c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
+        c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
+
+        cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"])
+
+        loops = [cl1] + loops
+
+    p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
+    p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize)
+
+    c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
+    c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
+
+    # Fixed Stars
+
+    p6 = gmsh.model.geo.add_point(radiusFixedStars, 0.0, 0.0, meshSize=cellSize_FS)
+    p7 = gmsh.model.geo.add_point(-radiusFixedStars, 0.0, 0.0, meshSize=cellSize_FS)
+
+    c5 = gmsh.model.geo.add_circle_arc(p6, p1, p7)
+    c6 = gmsh.model.geo.add_circle_arc(p7, p1, p6)
+
+    cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
+    cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries["FixedStars"])
+
+    loops = [cl3] + loops
+
+    s = gmsh.model.geo.add_plane_surface(loops)
+
+    gmsh.model.geo.synchronize()
+
+    if radiusInner == 0.0:
+        gmsh.model.mesh.embed(0, [p1], 2, s)
+
+    gmsh.model.geo.synchronize()
+    gmsh.model.mesh.embed(1, [c3, c4], 2, s)
+
+    gmsh.model.geo.synchronize()
+
+    if radiusInner > 0.0:
+        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"], name="Lower")
+    else:
+        gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"], name="Centre")
+
+    gmsh.model.addPhysicalGroup(
+        1,
+        [c3, c4],
+        boundaries["Upper"],
+        name="Upper",
+    )
+    gmsh.model.addPhysicalGroup(
+        1,
+        [c5, c6],
+        boundaries["FixedStars"],
+        name="FixedStars",
+    )
+
+    gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
+
+    gmsh.model.geo.synchronize()
+
+    # Generate Mesh
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
+        gmsh.model.mesh.generate(2)
+        gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
+        gmsh.finalize()
+        plex = PETSc.DMPlex().createFromFile(fp.name)
+
+    for name, tag in boundaries.items():
+        plex.createLabel(name)
+        label = plex.getLabel(name)
+        indexSet = plex.getStratumIS("Face Sets", tag)
+        if indexSet:
+            label.insertIS(indexSet, 1)
+        else:
+            plex.removeLabel(name)
+
+    for name, tag in vertices.items():
+        plex.createLabel(name)
+        label = plex.getLabel(name)
+        indexSet = plex.getStratumIS("Vertex Sets", tag)
+        if indexSet:
+            label.insertIS(indexSet, 1)
+        else:
+            plex.removeLabel(name)
 
     return Mesh(
         plex,

@@ -36,6 +36,9 @@ res = np.pi * (r_o + r_i) / (4 * num_els)
 
 free_slip_upper = True
 
+# -
+
+
 
 
 # +
@@ -48,8 +51,16 @@ meshball_xyz_tmp = uw.meshing.CubedSphere(
     radiusInner=r_i, 
     numElements=num_els, 
     filename="./tmp_meshball3.msh", 
-    qdegree=3, simplex=True,
+    qdegree=3, simplex=False,
 )
+
+# meshball_xyz_tmp = uw.meshing.SphericalShell(
+#     radiusOuter=r_o, 
+#     radiusInner=r_i, 
+#     cellSize=res,
+#     filename="./tmp_meshball3.msh", 
+#     qdegree=3, 
+# )
 
 
 
@@ -60,12 +71,9 @@ dmplex = meshball_xyz_tmp.dm.clone()
 
 rl1l2 = np.empty_like(xyz)
 
-
-## Fix this one ... 
-
 rl1l2[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
 rl1l2[:, 1] = np.arctan2(xyz[:, 1] + 1.0e-16, xyz[:, 0] + 1.0e-16)
-rl1l2[:, 2] = np.arcsin( xyz[:, 2] + 1.0e-16 / rl1l2[:, 0] + 1.0e-16)
+rl1l2[:, 2] = np.mod(0.01 + np.arcsin( xyz[:, 2] + 1.0e-16 / rl1l2[:, 0] + 1.0e-16), np.pi) - np.pi/2
 
 rl1l2_vec = xyz_vec.copy()
 rl1l2_vec.array[...] = rl1l2.reshape(-1)[...]
@@ -83,15 +91,21 @@ uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
 )
 meshball.dm.view()
 
-meshball.dm.localizeCoordinates()
-meshball.dm.view()
+# +
+# meshball.dm.localizeCoordinates()
+# meshball.dm.view()
+# -
+
+
 
 meshball_xyz = uw.meshing.CubedSphere(
     radiusOuter=r_o, 
     radiusInner=r_i, 
     numElements=num_els, 
-    qdegree=3, simplex=True
+    filename="./tmp_meshball3.msh", 
+    qdegree=3, simplex=False,
 )
+
 
 display(meshball_xyz.CoordinateSystem.type)
 display(meshball_xyz.CoordinateSystem.N)
@@ -115,7 +129,7 @@ r, l1, l2  = meshball.CoordinateSystem.R
 # -
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 3, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=False)
+p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
 
 
@@ -226,15 +240,13 @@ stokes_xyz.bodyforce = Rayleigh * t_init_xyz * unit_rvec
 stokes_xyz.bodyforce -= 1.0e6 * v_soln_xyz.sym.dot(unit_rvec) * surface_fn * unit_rvec
 # -
 
-meshball.CoordinateSystem.xRotN
+meshball.CoordinateSystem.X
 
 stokes_xyz._setup_terms()
 stokes_xyz.solve(zero_init_guess=True)
 
-0/0
-
 stokes._setup_terms()
-stokes.solve(zero_init_guess=False)
+stokes.solve(zero_init_guess=True)
 pressure_solver.solve()
 
 U_xyz = meshball.CoordinateSystem.xRotN * v_soln.sym.T
@@ -257,7 +269,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pvmesh = pv.read("./tmp_meshball.msh")
+    pvmesh = pv.read("./tmp_meshball3.msh")
 
     with meshball.access():
         pvmesh.point_data["V"] = uw.function.evaluate(
@@ -265,50 +277,54 @@ if uw.mpi.size == 1:
         )
         pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
         pvmesh.point_data["T"] = uw.function.evaluate(
-            t_init_xy, meshball_xyz.data, coord_sys=meshball_xyz.N
+            t_init_xyz, meshball_xyz.data, coord_sys=meshball_xyz.N
         )
 
     usol = np.empty_like(v_soln.coords)
-    usol[:, 0] = uw.function.evaluate(U_xy[0], v_soln.coords)
-    usol[:, 1] = uw.function.evaluate(U_xy[1], v_soln.coords)
+    usol[:, 0] = uw.function.evaluate(U_xyz[0], v_soln.coords)
+    usol[:, 1] = uw.function.evaluate(U_xyz[1], v_soln.coords)
+    usol[:, 2] = uw.function.evaluate(U_xyz[2], v_soln.coords)
 
-    usol_xy = np.empty_like(v_soln_xy.coords)
-    usol_xy[:, 0] = uw.function.evaluate(v_soln_xy.sym[0], v_soln_xy.coords)
-    usol_xy[:, 1] = uw.function.evaluate(v_soln_xy.sym[1], v_soln_xy.coords)
+    usol_xyz = np.empty_like(v_soln_xyz.coords)
+    usol_xyz[:, 0] = uw.function.evaluate(v_soln_xyz.sym[0], v_soln_xyz.coords)
+    usol_xyz[:, 1] = uw.function.evaluate(v_soln_xyz.sym[1], v_soln_xyz.coords)
 
-    xy = np.empty_like(v_soln.coords)
-    xy[:, 0] = uw.function.evaluate(
+    xyz = np.empty_like(v_soln.coords)
+    xyz[:, 0] = uw.function.evaluate(
         meshball.CoordinateSystem.X[0], v_soln.coords, coord_sys=meshball.N
     )
-    xy[:, 1] = uw.function.evaluate(
+    xyz[:, 1] = uw.function.evaluate(
         meshball.CoordinateSystem.X[1], v_soln.coords, coord_sys=meshball.N
+    )
+    xyz[:, 2] = uw.function.evaluate(
+        meshball.CoordinateSystem.X[2], v_soln.coords, coord_sys=meshball.N
     )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = xy[...]
+    arrow_loc[:, :] = xyz[...]
 
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+    arrow_length[:,:] = usol[...]
 
     arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length_xy[:, 0:2] = usol_xy[...]
+    arrow_length_xy[:, :] = usol_xyz[...]
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Grey",
-        scalars="P",
-        show_edges=True,
-        use_transparency=False,
-        opacity=0.75,
-    )
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
+    # pl.add_mesh(
+    #     pvmesh,
+    #     cmap="coolwarm",
+    #     edge_color="Grey",
+    #     scalars="P",
+    #     show_edges=True,
+    #     use_transparency=False,
+    #     opacity=0.75,
+    # )
 
-    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.00005, color="Blue")
+    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.0001, color="Blue")
     pl.add_arrows(
-        arrow_loc + (0.005, 0.005, 0.0), arrow_length, mag=0.00005, color="Red"
+        arrow_loc + (0.005, 0.005, 0.0), arrow_length, mag=0.0001, color="Red"
     )
 
     pl.show(cpos="xy")
