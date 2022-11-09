@@ -71,7 +71,6 @@ if build_mesh:
         gmsh.finalize()
 
 
-# %%
 # Create dictionary to tell the mesh constructor about the mesh labels
 # which are not embedded in the .geo file in the way the physical groups
 # are embedded in the .msh file
@@ -115,11 +114,11 @@ edot = uw.discretisation.MeshVariable(
 visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=True)
 stress = uw.discretisation.MeshVariable(r"\sigma", mesh1, 1, degree=1, continuous=True)
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # This is how we extract cell data from the mesh. We can map it to the swarm data structure and use this to
 # build material properties that depend on cell type.
+# -
 
-# %%
 # Parallel ? Local or global ?
 
 indexSetW = mesh1.dm.getStratumIS("Cell Sets", 0)
@@ -136,7 +135,6 @@ lvec.isset(indexSetS, 1.0)
 with swarm.access(material):
     material.data[:, 0] = lvec.array[:]
 
-# %%
 # check the mesh if in a notebook / serial
 
 if False and uw.mpi.size == 1:
@@ -188,7 +186,6 @@ if False and uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 
-# %%
 # Check that this mesh can be solved for a simple, linear problem
 
 # Create Stokes object
@@ -235,7 +232,6 @@ base_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
 edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.025)
 # stokes.bodyforce -= 10000.0 * surface_defn_fn * v_soln.sym[1] * mesh1.CoordinateSystem.unit_j
 
-# %%
 # This is a strategy to obtain integrals over the surface (etc)
 
 
@@ -279,16 +275,12 @@ stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 
 # %%
-
-# %%
 p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
 
 print(f"Surface Average pressure: {p_surface_ave}")
 
 with mesh1.access(p_null):
     p_null.data[:] = p_surface_ave
-
-# %%
 
 # %%
 tau_y = 100 + 0.5 * (p_soln.sym[0] - p_null.sym[0])
@@ -309,7 +301,6 @@ stokes.saddle_preconditioner = 1 / viscosity
 # %%
 stokes._setup_terms()
 
-# %%
 # Fake call-back version
 
 for i in range(5):
@@ -330,7 +321,6 @@ strain_rate_calc.solve()
 viscosity_calc.solve()
 stress_calc.solve()
 
-# %%
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
@@ -417,6 +407,3 @@ surface_defn_fn = sympy.exp(-((y + 0.666) ** 2) * hw)
 p_surface_ave = surface_integral(mesh1, edot.sym[0], surface_defn_fn)
 print(f"Edot at 0.666 = {p_surface_ave}")
 
-# %%
-
-# %%

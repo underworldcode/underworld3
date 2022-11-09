@@ -13,15 +13,16 @@
 # ---
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # # Periodic Mesh Example (WIP)
 #
 # This is a periodic, Cartesian mesh with the periodic bcs specified using gmsh itself.
 # Compare this to the Cylindrical Stokes example that has periodic coordinates in a mesh
 # that is continuously connected.
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # ## Generate Periodic mesh using GMSH
+# -
 
 # %%
 import gmsh
@@ -85,8 +86,9 @@ gmsh.model.mesh.generate(2)
 gmsh.write("tmp_periodicx.msh")
 gmsh.finalize()
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # ## Import Mesh into PETSc
+# -
 
 # %%
 from petsc4py import PETSc
@@ -129,7 +131,6 @@ swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1)
 swarm.populate(fill_param=3)
 
-# %%
 # Create Stokes object
 
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -176,7 +177,6 @@ stokes.p.save(savefile)
 densvar.save(savefile)
 mesh.generate_xdmf(savefile)
 
-# %%
 # check if that works
 
 if uw.mpi.size == 1:
@@ -219,8 +219,3 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
-# %%
-
-# %%
-
-# %%

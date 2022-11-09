@@ -342,6 +342,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=1.0,
     )
+    
 
     pl.show()
 
@@ -505,4 +506,3 @@ if uw.mpi.size == 1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
-# -
