@@ -757,7 +757,8 @@ def CubedSphere(
     import gmsh
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 0)
+    gmsh.option.setNumber("General.Verbosity", 5)
+    # gmsh.option.setNumber("Mesh.Algorithm3D", 7)
     gmsh.model.add("Cubed Sphere")
 
     center_point = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=1)
@@ -846,6 +847,8 @@ def CubedSphere(
     if not simplex:
         for _, volume in gmsh.model.get_entities(3):
             gmsh.model.mesh.set_transfinite_volume(volume)
+            # if not simplex:
+            gmsh.model.mesh.set_recombine(3, volume)
 
     # Generate Mesh
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
@@ -872,5 +875,136 @@ def CubedSphere(
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        filename=filename,
+    )
+
+
+def SegmentedSphericalSurface2D(
+    radius: float = 1.0,
+    cellSize: float = 0.05,
+    numSegments: int = 6,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+):
+
+    import gmsh
+    import underworld3 as uw
+
+    options = PETSc.Options()
+    options["dm_plex_gmsh_multiple_tags"] = None
+    options["dm_plex_gmsh_spacedim"] = 2
+    options["dm_plex_gmsh_use_regions"] = None
+    options["dm_plex_gmsh_mark_vertices"] = None
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.model.add("Segmented Sphere 2D Surface")
+
+    # Mesh like an orange
+
+    num_segments = numSegments
+    meshRes = cellSize
+
+    surflist = []
+    longitudesN = []
+    longitudesS = []
+    segments_clps = []
+    segments_surfs = []
+    equator_pts = []
+
+    centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1)
+    poleN = gmsh.model.geo.addPoint(0.0, 0.0, 1.0, tag=-1, meshSize=0.5 * meshRes)
+    poleS = gmsh.model.geo.addPoint(0.0, 0.0, -1.0, tag=-1, meshSize=0.5 * meshRes)
+
+    dtheta = 2 * np.pi / num_segments
+
+    for i in range(num_segments):
+        theta = i * 2 * np.pi / num_segments
+        x1 = np.cos(theta)
+        y1 = np.sin(theta)
+        equator_pts.append(
+            gmsh.model.geo.addPoint(x1, y1, 0.0, tag=-1, meshSize=meshRes)
+        )
+
+    for i in range(num_segments):
+        pEq = equator_pts[i]
+        longitudesN.append(gmsh.model.geo.addCircleArc(poleN, centre, pEq, tag=-1))
+        longitudesS.append(gmsh.model.geo.addCircleArc(pEq, centre, poleS, tag=-1))
+
+    gmsh.model.geo.synchronize()
+
+    # Curve loops:
+
+    for i in range(num_segments):
+        loops = [
+            longitudesN[i],
+            longitudesS[i],
+            longitudesS[np.mod(i + 1, num_segments)],
+            longitudesN[np.mod(i + 1, num_segments)],
+        ]
+        segments_clps.append(
+            gmsh.model.geo.addCurveLoop(loops[::-1], tag=-1, reorient=True)
+        )
+
+    gmsh.model.geo.synchronize()
+
+    # Surfaces
+
+    for i in range(num_segments):
+        segments_surfs.append(
+            gmsh.model.geo.addSurfaceFilling(
+                [segments_clps[i]], tag=-1, sphereCenterTag=centre
+            )
+        )
+
+    gmsh.model.geo.synchronize()
+
+    # Add some physical labels etc.
+
+    gmsh.model.addPhysicalGroup(0, [poleN], 1000)
+    gmsh.model.addPhysicalGroup(0, [poleS], 2000)
+    gmsh.model.addPhysicalGroup(0, [poleN, poleS], 3000)
+    gmsh.model.setPhysicalName(0, 1000, "NPole")
+    gmsh.model.setPhysicalName(0, 2000, "SPole")
+    gmsh.model.setPhysicalName(0, 3000, "Poles")
+
+    gmsh.model.addPhysicalGroup(2, segments_surfs, 10000)
+    gmsh.model.setPhysicalName(2, 10000, "Elements")
+
+    # Generate Mesh
+    gmsh.model.mesh.generate(2)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
+        gmsh.write(fp.name)
+        if filename:
+            gmsh.write(filename)
+        plex = PETSc.DMPlex().createFromFile(fp.name)
+
+    # xyz coordinates of the mesh NOTE:
+    # Drop the first point (the centre constructor point)
+    xyz = gmsh.model.mesh.get_nodes()[1].reshape(-1, 3)[1::, :]
+
+    # Re-interpret the DM coordinates
+    lonlat_vec = plex.getCoordinates()
+    lonlat = np.empty_like(xyz[:, 0:2])
+    lonlat[:, 0] = np.mod(np.arctan2(xyz[:, 1], xyz[:, 0]), 2.0 * np.pi) - np.pi
+    lonlat[:, 1] = np.arcsin(xyz[:, 2])
+    lonlat_vec.array[...] = lonlat.reshape(-1)
+    plex.setCoordinates(lonlat_vec)
+
+    # This mesh will always be periodic in the longitudinal coordinate
+
+    uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+        plex, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
+    )
+
+    gmsh.finalize()
+
+    return Mesh(
+        plex,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERE_SURFACE_NATIVE,
         filename=filename,
     )

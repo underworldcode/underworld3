@@ -12,10 +12,9 @@
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Stokes Benchmark SolCx
-# %%
+#
+#
 # options = PETSc.Options()
 # options["help"] = None
 
@@ -76,8 +75,10 @@ stokes.bodyforce = sympy.Matrix(
     ]
 )
 
+# +
 # stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
 # stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+# -
 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
@@ -91,7 +92,6 @@ stokes.add_dirichlet_bc(
 )  # left/right: components, function, markers
 
 
-# %%
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
 stokes.petsc_options["snes_rtol"] = 1.0e-6
@@ -106,13 +106,7 @@ stokes.petsc_options["snes_max_it"] = 10
 # Solve time
 stokes.solve()
 
-# %% [markdown]
 # ### Visualise it !
-#
-#
-
-# %%
-# OR
 
 # +
 # check the mesh if in a notebook / serial

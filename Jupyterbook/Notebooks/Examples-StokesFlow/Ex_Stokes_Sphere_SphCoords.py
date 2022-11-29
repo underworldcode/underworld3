@@ -12,9 +12,8 @@
 #     name: python3
 # ---
 
-
 # # Spherical Stokes
-# (In spherical coordinates)
+# (In a spherical coordinate system)
 
 # + tags=[]
 import petsc4py
@@ -95,9 +94,6 @@ meshball.dm.view()
 # meshball.dm.localizeCoordinates()
 # meshball.dm.view()
 # -
-
-
-
 meshball_xyz = uw.meshing.CubedSphere(
     radiusOuter=r_o, 
     radiusInner=r_i, 
@@ -124,12 +120,8 @@ display(meshball.CoordinateSystem.x)
 x, y, z = meshball.CoordinateSystem.X
 r, l1, l2  = meshball.CoordinateSystem.R
 
-# +
-# uw.function.evaluate(meshball.CoordinateSystem.R[0], meshball.data)
-# -
-
-v_soln = uw.discretisation.MeshVariable("U", meshball, 3, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
+v_soln = uw.discretisation.MeshVariable("U", meshball, 3, degree=1)
+p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=0, continuous=False)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
 
 
@@ -183,14 +175,24 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 #
 # $$ \dot\epsilon_{rr} \equiv \dot\epsilon_{00} = U_{ 0,0}(\mathbf{r}) $$
 #
+# $$ \dot\epsilon_{\lambda_2 \lambda_2} \equiv \dot\epsilon_{22} = 
+# \frac{U_{ 0 }(\mathbf{r}) + U_{ 2,2}(\mathbf{r})}{r}
+# $$
+#
+# $$ \dot\epsilon_{\lambda_1 \lambda_1} \equiv \dot\epsilon_{11} =
+# \frac{U_{ 0 }(\mathbf{r}) \cos{\left(\lambda_2 \right)} + U_{ 1,1}(\mathbf{r}) - U_{ 2 }(\mathbf{r}) \sin{\left(\lambda_2 \right)}}{r \cos{\left(\lambda_2 \right)}}
+# $$
+#
+# $$ \dot\epsilon_{r\lambda_2} \equiv \dot\epsilon_{02} = -\frac{U_{ 2,0}(\mathbf{r})}{2} - \frac{U_{ 0,2}(\mathbf{r})}{2 r} + \frac{U_{ 2 }(\mathbf{r})}{2 r} $$
+#
+#
+# $$ \dot\epsilon_{\lambda_1 \lambda_2} \equiv \dot\epsilon_{12} =\frac{- U_{ 1 }(\mathbf{r}) \tan{\left(\lambda_2 \right)} - U_{ 1,2}(\mathbf{r}) - \frac{U_{ 2,1}(\mathbf{r})}{\cos{\left(\lambda_2 \right)}}}{2 r} $$
+#
+#
 # $$ \dot\epsilon_{r\lambda_1} \equiv \dot\epsilon_{01} = \frac{U_{ 1,0}(\mathbf{r})}{2} + \frac{U_{ 0,1}(\mathbf{r})}{2 r \cos{\left(\lambda_2 \right)}} - \frac{U_{ 1 }(\mathbf{r})}{2 r} $$
 #
-# $$ \dot\epsilon_{r\lambda_2} \equiv \dot\epsilon_{02} = \frac{U_{ 2,0}(\mathbf{r})}{2} + \frac{U_{ 0,2}(\mathbf{r})}{2 r} - \frac{U_{ 2 }(\mathbf{r})}{2 r} $$
 #
-
-stokes.strainrate
-
-stokes.stress
+#
 
 # +
 # Create Stokes object (x,y)
@@ -240,14 +242,23 @@ stokes_xyz.bodyforce = Rayleigh * t_init_xyz * unit_rvec
 stokes_xyz.bodyforce -= 1.0e6 * v_soln_xyz.sym.dot(unit_rvec) * surface_fn * unit_rvec
 # -
 
-meshball.CoordinateSystem.X
-
 stokes_xyz._setup_terms()
 stokes_xyz.solve(zero_init_guess=True)
+
+options = stokes.petsc_options
+options.setValue("fieldsplit_velocity_ksp_monitor", None)
+options.setValue("fieldsplit_pressure_ksp_monitor", None)
+options.setValue("snes_rtol",1.0e-2)
+options.setValue("pc_gamg_agg_nsmooths", 3)
+options.setValue("pc_gamg_threshold", 0.5)
 
 stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 pressure_solver.solve()
+
+
+
+0/0
 
 U_xyz = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
@@ -347,6 +358,3 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # 0.1
 # MEAN: 0.8601596694865591
 # MAX:  1.0587809789060159
-# -
-
-stokes

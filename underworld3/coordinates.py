@@ -277,6 +277,52 @@ class CoordinateSystem:
             self._xRotN = self._Rot.subs([(rl1, l1), (rl2, l2)])
             self._rRotN = sympy.eye(self.mesh.dim)
 
+        elif (
+            system == CoordinateSystemType.SPHERE_SURFACE_NATIVE and self.mesh.dim == 2
+        ):
+            self.type = "Spherical Native"
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R"\lambda_1"
+            self._N[1]._latex_form = R"\lambda_2"
+            self._R = self._N.copy()
+            self._r = self._R
+            l1, l2 = self.N
+
+            r = sympy.sympify(1)  # Maybe we change this later
+            x = r * sympy.cos(l1) * sympy.cos(l2)
+            y = r * sympy.sin(l1) * sympy.cos(l2)
+            z = r * sympy.sin(l2)
+
+            self._X = sympy.Matrix([[x, y, z]])
+            self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
+
+            # l1 is longitude, l2 is latitude
+            rl1 = self._R[0]
+            rl2 = self._R[1]
+            self._Rot = sympy.Matrix(
+                [
+                    [
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        +sympy.sin(rl1) * sympy.cos(rl2),
+                        sympy.sin(rl2),
+                    ],
+                    [
+                        -sympy.sin(rl1) * sympy.cos(rl2),
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        0,
+                    ],
+                    [
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        sympy.cos(rl2),
+                    ],
+                ]
+            )
+
+            self._xRotN = self._Rot.subs([(rl1, l1), (rl2, l2)])
+            self._rRotN = sympy.eye(self.mesh.dim)
+
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
 

@@ -34,6 +34,12 @@ def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=Non
     # gmsh_viewer.setFileName(filename)
     # gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
 
+    options = PETSc.Options()
+    options["dm_plex_gmsh_multiple_tags"] = None
+    # options["dm_plex_gmsh_spacedim"] = 2  # The embedding dimension if not obvious from the mesh file
+    options["dm_plex_gmsh_use_regions"] = None
+    options["dm_plex_gmsh_mark_vertices"] = None
+
     # This is probably simpler
     gmsh_plex = PETSc.DMPlex().createFromFile(filename)
 
@@ -226,14 +232,25 @@ class Mesh(_api_tools.Stateful):
             or self.CoordinateSystem.coordinate_type
             == CoordinateSystemType.CYLINDRICAL3D_NATIVE
         ):
-            self.vector = uw.maths.vector_calculus_cylindrical(mesh=self)
+            self.vector = uw.maths.vector_calculus_cylindrical(
+                mesh=self,
+            )
         elif (
             self.CoordinateSystem.coordinate_type
             == CoordinateSystemType.SPHERICAL_NATIVE
         ):
             self.vector = uw.maths.vector_calculus_spherical_lonlat(
-                mesh=self
+                mesh=self,
             )  ## Not yet complete or tested
+
+        elif (
+            self.CoordinateSystem.coordinate_type
+            == CoordinateSystemType.SPHERE_SURFACE_NATIVE
+        ):
+            self.vector = uw.maths.vector_calculus_spherical_surface2D_lonlat(
+                mesh=self,
+            )
+
         else:
             self.vector = uw.maths.vector_calculus(mesh=self)
 

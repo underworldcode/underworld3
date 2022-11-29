@@ -240,7 +240,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
     """
     mesh_vector_calculus module for div, grad, curl etc that apply in
-    native cylindrical coordinates. NOTE - our choice of coordinates
+    native spherical coordinates. NOTE - our choice of coordinates
     is slightly unusual - radius, longitude and latitude (in radians)
     for convenience when it comes to working with Earth-Science datasets
     """
@@ -275,7 +275,7 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
             V_r.diff(r)
             + 2 * V_r / r
             + V_l1.diff(l1) / (r * sympy.cos(l2))
-            - sympy.tan(l2) * V_l2 / r
+            - sympy.tan(l2) * V_l2 / (r)
             + V_l2.diff(l2) / r
         )
 
@@ -295,9 +295,9 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         l1 = self.mesh.CoordinateSystem.N[1]
         l2 = self.mesh.CoordinateSystem.N[2]
 
-        grad_S[0] = scalar.diff(r)
-        grad_S[1] = scalar.diff(l1) / (r * sympy.cos(l2))
-        grad_S[2] = scalar.diff(l2) / r
+        grad_S[0] = +scalar.diff(r)
+        grad_S[1] = +scalar.diff(l1) / (r * sympy.cos(l2))
+        grad_S[2] = +scalar.diff(l2) / r
 
         return grad_S
 
@@ -348,18 +348,143 @@ class mesh_vector_calculus_spherical_lonlat(mesh_vector_calculus):
         V_l2 = matrix[2]
 
         E = L.copy()
-        # E_00, E_22 and E_02 are unchanged from Cartesian
 
         E[0, 0] = L[0, 0]
-        E[1, 1] = (L[1, 1] + V_r * sympy.cos(l2) + V_l2 * sympy.sin(l2)) / (
+        E[1, 1] = (L[1, 1] + V_r * sympy.cos(l2) - V_l2 * sympy.sin(l2)) / (
             r * sympy.cos(l2)
         )
         E[2, 2] = (L[2, 2] + V_r) / r
 
         E[1, 0] = E[0, 1] = (L[0, 1] / (r * sympy.cos(l2)) + L[1, 0] - V_l1 / r) / 2
-        E[2, 0] = E[0, 2] = (L[0, 2] / r + L[2, 0] - V_l2 / r) / 2
+        E[2, 0] = E[0, 2] = (-L[0, 2] / r - L[2, 0] + V_l2 / r) / 2
         E[1, 2] = E[2, 1] = (
-            L[1, 2] + L[2, 1] / sympy.cos(l2) - V_l1 * sympy.tan(l2)
+            -L[1, 2] - L[2, 1] / sympy.cos(l2) - V_l1 * sympy.tan(l2)
+        ) / (2 * r)
+
+        return E
+
+
+class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
+    """
+    mesh_vector_calculus module for div, grad, curl etc that apply in
+    native spherical coordinates on the surface of a sphere (r=r_0).
+    NOTE - our choice of coordinates
+    is slightly unusual - (radius) plus longitude and latitude (in radians)
+    for convenience when it comes to working with Earth-Science datasets
+    """
+
+    def __init__(self, mesh):
+
+        coordinate_type = mesh.CoordinateSystem.coordinate_type
+
+        # validation
+
+        if not coordinate_type == CoordinateSystemType.SPHERE_SURFACE_NATIVE:
+            print(
+                f"Warning mesh type {mesh.CoordinateSystem.type} is not a 2D spherical surface mesh"
+            )
+
+        super().__init__(mesh)
+
+    def divergence(self, matrix):
+        r"""
+        \( \nabla \cdot \mathbf{v} \)
+        """
+
+        r = sympy.sympify(1)
+        l1 = self.mesh.CoordinateSystem.N[0]
+        l2 = self.mesh.CoordinateSystem.N[1]
+
+        V_r = sympy.sympify(0)
+        V_l1 = matrix[0]
+        V_l2 = matrix[1]
+
+        unstable_term = V_l1.diff(l1) / (r * sympy.cos(l2)) - sympy.tan(l2) * V_l2 / r
+        div_V = (
+            sympy.Piecewise(
+                (0, sympy.Abs(l2) > 0.999 * sympy.pi / 2),
+                (unstable_term, True),
+            )
+            + V_l2.diff(l2) / r
+        )
+
+        return div_V
+
+    def gradient(self, scalar):
+        r"""
+        $\nabla \phi$
+        """
+
+        if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
+            scalar = scalar[0, 0]
+
+        grad_S = sympy.Matrix.zeros(1, 2)
+
+        r = sympy.sympify(1)
+        l1 = self.mesh.CoordinateSystem.N[0]
+        l2 = self.mesh.CoordinateSystem.N[1]
+
+        grad_S[0] = sympy.Piecewise(
+            (0, sympy.Abs(l2) > 0.999 * sympy.pi / 2),
+            (scalar.diff(l1) / (r * sympy.cos(l2)), True),
+        )
+        grad_S[1] = scalar.diff(l2) / r
+
+        return grad_S
+
+    ## WIP - no R component or derivatives ... what does this mean ?
+    def curl(self, matrix):
+        r"""
+        $\nabla \times \phi$ in spherical
+        """
+
+        r = sympy.sympify(1)
+        l1 = self.mesh.CoordinateSystem.N[0]
+        l2 = self.mesh.CoordinateSystem.N[1]
+
+        matrix0 = self.to_matrix(matrix)
+        V_l1 = matrix[0]
+        V_l2 = matrix[1]
+
+        curl_V = (
+            V_l1.diff(l2) / r
+            - sympy.tan(l2) * V_l1 / r
+            - V_l2.diff(l1) / (r * (1.0e-5 + sympy.cos(l2)))
+        )
+
+        return curl_V
+
+    ## WIP - no R component or derivatives
+    def strain_tensor(self, vector):
+        """
+        Components of the infinitessimal strain or strain-rate tensor where the
+        vector that is provided is displacement or velocity respectively.
+        In cylindrical geometry, there are additional terms that include
+        the location of each point
+        """
+
+        # Coerce vector to sympy.Matrix form
+        matrix = self.to_matrix(vector)
+
+        L = matrix.jacobian(self.mesh.CoordinateSystem.N)
+        r = sympy.sympify(1)
+        l1 = self.mesh.CoordinateSystem.N[0]
+        l2 = self.mesh.CoordinateSystem.N[1]
+
+        V_r = matrix[0]
+        V_l1 = matrix[1]
+        V_l2 = matrix[2]
+
+        E = L.copy()
+        # E_00, E_22 and E_02 are unchanged from Cartesian
+
+        E[0, 0] = (L[0, 0] - V_l2 * sympy.sin(l2)) / (r * (1.0e-5 + sympy.cos(l2)))
+        E[1, 1] = (L[1, 1]) / r
+
+        E[0, 1] = E[1, 0] = (
+            -L[0, 1]
+            - L[1, 0] / (1.0e-5 + sympy.cos(l2))
+            - V_l1 * sympy.Max(sympy.tan(l2), 100)
         ) / (2 * r)
 
         return E

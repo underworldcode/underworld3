@@ -503,7 +503,7 @@ class SNES_Projection(SNES_Scalar):
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        self._f1 = self.F1 + self.smoothing * self._L
+        self._f1 = self.F1 + self.smoothing * self.mesh.vector.gradient(self.u.sym)
 
         return
 
@@ -665,6 +665,8 @@ class SNES_Vector_Projection(SNES_Vector):
 
 ## Does not seem to be a well posed problem as currently written ...
 ## We will fall back to penalising the standard SNES_Vector
+
+'''
 class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
     """
     Map underworld (pointwise) function to continuous
@@ -672,40 +674,50 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
 
     Solver can be given boundary conditions that
     the continuous function needs to satisfy and
-    non-linear constraints will be handled by SNES
-
+    non-linear constraints will be handled by SNES"""
 
     instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self,
-                 mesh     : uw.discretisation.Mesh,
-                 u_Field  : uw.discretisation.MeshVariable = None,
-                 solver_name: str = "",
-                 verbose    = False):
-
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        solver_name: str = "",
+        verbose=False,
+    ):
 
         SNES_Solenoidal_Vector_Projection.instances += 1
+
+        self._smoothing = 0.0
+        self._uw_weighting_function = 1.0
 
         if solver_name == "":
             solver_name = "iVProj{}_".format(self.instances)
 
-        self._constraint_field = uw.discretisation.MeshVariable( mesh=mesh, num_components=1, name="VSP_p{}".format(self.instances), vtype=uw.VarType.SCALAR, degree=u_Field.degree-1 )
+        self._constraint_field = uw.discretisation.MeshVariable(
+            r"\lambda^{}".format(self.instances),
+            mesh=mesh,
+            num_components=1,
+            vtype=uw.VarType.SCALAR,
+            degree=u_Field.degree - 1,
+            continuous=False,
+        )
 
-        super().__init__(mesh,
-                         u_Field,
-                         self._constraint_field,
-                         True, # continuous constraint field
-                         solver_name, verbose
-                        )
+        super().__init__(
+            mesh,
+            u_Field,
+            self._constraint_field,
+            solver_name,
+            verbose,
+        )
 
-        self._setup_problem_description = self.constrained_projection_problem_description
+        self._setup_problem_description = (
+            self.constrained_projection_problem_description
+        )
         self.is_setup = False
-        self._smoothing = 0.0
-        self._uw_weighting_function = 1.0
 
         return
-
 
     @timing.routine_timer_decorator
     def constrained_projection_problem_description(self):
@@ -719,19 +731,26 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
         # F0 is left in place for the user to inject
         # non-linear constraints if required
 
-        self._u_f0 = self.UF0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        self._u_f0 = (
+            self.UF0 + (self.u.sym - self.uw_function) * self.uw_weighting_function
+        )
 
         # Integration by parts into the stiffness matrix
-        self._u_f1 = self.UF1  + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T) - self._constraint_field.fn * sympy.Matrix.eye(dim)
+        self._u_f1 = (
+            self.UF1
+            + self.smoothing * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T)
+            - self._constraint_field.fn * sympy.Matrix.eye(dim)
+        )
 
         # rhs in the constraint (pressure) equations
-        self._p_f0 = self.PF0  + self.mesh.vector.divergence(self.u.sym)
+        self._p_f0 = self.PF0 + sympy.Matrix([self.mesh.vector.divergence(self.u.sym)])
 
         return
 
     @property
     def uw_function(self):
         return self._uw_function
+
     @uw_function.setter
     def uw_function(self, user_uw_function):
         self.is_setup = False
@@ -740,6 +759,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
     @property
     def uw_weighting_function(self):
         return self._uw_weighting_function
+
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
         self.is_setup = False
@@ -748,12 +768,14 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
     @property
     def smoothing(self):
         return self._smoothing
+
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
-    """
-
+        if self._smoothing != 0.0:
+            self.saddle_preconditioner = 1.0 / self._smoothing
+'''
 
 #################################################
 # Characteristics-based advection-diffusion
