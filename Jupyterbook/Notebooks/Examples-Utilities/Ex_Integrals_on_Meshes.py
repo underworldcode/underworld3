@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.14.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -29,7 +29,6 @@ z = mesh.N.z
 
 I = uw.maths.Integral(mesh, x * y)
 print(I.evaluate())  # 0.25
-# -
 
 
 # +
@@ -105,14 +104,14 @@ I8 = uw.maths.Integral(mesh, 1)
 print(I8.evaluate())  # 4/3 * pi
 
 # +
-mesh = uw.meshing.CubicSphere(radiusInner=0.5, radiusOuter=1.0, numElements=30)
+# mesh = uw.meshing.CubicSphere(radiusInner=0.5, radiusOuter=1.0, numElements=30)
 
-x = mesh.N.x
-y = mesh.N.y
-z = mesh.N.z
+# x = mesh.N.x
+# y = mesh.N.y
+# z = mesh.N.z
 
-I9 = uw.maths.Integral(mesh, 1)
-print(I9.evaluate())  # 4/3 * 7/8 * pi (3.634)
+# I9 = uw.maths.Integral(mesh, 1)
+# print(I9.evaluate())  # 4/3 * 7/8 * pi (3.634)
 
 # +
 mesh = uw.meshing.SphericalShell(radiusInner=0.0, radiusOuter=1.0, cellSize=0.5)
@@ -192,4 +191,3 @@ with mesh.access(meshvar):
 
 I.fn = meshvar.fn
 print(I.evaluate())  # should be zero
-# -

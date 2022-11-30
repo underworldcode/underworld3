@@ -1,3 +1,5 @@
+import cython
+
 from typing import Union
 import sympy
 
@@ -67,13 +69,16 @@ class Integral:
         elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
-        cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())
+        ext = cython.declare(PtrContainer)
+        ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())
+        #cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values())
 
         # Pull out vec for variables, and go ahead with the integral
         self.mesh.update_lvec()
         a_global = self.mesh.dm.getGlobalVec()
         self.mesh.dm.localToGlobal(self.mesh.lvec, a_global)
-        cdef Vec cgvec
+        cgvec = cython.declare(Vec)
+        #cdef Vec cgvec
         cgvec = a_global
 
         # # Now, find var with the highest degree. We will then configure the integration 
@@ -92,19 +97,24 @@ class Integral:
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
-        cdef DM dm = self.mesh.dm
-        cdef DS ds = self.mesh.dm.getDS()
+        dm = cython.declare(DM, self.mesh.dm)
+        ds = cython.declare(DS, self.mesh.dm.getDS())
+      #  cdef DM dm = self.mesh.dm
+        #cdef DS ds = self.mesh.dm.getDS()
         # Now set callback... note that we set the highest degree var_id (as determined
         # above) for the second parameter. 
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
         
-        cdef PetscScalar val
+        val = cython.declare(PetscScalar)
+        #cdef PetscScalar val
         ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, <PetscScalar*>&val, NULL); CHKERRQ(ierr)
         self.mesh.dm.restoreGlobalVec(a_global)
 
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.
-        cdef double vald = <double> val
+        vald = cython.declare(double)
+        vald = cython.cast(double, val)
+        #cdef double vald = <double> val
 
         return vald
 
