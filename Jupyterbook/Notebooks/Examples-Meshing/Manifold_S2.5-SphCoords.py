@@ -12,20 +12,18 @@ import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
 
-
 # -
 
 
 bubblemesh = uw.meshing.SegmentedSphere(
     radiusOuter=1.0,
-    radiusInner=0.98,
+    radiusInner=0.5,
     cellSize=0.1,
     numSegments=6, 
     qdegree=3, 
     filename="tmpWedge.msh",
-    coordinatesNative=False,
+    coordinatesNative=True,
 )
-
 
 bubblemesh.dm.view()
 
@@ -39,22 +37,27 @@ bubblemesh.dm.view()
 V = uw.discretisation.MeshVariable("U", bubblemesh, 3, degree=2)
 P = uw.discretisation.MeshVariable("P", bubblemesh, 1, degree=1, continuous=False)
 Pc = uw.discretisation.MeshVariable("Pc",bubblemesh, 1, degree=2)
-T  = uw.discretisation.MeshVariable("T", bubblemesh, 1, degree=3)
+T  = uw.discretisation.MeshVariable("T", bubblemesh, 1, degree=2)
 Tnode = uw.discretisation.MeshVariable("Tn", bubblemesh, 1, degree=1)
 Tdiff  = uw.discretisation.MeshVariable("dT", bubblemesh, 1, degree=1, continuous=False)
-Tdiffc  = uw.discretisation.MeshVariable("dTc", bubblemesh, 1, degree=2, continuous=True)
+Tdiffc  = uw.discretisation.MeshVariable("dTc", bubblemesh, 1, degree=1, continuous=True)
 
 r, lon,lat = bubblemesh.CoordinateSystem.R
 
 # +
+
 t_init = sympy.sympify(sympy.sin(6 * lon) * sympy.cos(5 * lat) * sympy.cos(lat))
 
-with bubblemesh.access(T):
-    T.data[:,0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)
+with bubblemesh.access(T, Tnode):
+    T.data[:,0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)    
 # -
+
+T.gradient()
 
 slope = sympy.sqrt(T.gradient().dot(T.gradient()))
 slope
+
+T.gradient()
 
 # ### SNES example
 #
@@ -63,7 +66,10 @@ slope
 # +
 projector = uw.systems.Projection(bubblemesh, Tnode)
 projector.uw_function = T.sym[0]
-projector.smoothing = 1.0e-3
+projector.smoothing = 1.0e-6
+# Test if bc's work
+projector.add_dirichlet_bc(10.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
+projector.add_dirichlet_bc(-10.0,["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
@@ -77,7 +83,7 @@ projector.solve()
 projector = uw.systems.Projection(bubblemesh, Tdiff)
 projector.uw_function = slope # sympy.diff(T.sym[0], lon)        
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"] , 0)
+projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
 projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
 
 options = projector.petsc_options
@@ -86,14 +92,13 @@ options.setValue("snes_rtol",1.0e-4)
 projector.solve()
 # +
 projector = uw.systems.Projection(bubblemesh, Tdiffc)
-projector.uw_function = slope # sympy.diff(T.sym[0], lon)        
+projector.uw_function = Tdiff.sym[0] # sympy.diff(T.sym[0], lon)        
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"] , 0)
+projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
 projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
-
 
 projector.solve()
 # -
@@ -115,26 +120,28 @@ if uw.mpi.size == 1:
     pvmesh = pv.read("tmpWedge.msh")
    
     with bubblemesh.access():
-        pvmesh.point_data["nT"] = uw.function.evaluate(Tnode.sym[0], bubblemesh.data)
+        pvmesh.point_data["nT"] = Tnode.data.copy()
         pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.data)
-        pvmesh.point_data["dTc"] = uw.function.evaluate(Tdiffc.sym[0], bubblemesh.data)
+        pvmesh.point_data["dTc"] = Tdiffc.data.copy()
 
-    pl = pv.Plotter()
-  
-    pl.add_mesh(
-        pvmesh,
-        show_edges=True,
-        scalars="dT",
-        cmap="RdYlBu",
-        opacity=1.0,  
-        # clim=[0,1]
-    )
+# +
+pl = pv.Plotter()  
 
-    
-    pl.add_axes(labels_off=False)
+clipped = pvmesh.clip(normal='x', crinkle=True)
+
+pl.add_mesh(
+    clipped,
+    show_edges=True,
+    scalars="dT",
+    cmap="RdYlBu",
+    opacity=1.0,  
+    # clim=[-6,6]
+)
+
+pl.add_axes(labels_off=False)
 
 
-    pl.show(cpos="xy")
+pl.show(cpos="xy")
 
 # +
 ## Below is some useful stuff for dmplex that we should put somewhere

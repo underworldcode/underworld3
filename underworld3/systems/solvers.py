@@ -268,6 +268,8 @@ class SNES_Stokes(SNES_Stokes):
 
       - The `solver_name` parameter sets the namespace for PETSc options and should be unique and
     compatible with the PETSc naming conventions.
+
+
     """
 
     instances = 0
@@ -290,23 +292,6 @@ class SNES_Stokes(SNES_Stokes):
         super().__init__(mesh, velocityField, pressureField, solver_name, verbose)
 
         # User-facing operations are matrices / vectors by preference
-
-        # Depends on the geometry if DM coords are not cartesian
-        if self.mesh.CoordinateSystem.CartesianDM:
-            self._E = (self._L + self._L.transpose()) / 2
-        elif self.mesh.CoordinateSystem.type == "Cylindrical 2D Native":
-            r = self.mesh.CoordinateSystem.N[0]
-            vr = self._u.sym[0]
-            vt = self._u.sym[1]
-            self._E = self._L.copy()
-            self._E[0, 0] = self._L[0, 0]  # don't need this one !
-            self._E[1, 1] = self._L[1, 1] / r + vr / r
-            self._E[0, 1] = (self._L[0, 1] / r + self._L[1, 0] - vt / r) / 2
-            self._E[1, 0] = self._E[0, 1]
-
-        else:
-            # All the other ones ...
-            pass
 
         self._E = self.mesh.vector.strain_tensor(self._u.sym)
 
@@ -345,12 +330,6 @@ class SNES_Stokes(SNES_Stokes):
         self._p_f0 = self.PF0 + sympy.Matrix((self.constraints))
 
         return
-
-    ## note ... this is probably over-simple
-    ## due to isotropy. Once anisotropy is allowed, sympy
-    ## is going to require us to work with NDim arrays in place of
-    ## matrices ... but they need to go back to matrices for the
-    ## pointwise function evaluation
 
     @property
     def strainrate(self):
@@ -1163,6 +1142,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
     Uses a theta timestepping approach with semi-Lagrange sample backwards in time using
     a mid-point advection scheme (based on our particle swarm implementation)
+
+    Figure: ![](../../Jupyterbook/Figures/Diagrams/NS_Benchmark_DFG_2.png)
+
     """
 
     instances = 0  # count how many of these there are in order to create unique private mesh variable ids

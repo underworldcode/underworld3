@@ -15,7 +15,9 @@ from IPython.display import display  # since pytest runs pure python
 #
 # For illustration, we define two and three dimensional meshes and some vector, scalar fields on each one. The validation tests below are designed to run on each of these meshes.
 
-mesh1 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
+mesh1 = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0
+)
 
 
 ## two vectors and a scalar for testing
@@ -33,7 +35,9 @@ v21 = uw.discretisation.MeshVariable("U21", mesh2, mesh2.dim, degree=2)
 v22 = uw.discretisation.MeshVariable("U22", mesh2, mesh2.dim, degree=2)
 p21 = uw.discretisation.MeshVariable("P21", mesh2, 1, degree=1)
 
-mesh3 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=1.0 / 8.0)
+mesh3 = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=1.0 / 8.0
+)
 
 ## two vectors and a scalar for testing
 v31 = uw.discretisation.MeshVariable("U31", mesh3, mesh3.dim, degree=2)
@@ -131,7 +135,9 @@ def test_mesh_vector_grad(mesh, v1, v2, p):
 
     ## This should also be equivalent, if the .fn interface is not broken !
 
-    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(sympy.vector.gradient(p.fn))
+    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(
+        sympy.vector.gradient(p.fn)
+    )
 
 
 # Note: The curl is slightly odd - sympy returns the vector in the third dimension,
@@ -221,7 +227,9 @@ display(mesh3.vector.to_matrix(v31.ijk))
 
 mesh1.vector.to_vector(mesh1.vector.to_matrix(v11.ijk)) == v11.ijk
 
-V = mesh1.N.i + mesh1.N.j + mesh1.N.k  # V is a valid 2D vector from `sympy.vector`'s point of view
+V = (
+    mesh1.N.i + mesh1.N.j + mesh1.N.k
+)  # V is a valid 2D vector from `sympy.vector`'s point of view
 M = mesh1.vector.to_matrix(V)
 mesh1.vector.to_vector(M)
 
@@ -276,7 +284,9 @@ try:
     mesh3.vector.curl(mesh3.vector.gradient(p31.sym))
 except RuntimeError:
     print("")
-    print("RuntimeError: Second derivatives of Underworld functions are not supported at this time.")
+    print(
+        "RuntimeError: Second derivatives of Underworld functions are not supported at this time."
+    )
 # -
 
 # # Jacobian derivatives
@@ -311,7 +321,13 @@ display(curlgradF)
 display(curlgradFplus)
 
 
-G = sympy.Matrix([sympy.cos(2 * x * y * z), sympy.exp((y**2 + z**2) / sympy.sin(x)), sympy.erfc(z)]).T
+G = sympy.Matrix(
+    [
+        sympy.cos(2 * x * y * z),
+        sympy.exp((y**2 + z**2) / sympy.sin(x)),
+        sympy.erfc(z),
+    ]
+).T
 display(mesh3.vector.divergence(G))
 display(mesh3.vector.curl(G))
 # -

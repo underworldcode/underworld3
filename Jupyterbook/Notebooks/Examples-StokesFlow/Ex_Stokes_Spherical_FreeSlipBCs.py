@@ -134,7 +134,7 @@ gravity_fn = radius_fn
 
 # Some useful coordinate stuff
 
-x, y, z = meshball.CoordinateSystem.X
+x, y, z = meshball.CoordinateSystem.N
 ra, l1, l2 = meshball.CoordinateSystem.xR
 
 hw = 1000.0 / res
@@ -151,7 +151,10 @@ t_forcing_fn = 1.0 * (
     + sympy.exp(-10.0 * ((x - 0.8) ** 2 + y**2 + z**2))
     + sympy.exp(-10.0 * (x**2 + y**2 + (z - 0.8) ** 2))
 )
+# -
 
+
+meshball.N
 
 # +
 # Rigid body rotations that are null-spaces for this set of bc's
@@ -231,9 +234,11 @@ with meshball.access(meshr):
     )  # cf radius_fn which is 0->1
 
 with meshball.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords).reshape(-1, 1)
+    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
 # -
 
+
+meshball.N
 
 stokes.solve()
 

@@ -3,8 +3,13 @@ from .vector_calculus import mesh_vector_calculus as vector_calculus
 from .vector_calculus import (
     mesh_vector_calculus_cylindrical as vector_calculus_cylindrical,
 )
+
+# from .vector_calculus import (
+#     mesh_vector_calculus_spherical_lonlat as vector_calculus_spherical_lonlat,
+# )
+
 from .vector_calculus import (
-    mesh_vector_calculus_spherical_lonlat as vector_calculus_spherical_lonlat,
+    mesh_vector_calculus_spherical as vector_calculus_spherical,
 )
 from .vector_calculus import (
     mesh_vector_calculus_spherical_surface2D_lonlat as vector_calculus_spherical_surface2D_lonlat,

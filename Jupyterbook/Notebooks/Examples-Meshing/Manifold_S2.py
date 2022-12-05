@@ -16,7 +16,7 @@ r_o = 1.0
 # -
 
 
-bubblemesh = uw.meshing.SegmentedSphericalSurface2D(cellSize=0.05,numSegments=3, qdegree=3, filename="testManifold.msh")
+bubblemesh = uw.meshing.SegmentedSphericalSurface2D(cellSize=0.05,numSegments=3, qdegree=3, filename="tmpManifold.msh")
 
 bubblemesh.dm.view()
 
@@ -33,7 +33,7 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read("testManifold.msh")
+    pvmesh = pv.read("tmpManifold.msh")
     pvmesh.point_data["lon"] = bubblemesh.data[:,0]
     pvmesh.point_data["lat"] = bubblemesh.data[:,1]
     
@@ -92,7 +92,7 @@ projector.solve()
 # +
 projector = uw.systems.Projection(bubblemesh, Tdiff)
 projector.uw_function = slope 
-projector.smoothing = 1.0e-10
+projector.smoothing = 1.0e-6
 projector.add_dirichlet_bc((0.0,), "Poles", (0,) )
 
 options = projector.petsc_options
@@ -101,10 +101,9 @@ options.setValue("snes_rtol",1.0e-6)
 projector.solve()
 # +
 projector = uw.systems.Projection(bubblemesh, Tdiffc)
-projector.uw_function = slope # Tdiff.sym[0]   
+projector.uw_function = Tdiff.sym[0]   
 projector.smoothing = 1.0e-6
-# projector.add_dirichlet_bc((0.0,), "NPole", (0,) )
-# projector.add_dirichlet_bc((0.0,), "SPole", (0,) )
+projector.add_dirichlet_bc((0.0,), "Poles", (0,) )
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-6)
@@ -132,22 +131,26 @@ if uw.mpi.size == 1:
         pvmesh.point_data["nT"] = Tnode.data[:,0]
         pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.data)
         pvmesh.point_data["dTc"] = Tdiffc.data[:,0]
-             
-    pl = pv.Plotter()
-    
-    pl.add_mesh(
-        pvmesh,
-        show_edges=True,
-        scalars="dT",
-        cmap="RdYlBu",
-        opacity=1.0,  
-    )
-
-    
-    pl.add_axes(labels_off=False)
 
 
-    pl.show(cpos="xy")
+
+# +
+pl = pv.Plotter()
+
+pl.add_mesh(
+    pvmesh,
+    show_edges=True,
+    scalars="dT",
+    cmap="RdYlBu",
+    opacity=1,  
+)
+
+
+pl.add_axes(labels_off=False)
+
+
+pl.show(cpos="xy")
+# -
 
 slope
 
