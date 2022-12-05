@@ -1,8 +1,26 @@
-FROM underworldcode/base
-COPY . /tmp/uw3
-WORKDIR /tmp/uw3
-RUN pip3 install -e .
+FROM underworldcode/underworld2:2.14.0b-x86_64 as runtime
+LABEL maintainer="https://github.com/underworldcode/"
 
-# add a user
-ENV NB_USER jovyan
-RUN useradd -m -s /bin/bash -N $NB_USER 
+# install all build tool as root
+USER root
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends $(awk '{print $1'} /opt/installed.txt) \
+ libglu1 \
+ libxcursor-dev \
+ libxft2 \
+ libxinerama1 \
+ libfltk1.3-dev \
+ libfreetype6-dev \
+ libgl1-mesa-dev \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# install python packages for uw3
+RUN pip install sympy gmsh pyvista panel xxhash
+
+USER $NB_USER
+RUN git clone --branch development --depth 1 https://github.com/underworldcode/underworld3.git uw3
+WORKDIR $NB_HOME/uw3
+RUN python3 setup.py build_ext \
+&&  source pypathsetup.sh
+

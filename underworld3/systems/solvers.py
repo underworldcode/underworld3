@@ -813,9 +813,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # might fix this.
 
         nswarm = uw.swarm.Swarm(self.mesh)
-        name = f"^{{[{self.instances}]}}" + r"T^{*}"
+        ks = str(self.instances)
+        name = r'T^{*^{{[' + ks + ']}}}'
         nT1 = uw.swarm.SwarmVariable(name, nswarm, 1)
-        name = f"^{{[{self.instances}]}}" + r"X0^{*}"
+        name = r'X0^{*^{{[' + ks + ']}}}'
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim)
 
         nswarm.dm.finalizeFieldRegister()
