@@ -1201,7 +1201,6 @@ class SNES_Stokes:
         ## going to do this for arbitrary block systems.
         ## It's a bit easier for Stokes where P is a scalar field
 
-
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self._u.sym).reshape(dim)
         P = sympy.Array(self._p.sym).reshape(1)
@@ -1219,7 +1218,16 @@ class SNES_Stokes:
         # The indices need to be interleaved, but for symmetric problems
         # there are lots of symmetries. This means we can find it hard to debug
         # the required permutation for a non-symmetric problem 
-        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ?
+        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
+        # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
+        # permutation = (2,0,3,1) # ? same symmetry as I_ijkl ? # Ugh
+        # permutation = (1,3,0,2) # ? same symmetry as I_ijkl ? # XX 
+        # permutation = (3,1,0,2) # ? same symmetry as I_ijkl ? # XX 
+        # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
+        
+        # permutation = (3,2,1,0) # ? same symmetry as I_ijkl ? # XX
+        # permutation = (2,0,1,3) # ? same symmetry as I_ijkl ?
+        # permutation = (0,1,3,2) # ? same symmetry as I_ijkl ?
 
         self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -1347,8 +1355,6 @@ class SNES_Stokes:
 
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
-
-
         self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
