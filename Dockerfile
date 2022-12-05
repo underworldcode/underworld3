@@ -1,4 +1,4 @@
-FROM underworldcode/underworld2:2.14.0b-x86_64 as runtime
+FROM underworldcode/underworld2:2.14.0b as runtime
 LABEL maintainer="https://github.com/underworldcode/"
 
 # install all build tool as root
@@ -24,3 +24,4 @@ WORKDIR $NB_HOME/uw3
 RUN python3 setup.py build_ext \
 &&  source pypathsetup.sh
 
+WORKDIR $NB_HOME
