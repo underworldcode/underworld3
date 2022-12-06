@@ -21,7 +21,7 @@ RUN pip install sympy gmsh pyvista panel xxhash
 USER $NB_USER
 RUN git clone --branch development --depth 1 https://github.com/underworldcode/underworld3.git uw3
 WORKDIR $NB_HOME/uw3
-RUN python3 setup.py build_ext \
-&&  source pypathsetup.sh
-
-WORKDIR $NB_HOME
+RUN python3 setup.py build_ext
+ENV PYTHONPATH=$NB_HOME/uw3:$PYTHONPATH
+#
+#WORKDIR $NB_HOME
