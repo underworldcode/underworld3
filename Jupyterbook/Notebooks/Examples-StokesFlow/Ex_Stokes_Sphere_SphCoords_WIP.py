@@ -166,28 +166,7 @@ stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
 
 # ### Strain rate in Spherical geometry 
 #
-# Note: the standard formulation for this is usually in $r,\theta, \phi$ coordinates and there are different conventions for which angle is listed first. In UW3, we are using latitute ($\lambda_1$) and latitude ($\lambda_2$) which is not a standard form of spherical coordinates even if it is quite a logical choice when using geographical data.
-#
-# $$ \dot\epsilon_{rr} \equiv \dot\epsilon_{00} = U_{ 0,0}(\mathbf{r}) $$
-#
-# $$ \dot\epsilon_{\lambda_2 \lambda_2} \equiv \dot\epsilon_{22} = 
-# \frac{U_{ 0 }(\mathbf{r}) + U_{ 2,2}(\mathbf{r})}{r}
-# $$
-#
-# $$ \dot\epsilon_{\lambda_1 \lambda_1} \equiv \dot\epsilon_{11} =
-# \frac{U_{ 0 }(\mathbf{r}) \cos{\left(\lambda_2 \right)} + U_{ 1,1}(\mathbf{r}) - U_{ 2 }(\mathbf{r}) \sin{\left(\lambda_2 \right)}}{r \cos{\left(\lambda_2 \right)}}
-# $$
-#
-# $$ \dot\epsilon_{r\lambda_2} \equiv \dot\epsilon_{02} = -\frac{U_{ 2,0}(\mathbf{r})}{2} - \frac{U_{ 0,2}(\mathbf{r})}{2 r} + \frac{U_{ 2 }(\mathbf{r})}{2 r} $$
-#
-#
-# $$ \dot\epsilon_{\lambda_1 \lambda_2} \equiv \dot\epsilon_{12} =\frac{- U_{ 1 }(\mathbf{r}) \tan{\left(\lambda_2 \right)} - U_{ 1,2}(\mathbf{r}) - \frac{U_{ 2,1}(\mathbf{r})}{\cos{\left(\lambda_2 \right)}}}{2 r} $$
-#
-#
-# $$ \dot\epsilon_{r\lambda_1} \equiv \dot\epsilon_{01} = \frac{U_{ 1,0}(\mathbf{r})}{2} + \frac{U_{ 0,1}(\mathbf{r})}{2 r \cos{\left(\lambda_2 \right)}} - \frac{U_{ 1 }(\mathbf{r})}{2 r} $$
-#
-#
-#
+# Note: the standard formulation for this is usually in $r,\theta, \phi$ coordinates and there are different conventions for which angle is listed first but we stick with the standard one (radius, colatitude, longitude) which is the right handed coordinate system with colatitude increasing from the N pole.
 
 # +
 # Create Stokes object (x,y)
@@ -271,7 +250,8 @@ options.setValue("fieldsplit_pressure_ksp_rtol", 1.0e-2)
 
 
 # + tags=[]
-stokes.solve(zero_init_guess=True)
+stokes._setup_terms()
+# stokes.solve(zero_init_guess=True)
 # -
 
 stokes._u_f0
@@ -281,18 +261,16 @@ pressure_solver.solve()
 # +
 ## Projection operator - see if this works
 
-projector = uw.systems.Projection(meshball, vector)
-projector.uw_function = stokes._u.sym # sympy.diff(T.sym[0], lon)        
+projector = uw.systems.Vector_Projection(meshball, vector)
+projector.uw_function = stokes._u_f0
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
-projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
+projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 2)
+projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 2)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
 
 projector.solve()
-
-
 
 # -
 

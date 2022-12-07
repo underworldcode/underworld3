@@ -29,12 +29,28 @@
 #
 #
 
-U0 = 0.3
-expt_name = "NS_benchmark_DFG2d_1"
+# +
+benchmark = 2
+
+if benchmark == 1:
+    U0 = 0.3
+    expt_name = "NS_benchmark_DFG2d_1"
+    
+elif benchmark == 2:
+    U0 = 0.3
+    expt_name = "NS_benchmark_DFG2d_1_ss"
+
+elif benchmark == 3:
+    U0 = 1.5
+    expt_name = "NS_benchmark_DFG2d_2iii"
+
+# -
 
 import petsc4py
 import underworld3 as uw
 import numpy as np
+import sympy
+
 
 
 # +
@@ -42,8 +58,8 @@ import pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.025
-csize_circle = 0.015
+csize = 0.05
+csize_circle = 0.025
 res = csize_circle
 
 width = 2.2
@@ -76,42 +92,15 @@ if uw.mpi.rank == 0:
         geom.add_physical(domain.surface.curve_loop.curves[1], label="right")
         geom.add_physical(domain.surface.curve_loop.curves[2], label="top")
         geom.add_physical(domain.surface.curve_loop.curves[3], label="left")
-
         geom.add_physical(inclusion.curve_loop.curves, label="inclusion")
-
         geom.add_physical(domain.surface, label="Elements")
 
         geom.generate_mesh(dim=2, verbose=False)
         geom.save_geometry("ns_pipe_flow.msh")
 
-pipemesh = uw.discretisation.Mesh(meshfile="ns_pipe_flow.msh")
+pipemesh = uw.discretisation.Mesh("ns_pipe_flow.msh", qdegree=3)
 pipemesh.dm.view()
 
-# check the mesh if in a notebook / serial
-
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    pipemesh.vtk("ns_pipe_flow.vtk")
-    pvmesh = pv.read("ns_pipe_flow.vtk")
-
-    pl = pv.Plotter()
-
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.5)
-    pl.show(cpos="xy")
-# Define some functions on the mesh
-
-import sympy
 
 # radius_fn = sympy.sqrt(pipemesh.rvec.dot(pipemesh.rvec)) # normalise by outer radius if not 1.0
 # unit_rvec = pipemesh.rvec / (1.0e-10+radius_fn)
@@ -138,6 +127,7 @@ Vb = (4.0 * U0 * y * (0.41 - y)) / 0.41**2
 
 v_soln = uw.discretisation.MeshVariable("U", pipemesh, pipemesh.dim, degree=2)
 vs_soln = uw.discretisation.MeshVariable("Us", pipemesh, pipemesh.dim, degree=2)
+v_soln_1 = uw.discretisation.MeshVariable("U_1", pipemesh, pipemesh.dim, degree=2)
 v_stokes = uw.discretisation.MeshVariable("U_0", pipemesh, pipemesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", pipemesh, 1, degree=1)
 vorticity = uw.discretisation.MeshVariable("omega", pipemesh, 1, degree=1)
@@ -146,16 +136,16 @@ r_inc = uw.discretisation.MeshVariable("R", pipemesh, 1, degree=1)
 
 # +
 swarm = uw.swarm.Swarm(mesh=pipemesh)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=3)
-remeshed = uw.swarm.SwarmVariable("Vw", swarm, 1, proxy_degree=3, dtype="int")
+v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, proxy_degree=1, proxy_continuous=False)
+remeshed = uw.swarm.SwarmVariable("Vw", swarm, 1, proxy_degree=1, dtype="int")
 X_0 = uw.swarm.SwarmVariable("X0", swarm, pipemesh.dim, _proxy=False)
 
-swarm.populate(fill_param=5)
+swarm.populate(fill_param=3)
 
 # +
 passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
 passive_swarm.populate(
-    fill_param=1,
+    fill_param=3,
 )
 
 with passive_swarm.access(passive_swarm.particle_coordinates):
@@ -170,25 +160,27 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     pipemesh,
     velocityField=v_soln,
     pressureField=p_soln,
-    velocityStar_fn=v_star.fn,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
+    velocityStar_fn=v_star.sym,
     rho=1.0,
     theta=0.5,
     verbose=False,
-    projection=True,
+    projection=False,
     solver_name="navier_stokes",
 )
 
-
-# navier_stokes.petsc_options.delValue("ksp_monitor") # We can flip the default behaviour at some point
-# navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
-navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
-navier_stokes._u_star_projector.smoothing = navier_stokes.viscosity * 0.0
-navier_stokes._u_star_projector.penalty = 0.0001
-
+navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(pipemesh.dim)
+navier_stokes.constitutive_model.Parameters.viscosity = 1
 # -
+
+
+if benchmark == 2:  # Steady state !
+    # remove the d/dt term ... replace the time dependence with the
+    # steady state advective transport term
+    # to lean towards steady state solutions
+
+    navier_stokes.UF0 = -(
+        navier_stokes.rho * (v_soln.sym - v_soln_1.sym) / navier_stokes.delta_t
+    )
 
 
 nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
@@ -205,16 +197,13 @@ nodal_vorticity_from_v.petsc_options.delValue("ksp_monitor")
 navier_stokes.rho = 1000.0
 navier_stokes.theta = 0.5
 navier_stokes.penalty = 0.0
-navier_stokes.viscosity = 1.0
-navier_stokes.bodyforce = 1.0e-32 * pipemesh.N.i
-navier_stokes._Ppre_fn = 1.0 / (
-    navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t
-)
+navier_stokes.bodyforce = sympy.Matrix([0,0])
 
+navier_stokes.saddle_preconditioner = 1.0 / navier_stokes.constitutive_model.Parameters.viscosity
 
 hw = 1000.0 / res
 with pipemesh.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evaluate(r, pipemesh.data)
+    r_inc.data[:, 0] = uw.function.evaluate(r, pipemesh.data, pipemesh.N)
 
 surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 
@@ -224,15 +213,17 @@ navier_stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "top", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom", (0, 1))
 navier_stokes.add_dirichlet_bc((Vb, 0.0), "left", (0, 1))
+
 # -
 
 
-navier_stokes.solve(timestep=100.0)  # Stokes-like initial flow
+navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
 nodal_vorticity_from_v.solve()
 
 # +
-with pipemesh.access(v_stokes, v_soln):
+with pipemesh.access(v_stokes, v_soln, v_soln_1):
     v_stokes.data[...] = v_soln.data[...]
+    v_soln_1.data[...] = v_soln.data[...]
 
 with swarm.access(v_star, remeshed, X_0):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
@@ -243,9 +234,8 @@ with swarm.access(v_star, remeshed, X_0):
 
 swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
 
-# +
+# + tags=[]
 # check the mesh if in a notebook / serial
-
 
 if uw.mpi.size == 1:
 
@@ -258,11 +248,10 @@ if uw.mpi.size == 1:
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
-    # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-    # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
+    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = pv.read("ns_pipe_flow.msh")
 
     #     points = np.zeros((t_soln.coords.shape[0],3))
     #     points[:,0] = t_soln.coords[:,0]
@@ -271,7 +260,7 @@ if uw.mpi.size == 1:
     #     point_cloud = pv.PolyData(points)
 
     with pipemesh.access():
-        usol = navier_stokes._u_star_projector.u.data.copy()
+        # usol = navier_stokes._u_star_projector.u.data.copy()
         usol = v_soln.data.copy()
 
     with pipemesh.access():
@@ -301,12 +290,12 @@ if uw.mpi.size == 1:
     point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud, vectors="V", integration_direction="both", max_steps=100
+        point_cloud, vectors="V", integration_direction="forward", max_steps=10
     )
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.05 / U0, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.025 / U0, opacity=0.75)
 
     # pl.add_points(point_cloud, cmap="coolwarm",
     #               render_points_as_spheres=False,
@@ -324,14 +313,23 @@ if uw.mpi.size == 1:
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    pl.add_mesh(pvstream)
+    # pl.add_mesh(pvstream)
 
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+# +
+pv.global_theme.background = "white"
+pv.global_theme.window_size = [1250, 1000]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.smooth_shading = True
+# pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
+# pv.global_theme.camera['position'] = [0.0, 0.0, 2.0]
+
+pl = pv.Plotter()
 
 
-# -
 def plot_V_mesh(filename):
 
     if uw.mpi.size == 1:
@@ -340,15 +338,10 @@ def plot_V_mesh(filename):
         import pyvista as pv
         import vtk
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [1250, 1000]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-        # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-        # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0]
-
-        pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+        ## Plotting into existing pl (memory leak in pyvista)
+        pl.clear()
+        
+        pvmesh = pv.read("ns_pipe_flow.msh")
 
         with passive_swarm.access():
             points = np.zeros((passive_swarm.data.shape[0], 3))
@@ -385,8 +378,6 @@ def plot_V_mesh(filename):
         arrow_length = np.zeros((v_soln.coords.shape[0], 3))
         arrow_length[:, 0:2] = usol[...]
 
-        pl = pv.Plotter()
-
         pl.add_arrows(arrow_loc, arrow_length, mag=0.033 / U0, opacity=0.5)
 
         pvstream = pvmesh.streamlines_from_source(
@@ -422,19 +413,16 @@ def plot_V_mesh(filename):
         pl.remove_scalar_bar("Omega")
         pl.remove_scalar_bar("mag")
         pl.remove_scalar_bar("V")
-
+        
+        # pl.camera_position = "xz"
         pl.screenshot(
             filename="{}.png".format(filename),
             window_size=(2560, 1280),
             return_img=False,
         )
 
-        pl.close()
 
-        del pl
-
-    # pl.show()
-
+# -
 
 ts = 0
 dt_ns = 1.0e-2
@@ -446,13 +434,18 @@ for step in range(0, 250):
 
     phi = delta_t / dt_ns
 
-    navier_stokes.solve(timestep=dt_ns, zero_init_guess=False)
+    navier_stokes.solve(timestep=dt_ns, 
+                        zero_init_guess=False)
+    
+    with pipemesh.access(v_soln_1):
+        v_soln_1.data[...] = 0.5 * v_soln_1.data[...] + 0.5 * v_soln.data[...]
 
     with swarm.access(v_star):
         v_star.data[...] = (
             phi * uw.function.evaluate(v_soln.fn, swarm.data)
             + (1.0 - phi) * v_star.data
         )
+        
 
     # update passive swarm
 
@@ -467,7 +460,6 @@ for step in range(0, 250):
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
     # update integration swarm
-
     swarm.advection(v_soln.fn, delta_t, corrector=False)
 
     # Restore a subset of points to start
@@ -506,6 +498,7 @@ for step in range(0, 250):
 # +
 # check the mesh if in a notebook / serial
 
+pl.close()
 
 if uw.mpi.size == 1:
 
@@ -521,7 +514,7 @@ if uw.mpi.size == 1:
     # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
     # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
 
-    pvmesh = pipemesh.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    pvmesh = pv.read("ns_pipe_flow.msh")
 
     #     points = np.zeros((t_soln.coords.shape[0],3))
     #     points[:,0] = t_soln.coords[:,0]
@@ -608,4 +601,3 @@ if uw.mpi.size == 1:
 p = uw.function.evaluate(p_soln.fn, np.array([(0.15, 0.2), (0.25, 0.2)]))
 
 p[0] - p[1]
-# -
