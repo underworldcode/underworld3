@@ -221,7 +221,6 @@ stokes.solve(zero_init_guess=True)
 # +
 # check the solution
 
-
 if uw.mpi.size == 1 and render:
 
     import numpy as np
@@ -386,7 +385,9 @@ def plot_mesh(filename):
 
     pl.camera_position = "xz"
     pl.screenshot(
-        filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False
+        filename="{}.png".format(filename), 
+        window_size=(1000, 1000), 
+        return_img=False,
     )
 
     return

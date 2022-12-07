@@ -281,7 +281,6 @@ class SNES_Stokes(SNES_Stokes):
         pressureField: uw.discretisation.MeshVariable,
         solver_name: Optional[str] = "",
         verbose: Optional[str] = False,
-        saddle_preconditioner=None,
     ):
 
         SNES_Stokes.instances += 1
@@ -301,6 +300,7 @@ class SNES_Stokes(SNES_Stokes):
         self._constraints = sympy.Matrix(
             (self.div_u,)
         )  # by default, incompressibility constraint
+
         self._saddle_preconditioner = sympy.sympify(1)
         self._bodyforce = sympy.Matrix([0] * self.mesh.dim)
 
@@ -588,7 +588,7 @@ class SNES_Vector_Projection(SNES_Vector):
             self.F1
             + self.smoothing * E
             + self.penalty
-            * sympy.vector.divergence(self.u.fn)
+            * self.mesh.vector.divergence(self.u.sym)
             * sympy.eye(self.mesh.dim)
         )
 
@@ -814,9 +814,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         nswarm = uw.swarm.Swarm(self.mesh)
         ks = str(self.instances)
-        name = r'T^{*^{{[' + ks + ']}}}'
+        name = r"T^{*^{{[" + ks + "]}}}"
         nT1 = uw.swarm.SwarmVariable(name, nswarm, 1)
-        name = r'X0^{*^{{[' + ks + ']}}}'
+        name = r"X0^{*^{{[" + ks + "]}}}"
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim)
 
         nswarm.dm.finalizeFieldRegister()
@@ -1157,17 +1157,11 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         velocityField: uw.discretisation.MeshVariable = None,
         pressureField: uw.discretisation.MeshVariable = None,
         velocityStar_fn=None,  # uw.function.UnderworldFunction = None,
-        u_degree: Optional[int] = 2,
-        p_degree: Optional[int] = None,
-        p_continous: Optional[bool] = True,
         rho: Optional[float] = 0.0,
-        viscosity: Optional[float] = 1.0,
         theta: Optional[float] = 0.5,
-        penalty: Optional[float] = 0.0,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
         projection: Optional[bool] = False,
-        saddle_preconditioner=None,
         restore_points_func: Callable = None,
     ):
 
@@ -1180,36 +1174,28 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self.theta = theta
         self.projection = projection
         self.rho = rho
-        self.viscosity = viscosity
         self._u_star_raw_fn = velocityStar_fn
 
-        if saddle_preconditioner is None:
-            self._saddle_preconditioner = 1.0 / (
-                self.viscosity + self.rho / self.delta_t
-            )
-        else:
-            self._saddle_preconditioner = saddle_preconditioner
+        # self._saddle_preconditioner = 1.0 / (
+        #         self.viscosity + self.rho / self.delta_t
+        #     )
 
         ## Parent class will set up default values etc
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            u_degree,
-            p_degree,
-            p_continous,
             solver_name,
             verbose,
-            penalty,
         )
 
         if projection:
             # set up a projection solver
             self._u_star_projected = uw.discretisation.MeshVariable(
-                "uStar{}".format(self.instances),
+                rf"u^{{*[{self.instances}]}}",
                 self.mesh,
                 self.mesh.dim,
-                degree=u_degree,
+                degree=self._u.degree - 1,
             )
             self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(
                 self.mesh, self._u_star_projected
@@ -1219,25 +1205,37 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             self._u_star_projector.smoothing = 0.0
             self._u_star_projector.uw_function = self._u_star_raw_fn
 
+            self._u_star_projector.add_dirichlet_bc(
+                (self._u.sym[0],), "All_Boundaries", (0,)
+            )
+            self._u_star_projector.add_dirichlet_bc(
+                (self._u.sym[1],), "All_Boundaries", (1,)
+            )
+            if self.mesh.dim == 3:
+                self._u_star_projector.add_dirichlet_bc(
+                    (self._u.sym[2],), "All_Boundaries", (2,)
+                )
+
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_swarm_problem_description
 
         self.is_setup = False
         self.first_solve = True
 
-        self._Ustar = sympy.Array(
-            (self.u_star_fn.to_matrix(self.mesh.N))[0 : self.mesh.dim]
-        )
-        self._Lstar = sympy.derive_by_array(self._Ustar, self._X).transpose()
+        # self._Ustar = sympy.Array(
+        #     (self.u_star_fn.to_matrix(self.mesh.N))[0 : self.mesh.dim]
+        # )
 
-        # User-facing operations are matrices / vectors by preference but
-        # self._L / _Lstar is a sympy.Array object
+        # This part is used to compute Jacobians (so probably not used)
+        # self._Lstar = self.mesh.vector.jacobian(self._u_star.sym)
 
-        self._Estar = (sympy.Matrix(self._Lstar) + sympy.Matrix(self._Lstar).T) / 2
-        self._Stress_star = (
-            self.constitutive_model.flux(self._Estar)
-            - sympy.eye(self.mesh.dim) * self.p.fn
-        )
+        # This is used
+        self._Estar = self.mesh.vector.strain_tensor(self.u_star_fn)
+
+        # self._Stress_star = (
+        #     self.constitutive_model.flux(self.strainrate_star)
+        #     - sympy.eye(self.mesh.dim) * self.p.fn
+        # )
 
         return
 
@@ -1250,19 +1248,19 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self._u_f0 = (
             self.UF0
             - 1.0 * self.bodyforce
-            + self.rho * (self.u.fn - self.u_star_fn) / self.delta_t
+            + self.rho * (self.u.sym - self.u_star_fn) / self.delta_t
         )
 
         # Integration by parts into the stiffness matrix
         self._u_f1 = (
             self.UF1
             + self.stress * self.theta
-            + self._Stress_star * (1.0 - self.theta)
+            + self.stress_star * (1.0 - self.theta)
             + self.penalty * self.div_u * sympy.eye(dim)
         )
 
         # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + self.div_u
+        self._p_f0 = self.PF0 + sympy.Matrix([self.div_u])
 
         return
 
@@ -1273,7 +1271,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
     @property
     def u_star_fn(self):
         if self.projection:
-            return self._u_star_projected.fn
+            return self._u_star_projected.sym
         else:
             return self._u_star_raw_fn
 
@@ -1285,6 +1283,18 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             self._u_star_projector.uw_function = uw_function
 
         self._u_star_raw_fn = uw_function
+
+    @property
+    def stress_star_deviator(self):
+        return self.constitutive_model.flux(self.strainrate_star)
+
+    @property
+    def strainrate_star(self):
+        return sympy.Matrix(self._Estar)
+
+    @property
+    def stress_star(self):
+        return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
 
     @property
     def delta_t(self):
@@ -1335,22 +1345,14 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         # (we might want to use v_star for checkpointing though)
 
         if self.projection and (not self.first_solve or _force_u_star_projection):
-            print(
-                "Solve Ustar projection, uwfn = {}".format(
-                    self._u_star_projector.uw_function
-                )
-            )
-            self._u_star_projector.petsc_options[
-                "snes_type"
-            ] = "newtontr"  ## newtonls seems to be problematic when the previous guess is available
-            # v_mag_fn = self._u_star_raw_fn.dot(self._u_star_raw_fn)
-            # v_stats = self.mesh.stats(v_mag_fn)
-            # v_rms = v_stats[6]
-            # self._u_star_projector.petsc_options["snes_atol"] = v_rms * 1.0e-2
+            # self._u_star_projector.petsc_options[
+            #     "snes_type"
+            # ] = "newtontr"  ## newtonls seems to be problematic when the previous guess is available
+
             self._u_star_projector.solve(zero_init_guess=False)
 
         # Over to you Stokes Solver
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess)
         self.first_solve = False
 
         return
@@ -1359,7 +1361,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
     def _setup_terms(self):
 
         if self.projection:
-            self._u_star_projector.bcs = self.bcs
+            # self._u_star_projector.bcs = self.bcs
+            # self._u_star_projector.
             self._u_star_projector._setup_terms()
 
         super()._setup_terms()

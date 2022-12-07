@@ -272,7 +272,6 @@ with pipemesh.access(v_stokes, v_soln):
 
 with swarm.access(v_star):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-# -
 
 
 # +
@@ -607,4 +606,3 @@ if uw.mpi.size == 1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
-# -

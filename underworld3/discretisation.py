@@ -163,6 +163,7 @@ class Mesh(_api_tools.Stateful):
                 )
 
         self.filename = filename
+        self.dm.markBoundaryFaces("All_Boundaries", 1001)
         self.dm.distribute()
 
         Mesh.mesh_instances += 1
