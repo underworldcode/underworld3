@@ -25,7 +25,10 @@ class CoordinateSystemType(Enum):
     CYLINDRICAL3D_NATIVE = 4  # (Not really used for anything)
     SPHERICAL = 5
     SPHERICAL_NATIVE = 6
-    SPHERE_SURFACE_NATIVE = 7  # theta / phi only R = 1 ...
+    SPHERICAL_NATIVE_RTP = 6
+    # SPHERICAL_NATIVE_RLONLAT = 7
+    SPHERE_SURFACE_NATIVE = 8  # theta / phi only R = 1 ...
+    # SPHERE_SURFACE_NATIVE_RLONLAT = 8  # theta / phi only R = 1 ...
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,
@@ -95,7 +98,7 @@ class CoordinateSystem:
 
             x, y = self.N
             r = sympy.sqrt(x**2 + y**2)
-            t = sympy.atan2(y, x)
+            t = sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True))
             self._R = sympy.Matrix([[r, t]])
 
             self._r = sympy.Matrix([sympy.symbols(R"r, \theta")], real=True)
@@ -147,7 +150,8 @@ class CoordinateSystem:
 
             x, y, z = self.X
             r = sympy.sqrt(x**2 + y**2)
-            t = sympy.atan2(y, x)
+            t = sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True))
+
             self._R = sympy.Matrix([[r, t, z]])
 
             th = self._r[1]
@@ -159,7 +163,7 @@ class CoordinateSystem:
                 ]
             )
 
-            self._rRotN = self._rRotN_sym.subs(th, sympy.atan2(y, x))
+            self._rRotN = self._rRotN_sym.subs(th, t)
             self._xRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.CYLINDRICAL3D_NATIVE and self.mesh.dim == 3:
@@ -197,39 +201,39 @@ class CoordinateSystem:
             self._X = self._N.copy()
             self._x = self._X
 
-            self._r = sympy.Matrix([sympy.symbols(R"r, \lambda_{1}, \lambda_{2}")])
+            self._r = sympy.Matrix([sympy.symbols(R"r, \theta, \phi")])
 
             x, y, z = self.X
             r = sympy.sqrt(x**2 + y**2 + z**2)
-            l1 = sympy.atan2(y, x)
-            l2 = sympy.asin(z / r)
+            l1 = sympy.acos(z / r)
+            l2 = sympy.atan2(y, x)
 
             self._R = sympy.Matrix([[r, l1, l2]])
 
             # l1 is longitude, l2 is latitude
-            rl1 = self._R[1]
-            rl2 = self._R[2]
+            r1 = self._R[1]
+            r2 = self._R[2]
             self._rRotN_sym = sympy.Matrix(
                 [
                     [
-                        +sympy.cos(rl1) * sympy.cos(rl2),
-                        +sympy.sin(rl1) * sympy.cos(rl2),
-                        sympy.sin(rl2),
+                        sympy.sin(r1) * sympy.cos(r2),
+                        sympy.sin(r1) * sympy.sin(r2),
+                        sympy.cos(r2),
                     ],
                     [
-                        -sympy.sin(rl1) * sympy.cos(rl2),
-                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        sympy.cos(r1) * sympy.cos(r2),
+                        sympy.cos(r1) * sympy.sin(r2),
+                        -sympy.cos(r2),
+                    ],
+                    [
+                        -sympy.sin(r2),
+                        +sympy.cos(r2),
                         0,
                     ],
-                    [
-                        -sympy.cos(rl1) * sympy.sin(rl2),
-                        -sympy.cos(rl1) * sympy.sin(rl2),
-                        sympy.cos(rl2),
-                    ],
                 ]
-            )
+            ).transpose()
 
-            self._rRotN = self._rRotN_sym.subs((rl1, l1), (rl2, l2))
+            self._rRotN = self._rRotN_sym.subs((r1, l1), (r2, l2))
             self._xRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:
@@ -237,13 +241,59 @@ class CoordinateSystem:
             self.CartesianDM = False
 
             self._N[0]._latex_form = R"r"
-            self._N[1]._latex_form = R"\lambda_1"
-            self._N[2]._latex_form = R"\lambda_2"
+            self._N[1]._latex_form = R"\theta"
+            self._N[2]._latex_form = R"\varphi"
             self._R = self._N.copy()
             self._r = self._R
 
-            r, l1, l2 = self.N
+            r, t, p = self.N
 
+            x = r * sympy.sin(t) * sympy.cos(p)
+            y = r * sympy.sin(t) * sympy.sin(p)
+            z = r * sympy.cos(t)
+
+            self._X = sympy.Matrix([[x, y, z]])
+            self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
+
+            # l1 is longitude, l2 is latitude
+            r1 = self._R[1]
+            r2 = self._R[2]
+            self._Rot = sympy.Matrix(
+                [
+                    [
+                        sympy.sin(r1) * sympy.cos(r2),
+                        sympy.sin(r1) * sympy.sin(r2),
+                        sympy.cos(r2),
+                    ],
+                    [
+                        sympy.cos(r1) * sympy.cos(r2),
+                        sympy.cos(r1) * sympy.sin(r2),
+                        -sympy.cos(r2),
+                    ],
+                    [
+                        -sympy.sin(r2),
+                        +sympy.cos(r2),
+                        0,
+                    ],
+                ]
+            )
+
+            self._xRotN = self._Rot.subs([(r1, t), (r2, p)])
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        elif (
+            system == CoordinateSystemType.SPHERE_SURFACE_NATIVE and self.mesh.dim == 2
+        ):
+            self.type = "Spherical Native"
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R"\lambda_1"
+            self._N[1]._latex_form = R"\lambda_2"
+            self._R = self._N.copy()
+            self._r = self._R
+            l1, l2 = self.N
+
+            r = sympy.sympify(1)  # Maybe we will need to change this value
             x = r * sympy.cos(l1) * sympy.cos(l2)
             y = r * sympy.sin(l1) * sympy.cos(l2)
             z = r * sympy.sin(l2)
@@ -252,8 +302,8 @@ class CoordinateSystem:
             self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
 
             # l1 is longitude, l2 is latitude
-            rl1 = self._R[1]
-            rl2 = self._R[2]
+            rl1 = self._R[0]
+            rl2 = self._R[1]
             self._Rot = sympy.Matrix(
                 [
                     [

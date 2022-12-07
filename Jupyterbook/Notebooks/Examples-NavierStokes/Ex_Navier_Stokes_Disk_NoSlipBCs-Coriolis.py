@@ -31,7 +31,7 @@ expt_name = "NS_flow_coriolis_disk"
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(
+meshball = uw.meshes.(
     dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
 )
 

@@ -12,9 +12,8 @@
 #     name: python3
 # ---
 
-
 # # Spherical Stokes
-# (In spherical coordinates)
+# (In a spherical coordinate system)
 
 # + tags=[]
 import petsc4py
@@ -36,76 +35,67 @@ res = np.pi * (r_o + r_i) / (4 * num_els)
 
 free_slip_upper = True
 
+# +
+meshball = uw.meshing.SegmentedSphere(
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=0.25,
+    numSegments=7, 
+    qdegree=3, 
+    coordinatesNative=True,
+)
+
+meshball_xyz = uw.meshing.SegmentedSphere(
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=0.25,
+    numSegments=6, 
+    qdegree=3, 
+    filename="tmpWedgeX.msh",
+    coordinatesNative=False,
+)
+
 # -
 
+if uw.mpi.size == 1:
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [1050, 500]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+ 
+    pvmesh = pv.read("tmpWedgeX.msh")
+   
+    pl = pv.Plotter()
+    
+    clipped = pvmesh.clip(normal='x', crinkle=True)
+  
+    # pl.add_mesh(
+    #     pvmesh,
+    #     show_edges=True,
+    #     opacity=0.1,  
+    #     # clim=[0,1]
+    # )
+
+    pl.add_mesh(
+        pvmesh,
+        show_edges=True,
+        opacity=1.0,  
+        # clim=[0,1]
+    )
+    
+    pl.add_axes(labels_off=False)
 
 
+    pl.show(cpos="xy")
 
-# +
-# meshball_xyz_tmp = uw.meshing.Annulus(
-#     radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./tmp_meshball.msh"
-# )
-
-meshball_xyz_tmp = uw.meshing.CubedSphere(
-    radiusOuter=r_o, 
-    radiusInner=r_i, 
-    numElements=num_els, 
-    filename="./tmp_meshball3.msh", 
-    qdegree=3, simplex=False,
-)
-
-# meshball_xyz_tmp = uw.meshing.SphericalShell(
-#     radiusOuter=r_o, 
-#     radiusInner=r_i, 
-#     cellSize=res,
-#     filename="./tmp_meshball3.msh", 
-#     qdegree=3, 
-# )
-
-
-
-# +
-xyz_vec = meshball_xyz_tmp.dm.getCoordinates()
-xyz = xyz_vec.array.reshape(-1, 3)
-dmplex = meshball_xyz_tmp.dm.clone()
-
-rl1l2 = np.empty_like(xyz)
-
-rl1l2[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
-rl1l2[:, 1] = np.arctan2(xyz[:, 1] + 1.0e-16, xyz[:, 0] + 1.0e-16)
-rl1l2[:, 2] = np.mod(0.01 + np.arcsin( xyz[:, 2] + 1.0e-16 / rl1l2[:, 0] + 1.0e-16), np.pi) - np.pi/2
-
-rl1l2_vec = xyz_vec.copy()
-rl1l2_vec.array[...] = rl1l2.reshape(-1)[...]
-dmplex.setCoordinates(rl1l2_vec)
-del meshball_xyz_tmp
-# -
-
-
-meshball = uw.meshing.Mesh(
-    dmplex,
-    coordinate_system_type=uw.coordinates.CoordinateSystemType.SPHERICAL_NATIVE,
-)
-uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-    meshball.dm, [0.0, 6.28, 0.0], [0.0, -np.pi, 0.0], [0.0, 2*np.pi, 0.0]
-)
 meshball.dm.view()
-
-# +
-# meshball.dm.localizeCoordinates()
-# meshball.dm.view()
-# -
-
-
-
-meshball_xyz = uw.meshing.CubedSphere(
-    radiusOuter=r_o, 
-    radiusInner=r_i, 
-    numElements=num_els, 
-    filename="./tmp_meshball3.msh", 
-    qdegree=3, simplex=False,
-)
-
 
 display(meshball_xyz.CoordinateSystem.type)
 display(meshball_xyz.CoordinateSystem.N)
@@ -122,13 +112,10 @@ display(meshball.CoordinateSystem.X)
 display(meshball.CoordinateSystem.x)
 
 x, y, z = meshball.CoordinateSystem.X
-r, l1, l2  = meshball.CoordinateSystem.R
-
-# +
-# uw.function.evaluate(meshball.CoordinateSystem.R[0], meshball.data)
-# -
+r, t, p  = meshball.CoordinateSystem.R
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 3, degree=2)
+vector = uw.discretisation.MeshVariable("V", meshball, 3, degree=1)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
 
@@ -163,34 +150,23 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     meshball.dim
 )
 stokes.constitutive_model.Parameters.viscosity = 1
-stokes.penalty = 1.0
+stokes.penalty = 0.0
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
 else:
     stokes.add_dirichlet_bc((0.0), "Upper", (0,))
 
-stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
+stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
 # -
 
 
 # ### Strain rate in Spherical geometry 
 #
-# Note: the standard formulation for this is usually in $r,\theta, \phi$ coordinates and there are different conventions for which angle is listed first. In UW3, we are using latitute ($\lambda_1$) and latitude ($\lambda_2$) which is not a standard form of spherical coordinates even if it is quite a logical choice when using geographical data.
-#
-# $$ \dot\epsilon_{rr} \equiv \dot\epsilon_{00} = U_{ 0,0}(\mathbf{r}) $$
-#
-# $$ \dot\epsilon_{r\lambda_1} \equiv \dot\epsilon_{01} = \frac{U_{ 1,0}(\mathbf{r})}{2} + \frac{U_{ 0,1}(\mathbf{r})}{2 r \cos{\left(\lambda_2 \right)}} - \frac{U_{ 1 }(\mathbf{r})}{2 r} $$
-#
-# $$ \dot\epsilon_{r\lambda_2} \equiv \dot\epsilon_{02} = \frac{U_{ 2,0}(\mathbf{r})}{2} + \frac{U_{ 0,2}(\mathbf{r})}{2 r} - \frac{U_{ 2 }(\mathbf{r})}{2 r} $$
-#
-
-stokes.strainrate
-
-stokes.stress
+# Note: the standard formulation for this is usually in $r,\theta, \phi$ coordinates and there are different conventions for which angle is listed first but we stick with the standard one (radius, colatitude, longitude) which is the right handed coordinate system with colatitude increasing from the N pole.
 
 # +
 # Create Stokes object (x,y)
@@ -217,9 +193,10 @@ stokes_xyz.petsc_options["snes_rtol"] = 1.0e-5
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes_xyz.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes_xyz.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
 
-stokes_xyz.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
+
+stokes_xyz.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
 # -
 
 
@@ -229,8 +206,10 @@ pressure_solver.smoothing = 1.0e-3
 
 # +
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
-t_init = sympy.cos(4 * l1)
-stokes.bodyforce = sympy.Matrix([Rayleigh * t_init, 0, 0])
+t_init = sympy.cos(4 * p) * sympy.sin(t)
+stokes.bodyforce = sympy.Matrix([Rayleigh*t_init, 0, 0])
+stokes.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 2)
+stokes.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 2)
 
 # ----
 
@@ -240,14 +219,62 @@ stokes_xyz.bodyforce = Rayleigh * t_init_xyz * unit_rvec
 stokes_xyz.bodyforce -= 1.0e6 * v_soln_xyz.sym.dot(unit_rvec) * surface_fn * unit_rvec
 # -
 
-meshball.CoordinateSystem.X
-
 stokes_xyz._setup_terms()
-stokes_xyz.solve(zero_init_guess=True)
 
+
+# + tags=[]
+# Check this can work 
+options = stokes_xyz.petsc_options
+options.setValue("fieldsplit_velocity_ksp_type", "preonly")
+options.setValue("fieldsplit_pressure_ksp_type", "preonly")
+options.setValue("fieldsplit_pressure_pc_type", "lu")
+options.setValue("fieldsplit_velocity_pc_type", "lu")
+# stokes_xyz.solve(zero_init_guess=True)
+# -
+
+options = stokes.petsc_options
+# options.setValue("fieldsplit_velocity_ksp_monitor", None)
+# options.setValue("fieldsplit_pressure_ksp_monitor", None)
+options.setValue("snes_rtol",1.0e-2)
+options.setValue("ksp_rtol",1.0e-2)
+options.setValue("ksp_monitor",None)
+options.setValue("pc_gamg_agg_nsmooths", 3)
+options.setValue("pc_gamg_threshold", 0.25)
+options.delValue("pc_use_amat")
+options.setValue("fieldsplit_velocity_ksp_rtol", 1.0e-2)
+options.setValue("fieldsplit_pressure_ksp_rtol", 1.0e-2)
+# options.setValue("fieldsplit_velocity_ksp_type", "preonly")
+# options.setValue("fieldsplit_pressure_ksp_type", "preonly")
+# options.setValue("fieldsplit_pressure_pc_type", "lu")
+# options.setValue("fieldsplit_velocity_pc_type", "lu")
+
+
+# + tags=[]
 stokes._setup_terms()
-stokes.solve(zero_init_guess=True)
+# stokes.solve(zero_init_guess=True)
+# -
+
+stokes._u_f0
+
 pressure_solver.solve()
+
+# +
+## Projection operator - see if this works
+
+projector = uw.systems.Vector_Projection(meshball, vector)
+projector.uw_function = stokes._u_f0
+projector.smoothing = 1.0e-6
+projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 2)
+projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 2)
+
+options = projector.petsc_options
+options.setValue("snes_rtol",1.0e-4)
+
+projector.solve()
+
+# -
+
+0/0
 
 U_xyz = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
@@ -269,7 +296,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pvmesh = pv.read("./tmp_meshball3.msh")
+    pvmesh = pv.read("./tmpWedgeX.msh")
 
     with meshball.access():
         pvmesh.point_data["V"] = uw.function.evaluate(
@@ -304,7 +331,7 @@ if uw.mpi.size == 1:
     arrow_loc[:, :] = xyz[...]
 
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:,:] = usol[...]
+    arrow_length[:,:] = usol[...] * 0.0001
 
     arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length_xy[:, :] = usol_xyz[...]
@@ -322,9 +349,9 @@ if uw.mpi.size == 1:
     #     opacity=0.75,
     # )
 
-    pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.0001, color="Blue")
+    # pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.0001, color="Blue")
     pl.add_arrows(
-        arrow_loc + (0.005, 0.005, 0.0), arrow_length, mag=0.0001, color="Red"
+        arrow_loc + (0.005, 0.005, 0.0), arrow_length, mag=0.001, color="Red"
     )
 
     pl.show(cpos="xy")
@@ -347,6 +374,3 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # 0.1
 # MEAN: 0.8601596694865591
 # MAX:  1.0587809789060159
-# -
-
-stokes

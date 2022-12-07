@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # # Creating a mesh (and checking the labels)
 #
 # This example is for the notch-localization test of Spiegelman et al. For which they supply a geometry file which gmsh can use to construct meshes at various resolutions. NOTE: we are just demonstrating the mesh here, not the solver configuration / benchmarking.
@@ -21,8 +21,7 @@
 # how to read that into a `uw.discretisation.Mesh` object. The `.geo` file has header parameters to control the mesh refinement, and we provide a coarse version and the original version.
 #
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
-
-# %%
+# -
 
 import petsc4py
 from petsc4py import PETSc
@@ -68,10 +67,10 @@ C1 = uw.discretisation.MeshVariable(r"C_1", mesh1, 1, degree=1, continuous=True)
 C2 = uw.discretisation.MeshVariable(r"C_2", mesh1, 1, degree=2, continuous=True)
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # This is how we extract cell data from the mesh. We can map it to the swarm data structure
+# -
 
-# %%
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:

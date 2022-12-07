@@ -382,7 +382,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     dim = coords.shape[1]
 
 
-    ## Careful - if we change the names of thebase-scalars for the mesh, this will need to be kept in sync
+    ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
 
     if coord_sys is not None:
         N = coord_sys
@@ -391,9 +391,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     else:
         N = mesh.N
         
-    # print(f'Base vectors / scalars, mesh: \"{mesh}\"')
-    # print(f" - {N.base_scalars()}")
-    # print(f" - {N.base_vectors()}")
 
     r = N.base_scalars()[0:dim]
     if isinstance(subbedexpr, sympy.vector.Vector):

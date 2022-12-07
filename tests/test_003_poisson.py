@@ -2,8 +2,12 @@ import pytest
 import underworld3 as uw
 
 structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
-unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=False)
-unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=True)
+unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
+    cellSize=0.1, regular=False
+)
+unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
+    cellSize=0.1, regular=True
+)
 unstructured_quad_box_regular_3D = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.1, regular=True
 )
@@ -27,7 +31,9 @@ cubed_sphere = uw.meshing.CubedSphere()
 )
 def test_poisson_boxmesh(mesh):
 
-    u = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
+    u = uw.discretisation.MeshVariable(
+        r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2
+    )
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
@@ -37,10 +43,14 @@ def test_poisson_boxmesh(mesh):
     poisson.add_dirichlet_bc(0.0, "Top")
     poisson.solve()
 
+    assert poisson.snes.getConvergedReason() > 0
+
 
 @pytest.mark.parametrize("mesh", [spherical_shell, annulus, cubed_sphere])
 def test_poisson_sphere(mesh):
-    u = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
+    u = uw.discretisation.MeshVariable(
+        r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2
+    )
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
@@ -50,3 +60,5 @@ def test_poisson_sphere(mesh):
     poisson.add_dirichlet_bc(1.0, "Lower")
     poisson.add_dirichlet_bc(0.0, "Upper")
     poisson.solve()
+
+    assert poisson.snes.getConvergedReason() > 0

@@ -50,7 +50,7 @@ class SNES_Scalar:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "gmres"
+        self.petsc_options["ksp_type"] = "dgmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
@@ -145,6 +145,9 @@ class SNES_Scalar:
         
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
+        options.setValue("{}_private_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
+        options.setValue("{}_private_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
@@ -317,6 +320,12 @@ class SNES_Scalar:
                         print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
                     continue
 
+                iset = label.getNonEmptyStratumValuesIS()
+                if iset:
+                    value = iset.getIndices()[0]  # this is only one value in the label ... 
+                    ind = value
+
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
@@ -386,7 +395,7 @@ class SNES_Scalar:
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # solve
-        self.snes.solve(None,gvec)
+        self.snes.solve(None, gvec)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
@@ -394,14 +403,12 @@ class SNES_Scalar:
         with self.mesh.access(self.u,):
             self.dm.globalToLocal(gvec, lvec)
             # add back boundaries.
-            # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-            # derived from the system-dm (as opposed to the var.vec local vector), else 
-            # failures can occur. 
             ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
             self.u.vec.array[:] = lvec.array[:]
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
+
 
 
 ### =================================
@@ -447,7 +454,6 @@ class SNES_Vector:
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
 
         ## Todo: some validity checking on the size / type of u_Field supplied
@@ -550,6 +556,9 @@ class SNES_Vector:
         # create private variables
         options = PETSc.Options()
         options.setValue("{}_private_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
+        options.setValue("{}_private_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
+        options.setValue("{}_private_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+        
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree,"{}_private_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
@@ -704,6 +713,8 @@ class SNES_Vector:
         # identically `zero` pointwise functions instead of setting to `NULL`
         PetscDSSetJacobian(ds.ds, 0, 0, ext.fns_jacobian[0], ext.fns_jacobian[1], ext.fns_jacobian[2], ext.fns_jacobian[3])
         
+        # Note: this uses the label = 1 value for this BC (this could be a list of values in the label 
+        #                                                  not just 1, and not just a single value)
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
@@ -718,10 +729,16 @@ class SNES_Vector:
 
             for boundary in bc.boundaries:
                 label = self.dm.getLabel(boundary)
+
                 if not label:
                     if self.verbose == True:
                         print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
                     continue
+
+                iset = label.getNonEmptyStratumValuesIS()
+                if iset:
+                    value = iset.getIndices()[0]  # this is only one value in the label ... 
+                    ind = value
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -797,6 +814,7 @@ class SNES_Vector:
         # Copy solution back into user facing variable
         with self.mesh.access(self.u):
             self.dm.globalToLocal(gvec, lvec)
+
             # add back boundaries.
             # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
             # derived from the system-dm (as opposed to the var.vec local vector), else 
@@ -1183,7 +1201,6 @@ class SNES_Stokes:
         ## going to do this for arbitrary block systems.
         ## It's a bit easier for Stokes where P is a scalar field
 
-
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self._u.sym).reshape(dim)
         P = sympy.Array(self._p.sym).reshape(1)
@@ -1201,7 +1218,16 @@ class SNES_Stokes:
         # The indices need to be interleaved, but for symmetric problems
         # there are lots of symmetries. This means we can find it hard to debug
         # the required permutation for a non-symmetric problem 
-        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ?
+        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
+        # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
+        # permutation = (2,0,3,1) # ? same symmetry as I_ijkl ? # Ugh
+        # permutation = (1,3,0,2) # ? same symmetry as I_ijkl ? # XX 
+        # permutation = (3,1,0,2) # ? same symmetry as I_ijkl ? # XX 
+        # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
+        
+        # permutation = (3,2,1,0) # ? same symmetry as I_ijkl ? # XX
+        # permutation = (2,0,1,3) # ? same symmetry as I_ijkl ?
+        # permutation = (0,1,3,2) # ? same symmetry as I_ijkl ?
 
         self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -1315,6 +1341,11 @@ class SNES_Stokes:
                         print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
                     continue
 
+                iset = label.getNonEmptyStratumValuesIS()
+                if iset:
+                    value = iset.getIndices()[0]  # this is only one value in the label ... 
+                    ind = value
+
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
                 if bc.type == 'neumann':
@@ -1324,8 +1355,6 @@ class SNES_Stokes:
 
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)()>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
         
-
-
         self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
@@ -1411,6 +1440,8 @@ class SNES_Stokes:
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
+                sdm.localToGlobal(lvec, sgvec)
+
                 
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
@@ -1420,9 +1451,6 @@ class SNES_Stokes:
                 clvec = lvec
                 csdm = sdm
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-
-                ## print(f"{uw.mpi.rank}:{name} has size {var.vec.array.shape} cf {lvec.array.shape}", flush=True)
-
 
                 # Now copy into the user vec.
                 var.vec.array[:] = lvec.array[:]
@@ -1997,6 +2025,8 @@ class SNES_SaddlePoint:
                 sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
+                sdm.localToGlobal(lvec, sgvec)
+
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
                 # derived from the sub-dm (as opposed to the var.vec local vector), else 
