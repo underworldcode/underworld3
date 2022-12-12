@@ -33,7 +33,7 @@ import sympy
 from underworld3.cython import petsc_discretisation
 
 
-mesh_res = "medium"  # For tests. "fine" is the original resolution of the published benchmark
+mesh_res = "coarse"  # For tests. "fine" is the original resolution of the published benchmark
 
 # +
 if mesh_res == "coarse":
@@ -41,18 +41,18 @@ if mesh_res == "coarse":
     cl_2 = 0.05
     cl_2a = 0.03
     cl_3 = 0.1
-    cl_4 = 0.1
+    cl_4 = 0.05
 elif mesh_res == "medium": 
-    cl_1 = .1
-    cl_2 = 0.02
-    cl_2a = 0.01
-    cl_3 = 0.06
-    cl_4 = 0.03
+    cl_1 = 0.06
+    cl_2 = 0.03
+    cl_2a = 0.015
+    cl_3 = 0.04
+    cl_4 = 0.02
 elif mesh_res == "fine": 
-    cl_1 = .04
+    cl_1 = 0.04
     cl_2 = 0.005
     cl_2a = 0.003
-    cl_3 = .02
+    cl_3 = 0.02
     cl_4 = 0.01
     
 # The benchmark provides a .geo file. This is the gmsh python
@@ -110,7 +110,6 @@ Line27 = gmsh.model.geo.addLine(Point13, Point14)
 Line28 = gmsh.model.geo.addLine(Point15, Point16)
 Line29 = gmsh.model.geo.addLine(Point17, Point18)
 Line30 = gmsh.model.geo.addLine(Point19, Point4)
-
 
 LineLoop31 = gmsh.model.geo.addCurveLoop([
     Line1, Line2, -Line30, 
@@ -201,7 +200,7 @@ if uw.mpi.size == 1:
 
 swarm = uw.swarm.Swarm(mesh=mesh1)
 material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=1
+    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0
 )
 swarm.populate(fill_param=1)
 
@@ -301,31 +300,31 @@ stokes = uw.systems.Stokes(
 # +
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_rtol"] = 1.0e-5
-stokes.petsc_options["snes_atol"] = 1.0e-4
+stokes.petsc_options["snes_rtol"] = 1.0e-3
+stokes.petsc_options["snes_atol"] = 1.0e-2
 
-# stokes.petsc_options.setValue("pc_gamg_agg_nsmooths", 2)
-# stokes.petsc_options.setValue("pc_gamg_threshold", 0.25)
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-4
 
-# +
-# Level set approach to rheology:
-# viscosity_L = sympy.Piecewise(
-#     (1.0, material.sym[0] < 0.5),
-#     (1000.0, True),
-# )
+# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+stokes.petsc_options.setValue("pc_gamg_agg_nsmooths", 0)
+stokes.petsc_options.setValue("pc_gamg_threshold", 0.2)
+# -
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
-
-# -
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.0
+stokes.penalty = 0.1
 
 # Velocity boundary conditions
-stokes.add_dirichlet_bc((+1.0, 0), "Left", (0, 1))
-stokes.add_dirichlet_bc((-1.0, 0), "Right", (0, 1))
+stokes.add_dirichlet_bc(1.0, "Left", 0)
+stokes.add_dirichlet_bc(0,    "Left", 1)
+stokes.add_dirichlet_bc(-1.0, "Right", 0)
+stokes.add_dirichlet_bc(0 , "Right", 1)
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 # stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 
@@ -333,7 +332,7 @@ stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 stokes.bodyforce = sympy.Matrix([0, -1])
 
 
-# %%
+# +
 x, y = mesh1.X
 
 res = 0.1
@@ -342,6 +341,7 @@ surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
 base_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
 edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.025)
 # stokes.bodyforce -= 10000.0 * surface_defn_fn * v_soln.sym[1] * mesh1.CoordinateSystem.unit_j
+# -
 
 # This is a strategy to obtain integrals over the surface (etc)
 
@@ -375,8 +375,9 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
-# %%
 stokes.solve(zero_init_guess=True)
+
+
 
 # %%
 p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
@@ -391,9 +392,11 @@ with mesh1.access(p_null):
 ## in the original paper and introducing the non-linearity gradually
 ## seems the most effective for the purposes of numerical convergence
 
-for i in range(9):
-    mu = 0.0
-    C = 500.0 + (1 - i / 8) * 1000
+# stokes.petsc_options["snes_type"] = "newtontr"
+
+for i in range(16):
+    mu = 0.6
+    C = 100.0 + (1 - i / 15) * 1500
     print(f"Mu - {mu}, C = {C}")
     tau_y = C + mu * p_soln.sym[0]
     viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -418,6 +421,7 @@ stress_calc.solve()
 
 # check the mesh if in a notebook / serial
 
+# +
 if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
@@ -463,9 +467,12 @@ if uw.mpi.size == 1:
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
+
+# -
+
     pl = pv.Plotter()
 
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,
@@ -474,7 +481,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
-        clim=[0.1,2.0],
+        clim=[0.1,1.0],
         opacity=1.0,
     )
 
@@ -487,6 +494,13 @@ if uw.mpi.size == 1:
     # )
 
     pl.show(cpos="xy")
+
+# # What works:
+#
+# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.0 (step from C=1500)
+# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.3
+# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.6
+#
 
 # %%
 surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)

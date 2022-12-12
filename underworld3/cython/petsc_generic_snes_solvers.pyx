@@ -1343,8 +1343,12 @@ class SNES_Stokes:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
