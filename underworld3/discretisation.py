@@ -20,7 +20,9 @@ import weakref
 
 
 @PETSc.Log.EventDecorator()
-def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=None):
+def _from_gmsh(
+    filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True
+):
     """Read a Gmsh .msh file from `filename`.
 
     :kwarg comm: Optional communicator to build the mesh on (defaults to
@@ -35,11 +37,29 @@ def _from_gmsh(filename, comm=None, cellSets=None, faceSets=None, vertexSets=Non
     # gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
 
     options = PETSc.Options()
-    options["dm_plex_gmsh_multiple_tags"] = None
-    options["dm_plex_gmsh_use_regions"] = None
-    options["dm_plex_gmsh_mark_vertices"] = None
 
-    # This is probably simpler
+    # This option allows objects to be in multiple physical groups
+    # Rather than just the first one found.
+    if useMultipleTags:
+        options.setValue("dm_plex_gmsh_multiple_tags", True)
+    else:
+        options.setValue("dm_plex_gmsh_multiple_tags", False)
+
+    # This is usually True because dmplex then contains
+    # Labels for physical groups
+    if useRegions:
+        options["dm_plex_gmsh_use_regions"] = None
+
+    else:
+        options.delValue("dm_plex_gmsh_use_regions")
+
+    # Marking the vertices may be necessary to constrain isolated points
+    # but it means that the labels will have a mix of points, and edges / faces
+    if markVertices:
+        options.setValue("dm_plex_gmsh_mark_vertices", True)
+    else:
+        options.delValue("dm_plex_gmsh_mark_vertices")
+
     gmsh_plex = PETSc.DMPlex().createFromFile(filename)
 
     """
@@ -135,9 +155,9 @@ class Mesh(_api_tools.Stateful):
         simplex=True,
         coordinate_system_type=None,
         qdegree=2,
-        cellSets=None,
-        vertexSets=None,
-        faceSets=None,
+        markVertices=None,
+        useRegions=None,
+        useMultipleTags=None,
         filename=None,
         *args,
         **kwargs,
@@ -154,7 +174,11 @@ class Mesh(_api_tools.Stateful):
             # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
                 self.dm = _from_gmsh(
-                    plex_or_meshfile, comm, cellSets, faceSets, vertexSets
+                    plex_or_meshfile,
+                    comm,
+                    markVertices=False,
+                    useRegions=True,
+                    useMultipleTags=True,
                 )
             else:
                 raise RuntimeError(
@@ -748,7 +772,7 @@ class Mesh(_api_tools.Stateful):
     #     from underworld3.petsc_discretisation import petsc_create_surface_submesh
     #     return petsc_create_surface_submesh(self, "Boundary", 666, )
 
-    def stats(self, uw_function):
+    def stats(self, uw_function, basis=None):
         """
         Returns various norms on the mesh for the provided function.
           - size
@@ -766,12 +790,17 @@ class Mesh(_api_tools.Stateful):
         #       could either be simplified to just use petsc vectors, or extended to
         #       compute integrals over the elements which is in line with uw1 and uw2
 
+        if basis is None:
+            basis = self.N
+
         from petsc4py.PETSc import NormType
 
         tmp = self._work_MeshVar
 
         with self.access(tmp):
-            tmp.data[...] = uw.function.evaluate(uw_function, tmp.coords).reshape(-1, 1)
+            tmp.data[...] = uw.function.evaluate(
+                uw_function, tmp.coords, basis
+            ).reshape(-1, 1)
 
         vsize = self._work_MeshVar._gvec.getSize()
         vmean = tmp.mean()

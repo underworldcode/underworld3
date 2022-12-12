@@ -193,7 +193,7 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
-buoyancy = Rayleigh * density * (1 - surface_fn) * (1 - base_fn)
+buoyancy = Rayleigh * density # * (1 - surface_fn) * (1 - base_fn)
 
 unit_vec_r = mesh.CoordinateSystem.unit_e_0
 

@@ -12,6 +12,16 @@ class mesh_vector_calculus:
         self.mesh = mesh
         self.dim = self.mesh.dim
 
+    def cross(self, vector1, vector2):
+
+        a = self.to_vector(vector1)
+        b = self.to_vector(vector2)
+
+        a_cross_b_vec = sympy.vector.cross(a, b)
+        a_cross_b = self.to_matrix(a_cross_b_vec)
+
+        return a_cross_b
+
     def curl(self, matrix):
         r"""
         \( \nabla \times \mathbf{v} \)
@@ -67,9 +77,12 @@ class mesh_vector_calculus:
         if isinstance(matrix, sympy.vector.Vector):
             return matrix  # No need to convert
 
-        if matrix.shape == (1, self.dim):
+        # Note, the mesh vector basis is always 3D so out-of-plane
+        # vectors are allowed.
+
+        if matrix.shape == (1, 2) or matrix.shape == (1, 3):
             vector = sympy.vector.matrix_to_vector(matrix, self.mesh.N)
-        elif matrix.shape == (self.dim, 1):
+        elif matrix.shape == (2, 1) or matrix.shape == (3, 1):
             vector = sympy.vector.matrix_to_vector(matrix.T, self.mesh.N)
         elif matrix.shape == (1, 1):
             vector = matrix[0, 0]

@@ -23,16 +23,28 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+
+
+# +
+model = 1
+
+if model == 1:
+    free_slip = False
+    expt_name = "NS_flow_coriolis_disk_no_slip"  
+    
+elif model == 2:
+    free_slip = True
+    expt_name = "NS_flow_coriolis_disk_free_slip"
+
 # -
 
 
-expt_name = "NS_flow_coriolis_disk"
-
-# +
-import meshio
-
-meshball = uw.meshes.(
-    dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, 
+    radiusInner=0.0, 
+    cellSize=0.05,
+    qdegree=3,
+    filename="tmp_CoriolisDisk.msh"
 )
 
 # +
@@ -62,7 +74,8 @@ import sympy
 radius_fn = sympy.sqrt(
     meshball.rvec.dot(meshball.rvec)
 )  # normalise by outer radius if not 1.0
-unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
+
+unit_rvec = meshball.CoordinateSystem.unit_e_0
 gravity_fn = radius_fn
 
 # Some useful coordinate stuff
@@ -90,43 +103,38 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     meshball,
     velocityField=v_soln,
     pressureField=p_soln,
-    velocityStar_fn=v_star.fn,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
+    velocityStar_fn=v_star.sym,
     rho=1.0,
     theta=0.5,
     verbose=False,
-    projection=True,
+    projection=False,
     solver_name="navier_stokes",
 )
 
-navier_stokes.petsc_options.delValue(
-    "ksp_monitor"
-)  # We can flip the default behaviour at some point
-navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
-navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
-navier_stokes._u_star_projector.smoothing = 0.0  # navier_stokes.viscosity * 1.0e-6
-navier_stokes._u_star_projector.penalty = 0.0001
-
-# Constant visc
-
+navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
+navier_stokes.constitutive_model.Parameters.viscosity = 1
 navier_stokes.rho = 1000.0
 navier_stokes.theta = 0.5
-navier_stokes.penalty = 0.0
-navier_stokes.viscosity = 1.0
-navier_stokes.bodyforce = 1.0e-32 * meshball.N.i
-navier_stokes._Ppre_fn = 1.0 / (
-    navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t
-)
+navier_stokes.bodyforce = sympy.Matrix([0,0])
+
+navier_stokes.saddle_preconditioner = 1.0 / navier_stokes.constitutive_model.Parameters.viscosity
+
+hw = 1000.0 / meshball.get_min_radius()
+surface_fn = sympy.exp(-((r - 1.0) ** 2) * hw)
+free_slip_penalty = 1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
 
 # Velocity boundary conditions
 
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+if free_slip:
+    free_slip_penalty = 1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+else:
+    free_slip_penalty = 0.0
+    navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Centre", (0, 1))
 
 v_theta = (
-    navier_stokes.theta * navier_stokes.u.fn
+    navier_stokes.theta * navier_stokes.u.sym
     + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
 )
 # -
@@ -137,10 +145,12 @@ t_init = sympy.cos(3 * th)
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(t_init, t_soln.coords)
-    print(t_soln.data.min(), t_soln.data.max())
+    t_soln.data[:, 0] = uw.function.evaluate(t_init, t_soln.coords, meshball.N)
+
 # -
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
+navier_stokes.bodyforce -= free_slip_penalty
+
 
 # +
 navier_stokes.solve(timestep=10.0)
@@ -154,27 +164,28 @@ with swarm.access(v_star, remeshed, X_0):
 
 # -
 
-swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
+swarm.advection(v_soln.fn, 
+                delta_t=navier_stokes.estimate_dt(),
+                corrector=False)
 
 
 # +
 # check the mesh if in a notebook / serial
+import pyvista as pv
 
+pv.global_theme.background = "white"
+pv.global_theme.window_size = [1250, 1250]
+pv.global_theme.antialiasing = True
+pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.smooth_shading = True
+
+pl = pv.Plotter()
 
 def plot_V_mesh(filename):
 
     if uw.mpi.size == 1:
 
-        import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [1250, 1250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        pvmesh = meshball.mesh2pyvista()
+        pvmesh = pv.read("tmp_CoriolisDisk.msh")
 
         with meshball.access():
             pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
@@ -188,7 +199,7 @@ def plot_V_mesh(filename):
         arrow_length = np.zeros((navier_stokes.u.coords.shape[0], 3))
         arrow_length[:, 0:2] = usol[...]
 
-        pl = pv.Plotter()
+        pl.clear()
         pl.camera.SetPosition(0.0001, 0.0001, 4.0)
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe')
@@ -208,18 +219,16 @@ def plot_V_mesh(filename):
             return_img=False,
         )
 
-        pl.close()
-
-        del pl
 
 
 # +
 ts = 0
-swarm_loop = 5
+swarm_loop = 10
 
 Omega = 2.0 * meshball.N.k
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
-navier_stokes.bodyforce -= 2.0 * navier_stokes.rho * sympy.vector.cross(Omega, v_theta)
+navier_stokes.bodyforce -= free_slip_penalty
+navier_stokes.bodyforce -= 2.0 * navier_stokes.rho * meshball.vector.cross(Omega, v_theta)
 # -
 
 
@@ -268,8 +277,6 @@ for step in range(0, 250):
         # p_soln.save(savefile)
         # vorticity.save(savefile)
         # meshball.generate_xdmf(savefile)
-
-    navier_stokes._u_star_projector.smoothing = navier_stokes.viscosity * 1.0e-6
 
     ts += 1
 

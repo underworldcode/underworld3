@@ -293,6 +293,7 @@ class SNES_Stokes(SNES_Stokes):
         # User-facing operations are matrices / vectors by preference
 
         self._E = self.mesh.vector.strain_tensor(self._u.sym)
+        self._Estar = None
 
         # scalar 2nd invariant (incompressible)
         self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace() / 2)
@@ -335,9 +336,22 @@ class SNES_Stokes(SNES_Stokes):
     def strainrate(self):
         return sympy.Matrix(self._E)
 
+    # Set this to something that supplies history if relevant
+    @property
+    def strainrate_star(self):
+        return None
+
+    # provide the strain-rate history in symbolic form
+    @strainrate_star.setter
+    def strainrate_star(self, strain_rate_fn):
+        self._is_setup = False
+        symval = sympify(strain_rate_fn)
+        self._Estar = symval
+
+    # This should return standard viscous behaviour if strainrate_star is None
     @property
     def stress_deviator(self):
-        return self.constitutive_model.flux(self.strainrate)
+        return self.constitutive_model.flux(self.strainrate, self.strainrate_star)
 
     @property
     def stress(self):
