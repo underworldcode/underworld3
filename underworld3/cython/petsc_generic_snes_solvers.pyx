@@ -51,7 +51,7 @@ class SNES_Scalar:
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_type"] = "dgmres"
-        self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["pc_type"] = "mg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-4
@@ -450,8 +450,8 @@ class SNES_Vector:
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_monitor"] = None
-        self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["ksp_type"] = "dgmres"
+        self.petsc_options["pc_type"] = "mg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
@@ -947,11 +947,11 @@ class SNES_Stokes:
 
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "dgmres"
         # self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
-        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
 
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "dgmres"
         # self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
 
         self._u = velocityField
         self._p = pressureField

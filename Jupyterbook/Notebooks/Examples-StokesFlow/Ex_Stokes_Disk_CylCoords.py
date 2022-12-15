@@ -27,6 +27,7 @@ import sympy
 import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
+os.environ['UW_TIMING_ENABLE'] = "1"
 
 res = 0.075
 r_o = 1.0
@@ -130,7 +131,7 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.penalty = 1.0
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-stokes.petsc_options["snes_rtol"] = 1.0e-8
+stokes.petsc_options["snes_rtol"] = 1.0e-4
 
 
 # Velocity boundary conditions
@@ -206,11 +207,19 @@ stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_
 
 stokes._setup_terms()
 
+# +
+from underworld3 import timing
+timing.start()
 stokes.solve(zero_init_guess=True)
-pressure_solver.solve()
+timing.print_table()
 
-stokes_xy._setup_terms()
+pressure_solver.solve()
+# -
+
+from underworld3 import timing
+timing.start()
 stokes_xy.solve(zero_init_guess=True)
+timing.print_table()
 
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 

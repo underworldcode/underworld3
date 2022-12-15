@@ -21,8 +21,13 @@
 #
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
 
+# +
 import gmsh
 import meshio
+import os
+
+os.environ['UW_TIMING_ENABLE'] = "1"
+# -
 
 import petsc4py
 from petsc4py import PETSc
@@ -171,6 +176,8 @@ mesh1.dm.view()
 # -
 
 
+
+
 if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
@@ -289,6 +296,8 @@ if True and uw.mpi.size == 1:
 
 # Create Stokes object
 
+# +
+
 stokes = uw.systems.Stokes(
     mesh1,
     velocityField=v_soln,
@@ -297,14 +306,18 @@ stokes = uw.systems.Stokes(
     verbose=False,
 )
 
+mesh1.dm.coarsenHierarchy(6)
+
+
 # +
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_rtol"] = 1.0e-3
 stokes.petsc_options["snes_atol"] = 1.0e-2
-
 stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
 stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-4
+stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
+stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "mg"
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
@@ -318,7 +331,7 @@ viscosity_L = 999.0 * material.sym[0] + 1.0
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.1
+stokes.penalty = 1.0
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc(1.0, "Left", 0)
@@ -375,17 +388,37 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
+from underworld3 import timing
+
+timing.reset()
+timing.start()
 stokes.solve(zero_init_guess=True)
+timing.print_table()
 
 
+# +
+mu = 0.5
+C = 100.0 
+print(f"Mu - {mu}, C = {C}")
+tau_y = C + mu * p_soln.sym[0]
+viscosity_L = 999.0 * material.sym[0] + 1.0
+viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
+viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1 / viscosity
+stokes.solve(zero_init_guess=False)
+
+# +
 # %%
-p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
+# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
 
-print(f"Surface Average pressure: {p_surface_ave}")
+# +
+# print(f"Surface Average pressure: {p_surface_ave}")
 
-with mesh1.access(p_null):
-    p_null.data[:] = p_surface_ave
+# +
+# with mesh1.access(p_null):
+#     p_null.data[:] = p_surface_ave
 
 # +
 ## Approach this gradually - There is a long discussion on this 
@@ -394,18 +427,18 @@ with mesh1.access(p_null):
 
 # stokes.petsc_options["snes_type"] = "newtontr"
 
-for i in range(16):
-    mu = 0.6
-    C = 100.0 + (1 - i / 15) * 1500
-    print(f"Mu - {mu}, C = {C}")
-    tau_y = C + mu * p_soln.sym[0]
-    viscosity_L = 999.0 * material.sym[0] + 1.0
-    viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
-    viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
+# for i in range(16):
+#     mu = 0.9
+#     C = 100.0 + (1 - i / 15) * 1500
+#     print(f"Mu - {mu}, C = {C}")
+#     tau_y = C + mu * p_soln.sym[0]
+#     viscosity_L = 999.0 * material.sym[0] + 1.0
+#     viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
+#     viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
     
-    stokes.constitutive_model.Parameters.viscosity = viscosity
-    stokes.saddle_preconditioner = 1 / viscosity
-    stokes.solve(zero_init_guess=False)
+#     stokes.constitutive_model.Parameters.viscosity = viscosity
+#     stokes.saddle_preconditioner = 1 / viscosity
+#     stokes.solve(zero_init_guess=False)
 # -
 
 # %%
@@ -421,7 +454,6 @@ stress_calc.solve()
 
 # check the mesh if in a notebook / serial
 
-# +
 if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
@@ -467,9 +499,6 @@ if uw.mpi.size == 1:
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-
-# -
-
     pl = pv.Plotter()
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
@@ -481,7 +510,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
-        clim=[0.1,1.0],
+        clim=[0.1,2.1],
         opacity=1.0,
     )
 
@@ -500,6 +529,7 @@ if uw.mpi.size == 1:
 # Coarse mesh, small penalty (0.1) - C >= 100, mu 0.0 (step from C=1500)
 # Coarse mesh, small penalty (0.1) - C >= 100, mu 0.3
 # Coarse mesh, small penalty (0.1) - C >= 100, mu 0.6
+# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.9
 #
 
 # %%

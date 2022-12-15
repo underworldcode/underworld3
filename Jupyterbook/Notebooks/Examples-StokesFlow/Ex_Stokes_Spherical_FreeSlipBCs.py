@@ -225,20 +225,19 @@ stokes.saddle_preconditioner = 1.0
 
 stokes._setup_terms()
 
-stokes._uu_G3
+# +
+# stokes._uu_G3
 
 # +
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), meshball.data
+        sympy.sqrt(x**2 + y**2 + z**2), meshball.data, meshball.N
     )  # cf radius_fn which is 0->1
 
 with meshball.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
 # -
 
-
-meshball.N
 
 stokes.solve()
 
@@ -324,7 +323,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     meshball.vtk("tmp_meshball.vtk")
     pvmesh = pv.read("tmp_meshball.vtk")
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data, meshball.N)
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
     pvmesh.point_data["S"] = uw.function.evaluate(
         v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
@@ -337,6 +336,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     arrow_length[...] = uw.function.evaluate(stokes.u.fn, stokes.u.coords)
 
     clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
+# -
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -355,9 +355,10 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     #               use_transparency=False, opacity=1.0)
 
     pl.add_arrows(arrow_loc, arrow_length, mag=33 / Rayleigh)
-    pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
+    # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
+    # OR
+    pl.show(cpos="xy")
 
-    # pl.show(cpos="xy")
-# -
+meshball.dm.view()
 
-# ls
+

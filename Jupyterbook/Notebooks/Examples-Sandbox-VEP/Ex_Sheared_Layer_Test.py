@@ -319,6 +319,7 @@ if uw.mpi.size == 1:
         pvmesh.point_data["Visc"] = uw.function.evaluate(node_viscosity.fn, pvpoints)
 
     # Velocity arrows
+    
     v_vectors = np.zeros_like(pvmesh.points)
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, pvpoints)
     pvmesh.point_data["V"] = v_vectors / v_vectors.max()
@@ -387,9 +388,7 @@ nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.solve()
 
 nodal_strain_rate_inv2.solve()
-
-# +
-
+# -
 
 steps = 5
 for i in range(steps, 0, -1):

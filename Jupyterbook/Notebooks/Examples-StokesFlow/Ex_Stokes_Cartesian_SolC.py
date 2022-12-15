@@ -115,10 +115,6 @@ stokes.petsc_options["ksp_monitor"] = None
 # Solve time
 stokes.solve()
 
-stokes.snes.getConvergedReason()
-
-0/0
-
 # ### Visualise it !
 
 # + tags=[]
@@ -168,8 +164,6 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pl.show(cpos="xy")
 
-
-# %% [markdown]
 
 # + [markdown] tags=[]
 # ## SolCx from the same setup

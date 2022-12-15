@@ -14,9 +14,25 @@
 
 # # Compression / Extension with no mesh deformation
 #
+# This is a rigid inclusion model so it looks a lot like Ex_Shear_Band_Plasticity_PS.py but the geometry is closer to 
+# what we have seen before in various papers.
+#
+# The yield stress is Drucker-Prager / Von Mises ($\mu$ = 0).
+#
+# ## Examples:
+#
+# Try $C = 0.1$ and $\mu = 0$ to see highly developed shear bands
+#
+# Try $C = 0.05$ and $\mu = 0.5$ which does not localise as strongly but is highly non-linear nonetheless.
 #
 
-expt_name = "Compression_1"
+# +
+
+C0 = 0.0001
+mu0 = 0.3
+
+expt_name = "Compression_C{C0}_mu{mu0}"
+# -
 
 import petsc4py
 import underworld3 as uw
@@ -160,11 +176,6 @@ inclusion_unit_rvec = mesh1.vector.to_matrix(inclusion_unit_rvec)
 
 vx_ps = mesh1.N.x
 vy_ps = -mesh1.N.y
-# -
-
-
-
-
 # +
 v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
 t_soln = uw.discretisation.MeshVariable("T", mesh1, 1, degree=2)
@@ -191,9 +202,17 @@ stokes = uw.systems.Stokes(
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+stokes.penalty=0.1
 
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_atol"] = 1.0e-4
+
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-4
+stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
+stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "mg"
+
+mesh1.dm.coarsenHierarchy(6)
 
 
 # +
@@ -227,7 +246,7 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
 
-stokes.bodyforce = -0.1 * mesh1.CoordinateSystem.unit_j
+stokes.bodyforce = -1 * mesh1.CoordinateSystem.unit_j
 
 hw = 1000.0 / res
 hump_surface_fn = sympy.exp(-(((r - radius) / radius) ** 2) * hw)
@@ -260,7 +279,6 @@ stokes.solve(zero_init_guess=False)
 # +
 # Calculate surface pressure
 
-
 _,_,_,_,ps_sum,_,_ = mesh1.stats(p_soln.sym[0] * upper_surface_fn)
 _,_,_,_,p_sum,_,_ = mesh1.stats(p_soln.sym[0])
 _,_,_,_,ps_norm,_,_ = mesh1.stats(upper_surface_fn)
@@ -280,17 +298,6 @@ print(f"Mean P - {p_sum/p_norm}")
 
 # print(f"Average surface pressure: {integral}")
 
-# +
-# Now introduce the non-linearity once we have an initial strain rate
-
-# mu = 0.5
-# C = 1.0
-# tau_y = sympy.Max(C - mu * stokes.p.sym[0], 0.0001)
-# viscosity = 1.0 / (2 * stokes._Einv2 / tau_y + 1.0)
-
-
-# stokes.constitutive_model.Parameters.viscosity = viscosity
-# stokes.saddle_preconditioner = (1 / stokes.constitutive_model.Parameters.viscosity
 # + p_penalty * upper_surface_fn)
 
 # stokes.solve(zero_init_guess=False)
@@ -299,16 +306,11 @@ print(f"Mean P - {p_sum/p_norm}")
 # + tags=[]
 # Approach the required value by shifting the parameters
 
-# options = stokes.petsc_options
-# options.setValue("snes_rtol", 1.0e-3)
-# options.setValue("pc_gamg_agg_nsmooths", 2)
-# options.setValue("pc_gamg_threshold", 0.25)
-
-for i in range(5):
-    mu = 0.5
-    C = 1.0 + (1 - i / 4) * 1.0
+for i in range(1):
+    mu = mu0
+    C = C0 # + (1 - i / 4) * 0.1
     print(f"Mu - {mu}, C = {C}")
-    tau_y = sympy.Max(C + mu * stokes.p.sym[0] + 1 * sympy.sin(x * sympy.pi / (2*width))**2, 0.001)
+    tau_y = sympy.Max(C + mu * stokes.p.sym[0] + 1 * sympy.sin(x * sympy.pi / (2*width))**2, 0.0001)
     viscosity = 1.0 / (2 * stokes._Einv2 / tau_y + 1.0)
     
     stokes.constitutive_model.Parameters.viscosity = viscosity
@@ -326,7 +328,16 @@ nodal_visc_calc.solve()
 nodal_strain_rate_inv2.solve()
 
 
-stokes.constitutive_model.Parameters.viscosity
+# +
+
+savefile = "output/{expt_name}.h5"
+mesh1.save(savefile)
+v_soln.save(savefile)
+p_soln.save(savefile)
+dev_stress_inv2.save(savefile)
+node_viscosity.save(savefile)
+mesh1.generate_xdmf(savefile)
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -363,9 +374,6 @@ if uw.mpi.size == 1:
         pvmesh.point_data["Str"] = uw.function.evaluate(
             dev_stress_inv2.sym[0], mesh1.data
         )
-        pvmesh.point_data["Str"] = uw.function.evaluate(
-            dev_stress_inv2.sym[0], mesh1.data
-        )
 
     v_vectors = np.zeros((mesh1.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh1.data)
@@ -388,33 +396,29 @@ if uw.mpi.size == 1:
         point_cloud, vectors="V", integration_direction="both", max_steps=100
     )
 
+
+# -
+
     pl = pv.Plotter(window_size=(1000, 500))
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)
-
-    # pl.add_points(point_cloud, cmap="coolwarm",
-    #               render_points_as_spheres=False,
-    #               point_size=10, opacity=0.66
-    #             )
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="Visc",
+        scalars="Edot",
         use_transparency=False,
         opacity=1.0,
-        # clim=[0.0,1.0],
+        clim=[0.0,5.0],
     )
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    # pl.add_mesh(pvstream)
+
 
     # pl.remove_scalar_bar("mag")
 
     pl.show()
-# -
 
 pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max()
 
