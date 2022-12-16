@@ -39,13 +39,20 @@ import underworld3 as uw
 import numpy as np
 
 
+
+
+options = petsc4py.PETSc.Options()
+options["dm_adaptor"]= "pragmatic"
+
+
+
 # +
 import gmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.075
-csize_inclusion = 0.025
+csize = 0.025
+csize_inclusion = 0.01
 res = csize_inclusion
 
 width = 2.0
@@ -207,12 +214,12 @@ stokes.penalty=0.1
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_atol"] = 1.0e-4
 
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-4
-stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
-stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "mg"
 
-mesh1.dm.coarsenHierarchy(6)
+stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
+
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+stokes.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
 
 
 # +
@@ -330,7 +337,7 @@ nodal_strain_rate_inv2.solve()
 
 # +
 
-savefile = "output/{expt_name}.h5"
+savefile = f"output/{expt_name}.h5"
 mesh1.save(savefile)
 v_soln.save(savefile)
 p_soln.save(savefile)
@@ -399,6 +406,8 @@ if uw.mpi.size == 1:
 
 # -
 
+if uw.mpi.size == 1:
+
     pl = pv.Plotter(window_size=(1000, 500))
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)
@@ -411,7 +420,7 @@ if uw.mpi.size == 1:
         scalars="Edot",
         use_transparency=False,
         opacity=1.0,
-        clim=[0.0,5.0],
+        clim=[0.0,4.0],
     )
 
 
@@ -420,7 +429,9 @@ if uw.mpi.size == 1:
 
     pl.show()
 
-pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max()
+if uw.mpi.size == 1:
+
+    print(pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max())
 
 
 

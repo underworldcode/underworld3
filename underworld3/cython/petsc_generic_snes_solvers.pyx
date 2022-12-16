@@ -45,7 +45,10 @@ class SNES_Scalar:
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
-   
+
+        options = PETSc.Options()
+        options["dm_adaptor"]= "pragmatic"
+    
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
@@ -322,8 +325,13 @@ class SNES_Scalar:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
+
 
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -443,6 +451,9 @@ class SNES_Vector:
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
+
+        options = PETSc.Options()
+        options["dm_adaptor"]= "pragmatic"
 
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
@@ -737,8 +748,12 @@ class SNES_Vector:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -912,8 +927,6 @@ class SNES_Stokes:
 
         SNES_Stokes.instances += 1
         self.name = solver_name
-
-
         self.mesh = mesh
         self.verbose = verbose
         
@@ -924,16 +937,16 @@ class SNES_Stokes:
         else:
             self.petsc_options_prefix = solver_name
 
+        options = PETSc.Options()
+        options["dm_adaptor"]= "pragmatic"
+
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
-        # self.petsc_options["ksp_rtol"] = 1.0e-4
-        # self.petsc_options["ksp_monitor"] = None
-
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        self.petsc_options["snes_rtol"] = 1.0e-3
+        self.petsc_options["snes_rtol"] = 1.0e-4
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -945,12 +958,10 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "dgmres"
-        # self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
 
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "dgmres"
-        # self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
 
         self._u = velocityField

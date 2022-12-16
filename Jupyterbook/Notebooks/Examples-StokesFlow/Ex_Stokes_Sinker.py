@@ -23,6 +23,7 @@
 #
 # The masks are implemented as continuous mesh variables (the user can specify the interpolation order) and so they are also differentiable (once).
 
+# +
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
@@ -32,15 +33,22 @@ import sympy
 from mpi4py import MPI
 
 
+
+
+# +
 # %%
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
+# options = PETSc.Options()
+# options["dm_adaptor"]= "pragmatic"
+# -
+
 # %%
-expt_name = f"output/stinker_eta1e5_rho10"
+expt_name = f"output/stinker_eta1e6_rho10"
 
 # Set the resolution.
-res = 16
+res = 32
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -52,7 +60,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 1.0e5
+viscSphere = 1.0e6
 
 densityBG = 1.0
 densitySphere = 10.0
@@ -69,10 +77,9 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(-1.0, 0.0),
     maxCoords=(1.0, 1.0),
     cellSize=1.0 / res, 
-    regular=False
+    regular=False,
+    qdegree=3
 )
-
-mesh.dm.view()
 
 # ## Create Stokes object
 
@@ -84,22 +91,23 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 
 
 stokes.add_dirichlet_bc(
-    (0,0), ["Top", "Bottom"], [0, 1]
+    (0.0), ["Top", "Bottom"], [1]
 )  # top/bottom: components, function, markers
 stokes.add_dirichlet_bc(
-    (0,0), ["Left", "Right"], [0, 1]
+    (0.0), ["Left", "Right"], [0]
 )  # left/right: components, function, markers
 
 
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4, 
-                                   proxy_continuous=True)
-swarm.populate(fill_param=4)
+material = uw.swarm.IndexSwarmVariable("M", swarm,
+                                       indices=2, 
+                                       proxy_continuous=False,
+                                       proxy_degree=0)
+swarm.populate(fill_param=2)
 
 blob = np.array(
     [[sphereCentre[0], sphereCentre[1], sphereRadius, 1]]
 )
-
 
 
 with swarm.access(material):
@@ -126,13 +134,6 @@ viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.
 
 # viscosity = sympy.Max( sympy.Min(viscosityMat, eta_max), eta_min)
 viscosity = viscBG * material.sym[0] + viscSphere *  material.sym[1]
-
-
-
-mesh.dm.coarsenHierarchy(6)
-
-
-
 
 render = True
 
@@ -194,9 +195,8 @@ def plot_T_mesh(filename):
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
+stokes.penalty = 1.0
 stokes.saddle_preconditioner = 1.0 / viscosity
-stokes.penalty = 0.0
-
 
 # +
 # stokes.petsc_options.view()
@@ -205,11 +205,15 @@ stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_rtol"] = snes_rtol
 stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
 
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = snes_rtol
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = snes_rtol
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+
 
 # -
 
@@ -223,27 +227,11 @@ nprint = 0.0
 tSinker = np.zeros(nsteps)
 ySinker = np.zeros(nsteps)
 
-# +
-# test solve
-
-# +
-# viscS = 1.0e5
-# viscosity = viscBG * material.sym[0] + viscS *  material.sym[1]
-# stokes.constitutive_model.Parameters.viscosity = viscosity
-# stokes.saddle_preconditioner = 1.0 / viscosity
-# -
-
 stokes.solve(zero_init_guess=True)
 
 stokes.solve(zero_init_guess=False)
 
-# +
-# viscSphere = 1.0e4
-# viscosity = viscBG * material.sym[0] + viscSphere *  material.sym[1]
-# stokes.constitutive_model.Parameters.viscosity = viscosity
-# stokes.saddle_preconditioner = 1.0 / viscosity
-# stokes.solve(zero_init_guess=True)
-# -
+
 
 while step < nstep:
     ### Get the position of the sinking ball
@@ -305,6 +293,7 @@ if uw.mpi.rank == 0:
 
 # ## check if that worked
 
+# +
 if uw.mpi.size == 1:
 
     import numpy as np
@@ -356,23 +345,24 @@ if uw.mpi.size == 1:
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
     #               use_transparency=False, opacity=0.5)
 
-    pl.add_mesh(
-        point_cloud,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=False,
-        scalars="M",
-        use_transparency=False,
-        point_size=10.0,
-        opacity=0.5,
-    )
+#     pl.add_mesh(
+#         point_cloud,
+#         cmap="coolwarm",
+#         edge_color="Black",
+#         show_edges=False,
+#         scalars="M",
+#         use_transparency=False,
+#         point_size=10.0,
+#         opacity=0.5,
+#     )
     
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=5.0, opacity=1.0)
+    pl.add_arrows(arrow_loc, arrow_length, mag=2.0, opacity=1.0)
 
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+# -
 
 
