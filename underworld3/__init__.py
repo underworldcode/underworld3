@@ -34,6 +34,7 @@ import underworld3.utilities
 import underworld3.kdtree
 import underworld3.mpi
 import underworld3.cython
+import underworld3.scaling
 import numpy as _np
 
 # Info for JIT modules.
