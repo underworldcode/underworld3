@@ -14,6 +14,10 @@
 
 # # Multiple materials - Linear stokes sinker
 #
+# This is the notorious "Stokes sinker" problem in which we have a dense and "rigid" (highly viscous) blob sinking in a low-viscosity fluid. This combination of high velocity and low strain rate is challenging for iterative solvers and there is a limit to the viscosity jujmp that can be introduced before the solvers fail to converge.
+#
+# ![Sinker image with streamlines](images/SinkerSolution.png)
+#
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
 # variable that consists of discrete level values (integers).
 #
@@ -32,7 +36,8 @@ import numpy as np
 import sympy
 from mpi4py import MPI
 
-
+import os
+os.environ['UW_TIMING_ENABLE'] = "1"
 
 
 # +
@@ -48,7 +53,7 @@ sys.pushErrorHandler("traceback")
 expt_name = f"output/stinker_eta1e6_rho10"
 
 # Set the resolution.
-res = 32
+res = 48
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -60,7 +65,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 1.0e6
+viscSphere = 1.0e8
 
 densityBG = 1.0
 densitySphere = 10.0
@@ -69,7 +74,7 @@ densitySphere = 10.0
 x_pos = sphereCentre[0]
 y_pos = sphereCentre[1] - sphereRadius
 
-nsteps = 10
+nsteps = 0
 
 swarmGPC = 2
 
@@ -102,7 +107,7 @@ swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable("M", swarm,
                                        indices=2, 
                                        proxy_continuous=False,
-                                       proxy_degree=0)
+                                       proxy_degree=1)
 swarm.populate(fill_param=2)
 
 blob = np.array(
@@ -198,26 +203,14 @@ stokes.bodyforce = sympy.Matrix([0, -1 * density])
 stokes.penalty = 1.0
 stokes.saddle_preconditioner = 1.0 / viscosity
 
-# +
 # stokes.petsc_options.view()
 snes_rtol = 0.1 / viscSphere
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_rtol"] = snes_rtol
 stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
 
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
 
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-
-
-# -
-
-nstep = 10
+nstep = 1
 
 step = 0
 time = 0.0
@@ -227,11 +220,46 @@ nprint = 0.0
 tSinker = np.zeros(nsteps)
 ySinker = np.zeros(nsteps)
 
+# +
+from underworld3 import timing
+
+timing.reset()
+timing.start()
 stokes.solve(zero_init_guess=True)
+timing.print_table()
+# -
+
+# ## Timing results
+#
+# $\Delta \eta$ fixed mesh size (`res = 32`, `penalty = 1`)
+#
+# $\Delta \eta = 10^{0}$, 3.4s
+#
+# $\Delta \eta = 10^{2}$, 5.8s
+#
+# $\Delta \eta = 10^{4}$, 9.0s
+#
+# $\Delta \eta = 10^{6}$, 17.3s
+#
+# $\Delta \eta = 10^{8}$, 60.0s
+#
+#
+# $\Delta \eta = 10^{4}$ changin mesh size (`penalty = 1`)
+#
+# `res = 16`, 2.0s
+#
+# `res = 32`, 9.0s
+#
+# `res = 48`, 64.0s
+#
+# `res = 64`, 154.0s  (19000 elements / 38000 v-nodes)
+#
+
+# +
+# stokes.snes.view()
+# -
 
 stokes.solve(zero_init_guess=False)
-
-
 
 while step < nstep:
     ### Get the position of the sinking ball
@@ -293,7 +321,6 @@ if uw.mpi.rank == 0:
 
 # ## check if that worked
 
-# +
 if uw.mpi.size == 1:
 
     import numpy as np
@@ -301,7 +328,6 @@ if uw.mpi.size == 1:
     import vtk
 
     pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
@@ -309,6 +335,8 @@ if uw.mpi.size == 1:
     # pv.start_xvfb()
 
     # mesh.vtk("ignore_periodic_mesh.vtk")
+    mesh.vtk("tmpMsh.vtk")
+
     pvmesh = pv.read("tmpMsh.vtk")
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
@@ -319,21 +347,31 @@ if uw.mpi.size == 1:
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
         points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
+        points[:, 1] = swarm.data[:,1]
         points[:, 2] = 0.0
 
     point_cloud = pv.PolyData(points)
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
+        
+    v_vectors = np.zeros((mesh.data.shape[0], 3))
+    v_vectors[:, 0:2] = uw.function.evaluate(v.fn, mesh.data)
+    pvmesh.point_data["V"] = v_vectors
 
     arrow_loc = np.zeros((v.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v.coords[...]
 
     arrow_length = np.zeros((v.coords.shape[0], 3))
     arrow_length[:, 0:2] = vsol[...]
+    
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", integration_direction="both",
+        max_steps=10, surface_streamlines=True, max_step_length=0.33
+    )
 
-    pl = pv.Plotter()
+
+    pl = pv.Plotter(window_size=(1000,750))
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
@@ -345,24 +383,28 @@ if uw.mpi.size == 1:
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
     #               use_transparency=False, opacity=0.5)
 
-#     pl.add_mesh(
-#         point_cloud,
-#         cmap="coolwarm",
-#         edge_color="Black",
-#         show_edges=False,
-#         scalars="M",
-#         use_transparency=False,
-#         point_size=10.0,
-#         opacity=0.5,
-#     )
+    pl.add_mesh(pvstream, opacity=0.5)
+
+    pl.add_mesh(
+        point_cloud,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=False,
+        scalars="M",
+        use_transparency=False,
+        point_size=2.0,
+        opacity=0.75,
+    )
     
-    pl.add_mesh(pvmesh, "Black", "wireframe")
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=2.0, opacity=1.0)
-
-    # pl.add_points(pdata)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=2.0, opacity=0.33)
+    # pl.add_mesh(pvmesh, "Black", "wireframe")
+    
+    pl.remove_scalar_bar("M")
+    pl.remove_scalar_bar("V")
+    pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000,2000))
 
     pl.show(cpos="xy")
-# -
+
+v.coords.shape
 
 

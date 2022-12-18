@@ -31,7 +31,7 @@
 C0 = 0.0001
 mu0 = 0.3
 
-expt_name = "Compression_C{C0}_mu{mu0}"
+expt_name = f"Compression_C{C0}_mu{mu0}"
 # -
 
 import petsc4py
@@ -51,8 +51,8 @@ import gmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.025
-csize_inclusion = 0.01
+csize = 0.033
+csize_inclusion = 0.02
 res = csize_inclusion
 
 width = 2.0
@@ -335,8 +335,6 @@ nodal_visc_calc.solve()
 nodal_strain_rate_inv2.solve()
 
 
-# +
-
 savefile = f"output/{expt_name}.h5"
 mesh1.save(savefile)
 v_soln.save(savefile)
@@ -428,6 +426,12 @@ if uw.mpi.size == 1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+
+savefile = "output/compresssion_example.h5"
+mesh1.save(savefile)
+v_soln.save(savefile)
+strain_rate_inv2.save(savefile)
+mesh1.generate_xdmf(savefile)
 
 if uw.mpi.size == 1:
 

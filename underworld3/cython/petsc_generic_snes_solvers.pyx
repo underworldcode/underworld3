@@ -964,6 +964,14 @@ class SNES_Stokes:
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
 
+        # This makes for a more efficient solve but it also prevents the
+        # solver from stalling at some level when an exact solution is not required
+        # (max can be increased if the solver diverges)
+
+        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
+        self.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
+
+
         self._u = velocityField
         self._p = pressureField
 
