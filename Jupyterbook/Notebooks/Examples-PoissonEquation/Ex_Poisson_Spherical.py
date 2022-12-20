@@ -61,11 +61,11 @@ from underworld3.meshing import Annulus
 # first do 2D
 if problem_size <= 1: 
     cell_size = 0.1
-elif problem_size == 1: 
-    cell_size = 0.05
 elif problem_size == 2: 
-    cell_size = 0.02
+    cell_size = 0.05
 elif problem_size == 3: 
+    cell_size = 0.02
+elif problem_size >= 4: 
     cell_size = 0.005
  
 

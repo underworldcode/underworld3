@@ -114,7 +114,7 @@ elif problem_size == 2:
     cell_size = 0.15
 elif problem_size == 3: 
     cell_size = 0.05
-elif problem_size == 4: 
+elif problem_size >= 4: 
     cell_size = 0.02
     
 res = cell_size
@@ -245,9 +245,6 @@ stokes.saddle_preconditioner = 1.0
 # -
 
 stokes._setup_terms()
-
-# +
-# stokes._uu_G3
 
 # +
 with meshball.access(meshr):
