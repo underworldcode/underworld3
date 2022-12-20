@@ -175,13 +175,13 @@ gmsh.model.addPhysicalGroup(2, [Surface34], tag=101, name="Strong")
 
 gmsh.model.mesh.generate(2)
 
-gmsh.write(f"meshes/notch_{mesh_res}.msh")
+gmsh.write(f"./meshes/notch_mesh{problem_size}.msh")
 gmsh.finalize()
 # -
 
 
 mesh1 = uw.discretisation.Mesh(
-    f"./meshes/notch_{mesh_res}.msh",
+    f"./meshes/notch_mesh{problem_size}.msh",
     simplex=True,
     qdegree=3,   
     markVertices=False,
@@ -203,7 +203,7 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read(f"./meshes/notch_{mesh_res}.msh",)
+    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh",)
 
     pl = pv.Plotter()
 
@@ -267,7 +267,7 @@ if True and uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read(f"./meshes/notch_{mesh_res}.msh",)
+    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh")
 
     pl = pv.Plotter()
 
