@@ -411,7 +411,11 @@ viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / viscosity
+
+timing.reset()
+timing.start()
 stokes.solve(zero_init_guess=False)
+timing.print_table()
 # -
 
 # %%
