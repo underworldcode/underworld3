@@ -26,7 +26,12 @@ import gmsh
 import os
 
 os.makedirs("meshes", exist_ok=True)
-os.makedirs("output", exist_ok=True)
+
+if uw.mpi.size == 1:
+    os.makedirs("output", exist_ok=True)
+else:
+    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
+
 
 os.environ['UW_TIMING_ENABLE'] = "1"
 
@@ -36,7 +41,7 @@ os.environ['UW_TIMING_ENABLE'] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 1
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -324,13 +329,19 @@ stokes = uw.systems.Stokes(
     verbose=False,
 )
 
-# -
 
 
+# +
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_rtol"] = 1.0e-5
+stokes.petsc_options["snes_rtol"] = 1.0e-4
 stokes.petsc_options["snes_atol"] = 1.0e-3
+
+stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
+stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 5
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
+
+# -
 
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -407,8 +418,8 @@ timing.print_table()
 
 
 # +
-mu = 0.9
-C = 75.0 
+mu = 0.6
+C = 100.0 
 print(f"Mu - {mu}, C = {C}")
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
