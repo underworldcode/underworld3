@@ -500,7 +500,7 @@ def Annulus(
     import gmsh
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Annulus")
 
     p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -585,7 +585,7 @@ def AnnulusFixedStars(
     import gmsh
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("AnnulusFS")
 
     p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -726,7 +726,7 @@ def CubedSphere(
     import gmsh
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.option.setNumber("Mesh.Algorithm3D", 4)
     gmsh.model.add("Cubed Sphere")
 
@@ -882,7 +882,7 @@ def SegmentedSphericalSurface2D(
     options["dm_plex_gmsh_mark_vertices"] = None
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Segmented Sphere 2D Surface")
 
     # Mesh like an orange
@@ -1024,7 +1024,7 @@ def SegmentedSphere(
     ## Follow the lead of the cubed sphere and make copies of a segment
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 2)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.option.setNumber("Mesh.Algorithm3D", 4)
     gmsh.model.add("Segmented Sphere 3D")
 
