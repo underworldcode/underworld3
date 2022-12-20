@@ -22,6 +22,11 @@
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
 
 # +
+import petsc4py
+from petsc4py import PETSc
+import underworld3 as uw
+import numpy as np
+import sympy
 import gmsh
 import os
 
@@ -56,11 +61,7 @@ if uw_testing_level:
         
 # -
 
-import petsc4py
-from petsc4py import PETSc
-import underworld3 as uw
-import numpy as np
-import sympy
+
 
 from underworld3.cython import petsc_discretisation
 
@@ -340,7 +341,6 @@ stokes.petsc_options["snes_atol"] = 1.0e-3
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
 stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 5
 stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
-
 # -
 
 
