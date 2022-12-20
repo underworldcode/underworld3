@@ -1,5 +1,4 @@
 import pytest
-from pyvista import cell_array
 import sympy
 import underworld3 as uw
 
