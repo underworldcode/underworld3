@@ -530,6 +530,7 @@ if uw.mpi.size == 1:
 # -
 
 
-pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
+if uw.mpi.size == 1: 
+    pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
 
 
