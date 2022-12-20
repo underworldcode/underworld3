@@ -2,3 +2,12 @@
 
 from . import _api_tools
 
+# get/import petsc_gen_xdmf from the original petsc installation
+import sys
+import petsc4py
+conf = petsc4py.get_config()
+petsc_dir = conf["PETSC_DIR"]
+if not petsc_dir+'/lib/petsc/bin' in sys.path:
+    sys.path.append(petsc_dir+'/lib/petsc/bin')
+from petsc_gen_xdmf import *
+

@@ -19,7 +19,7 @@ from underworld3.cython.petsc_types cimport PetscDMBoundaryType
 from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
 
-from underworld3.utilities.petsc_gen_xdmf import generateXdmf
+from underworld3.utilities import generateXdmf
 
 ctypedef enum PetscBool:
     PETSC_FALSE
