@@ -26,6 +26,7 @@ import gmsh
 import os
 
 os.makedirs("meshes", exist_ok=True)
+os.makedirs("output", exist_ok=True)
 
 os.environ['UW_TIMING_ENABLE'] = "1"
 
@@ -431,6 +432,16 @@ strain_rate_calc.solve()
 viscosity_calc.solve()
 stress_calc.solve()
 
+# +
+## Save data ... 
+
+savefile = f"output/notched_beam_mesh{problem_size}.h5"
+mesh1.save(savefile)
+v_soln.save(savefile)
+p_soln.save(savefile)
+# mesh1.generate_xdmf(savefile)
+# -
+
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
@@ -538,8 +549,3 @@ if uw.mpi.size == 1:
 
 if uw.mpi.size == 1: 
     pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
-
-# +
-## Save data ... 
-
-
