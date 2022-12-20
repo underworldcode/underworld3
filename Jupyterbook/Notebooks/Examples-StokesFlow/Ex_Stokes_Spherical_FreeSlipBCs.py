@@ -66,28 +66,6 @@
 # ## Computational script in python
 
 # +
-visuals = 1
-output_dir = "output"
-expt_name = "Stokes_Sphere_i"
-
-# Some gmsh issues, so we'll use a pre-built one
-mesh_file = "Sample_Meshes_Gmsh/test_mesh_sphere_at_res_005_c.msh"
-res = 0.075
-r_o = 1.0
-r_i = 0.5
-
-Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
-# choose 1 to make re-scaling simple
-
-iic_radius = 0.1
-iic_delta_eta = 100.0
-import os
-
-os.makedirs(output_dir, exist_ok=True)
-
-# +
-# Imports here seem to be order dependent again (pygmsh / gmsh v. petsc
-
 import petsc4py
 from petsc4py import PETSc
 import mpi4py
@@ -95,24 +73,70 @@ import mpi4py
 import underworld3 as uw
 import numpy as np
 import sympy
+import os
+
+
+
+# +
+# Define the problem size 
+#      1 - ultra low res for automatic checking
+#      2 - low res problem to play with this notebook
+#      3 - medium resolution (be prepared to wait)
+#      4 - highest resolution (benchmark case from Spiegelman et al)
+
+problem_size = 2
+
+# For testing and automatic generation of notebook output,
+# over-ride the problem size if the UW_TESTING_LEVEL is set
+
+uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+if uw_testing_level:
+    try:
+        problem_size = int(uw_testing_level)
+    except ValueError:
+        # Accept the default value
+        pass
+
+# +
+visuals = 1
+output_dir = "output"
+
+# Some gmsh issues, so we'll use a pre-built one
+r_o = 1.0
+r_i = 0.5
+
+Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
+
+# + tags=[]
+if problem_size <= 1: 
+    cell_size = 0.30
+elif problem_size == 2: 
+    cell_size = 0.15
+elif problem_size == 3: 
+    cell_size = 0.05
+elif problem_size == 4: 
+    cell_size = 0.02
+    
+res = cell_size
+
+expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
 
 
 # +
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
     radiusOuter=r_o,
-    cellSize=res,
+    cellSize=cell_size,
     qdegree=2,
 )
 
+# BC weirdness in this one (need to define pole points etc)
+# meshball = uw.meshing.SegmentedSphere(radiusInner=r_i, 
+#                            radiusOuter=r_o, 
+#                            cellSize=cell_size,
+#                            qdegree=2,
+#                           )
 
-# -- OR --
-
-
-# meshball = uw.meshing.CubedSphere( radiusInner=r_i,
-#                                    radiusOuter=r_o,
-#                                    numElements=9,
-#                                    simplex=True)
 # -
 
 v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2)
@@ -151,10 +175,7 @@ t_forcing_fn = 1.0 * (
     + sympy.exp(-10.0 * ((x - 0.8) ** 2 + y**2 + z**2))
     + sympy.exp(-10.0 * (x**2 + y**2 + (z - 0.8) ** 2))
 )
-# -
 
-
-meshball.N
 
 # +
 # Rigid body rotations that are null-spaces for this set of bc's
@@ -346,7 +367,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="S",
+        scalars="T",
         use_transparency=False,
         opacity=1.0,
     )

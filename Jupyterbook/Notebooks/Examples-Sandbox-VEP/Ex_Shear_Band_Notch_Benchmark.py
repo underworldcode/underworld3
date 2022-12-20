@@ -27,6 +27,26 @@ import meshio
 import os
 
 os.environ['UW_TIMING_ENABLE'] = "1"
+
+# Define the problem size 
+#      1 - ultra low res for automatic checking
+#      2 - low res problem to play with this notebook
+#      3 - medium resolution (be prepared to wait)
+#      4 - highest resolution (benchmark case from Spiegelman et al)
+
+problem_size = 2 
+
+# For testing and automatic generation of notebook output,
+# over-ride the problem size if the UW_TESTING_LEVEL is set
+
+uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+if uw_testing_level:
+    try:
+        problem_size = int(uw_testing_level)
+    except ValueError:
+        # Accept the default value
+        pass
+        
 # -
 
 import petsc4py
@@ -38,22 +58,26 @@ import sympy
 from underworld3.cython import petsc_discretisation
 
 
-mesh_res = "fine"  # For tests. "fine" is the original resolution of the published benchmark
-
 # +
-if mesh_res == "coarse":
+if problem_size <= 1:
+    cl_1 = .25
+    cl_2 = 0.15
+    cl_2a = 0.1
+    cl_3 = 0.25
+    cl_4 = 0.15
+elif problem_size == 2:
     cl_1 = .1
     cl_2 = 0.05
     cl_2a = 0.03
     cl_3 = 0.1
     cl_4 = 0.05
-elif mesh_res == "medium": 
+elif problem_size == 3: 
     cl_1 = 0.06
     cl_2 = 0.03
     cl_2a = 0.015
     cl_3 = 0.04
     cl_4 = 0.02
-elif mesh_res == "fine": 
+else: 
     cl_1 = 0.04
     cl_2 = 0.005
     cl_2a = 0.003
@@ -154,13 +178,7 @@ gmsh.model.mesh.generate(2)
 
 gmsh.write(f"meshes/notch_{mesh_res}.msh")
 gmsh.finalize()
-
-
-# +
-# options = PETSc.Options()
-# options["dm_plex_gmsh_multiple_tags"] = None
-# options["dm_plex_gmsh_use_regions"] = None
-# options["dm_plex_gmsh_mark_vertices"] = None
+# -
 
 
 mesh1 = uw.discretisation.Mesh(
@@ -173,7 +191,6 @@ mesh1 = uw.discretisation.Mesh(
 )
 mesh1.dm.view()
 
-# -
 if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
@@ -307,8 +324,8 @@ stokes = uw.systems.Stokes(
 
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options["snes_atol"] = 1.0e-2
+stokes.petsc_options["snes_rtol"] = 1.0e-5
+stokes.petsc_options["snes_atol"] = 1.0e-3
 
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -385,8 +402,8 @@ timing.print_table()
 
 
 # +
-mu = 0.5
-C = 100.0 
+mu = 0.9
+C = 75.0 
 print(f"Mu - {mu}, C = {C}")
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -396,37 +413,6 @@ viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / viscosity
 stokes.solve(zero_init_guess=False)
-
-# +
-# %%
-# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
-
-# +
-# print(f"Surface Average pressure: {p_surface_ave}")
-
-# +
-# with mesh1.access(p_null):
-#     p_null.data[:] = p_surface_ave
-
-# +
-## Approach this gradually - There is a long discussion on this 
-## in the original paper and introducing the non-linearity gradually
-## seems the most effective for the purposes of numerical convergence
-
-# stokes.petsc_options["snes_type"] = "newtontr"
-
-# for i in range(16):
-#     mu = 0.9
-#     C = 100.0 + (1 - i / 15) * 1500
-#     print(f"Mu - {mu}, C = {C}")
-#     tau_y = C + mu * p_soln.sym[0]
-#     viscosity_L = 999.0 * material.sym[0] + 1.0
-#     viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
-#     viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
-    
-#     stokes.constitutive_model.Parameters.viscosity = viscosity
-#     stokes.saddle_preconditioner = 1 / viscosity
-#     stokes.solve(zero_init_guess=False)
 # -
 
 # %%
@@ -493,22 +479,22 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(
         pvmesh,
-        cmap="coolwarm",
+        cmap="RdYlGn",
         scalars="edot",
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
-        clim=[0.1,2.1],
+        # clim=[0.1,1.0],
         opacity=1.0,
     )
 
-    # pl.add_points(
-    #     point_cloud,
-    #     cmap="coolwarm",
-    #     render_points_as_spheres=False,
-    #     point_size=10,
-    #     opacity=0.3,
-    # )
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=5,
+        opacity=0.3,
+    )
 
     pl.show(cpos="xy")
 
@@ -522,21 +508,27 @@ if uw.mpi.size == 1:
 #
 # Coarse mesh, small penalty (0.1) - C >= 100, mu 0.9
 #
+# Coarse mesh, small penalty (1.0) - C >= 75, mu 0.9
+#
 
+# +
 # %%
-surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
-p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
-print(f"Upper surface average P = {p_surface_ave}")
+# surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
+# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
+# print(f"Upper surface average P = {p_surface_ave}")
 
-surface_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
-p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
-print(f"Lower surface average P = {p_surface_ave}")
+# +
+# surface_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
+# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
+# print(f"Lower surface average P = {p_surface_ave}")
 
 
+# +
 # %%
-surface_defn_fn = sympy.exp(-((y + 0.666) ** 2) * hw)
-p_surface_ave = surface_integral(mesh1, edot.sym[0], surface_defn_fn)
-print(f"Edot at 0.666 = {p_surface_ave}")
+# surface_defn_fn = sympy.exp(-((y + 0.666) ** 2) * hw)
+# p_surface_ave = surface_integral(mesh1, edot.sym[0], surface_defn_fn)
+# print(f"Edot at 0.666 = {p_surface_ave}")
+# -
 
 
 pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()

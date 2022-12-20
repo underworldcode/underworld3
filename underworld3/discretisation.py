@@ -28,14 +28,8 @@ def _from_gmsh(
     :kwarg comm: Optional communicator to build the mesh on (defaults to
         COMM_WORLD).
     """
-    comm = comm or PETSc.COMM_WORLD
-    # Create a read-only PETSc.Viewer
-    # gmsh_viewer = PETSc.Viewer().create(comm=comm)
-    # gmsh_viewer.setType("ascii")
-    # gmsh_viewer.setFileMode("r")
-    # gmsh_viewer.setFileName(filename)
-    # gmsh_plex = PETSc.DMPlex().createGmsh(gmsh_viewer, comm=comm)
 
+    comm = comm or PETSc.COMM_WORLD
     options = PETSc.Options()
 
     # This option allows objects to be in multiple physical groups
@@ -176,9 +170,9 @@ class Mesh(_api_tools.Stateful):
                 self.dm = _from_gmsh(
                     plex_or_meshfile,
                     comm,
-                    markVertices=False,
-                    useRegions=True,
-                    useMultipleTags=True,
+                    markVertices=markVertices,
+                    useRegions=useRegions,
+                    useMultipleTags=useMultipleTags,
                 )
             else:
                 raise RuntimeError(

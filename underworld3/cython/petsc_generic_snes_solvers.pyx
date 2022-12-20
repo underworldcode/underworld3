@@ -53,11 +53,12 @@ class SNES_Scalar:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "dgmres"
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "mg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-4
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
 
         self._u = u_Field
         self.mesh = mesh
@@ -125,8 +126,9 @@ class SNES_Scalar:
         display(Markdown(docstring))
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
-        ## Usually, there are constitutive parameters that can be included in the iputho display 
+        ## Usually, there are constitutive parameters that can be included in the ipython display 
 
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -461,11 +463,13 @@ class SNES_Vector:
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_monitor"] = None
-        self.petsc_options["ksp_type"] = "dgmres"
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "mg"
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
+
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         ##if not u_Field:
@@ -552,7 +556,7 @@ class SNES_Vector:
         self._constitutive_model = model
         self._constitutive_model.solver = self 
 
- 
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -1023,7 +1027,7 @@ class SNES_Stokes:
 
         ## Usually, there are constitutive parameters that can be included in the iputho display 
 
-
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
         """
         Most of what is in the init phase that is not called by _setup_terms()

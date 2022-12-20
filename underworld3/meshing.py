@@ -152,33 +152,17 @@ def UnstructuredSimplexBox(
             gmsh.write(filename)
         gmsh.finalize()
 
-        options = PETSc.Options()
-        options["dm_plex_gmsh_multiple_tags"] = None
-        options["dm_plex_gmsh_use_regions"] = None
-        options["dm_plex_gmsh_mark_vertices"] = None
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.SPHERICAL,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+        )
 
-        plex = PETSc.DMPlex().createFromFile(fp.name)
-
-    """
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-
-    plex.removeLabel("Face Sets")
-    """
-
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.CARTESIAN,
-        filename=filename,
-    )
+    return new_mesh
 
 
 def StructuredQuadBox(
@@ -405,32 +389,17 @@ def StructuredQuadBox(
             gmsh.write(filename)
         gmsh.finalize()
 
-        options = PETSc.Options()
-        options["dm_plex_gmsh_multiple_tags"] = None
-        options["dm_plex_gmsh_use_regions"] = None
-        options["dm_plex_gmsh_mark_vertices"] = None
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.SPHERICAL,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+        )
 
-        plex = PETSc.DMPlex().createFromFile(fp.name)
-    """
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-
-    plex.removeLabel("Face Sets")
-    """
-
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.CARTESIAN,
-        filename=filename,
-    )
+    return new_mesh
 
 
 def SphericalShell(
@@ -442,7 +411,7 @@ def SphericalShell(
     filename=None,
 ):
 
-    boundaries = {"Lower": 1, "Upper": 2}
+    boundaries = {"Lower": 11, "Upper": 12}
 
     vertices = {"Centre": 1}
 
@@ -470,14 +439,13 @@ def SphericalShell(
 
     if radiusInner > 0.0:
         outerSurface, innerSurface = surfaces
+
         gmsh.model.addPhysicalGroup(
-            innerSurface[0], [innerSurface[1]], boundaries["Lower"]
+            innerSurface[0], [innerSurface[1]], boundaries["Lower"], name="Lower"
         )
-        gmsh.model.setPhysicalName(innerSurface[1], boundaries["Lower"], "Lower")
         gmsh.model.addPhysicalGroup(
-            outerSurface[0], [outerSurface[1]], boundaries["Upper"]
+            outerSurface[0], [outerSurface[1]], boundaries["Upper"], name="Upper"
         )
-        gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
         gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
         gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
 
@@ -502,44 +470,17 @@ def SphericalShell(
             gmsh.write(filename)
         gmsh.finalize()
 
-        options = PETSc.Options()
-        options["dm_plex_gmsh_multiple_tags"] = None
-        options["dm_plex_gmsh_use_regions"] = None
-        options["dm_plex_gmsh_mark_vertices"] = None
-        plex = PETSc.DMPlex().createFromFile(fp.name)
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.SPHERICAL,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+        )
 
-    """
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-
-    plex.removeLabel("Face Sets")
-
-    # This seems not to work any longer ?? 3.17.4
-    for name, tag in vertices.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Vertex Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-
-    plex.removeLabel("Vertex Sets")
-    """
-
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.SPHERICAL,
-        filename=filename,
-    )
+    return new_mesh
 
 
 def Annulus(
@@ -613,40 +554,17 @@ def Annulus(
             gmsh.write(filename)
         gmsh.finalize()
 
-        options = PETSc.Options()
-        options["dm_plex_gmsh_multiple_tags"] = None
-        options["dm_plex_gmsh_use_regions"] = None
-        options["dm_plex_gmsh_mark_vertices"] = None
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+        )
 
-        plex = PETSc.DMPlex().createFromFile(fp.name)
-
-    """
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-
-    for name, tag in vertices.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Vertex Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
-    """
-
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
-        filename=filename,
-    )
+    return new_mesh
 
 
 def AnnulusFixedStars(
@@ -745,33 +663,46 @@ def AnnulusFixedStars(
         if filename:
             gmsh.write(filename)
         gmsh.finalize()
-        plex = PETSc.DMPlex().createFromFile(fp.name)
 
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.SPHERICAL,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,  # only if required !!
+        )
 
-    for name, tag in vertices.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Vertex Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
+    return new_mesh
 
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
-        filename=filename,
-    )
+    # plex = PETSc.DMPlex().createFromFile(fp.name)
+
+    # for name, tag in boundaries.items():
+    #     plex.createLabel(name)
+    #     label = plex.getLabel(name)
+    #     indexSet = plex.getStratumIS("Face Sets", tag)
+    #     if indexSet:
+    #         label.insertIS(indexSet, 1)
+    #     else:
+    #         plex.removeLabel(name)
+
+    # for name, tag in vertices.items():
+    #     plex.createLabel(name)
+    #     label = plex.getLabel(name)
+    #     indexSet = plex.getStratumIS("Vertex Sets", tag)
+    #     if indexSet:
+    #         label.insertIS(indexSet, 1)
+    #     else:
+    #         plex.removeLabel(name)
+
+    # return Mesh(
+    #     plex,
+    #     degree=degree,
+    #     qdegree=qdegree,
+    #     coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+    #     filename=filename,
+    # )
 
 
 def CubedSphere(
@@ -895,28 +826,41 @@ def CubedSphere(
         if filename:
             gmsh.write(filename)
         gmsh.finalize()
-        plex = PETSc.DMPlex().createFromFile(fp.name)
 
-    """
-    for name, tag in boundaries.items():
-        plex.createLabel(name)
-        label = plex.getLabel(name)
-        indexSet = plex.getStratumIS("Face Sets", tag)
-        if indexSet:
-            label.insertIS(indexSet, 1)
-        else:
-            plex.removeLabel(name)
+        new_mesh = Mesh(
+            fp.name,
+            degree=degree,
+            qdegree=qdegree,
+            coordinate_system_type=CoordinateSystemType.SPHERICAL,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+        )
 
-    plex.removeLabel("Face Sets")
-    """
+    return new_mesh
 
-    return Mesh(
-        plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.SPHERICAL,
-        filename=filename,
-    )
+    #     plex = PETSc.DMPlex().createFromFile(fp.name)
+
+    # """
+    # for name, tag in boundaries.items():
+    #     plex.createLabel(name)
+    #     label = plex.getLabel(name)
+    #     indexSet = plex.getStratumIS("Face Sets", tag)
+    #     if indexSet:
+    #         label.insertIS(indexSet, 1)
+    #     else:
+    #         plex.removeLabel(name)
+
+    # plex.removeLabel("Face Sets")
+    # """
+
+    # return Mesh(
+    #     plex,
+    #     degree=degree,
+    #     qdegree=qdegree,
+    #     coordinate_system_type=CoordinateSystemType.SPHERICAL,
+    #     filename=filename,
+    # )
 
 
 def SegmentedSphericalSurface2D(
