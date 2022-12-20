@@ -22,7 +22,7 @@ P_voigt = [None, None, _P_voigt_2, _P_voigt_3]
 
 
 def rank2_symmetric_sym(name, dim):
-    """Rank 2 symmetric tensor (as symbolic matrix), name is a sympy latex expression"""
+    r"""Rank 2 symmetric tensor (as symbolic matrix), name is a sympy latex expression"""
 
     d = dim
     T = sympy.Matrix(sympy.symarray(name, (d, d)))
@@ -35,7 +35,7 @@ def rank2_symmetric_sym(name, dim):
 
 
 def rank4_symmetric_sym(name, dim):
-    """Rank 4 symmetric tensor (as symbolic matrix), name is a sympy latex expression"""
+    r"""Rank 4 symmetric tensor (as symbolic matrix), name is a sympy latex expression"""
 
     d = dim
     dd = idxmap[d][0]
@@ -51,7 +51,7 @@ def rank4_symmetric_sym(name, dim):
 
 
 def tensor_rotation(R, T):
-    """Rotate tensor of any rank using matrix R"""
+    r"""Rotate tensor of any rank using matrix R"""
 
     rank = T.rank()
 
@@ -62,7 +62,7 @@ def tensor_rotation(R, T):
 
 
 def _rank2_to_unscaled_matrix(v_ij, dim, covariant=True):
-    """Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
+    r"""Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
 
     imapping = idxmap
 
@@ -79,7 +79,7 @@ def _rank2_to_unscaled_matrix(v_ij, dim, covariant=True):
 
 
 def _rank4_to_unscaled_matrix(c_ijkl, dim):
-    """Convert rank 4 tensor (c_ijkl) to matrix form (C_IJ)"""
+    r"""Convert rank 4 tensor (c_ijkl) to matrix form (C_IJ)"""
 
     imapping = idxmap
 
@@ -98,7 +98,7 @@ def _rank4_to_unscaled_matrix(c_ijkl, dim):
 
 
 def _unscaled_matrix_to_rank2(V_I, dim):
-    """Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
+    r"""Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
 
     # convert Voight form V_I to v_ij (matrix)
     v_ij = sympy.Matrix.zeros(dim, dim)
@@ -114,7 +114,7 @@ def _unscaled_matrix_to_rank2(V_I, dim):
 
 
 def _unscaled_matrix_to_rank4(C_IJ, dim):
-    """Convert to rank 4 tensor (c_ijkl) from matrix form (C_IJ)"""
+    r"""Convert to rank 4 tensor (c_ijkl) from matrix form (C_IJ)"""
 
     imapping = idxmap
 
@@ -137,7 +137,7 @@ def _unscaled_matrix_to_rank4(C_IJ, dim):
 
 
 def rank2_to_voigt(v_ij, dim, covariant=True):
-    """Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
+    r"""Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
 
     imapping = idxmap
     vdim = imapping[dim][0]
@@ -151,7 +151,7 @@ def rank2_to_voigt(v_ij, dim, covariant=True):
 
 
 def voigt_to_rank2(V_I, dim, covariant=True):
-    """Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
+    r"""Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
 
     imapping = idxmap
     vdim = imapping[dim][0]
@@ -165,7 +165,7 @@ def voigt_to_rank2(V_I, dim, covariant=True):
 
 
 def rank4_to_voigt(c_ijkl, dim):
-    """Convert rank 4 tensor (c_ijkl) to voigt (matrix) form (C_IJ)"""
+    r"""Convert rank 4 tensor (c_ijkl) to voigt (matrix) form (C_IJ)"""
 
     imapping = idxmap
 
@@ -177,7 +177,7 @@ def rank4_to_voigt(c_ijkl, dim):
 
 
 def voigt_to_rank4(C_IJ, dim):
-    """Convert to rank 4 tensor (c_ijkl) from voigt (matrix) form (C_IJ)"""
+    r"""Convert to rank 4 tensor (c_ijkl) from voigt (matrix) form (C_IJ)"""
 
     imapping = idxmap
     vdim = imapping[dim][0]
@@ -217,7 +217,7 @@ def mandel_to_rank4(c_IJ, dim):
 
 
 def rank4_identity(dim):
-    """I_ijkl = (\delta_ij \delta_kl + \delta_il\delta_jk)/2"""
+    r"""I_ijkl = (\delta_ij \delta_kl + \delta_il\delta_jk)/2"""
 
     I = sympy.MutableDenseNDimArray.zeros(dim, dim, dim, dim)
 
@@ -225,6 +225,8 @@ def rank4_identity(dim):
         for j in range(dim):
             for k in range(dim):
                 for l in range(dim):
-                    I[i, j, k, l] = sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
+                    I[i, j, k, l] = (
+                        sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
+                    )
 
     return I

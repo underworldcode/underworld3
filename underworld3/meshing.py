@@ -1217,29 +1217,8 @@ def SegmentedSphere(
         if filename:
             gmsh.write(filename)
         plex = PETSc.DMPlex().createFromFile(fp.name)
-        # plex = PETSc.DMPlex().createFromFile(filename)
 
     gmsh.finalize()
-
-    ## This is the lat lon version that I can't quite seem to get right
-    ## in the vector calculus section
-
-    # if coordinatesNative:
-    #     xyz_vec = plex.getCoordinates()
-    #     xyz = xyz_vec.array.reshape(-1, 3)
-
-    #     rl1l2 = np.empty_like(xyz)
-    #     rl1l2[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
-    #     rl1l2[:, 1] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-16) - np.pi
-    #     rl1l2[:, 2] = np.arcsin((xyz[:, 2] + 1.0e-16) / (rl1l2[:, 0] + 1.0e-16))
-
-    #     rl1l2_vec = xyz_vec.copy()
-    #     rl1l2_vec.array[...] = rl1l2.reshape(-1)[...]
-    #     plex.setCoordinates(rl1l2_vec)
-
-    #     uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-    #         plex, [0.0, np.pi, 0.0], [0.0, -np.pi, 0.0], [0.0, np.pi * 2, 0.0]
-    #     )
 
     if coordinatesNative:
         xyz_vec = plex.getCoordinates()

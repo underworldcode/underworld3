@@ -40,6 +40,10 @@ import os
 os.environ['UW_TIMING_ENABLE'] = "1"
 
 
+
+
+
+
 # +
 # %%
 sys = PETSc.Sys()

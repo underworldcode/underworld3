@@ -67,7 +67,6 @@ elif problem_size == 3:
     cell_size = 0.02
 elif problem_size >= 4: 
     cell_size = 0.005
- 
 
 mesh = Annulus(radiusInner=r_i, radiusOuter=r_o, cellSize=cell_size)
 
@@ -150,7 +149,7 @@ if MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="DT",
+        scalars="T2",
         use_transparency=False,
         opacity=0.5,
     )
@@ -229,7 +228,7 @@ with mesh.access():
 
 import numpy as np
 
-if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.001):
     raise RuntimeError("Unexpected values encountered.")
 
 # Validate

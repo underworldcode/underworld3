@@ -12,7 +12,6 @@
 #     name: python3
 # ---
 
-
 # # Cylindrical Stokes
 # (In cylindrical coordinates)
 
@@ -29,10 +28,38 @@ import os
 os.environ["SYMPY_USE_CACHE"] = "no"
 os.environ['UW_TIMING_ENABLE'] = "1"
 
-res = 0.075
+
+# Define the problem size 
+#      1 - ultra low res for automatic checking
+#      2 - low res problem to play with this notebook
+#      3 - medium resolution (be prepared to wait)
+#      4 - highest resolution (benchmark case from Spiegelman et al)
+
+problem_size = 2 
+
+# For testing and automatic generation of notebook output,
+# over-ride the problem size if the UW_TESTING_LEVEL is set
+
+uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+if uw_testing_level:
+    try:
+        problem_size = int(uw_testing_level)
+    except ValueError:
+        # Accept the default value
+        pass
+        
 r_o = 1.0
-r_i = 0.2
+r_i = 0.5
 free_slip_upper = True
+
+if problem_size <= 1: 
+    res = 0.1
+elif problem_size == 2: 
+    res = 0.075
+elif problem_size == 3: 
+    res = 0.05
+elif problem_size >= 4: 
+    res = 0.01
 
 # -
 
@@ -129,7 +156,7 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     meshball.dim
 )
 stokes.constitutive_model.Parameters.viscosity = 1
-stokes.penalty = 1.0
+stokes.penalty = 0.0
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 stokes.petsc_options["snes_rtol"] = 1.0e-4
 
@@ -142,6 +169,21 @@ else:
     stokes.add_dirichlet_bc((0.0), "Upper", (0,))
 
 stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
+
+
+# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+
+stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
+stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
+
+
+stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
+stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
+
 # -
 
 
@@ -203,9 +245,6 @@ t_init_xy = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0
 stokes_xy.bodyforce = Rayleigh * t_init_xy * unit_rvec
 stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_rvec
-# -
-
-stokes._setup_terms()
 
 # +
 from underworld3 import timing
@@ -215,6 +254,8 @@ timing.print_table()
 
 pressure_solver.solve()
 # -
+
+
 
 from underworld3 import timing
 timing.start()
@@ -318,3 +359,5 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # -
 
 stokes
+
+
