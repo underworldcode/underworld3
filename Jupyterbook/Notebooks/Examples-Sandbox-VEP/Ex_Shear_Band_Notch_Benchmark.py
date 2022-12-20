@@ -25,6 +25,8 @@
 import gmsh
 import os
 
+os.makedirs("meshes", exist_ok=True)
+
 os.environ['UW_TIMING_ENABLE'] = "1"
 
 # Define the problem size 
@@ -33,7 +35,7 @@ os.environ['UW_TIMING_ENABLE'] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2 
+problem_size = 1
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -536,5 +538,8 @@ if uw.mpi.size == 1:
 
 if uw.mpi.size == 1: 
     pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
+
+# +
+## Save data ... 
 
 
