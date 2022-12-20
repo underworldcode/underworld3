@@ -583,7 +583,7 @@ class Mesh(_api_tools.Stateful):
             File name of the checkpointed hdf5 file for which the
             xdmf schema will be written.
         """
-        from underworld3.utilities.petsc_gen_xdmf import generateXdmf
+        from underworld3.utilities import generateXdmf
 
         generateXdmf(filename)
 
@@ -877,7 +877,9 @@ class _MeshVariable(_api_tools.Stateful):
             if possible.
         degree :
             The polynomial degree for this variable.
-
+        continuous:
+            True for continuous element discretisation across element boundaries.
+            False for discontinuous values across element boundaries.
         """
 
         if isinstance(varname, list):

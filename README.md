@@ -71,6 +71,16 @@ Reproduce the existing UW2 examples and extend to spherical / cylindrical
 
 Ingredients in achieving the above
 
+Outcomes of Dec 22 Canberra Catch up
+
+- [ ] Better constraint interface
+- [ ] Small technical document on penalty constraint applications, ellipse geometry !!!
+- [ ] UW2 examples reproduction.
+- [ ] Mesh Variable constraints based on masks, using labels to apply penalty constraints.
+ - requires label generation to use constraints.
+- [ ] work out timing model and create user guide
+
+
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
 
 - [x] spherical, annulus 

@@ -5,7 +5,7 @@ import tempfile
 import numpy as np
 from petsc4py import PETSc
 
-from underworld3.discretisation import Mesh, MeshVariable
+from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
 import sympy

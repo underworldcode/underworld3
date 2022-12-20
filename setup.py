@@ -31,11 +31,7 @@ if petscVer[0] != 3 or petscVer[1] < 18:
         f"Minimum compatible version of petsc is 3.18.0, detected version "
         f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
     )
-    if petscVer[1] == 17 and petscVer[2] == 4:
-        print("Warning Petsc 3.17.4 may not compatible with underworld3")
-    else:
-        raise RuntimeError(msg)
-
+    raise RuntimeError(msg)
 
 def configure():
 
