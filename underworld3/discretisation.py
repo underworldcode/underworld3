@@ -717,12 +717,17 @@ class Mesh(_api_tools.Stateful):
                     tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
                 )
 
-        closest_points, dist, found = self._index.find_closest_point(coords)
-
-        if not numpy.allclose(found, True):
-            raise RuntimeError(
-                "An error was encountered attempting to find the closest cells to the provided coordinates."
-            )
+        if len(coords) > 0 :
+            closest_points, dist, found = self._index.find_closest_point(coords)
+        else:
+            ### returns an empty array if no coords are on a proc
+            closest_points, dist, found = False, False, numpy.array([None])
+        
+        if found.any() != None:
+            if not numpy.allclose(found, True):
+                raise RuntimeError(
+                    "An error was encountered attempting to find the closest cells to the provided coordinates."
+                )
 
         return self._indexMap[closest_points]
 
