@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.11.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -52,6 +52,7 @@
 #
 # where the stress (pressure) scaling using viscosity ($\eta$) determines how the mass scales. In the above, $d$ is the radius of the inner core, a typical length scale for the problem, $\Delta T$ is the order-of-magnitude range of the temperature variation from our observations, and $\kappa$ is thermal diffusivity. The scaled velocity is obtained as $v = \kappa / d v'$.
 
+# + [markdown] tags=[]
 # ## Formulation & model
 #
 #
@@ -60,8 +61,7 @@
 # \\[
 # T(r,\theta,\phi) =  T_\textrm{TM}(\theta, \phi) \cdot r  \sin(\pi r)
 # \\]
-
-#
+# -
 
 # ## Computational script in python
 
@@ -74,6 +74,13 @@ import underworld3 as uw
 import numpy as np
 import sympy
 import os
+
+os.environ['UW_TIMING_ENABLE'] = "1"
+
+if uw.mpi.size == 1:
+    os.makedirs("output", exist_ok=True)
+else:
+    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
 
 
@@ -114,8 +121,12 @@ elif problem_size == 2:
     cell_size = 0.15
 elif problem_size == 3: 
     cell_size = 0.05
-elif problem_size >= 4: 
+elif problem_size == 4: 
     cell_size = 0.02
+elif problem_size == 5: 
+    cell_size = 0.01
+elif problem_size >= 6: 
+    cell_size = 0.005
     
 res = cell_size
 
@@ -130,7 +141,6 @@ meshball = uw.meshing.SphericalShell(
     qdegree=2,
 )
 
-# BC weirdness in this one (need to define pole points etc)
 # meshball = uw.meshing.SegmentedSphere(radiusInner=r_i, 
 #                            radiusOuter=r_o, 
 #                            cellSize=cell_size,
@@ -139,10 +149,12 @@ meshball = uw.meshing.SphericalShell(
 
 # -
 
-v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2)
+v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR)
 p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
+
+
 
 
 # +
@@ -219,6 +231,24 @@ stokes = uw.systems.Stokes(
 
 stokes.petsc_options["snes_rtol"] = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
+stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "gamg"
+stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"]  = "agg"
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_aggressive_coarsening"]  = 2
+
+stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+stokes.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "classical"
+stokes.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
+stokes.petsc_options["fieldsplit_velocity_pc_mg_cycles"]  = "w"
+
+
+# stokes.petsc_options["fieldsplit_velocity_pc_mg_galerkin"] = None
+# stokes.petsc_options["fieldsplit_pressure_pc_mg_galerkin"] = None
+
+
+# stokes.petsc_options["fieldsplit_pressure_pc_mg_levels"] = 2
+# stokes.petsc_options["fieldsplit_velocity_pc_mg_levels"] = 2
+
+
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
@@ -254,10 +284,15 @@ with meshball.access(meshr):
 
 with meshball.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
-# -
 
 
-stokes.solve()
+# +
+from underworld3 import timing
+
+timing.reset()
+timing.start()
+stokes.solve(zero_init_guess=True)
+timing.print_table()
 
 # +
 
@@ -282,11 +317,11 @@ for i in range(10):
 
     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
-    print(
-        "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-            i, x_ns, y_ns, z_ns, null_space_err
-        )
-    )
+    # print(
+    #     "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
+    #         i, x_ns, y_ns, z_ns, null_space_err
+    #     )
+    # )
 
     with meshball.access(v_soln):
         ## Note, we have to add in something in the missing component (and it has to be spatially variable ??)
@@ -317,7 +352,7 @@ savefile = "output/{}_ts_{}.h5".format(expt_name, 0)
 meshball.save(savefile)
 v_soln.save(savefile)
 p_soln.save(savefile)
-meshball.generate_xdmf(savefile)
+# meshball.generate_xdmf(savefile)
 # +
 # OR
 
@@ -379,4 +414,5 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
 meshball.dm.view()
 
-
+# +
+# stokes.snes.view()

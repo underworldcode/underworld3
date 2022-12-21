@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.11.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -39,25 +39,58 @@ from mpi4py import MPI
 import os
 os.environ['UW_TIMING_ENABLE'] = "1"
 
+if uw.mpi.size == 1:
+    os.makedirs("output", exist_ok=True)
+else:
+    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
-
-
+options = PETSc.Options()
+options["dm_adaptor"] = "pragmatic"
 
 
 # +
-# %%
+# Define the problem size 
+#      1 - ultra low res for automatic checking
+#      2 - low res problem to play with this notebook
+#      3 - medium resolution (be prepared to wait)
+#      4 - highest resolution (benchmark case from Spiegelman et al)
+
+problem_size = 2
+
+# For testing and automatic generation of notebook output,
+# over-ride the problem size if the UW_TESTING_LEVEL is set
+
+uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+if uw_testing_level:
+    try:
+        problem_size = int(uw_testing_level)
+    except ValueError:
+        # Accept the default value
+        pass
+# -
+
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
-# options = PETSc.Options()
-# options["dm_adaptor"]= "pragmatic"
+
+# +
+if problem_size <= 1: 
+    res = 8
+elif problem_size == 2: 
+    res = 16
+elif problem_size == 3: 
+    res = 32
+elif problem_size == 4: 
+    res = 48
+elif problem_size == 5: 
+    res = 64
+elif problem_size >= 6: 
+    res = 128
+    
+
 # -
 
-# %%
-expt_name = f"output/stinker_eta1e6_rho10"
 
-# Set the resolution.
-res = 48
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -70,6 +103,8 @@ materialHeavyIndex = 1
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
 viscSphere = 1.0e8
+
+expt_name = f"output/stinker_eta{viscSphere}_rho10_res{res}"
 
 densityBG = 1.0
 densitySphere = 10.0
@@ -89,6 +124,10 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     regular=False,
     qdegree=3
 )
+
+
+
+
 
 # ## Create Stokes object
 
@@ -204,14 +243,36 @@ def plot_T_mesh(filename):
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
-stokes.penalty = 1.0
+stokes.penalty = 0.0
 stokes.saddle_preconditioner = 1.0 / viscosity
 
+# +
 # stokes.petsc_options.view()
 snes_rtol = 0.1 / viscSphere
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_rtol"] = snes_rtol
 stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
+
+stokes.petsc_options["snes_rtol"] = 1.0e-5
+stokes.petsc_options["ksp_monitor"] = None
+
+
+# stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "gamg"
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"]  = "classical"
+# stokes.petsc_options["fieldsplit_pressure_pc_mg_type"]  = "additive"
+
+# stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 2
+
+
+# stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "classical"
+# stokes.petsc_options["fieldsplit_velocity_pc_mg_galerkin"]  = None
+stokes.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
+stokes.petsc_options["fieldsplit_velocity_pc_mg_levels"]  = 2
+stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 2
+
+
+# -
 
 
 nstep = 1
@@ -259,11 +320,9 @@ timing.print_table()
 # `res = 64`, 154.0s  (19000 elements / 38000 v-nodes)
 #
 
-# +
-# stokes.snes.view()
-# -
-
 stokes.solve(zero_init_guess=False)
+
+stokes.snes.view()
 
 while step < nstep:
     ### Get the position of the sinking ball
