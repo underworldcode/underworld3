@@ -454,6 +454,40 @@ class Swarm(_api_tools.Stateful):
         return  # self # LM: Is there any reason to return self ?
 
     @timing.routine_timer_decorator
+    def add_particles_with_coordinates( self, coordinatesArray ):
+        """
+        This method adds particles to the swarm using particle coordinates provided
+        using a numpy array.
+        Note that particles with coordinates NOT local to the current processor will
+        be reject/ignored. Either include an array with all coordinates to all processors 
+        or an array with the local coordinates.
+        Parameters
+        ----------
+        coordinatesArray : numpy.ndarray
+            The numpy array containing the coordinate of the new particles. Array is
+            expected to take shape n*dim, where n is the number of new particles, and
+            dim is the dimensionality of the swarm's supporting mesh.
+        """
+
+        if not isinstance( coordinatesArray, np.ndarray ):
+            raise TypeError("'coordinateArray' must be provided as a numpy array")
+        if not len(coordinatesArray.shape) == 2 :
+            raise ValueError("The 'coordinateArray' is expected to be two dimensional.")
+        if not coordinatesArray.shape[1] == self.mesh.dim :
+            #### petsc appears to ignore columns that are greater than the mesh dim, but still worth including
+            raise ValueError("""The 'coordinateArray' must have shape n*dim, where 'n' is the
+                              number of particles to add, and 'dim' is the dimensionality of
+                              the supporting mesh ({}).""".format(self.mesh.dim) )
+
+        self.dm.finalizeFieldRegister()
+
+        self.dm.addNPoints(npoints=len(coordinatesArray))
+
+        self.dm.setPointCoordinates(coordinatesArray)
+
+        return
+
+    @timing.routine_timer_decorator
     def add_variable(self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False):
         return SwarmVariable(name, self, num_components, dtype=dtype, proxy_degree=proxy_degree, _nn_proxy=_nn_proxy)
 
@@ -544,7 +578,7 @@ class Swarm(_api_tools.Stateful):
                     # get things wrong that way.
                     cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
                     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, self.em_swarm.dim))
-                    cellid[:] = self.em_swarm.mesh.get_closest_cells(coords)
+                    cellid[:] = self.em_swarm.mesh.get_closest_cells(coords).reshape(-1)
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
                     # now migrate.
