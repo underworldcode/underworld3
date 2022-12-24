@@ -1078,8 +1078,9 @@ class SNES_Stokes:
         self.is_setup = False # Need to make sure the snes machinery is set up consistently
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.33   # rule of thumb 
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.0033
+        self.petsc_options["ksp_rtol"] = self._tolerance
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1   # rule of thumb 
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
 
     @property
     def UF0(self):

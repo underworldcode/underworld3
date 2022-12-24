@@ -190,6 +190,7 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
+print("", flush=True)
 
 # +
 # Pressure at mesh nodes
