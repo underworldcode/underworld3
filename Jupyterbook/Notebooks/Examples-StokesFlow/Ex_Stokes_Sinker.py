@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.14.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -45,7 +45,7 @@ else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
 options = PETSc.Options()
-options["dm_adaptor"] = "pragmatic"
+options["dm_adaptor"] = "parmmg"
 
 
 # +
@@ -73,7 +73,6 @@ sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
 
-# +
 if problem_size <= 1: 
     res = 8
 elif problem_size == 2: 
@@ -86,9 +85,6 @@ elif problem_size == 5:
     res = 64
 elif problem_size >= 6: 
     res = 128
-    
-
-# -
 
 
 
@@ -125,10 +121,6 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     qdegree=3
 )
 
-
-
-
-
 # ## Create Stokes object
 
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -152,6 +144,12 @@ material = uw.swarm.IndexSwarmVariable("M", swarm,
                                        proxy_continuous=False,
                                        proxy_degree=1)
 swarm.populate(fill_param=2)
+
+# +
+# print("Coarsening", flush=True)
+# dmh = mesh.dm.coarsenHierarchy(3)
+# print("Coarsening ... complete", flush=True)
+# -
 
 blob = np.array(
     [[sphereCentre[0], sphereCentre[1], sphereRadius, 1]]
@@ -248,28 +246,27 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 
 # +
 # stokes.petsc_options.view()
-snes_rtol = 0.1 / viscSphere
+snes_rtol = 1.0e-6
+
+stokes.tolerance = snes_rtol
+
 stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["snes_rtol"] = snes_rtol
-stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
+stokes.petsc_options["ksp_type"] = "gmres"
+stokes.petsc_options["ksp_rtol"]  = snes_rtol
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = snes_rtol
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = snes_rtol
 
-stokes.petsc_options["snes_rtol"] = 1.0e-5
+# stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
 stokes.petsc_options["ksp_monitor"] = None
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
+stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+
+stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
+stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
 
 
-# stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "gamg"
-# stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"]  = "classical"
-# stokes.petsc_options["fieldsplit_pressure_pc_mg_type"]  = "additive"
-
-# stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 2
-
-
-# stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "classical"
-# stokes.petsc_options["fieldsplit_velocity_pc_mg_galerkin"]  = None
-stokes.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
-stokes.petsc_options["fieldsplit_velocity_pc_mg_levels"]  = 2
-stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 2
 
 
 # -
@@ -292,8 +289,8 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
-# -
 
+# + [markdown] tags=[]
 # ## Timing results
 #
 # $\Delta \eta$ fixed mesh size (`res = 32`, `penalty = 1`)
@@ -319,10 +316,13 @@ timing.print_table()
 #
 # `res = 64`, 154.0s  (19000 elements / 38000 v-nodes)
 #
+# -
 
 stokes.solve(zero_init_guess=False)
 
-stokes.snes.view()
+# +
+# stokes.snes.view()
+# -
 
 while step < nstep:
     ### Get the position of the sinking ball

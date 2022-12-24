@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.14.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -134,6 +134,9 @@ expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
 
 
 # +
+options = PETSc.Options()
+options["dm_adaptor"] = "parmmg"
+
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
     radiusOuter=r_o,
@@ -229,26 +232,11 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.petsc_options["snes_rtol"] = 1.0e-5
+stokes.tolerance = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["fieldsplit_pressure_pc_type"]  = "gamg"
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"]  = "agg"
-# stokes.petsc_options["fieldsplit_pressure_pc_gamg_aggressive_coarsening"]  = 2
 
-stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-stokes.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "classical"
-stokes.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
-stokes.petsc_options["fieldsplit_velocity_pc_mg_cycles"]  = "w"
-
-
-# stokes.petsc_options["fieldsplit_velocity_pc_mg_galerkin"] = None
-# stokes.petsc_options["fieldsplit_pressure_pc_mg_galerkin"] = None
-
-
-# stokes.petsc_options["fieldsplit_pressure_pc_mg_levels"] = 2
-# stokes.petsc_options["fieldsplit_velocity_pc_mg_levels"] = 2
-
-
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_aggressive_coarsening"]  = 2
+# stokes.petsc_options["fieldsplit_velocity_pc_mg_cycles"]  = "w"
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 

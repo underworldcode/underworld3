@@ -948,9 +948,12 @@ class SNES_Stokes:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
+        self._tolerance = 1.0e-4
+
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        self.petsc_options["snes_rtol"] = 1.0e-4
+        self.petsc_options["snes_rtol"] = self._tolerance
+        self.petsc_options["ksp_rtol"]  = max(self._tolerance * 0.001, 1.0e-10)
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -962,19 +965,21 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-        self.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
 
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
 
-        # This makes for a more efficient solve but it also prevents the
-        # solver from stalling at some level when an exact solution is not required
-        # (max can be increased if the solver diverges)
-
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "agg"  
+        self.petsc_options["fieldsplit_velocity_pc_gamg_repartition"]  = True  
+        self.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
         self.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-        self.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
-
+        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
 
         self._u = velocityField
         self._p = pressureField
@@ -996,7 +1001,6 @@ class SNES_Stokes:
         self.UF0 = sympy.Matrix.zeros(1, self.mesh.dim) 
         self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.PF0 = sympy.Matrix.zeros(1, 1) 
-
 
         self.bcs = []
         self._constitutive_model = None
@@ -1064,6 +1068,18 @@ class SNES_Stokes:
 
 
         return
+
+
+    @property
+    def tolerance(self):
+        return self._tolerance
+    @tolerance.setter
+    def tolerance(self, value):
+        self.is_setup = False # Need to make sure the snes machinery is set up consistently
+        self._tolerance = value
+        self.petsc_options["snes_rtol"] = self._tolerance
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.33   # rule of thumb 
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.0033
 
     @property
     def UF0(self):
@@ -1485,7 +1501,7 @@ class SNES_Stokes:
 
         self.dm.restoreGlobalVec(gvec)
 
-
+        return self.snes.getConvergedReason()
 
 
 ### =================================
@@ -1555,13 +1571,10 @@ class SNES_SaddlePoint:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         # self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_rtol"] = 1.0e-4
-        # self.petsc_options["ksp_monitor"] = None
-        # self.petsc_options["ksp_type"] = "fgmres"
-        # self.petsc_options["pre_type"] = "gamg"
+        self.petsc_options["ksp_rtol"] = 1.0e-6
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
+
         self.petsc_options["snes_rtol"] = 1.0e-3
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -1571,12 +1584,26 @@ class SNES_SaddlePoint:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    # These two seem to be needed in petsc 3.17
         self.petsc_options["pc_use_amat"] = None                        # These two seem to be needed in petsc 3.17
 
+
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
+
+
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" 
+        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+
+
+
+
+
+
+
+
+
 
         self._u = velocityField
         self._p = pressureField

@@ -60,7 +60,8 @@ if uw_testing_level:
         pass
         
 # -
-
+options = PETSc.Options()
+options["dm_adaptor"] = "pragmatic"
 
 
 from underworld3.cython import petsc_discretisation
@@ -200,7 +201,6 @@ mesh1 = uw.discretisation.Mesh(
     useRegions=True,
     useMultipleTags=True
 )
-mesh1.dm.view()
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -215,7 +215,8 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh",)
+    mesh1.vtk("tmp_notch_msh.vtk")
+    pvmesh = pv.read("tmp_notch_msh.vtk")
 
     pl = pv.Plotter()
 
@@ -320,8 +321,6 @@ if True and uw.mpi.size == 1:
 
 # Create Stokes object
 
-# +
-
 stokes = uw.systems.Stokes(
     mesh1,
     velocityField=v_soln,
@@ -335,12 +334,32 @@ stokes = uw.systems.Stokes(
 # +
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_rtol"] = 1.0e-4
-stokes.petsc_options["snes_atol"] = 1.0e-3
 
-stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 5
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
+stokes.tolerance = 1.0e-6
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
+# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
+# stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" # can use gasm / gamg / lu here 
+# stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+
+# # stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "classical" # can use gasm / gamg / lu here 
+# # stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
+# # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
+# # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
+# # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
+
+
+# # Fast: preonly plus gasm / gamg / mumps 
+# # Robust: gmres plus gasm / gamg / mumps 
+
+# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
+# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
+# stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
+
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
+
 # -
 
 
@@ -349,7 +368,7 @@ viscosity_L = 999.0 * material.sym[0] + 1.0
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 1.0
+stokes.penalty = 0.1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc(1.0, "Left", 0)
@@ -406,21 +425,28 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
-
-
 # +
-from underworld3 import timing
+# First, we solve the linear problem
 
+stokes.tolerance = 1e-4
+# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
+# stokes.petsc_options["ksp_atol"]  = 1.0e-8
+
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
+
+from underworld3 import timing
 timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
+print("Linear solve complete", flush=True)
 
 
 # +
-mu = 0.6
-C = 100.0 
-print(f"Mu - {mu}, C = {C}")
+mu = 0.75
+C = 175.0 
+print(f"Mu - {mu}, C = {C}", flush=True)
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
 viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
@@ -433,6 +459,70 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=False)
 timing.print_table()
+print("", flush=True)
+
+# +
+# stokes.snes.view()
+# stokes.snes.getKSP().getType()
+
+# +
+mu = 0.75
+C = 150.0 
+print(f"Mu - {mu}, C = {C}", flush=True)
+tau_y = C + mu * p_soln.sym[0]
+viscosity_L = 999.0 * material.sym[0] + 1.0
+viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
+viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
+
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1 / viscosity
+
+# +
+# Now use that as the guess for a better job
+
+# stokes.tolerance = 1e-4
+# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
+# stokes.petsc_options["ksp_atol"]  = 1.0e-8
+
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
+# stokes.snes.atol = 1e-3
+
+timing.reset()
+timing.start()
+stokes.solve(zero_init_guess=False)
+timing.print_table()
+print("", flush=True)
+
+# +
+mu = 0.75
+C = 125.0 
+print(f"Mu - {mu}, C = {C}", flush=True)
+tau_y = C + mu * p_soln.sym[0]
+viscosity_L = 999.0 * material.sym[0] + 1.0
+viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
+viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
+
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1 / viscosity
+
+# +
+# Now use that as the guess for a better job
+
+# stokes.tolerance = 1e-4
+# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
+# stokes.petsc_options["ksp_atol"]  = 1.0e-8
+
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
+# stokes.snes.atol = 1e-3
+
+
+timing.reset()
+timing.start()
+stokes.solve(zero_init_guess=False)
+timing.print_table()
+print("", flush=True)
 # -
 
 # %%
@@ -505,16 +595,16 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,
         cmap="RdYlGn",
         scalars="edot",
         edge_color="Grey",
-        show_edges=True,
+        # show_edges=True,
         use_transparency=False,
-        # clim=[0.1,1.0],
+        clim=[0.1,1.25],
         opacity=1.0,
     )
 
@@ -523,7 +613,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         render_points_as_spheres=False,
         point_size=5,
-        opacity=0.3,
+        opacity=0.1,
     )
 
     pl.show(cpos="xy")
