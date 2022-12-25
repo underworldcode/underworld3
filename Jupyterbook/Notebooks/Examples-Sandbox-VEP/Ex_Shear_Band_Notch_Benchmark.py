@@ -440,13 +440,16 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
-print("Linear solve complete", flush=True)
+if uw.mpi.rank == 0:
+    print("Linear solve complete", flush=True)
 
 
 # +
 mu = 0.75
 C = 175.0 
-print(f"Mu - {mu}, C = {C}", flush=True)
+if uw.mpi.rank == 0:
+    print(f"Mu - {mu}, C = {C}", flush=True)
+    
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
 viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
@@ -468,7 +471,8 @@ print("", flush=True)
 # +
 mu = 0.75
 C = 150.0 
-print(f"Mu - {mu}, C = {C}", flush=True)
+if uw.mpi.rank == 0:
+    print(f"Mu - {mu}, C = {C}", flush=True)
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
 viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
@@ -497,7 +501,8 @@ print("", flush=True)
 # +
 mu = 0.75
 C = 125.0 
-print(f"Mu - {mu}, C = {C}", flush=True)
+if uw.mpi.rank == 0:
+    print(f"Mu - {mu}, C = {C}", flush=True)
 tau_y = C + mu * p_soln.sym[0]
 viscosity_L = 999.0 * material.sym[0] + 1.0
 viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
