@@ -98,7 +98,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 1.0e8
+viscSphere = 1.0e6
 
 expt_name = f"output/stinker_eta{viscSphere}_rho10_res{res}"
 
@@ -246,27 +246,21 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 
 # +
 # stokes.petsc_options.view()
-snes_rtol = 1.0e-6
+
+snes_rtol = 1.0e-8
 
 stokes.tolerance = snes_rtol
 
 stokes.petsc_options["snes_converged_reason"] = None
+stokes.petsc_options["snes_max_it"] = 3
 stokes.petsc_options["ksp_type"] = "gmres"
-stokes.petsc_options["ksp_rtol"]  = snes_rtol
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = snes_rtol
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = snes_rtol
+stokes.petsc_options["ksp_rtol"]  = 1.0e-9
+stokes.petsc_options["ksp_atol"]  = 1.0e-12
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-6
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-6
 
 # stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
-
-stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
-stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
-
-
 
 
 # -
@@ -323,6 +317,8 @@ stokes.solve(zero_init_guess=False)
 # +
 # stokes.snes.view()
 # -
+
+exit()
 
 while step < nstep:
     ### Get the position of the sinking ball
