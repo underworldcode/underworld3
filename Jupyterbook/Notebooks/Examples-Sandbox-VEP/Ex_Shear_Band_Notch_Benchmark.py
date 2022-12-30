@@ -431,7 +431,6 @@ stress_calc.smoothing = 1.0e-3
 stokes.tolerance = 1e-4
 stokes.petsc_options["snes_atol"]  = 1.0e-2
 
-
 # stokes.petsc_options["ksp_rtol"]  = 1.0e-4
 # stokes.petsc_options["ksp_atol"]  = 1.0e-8
 
@@ -443,6 +442,7 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
+
 if uw.mpi.rank==0:
 	print("Linear solve complete", flush=True)
 
@@ -450,7 +450,6 @@ if uw.mpi.rank==0:
 # +
 
 C0 = 150
-
 for i in range(10):
 
 	mu = 0.75
