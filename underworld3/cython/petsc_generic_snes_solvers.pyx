@@ -953,7 +953,8 @@ class SNES_Stokes:
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["ksp_rtol"]  = max(self._tolerance * 0.001, 1.0e-10)
+        self.petsc_options["ksp_rtol"]  = self._tolerance * 0.001
+        self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -964,7 +965,6 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_diag_use_amat"] = None        
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
-
 
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
@@ -1078,7 +1078,8 @@ class SNES_Stokes:
         self.is_setup = False # Need to make sure the snes machinery is set up consistently
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["ksp_rtol"] = self._tolerance
+        self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-3
+        self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1   # rule of thumb 
         self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
 

@@ -232,13 +232,9 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.tolerance = 1.0e-5
+stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_aggressive_coarsening"]  = 2
-# stokes.petsc_options["fieldsplit_velocity_pc_mg_cycles"]  = "w"
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+stokes.penalty = 0.1
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     meshball.dim
@@ -400,7 +396,8 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # OR
     pl.show(cpos="xy")
 
-meshball.dm.view()
+# +
+# meshball.dm.view()
 
 # +
 # stokes.snes.view()

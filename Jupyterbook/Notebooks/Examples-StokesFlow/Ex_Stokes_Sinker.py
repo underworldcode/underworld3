@@ -241,35 +241,37 @@ def plot_T_mesh(filename):
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
-stokes.penalty = 0.0
+stokes.penalty = 1.0
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 # +
 # stokes.petsc_options.view()
-snes_rtol = 1.0e-6
+snes_rtol = 1.0e-5
 
 stokes.tolerance = snes_rtol
 
 stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["ksp_type"] = "gmres"
-stokes.petsc_options["ksp_rtol"]  = snes_rtol
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = snes_rtol
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = snes_rtol
+# stokes.petsc_options["ksp_type"] = "gmres"
+stokes.petsc_options["ksp_rtol"]  = 1.0e-12
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-6
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-6
 
-# stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
-stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+# # stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
+# stokes.petsc_options["ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
+# stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+# stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
 
-stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
-stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
+# stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
 
 
 
 
 # -
+
+
 
 
 nstep = 1
@@ -287,6 +289,7 @@ from underworld3 import timing
 
 timing.reset()
 timing.start()
+stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
