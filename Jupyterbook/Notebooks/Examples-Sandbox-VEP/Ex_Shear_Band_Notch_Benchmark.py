@@ -336,6 +336,8 @@ stokes = uw.systems.Stokes(
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-6
+stokes.petsc_options["snes_atol"] = 1e-2
+
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
 # stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" # can use gasm / gamg / lu here 
@@ -462,7 +464,8 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=False)
 timing.print_table()
-print("", flush=True)
+if uw.mpi.rank == 0:
+    print("", flush=True)
 
 # +
 # stokes.snes.view()
@@ -496,7 +499,8 @@ timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=False)
 timing.print_table()
-print("", flush=True)
+if uw.mpi.rank == 0:
+    print("", flush=True)
 
 # +
 mu = 0.75
@@ -520,14 +524,15 @@ stokes.saddle_preconditioner = 1 / viscosity
 
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
-# stokes.snes.atol = 1e-3
+# stokes.snes.atol = 1e-2
 
 
 timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=False)
 timing.print_table()
-print("", flush=True)
+if uw.mpi.rank == 0:
+    print("", flush=True)
 # -
 
 # %%
