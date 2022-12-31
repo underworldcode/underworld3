@@ -135,7 +135,7 @@ expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
 
 # +
 options = PETSc.Options()
-options["dm_adaptor"] = "parmmg"
+# options["dm_adaptor"] = "parmmg"
 
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
@@ -235,8 +235,11 @@ stokes = uw.systems.Stokes(
 stokes.tolerance = 1.0e-5
 stokes.petsc_options["ksp_monitor"] = None
 
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_aggressive_coarsening"]  = 2
-# stokes.petsc_options["fieldsplit_velocity_pc_mg_cycles"]  = "w"
+## This is ONLY for timing runs to ensure there are no
+## special cases where the snes iteration cuts short 
+stokes.petsc_options["snes_rtol"] = 1.0e-6
+stokes.petsc_options["snes_max_it"] = 2
+
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
