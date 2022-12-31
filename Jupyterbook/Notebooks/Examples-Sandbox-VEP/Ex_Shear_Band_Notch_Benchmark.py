@@ -38,9 +38,9 @@ else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
 
-os.environ['UW_TIMING_ENABLE'] = "1"
+os.environ["UW_TIMING_ENABLE"] = "1"
 
-# Define the problem size 
+# Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
 #      3 - medium resolution (be prepared to wait)
@@ -51,14 +51,14 @@ problem_size = 2
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
     except ValueError:
         # Accept the default value
         pass
-        
+
 # -
 options = PETSc.Options()
 options["dm_adaptor"] = "pragmatic"
@@ -69,30 +69,30 @@ from underworld3.cython import petsc_discretisation
 
 # +
 if problem_size <= 1:
-    cl_1 = .25
+    cl_1 = 0.25
     cl_2 = 0.15
     cl_2a = 0.1
     cl_3 = 0.25
     cl_4 = 0.15
 elif problem_size == 2:
-    cl_1 = .1
+    cl_1 = 0.1
     cl_2 = 0.05
     cl_2a = 0.03
     cl_3 = 0.1
     cl_4 = 0.05
-elif problem_size == 3: 
+elif problem_size == 3:
     cl_1 = 0.06
     cl_2 = 0.03
     cl_2a = 0.015
     cl_3 = 0.04
     cl_4 = 0.02
-else: 
+else:
     cl_1 = 0.04
     cl_2 = 0.005
     cl_2a = 0.003
     cl_3 = 0.02
     cl_4 = 0.01
-    
+
 # The benchmark provides a .geo file. This is the gmsh python
 # equivalent (mostly transcribed from the .geo format). The duplicated
 # Point2 caused a few problems with the mesh reader at one point.
@@ -104,27 +104,27 @@ if uw.mpi.rank == 0:
     gmsh.model.add("Notch")
 
     Point1 = gmsh.model.geo.addPoint(-2, -1, 0, cl_1)
-    # Point2 = gmsh.model.geo.addPoint(-2, -1, 0, cl_1) 
-    Point3 = gmsh.model.geo.addPoint(+2, -1, 0, cl_1) 
-    Point4 = gmsh.model.geo.addPoint(2, -0.75, 0, cl_1) 
-    Point5 = gmsh.model.geo.addPoint(2, 0, 0, cl_1) 
-    Point6 = gmsh.model.geo.addPoint(-2, 0, 0, cl_1) 
-    Point7 = gmsh.model.geo.addPoint(-2, -0.75, 0, cl_1) 
-    Point8 = gmsh.model.geo.addPoint(-0.08333333333329999, -0.75, 0, cl_2) 
-    Point9 = gmsh.model.geo.addPoint(0.08333333333329999, -0.75, 0, cl_2) 
-    Point10 = gmsh.model.geo.addPoint(0.08333333333329999, -0.6666666666667, 0, cl_2) 
-    Point11 = gmsh.model.geo.addPoint(-0.08333333333329999, -0.6666666666667, 0, cl_2) 
-    Point25 = gmsh.model.geo.addPoint(-.75, 0, 0, cl_4) 
-    Point26 = gmsh.model.geo.addPoint(.75, 0, 0, cl_4) 
-    Point27 = gmsh.model.geo.addPoint(0, 0, 0, cl_3) 
+    # Point2 = gmsh.model.geo.addPoint(-2, -1, 0, cl_1)
+    Point3 = gmsh.model.geo.addPoint(+2, -1, 0, cl_1)
+    Point4 = gmsh.model.geo.addPoint(2, -0.75, 0, cl_1)
+    Point5 = gmsh.model.geo.addPoint(2, 0, 0, cl_1)
+    Point6 = gmsh.model.geo.addPoint(-2, 0, 0, cl_1)
+    Point7 = gmsh.model.geo.addPoint(-2, -0.75, 0, cl_1)
+    Point8 = gmsh.model.geo.addPoint(-0.08333333333329999, -0.75, 0, cl_2)
+    Point9 = gmsh.model.geo.addPoint(0.08333333333329999, -0.75, 0, cl_2)
+    Point10 = gmsh.model.geo.addPoint(0.08333333333329999, -0.6666666666667, 0, cl_2)
+    Point11 = gmsh.model.geo.addPoint(-0.08333333333329999, -0.6666666666667, 0, cl_2)
+    Point25 = gmsh.model.geo.addPoint(-0.75, 0, 0, cl_4)
+    Point26 = gmsh.model.geo.addPoint(0.75, 0, 0, cl_4)
+    Point27 = gmsh.model.geo.addPoint(0, 0, 0, cl_3)
 
     Line1 = gmsh.model.geo.addLine(Point1, Point3)
     Line2 = gmsh.model.geo.addLine(Point3, Point4)
     Line3 = gmsh.model.geo.addLine(Point4, Point5)
     Line4 = gmsh.model.geo.addLine(Point5, Point26)
-    Line8 = gmsh.model.geo.addLine(Point26,Point27)
-    Line9 = gmsh.model.geo.addLine(Point27,Point25)
-    Line10= gmsh.model.geo.addLine(Point25,Point6)
+    Line8 = gmsh.model.geo.addLine(Point26, Point27)
+    Line9 = gmsh.model.geo.addLine(Point27, Point25)
+    Line10 = gmsh.model.geo.addLine(Point25, Point6)
     Line6 = gmsh.model.geo.addLine(Point6, Point7)
     Line7 = gmsh.model.geo.addLine(Point7, Point1)
 
@@ -146,25 +146,47 @@ if uw.mpi.rank == 0:
     Circle24 = gmsh.model.geo.addCircleArc(Point16, Point22, Point17)
     Circle25 = gmsh.model.geo.addCircleArc(Point18, Point24, Point19)
 
-    Line26 = gmsh.model.geo.addLine(Point7,  Point12)
+    Line26 = gmsh.model.geo.addLine(Point7, Point12)
     Line27 = gmsh.model.geo.addLine(Point13, Point14)
     Line28 = gmsh.model.geo.addLine(Point15, Point16)
     Line29 = gmsh.model.geo.addLine(Point17, Point18)
     Line30 = gmsh.model.geo.addLine(Point19, Point4)
 
-    LineLoop31 = gmsh.model.geo.addCurveLoop([
-        Line1, Line2, -Line30, 
-        -Circle25, -Line29, -Circle24,
-        -Line28, -Circle23, -Line27,
-        -Circle22, -Line26, Line7],
+    LineLoop31 = gmsh.model.geo.addCurveLoop(
+        [
+            Line1,
+            Line2,
+            -Line30,
+            -Circle25,
+            -Line29,
+            -Circle24,
+            -Line28,
+            -Circle23,
+            -Line27,
+            -Circle22,
+            -Line26,
+            Line7,
+        ],
     )
 
-    LineLoop33 = gmsh.model.geo.addCurveLoop([
-        Line6,   Line26, Circle22,
-        Line27,  Circle23, Line28,
-        Circle24, Line29, Circle25,
-        Line30, Line3,  Line4, 
-        Line8,  Line9,  Line10],
+    LineLoop33 = gmsh.model.geo.addCurveLoop(
+        [
+            Line6,
+            Line26,
+            Circle22,
+            Line27,
+            Circle23,
+            Line28,
+            Circle24,
+            Line29,
+            Circle25,
+            Line30,
+            Line3,
+            Line4,
+            Line8,
+            Line9,
+            Line10,
+        ],
     )
 
     Surface32 = gmsh.model.geo.addPlaneSurface([LineLoop31])
@@ -172,16 +194,27 @@ if uw.mpi.rank == 0:
 
     gmsh.model.geo.synchronize()
 
-    gmsh.model.addPhysicalGroup(1,[Line1], tag=3, name="Bottom")
-    gmsh.model.addPhysicalGroup(1,[Line2, Line3], tag=2, name="Right")
-    gmsh.model.addPhysicalGroup(1,[Line7, Line6], tag=1, name="Left")
-    gmsh.model.addPhysicalGroup(1,[Line4, Line8, Line9, Line10], tag=4, name="Top")
+    gmsh.model.addPhysicalGroup(1, [Line1], tag=3, name="Bottom")
+    gmsh.model.addPhysicalGroup(1, [Line2, Line3], tag=2, name="Right")
+    gmsh.model.addPhysicalGroup(1, [Line7, Line6], tag=1, name="Left")
+    gmsh.model.addPhysicalGroup(1, [Line4, Line8, Line9, Line10], tag=4, name="Top")
 
-    gmsh.model.addPhysicalGroup(1, 
-                                [Line26, Circle22, Line27,
-                                 Circle23, Line28, Circle24,
-                                 Line29, Circle25, Line30], 
-                                 tag=5, name="InnerBoundary")
+    gmsh.model.addPhysicalGroup(
+        1,
+        [
+            Line26,
+            Circle22,
+            Line27,
+            Circle23,
+            Line28,
+            Circle24,
+            Line29,
+            Circle25,
+            Line30,
+        ],
+        tag=5,
+        name="InnerBoundary",
+    )
 
     gmsh.model.addPhysicalGroup(2, [Surface32], tag=100, name="Weak")
     gmsh.model.addPhysicalGroup(2, [Surface34], tag=101, name="Strong")
@@ -196,10 +229,10 @@ if uw.mpi.rank == 0:
 mesh1 = uw.discretisation.Mesh(
     f"./meshes/notch_mesh{problem_size}.msh",
     simplex=True,
-    qdegree=3,   
+    qdegree=3,
     markVertices=False,
     useRegions=True,
-    useMultipleTags=True
+    useMultipleTags=True,
 )
 
 if uw.mpi.size == 1:
@@ -222,7 +255,7 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(
         pvmesh,
-        "Blue", 
+        "Blue",
         "wireframe",
         opacity=0.5,
     )
@@ -301,7 +334,6 @@ if True and uw.mpi.size == 1:
     pvmesh.point_data["eta"] = uw.function.evaluate(
         material.sym[0], mesh1.data, mesh1.N
     )
-    
 
     # pl.add_mesh(
     #     pvmesh,
@@ -311,7 +343,13 @@ if True and uw.mpi.size == 1:
     #     use_transparency=False,
     #     opacity=0.5,
     # )
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.66,
+    )
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
     pl.show(cpos="xy")
@@ -330,7 +368,6 @@ stokes = uw.systems.Stokes(
 )
 
 
-
 # +
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
@@ -340,27 +377,32 @@ stokes.petsc_options["snes_atol"] = 1e-2
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
-# stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" # can use gasm / gamg / lu here 
-# stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
-
-# # stokes.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "classical" # can use gasm / gamg / lu here 
-# # stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_type"
+] = "gamg"  # can use gasm / gamg / lu here
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_gasm_type"
+] = "basic"  # can use gasm / gamg / lu here
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_gamg_type"
+] = "classical"  # can use gasm / gamg / lu here
+stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
 # # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
 # # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
 # # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
 
 
-# # Fast: preonly plus gasm / gamg / mumps 
-# # Robust: gmres plus gasm / gamg / mumps 
+# # Fast: preonly plus gasm / gamg / mumps
+# # Robust: gmres plus gasm / gamg / mumps
 
-# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
-# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
+# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
+# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here
 
 # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
 # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
 
 # stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
-# stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
+stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 # -
 
@@ -374,9 +416,9 @@ stokes.penalty = 0.1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc(1.0, "Left", 0)
-stokes.add_dirichlet_bc(0,    "Left", 1)
+stokes.add_dirichlet_bc(0, "Left", 1)
 stokes.add_dirichlet_bc(-1.0, "Right", 0)
-stokes.add_dirichlet_bc(0 , "Right", 1)
+stokes.add_dirichlet_bc(0, "Right", 1)
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 # stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 
@@ -417,7 +459,7 @@ strain_rate_calc.uw_function = stokes._Einv2
 strain_rate_calc.smoothing = 1.0e-3
 
 viscosity_calc = uw.systems.Projection(mesh1, visc)
-viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity 
+viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 viscosity_calc.smoothing = 1.0e-3
 
 stress_calc = uw.systems.Projection(mesh1, stress)
@@ -431,6 +473,8 @@ stress_calc.smoothing = 1.0e-3
 # First, we solve the linear problem
 
 stokes.tolerance = 1e-4
+stokes.petsc_options["snes_atol"] = 1.0e-2
+
 # stokes.petsc_options["ksp_rtol"]  = 1.0e-4
 # stokes.petsc_options["ksp_atol"]  = 1.0e-8
 
@@ -438,101 +482,51 @@ stokes.tolerance = 1e-4
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
 
 from underworld3 import timing
+
 timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
+
 if uw.mpi.rank == 0:
     print("Linear solve complete", flush=True)
 
 
 # +
-mu = 0.75
-C = 175.0 
-if uw.mpi.rank == 0:
-    print(f"Mu - {mu}, C = {C}", flush=True)
-    
-tau_y = C + mu * p_soln.sym[0]
-viscosity_L = 999.0 * material.sym[0] + 1.0
-viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
-viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1 / viscosity
+C0 = 150
+for i in range(10):
 
-timing.reset()
-timing.start()
-stokes.solve(zero_init_guess=False)
-timing.print_table()
-if uw.mpi.rank == 0:
-    print("", flush=True)
+    mu = 0.75
+    C = C0 + (1.0 - i / 9) * 15.0
+    if uw.mpi.rank == 0:
+        print(f"Mu - {mu}, C = {C}", flush=True)
 
-# +
-# stokes.snes.view()
-# stokes.snes.getKSP().getType()
+    tau_y = C + mu * p_soln.sym[0]
+    viscosity_L = 999.0 * material.sym[0] + 1.0
+    viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0 / 1000)
+    viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
-# +
-mu = 0.75
-C = 150.0 
-if uw.mpi.rank == 0:
-    print(f"Mu - {mu}, C = {C}", flush=True)
-tau_y = C + mu * p_soln.sym[0]
-viscosity_L = 999.0 * material.sym[0] + 1.0
-viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
-viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
+    stokes.constitutive_model.Parameters.viscosity = viscosity
+    stokes.saddle_preconditioner = 1 / viscosity
 
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1 / viscosity
+    # +
+    # Now use that as the guess for a better job
 
-# +
-# Now use that as the guess for a better job
+    # stokes.tolerance = 1e-4
+    # stokes.petsc_options["ksp_rtol"]  = 1.0e-4
+    # stokes.petsc_options["ksp_atol"]  = 1.0e-8
 
-# stokes.tolerance = 1e-4
-# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
-# stokes.petsc_options["ksp_atol"]  = 1.0e-8
+    # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
+    # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
+    # stokes.snes.atol = 1e-3
 
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
-# stokes.snes.atol = 1e-3
-
-timing.reset()
-timing.start()
-stokes.solve(zero_init_guess=False)
-timing.print_table()
-if uw.mpi.rank == 0:
-    print("", flush=True)
-
-# +
-mu = 0.75
-C = 125.0 
-if uw.mpi.rank == 0:
-    print(f"Mu - {mu}, C = {C}", flush=True)
-tau_y = C + mu * p_soln.sym[0]
-viscosity_L = 999.0 * material.sym[0] + 1.0
-viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0/1000)
-viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
-
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1 / viscosity
-
-# +
-# Now use that as the guess for a better job
-
-# stokes.tolerance = 1e-4
-# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
-# stokes.petsc_options["ksp_atol"]  = 1.0e-8
-
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
-# stokes.snes.atol = 1e-2
-
-
-timing.reset()
-timing.start()
-stokes.solve(zero_init_guess=False)
-timing.print_table()
-if uw.mpi.rank == 0:
-    print("", flush=True)
+    timing.reset()
+    timing.start()
+    stokes.solve(zero_init_guess=False)
+    timing.print_table()
+    if uw.mpi.rank == 0:
+        print(f"Completed: Mu - {mu}, C = {C}", flush=True)
 # -
 
 # %%
@@ -547,7 +541,7 @@ viscosity_calc.solve()
 stress_calc.solve()
 
 # +
-## Save data ... 
+## Save data ...
 
 savefile = f"output/notched_beam_mesh{problem_size}.h5"
 mesh1.save(savefile)
@@ -581,9 +575,7 @@ if uw.mpi.size == 1:
     pvmesh.point_data["sfn"] = uw.function.evaluate(
         surface_defn_fn, mesh1.data, mesh1.N
     )
-    pvmesh.point_data["pres"] = uw.function.evaluate(
-        p_soln.sym[0], mesh1.data
-    )
+    pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
     pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
     # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.data, mesh1.N)
     pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], mesh1.data)
@@ -614,7 +606,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         # show_edges=True,
         use_transparency=False,
-        clim=[0.1,1.25],
+        clim=[0.1, 1.25],
         opacity=1.0,
     )
 
@@ -661,5 +653,5 @@ if uw.mpi.size == 1:
 # -
 
 
-if uw.mpi.size == 1: 
+if uw.mpi.size == 1:
     pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()

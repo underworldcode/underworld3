@@ -37,7 +37,8 @@ import sympy
 from mpi4py import MPI
 
 import os
-os.environ['UW_TIMING_ENABLE'] = "1"
+
+os.environ["UW_TIMING_ENABLE"] = "1"
 
 if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)
@@ -49,7 +50,7 @@ options["dm_adaptor"] = "parmmg"
 
 
 # +
-# Define the problem size 
+# Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
 #      3 - medium resolution (be prepared to wait)
@@ -60,7 +61,7 @@ problem_size = 2
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
@@ -73,19 +74,18 @@ sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
 
-if problem_size <= 1: 
+if problem_size <= 1:
     res = 8
-elif problem_size == 2: 
+elif problem_size == 2:
     res = 16
-elif problem_size == 3: 
+elif problem_size == 3:
     res = 32
-elif problem_size == 4: 
+elif problem_size == 4:
     res = 48
-elif problem_size == 5: 
+elif problem_size == 5:
     res = 64
-elif problem_size >= 6: 
+elif problem_size >= 6:
     res = 128
-
 
 
 # Set size and position of dense sphere.
@@ -98,7 +98,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity and density of the sinker.
 viscBG = 1.0
-viscSphere = 1.0e8
+viscSphere = 1.0e6
 
 expt_name = f"output/stinker_eta{viscSphere}_rho10_res{res}"
 
@@ -116,9 +116,9 @@ swarmGPC = 2
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(-1.0, 0.0),
     maxCoords=(1.0, 1.0),
-    cellSize=1.0 / res, 
+    cellSize=1.0 / res,
     regular=False,
-    qdegree=3
+    qdegree=3,
 )
 
 # ## Create Stokes object
@@ -139,10 +139,9 @@ stokes.add_dirichlet_bc(
 
 
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm,
-                                       indices=2, 
-                                       proxy_continuous=False,
-                                       proxy_degree=1)
+material = uw.swarm.IndexSwarmVariable(
+    "M", swarm, indices=2, proxy_continuous=False, proxy_degree=1
+)
 swarm.populate(fill_param=2)
 
 # +
@@ -151,9 +150,7 @@ swarm.populate(fill_param=2)
 # print("Coarsening ... complete", flush=True)
 # -
 
-blob = np.array(
-    [[sphereCentre[0], sphereCentre[1], sphereRadius, 1]]
-)
+blob = np.array([[sphereCentre[0], sphereCentre[1], sphereRadius, 1]])
 
 
 with swarm.access(material):
@@ -179,7 +176,7 @@ mat_viscosity = np.array([viscBG, viscSphere])
 viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
 
 # viscosity = sympy.Max( sympy.Min(viscosityMat, eta_max), eta_min)
-viscosity = viscBG * material.sym[0] + viscSphere *  material.sym[1]
+viscosity = viscBG * material.sym[0] + viscSphere * material.sym[1]
 
 render = True
 
@@ -246,32 +243,24 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 
 # +
 # stokes.petsc_options.view()
-snes_rtol = 1.0e-5
+
+snes_rtol = 1.0e-8
 
 stokes.tolerance = snes_rtol
 
 stokes.petsc_options["snes_converged_reason"] = None
-# stokes.petsc_options["ksp_type"] = "gmres"
-stokes.petsc_options["ksp_rtol"]  = 1.0e-12
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-6
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-6
+stokes.petsc_options["snes_max_it"] = 3
+stokes.petsc_options["ksp_type"] = "gmres"
+stokes.petsc_options["ksp_rtol"] = 1.0e-9
+stokes.petsc_options["ksp_atol"] = 1.0e-12
+stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-6
 
-# # stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
-# stokes.petsc_options["ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "cg"
-# stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-# stokes.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
-
-
+# stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
+stokes.petsc_options["ksp_monitor"] = None
 
 
 # -
-
-
 
 
 nstep = 1
@@ -327,6 +316,8 @@ stokes.solve(zero_init_guess=False)
 # stokes.snes.view()
 # -
 
+exit()
+
 while step < nstep:
     ### Get the position of the sinking ball
     ymin = tracer[:, 1].min()
@@ -334,9 +325,9 @@ while step < nstep:
     tSinker[step] = time
 
     ### solve stokes
-    
+
     stokes.solve(zero_init_guess=False)
-    
+
     ### estimate dt
     dt = stokes.estimate_dt()
 
@@ -413,14 +404,14 @@ if uw.mpi.size == 1:
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
         points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:,1]
+        points[:, 1] = swarm.data[:, 1]
         points[:, 2] = 0.0
 
     point_cloud = pv.PolyData(points)
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
-        
+
     v_vectors = np.zeros((mesh.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(v.fn, mesh.data)
     pvmesh.point_data["V"] = v_vectors
@@ -430,14 +421,17 @@ if uw.mpi.size == 1:
 
     arrow_length = np.zeros((v.coords.shape[0], 3))
     arrow_length[:, 0:2] = vsol[...]
-    
+
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud, vectors="V", integration_direction="both",
-        max_steps=10, surface_streamlines=True, max_step_length=0.33
+        point_cloud,
+        vectors="V",
+        integration_direction="both",
+        max_steps=10,
+        surface_streamlines=True,
+        max_step_length=0.33,
     )
 
-
-    pl = pv.Plotter(window_size=(1000,750))
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
@@ -461,16 +455,14 @@ if uw.mpi.size == 1:
         point_size=2.0,
         opacity=0.75,
     )
-    
+
     # pl.add_arrows(arrow_loc, arrow_length, mag=2.0, opacity=0.33)
     # pl.add_mesh(pvmesh, "Black", "wireframe")
-    
+
     pl.remove_scalar_bar("M")
     pl.remove_scalar_bar("V")
-    pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000,2000))
+    pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000, 2000))
 
     pl.show(cpos="xy")
 
 v.coords.shape
-
-
