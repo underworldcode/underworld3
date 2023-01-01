@@ -5,6 +5,7 @@ import tempfile
 import numpy as np
 from petsc4py import PETSc
 
+import underworld3 as uw
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -412,73 +413,77 @@ def SphericalShell(
 ):
 
     boundaries = {"Lower": 11, "Upper": 12}
-
     vertices = {"Centre": 1}
 
     import gmsh
 
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 0)
-    gmsh.model.add("Sphere")
+    uw_filename = (
+        f"uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+    )
 
-    p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+    if uw.mpi.rank == 0:
 
-    ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.model.add("Sphere")
 
-    if radiusInner > 0.0:
-        ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
-        gmsh.model.occ.cut(
-            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
-        )
+        p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
 
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
-    gmsh.model.occ.synchronize()
+        ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
 
-    surfaces = gmsh.model.getEntities(2)
-    volume = gmsh.model.getEntities(3)[0]
+        if radiusInner > 0.0:
+            ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
+            gmsh.model.occ.cut(
+                [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
+            )
 
-    if radiusInner > 0.0:
-        outerSurface, innerSurface = surfaces
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
+        gmsh.model.occ.synchronize()
 
-        gmsh.model.addPhysicalGroup(
-            innerSurface[0], [innerSurface[1]], boundaries["Lower"], name="Lower"
-        )
-        gmsh.model.addPhysicalGroup(
-            outerSurface[0], [outerSurface[1]], boundaries["Upper"], name="Upper"
-        )
-        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
-        gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
+        surfaces = gmsh.model.getEntities(2)
+        volume = gmsh.model.getEntities(3)[0]
 
-    else:
-        outerSurface = surfaces[0]
-        gmsh.model.addPhysicalGroup(
-            outerSurface[0], [outerSurface[1]], boundaries["Upper"]
-        )
-        gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
-        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
-        gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
-        gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"])
-        gmsh.model.setPhysicalName(0, vertices["Centre"], "Centre")
+        if radiusInner > 0.0:
+            outerSurface, innerSurface = surfaces
 
-    gmsh.model.occ.synchronize()
+            gmsh.model.addPhysicalGroup(
+                innerSurface[0], [innerSurface[1]], boundaries["Lower"], name="Lower"
+            )
+            gmsh.model.addPhysicalGroup(
+                outerSurface[0], [outerSurface[1]], boundaries["Upper"], name="Upper"
+            )
+            gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
+            gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
 
-    # Generate Mesh
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
+        else:
+            outerSurface = surfaces[0]
+            gmsh.model.addPhysicalGroup(
+                outerSurface[0], [outerSurface[1]], boundaries["Upper"]
+            )
+            gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
+            gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
+            gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
+            gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"])
+            gmsh.model.setPhysicalName(0, vertices["Centre"], "Centre")
+
+        gmsh.model.occ.synchronize()
+
         gmsh.model.mesh.generate(3)
-        gmsh.write(fp.name)
+        gmsh.write(uw_filename)
         if filename:
             gmsh.write(filename)
+
         gmsh.finalize()
 
-        new_mesh = Mesh(
-            fp.name,
-            degree=degree,
-            qdegree=qdegree,
-            coordinate_system_type=CoordinateSystemType.SPHERICAL,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-        )
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+    )
 
     return new_mesh
 
