@@ -40,6 +40,10 @@ Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
 package-lock.json
 
+# Mesh files 
+
+uw_*.msh
+*.msh # unless we really want to add some examples
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -57,7 +61,6 @@ uw3_api_docs/*
 
 
 # Visualisation artefacts
-
 ignore*vtk
 ignore*msh
 tmp*vtk

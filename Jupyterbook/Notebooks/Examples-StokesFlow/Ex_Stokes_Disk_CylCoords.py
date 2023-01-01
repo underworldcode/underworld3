@@ -26,39 +26,39 @@ import sympy
 import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
-os.environ['UW_TIMING_ENABLE'] = "1"
+os.environ["UW_TIMING_ENABLE"] = "1"
 
 
-# Define the problem size 
+# Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2 
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
     except ValueError:
         # Accept the default value
         pass
-        
+
 r_o = 1.0
 r_i = 0.5
 free_slip_upper = True
 
-if problem_size <= 1: 
+if problem_size <= 1:
     res = 0.1
-elif problem_size == 2: 
+elif problem_size == 2:
     res = 0.075
-elif problem_size == 3: 
+elif problem_size == 3:
     res = 0.05
-elif problem_size >= 4: 
+elif problem_size >= 4:
     res = 0.01
 
 # -
@@ -122,6 +122,7 @@ v_soln_xy = uw.discretisation.MeshVariable("Uxy", meshball_xyz, 2, degree=2)
 p_soln_xy = uw.discretisation.MeshVariable(
     "Pxy", meshball_xyz, 1, degree=1, continuous=True
 )
+r_xy = uw.discretisation.MeshVariable("Rxy", meshball_xyz, 1, degree=1, continuous=True)
 
 # +
 # Create a density structure / buoyancy force
@@ -147,8 +148,8 @@ stokes = uw.systems.Stokes(
 )
 
 options = stokes.petsc_options
-options.setValue("snes_rtol",1.0e-4)
-options.setValue("pc_gamg_type","agg")
+options.setValue("snes_rtol", 1.0e-4)
+options.setValue("pc_gamg_type", "agg")
 options.setValue("pc_gamg_agg_nsmooths", 3)
 options.setValue("pc_gamg_threshold", 0.5)
 
@@ -175,10 +176,10 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 
 stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
 
 stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg" 
+stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
 
 
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
@@ -203,6 +204,7 @@ stokes.stress
 # Create Stokes object (x,y)
 
 radius_fn = meshball_xyz.CoordinateSystem.xR[0]
+radius_fn = r_xy.sym[0]
 
 hw = 1000.0 / res
 surface_fn = sympy.exp(-((radius_fn - r_o) ** 2) * hw)
@@ -245,19 +247,27 @@ t_init_xy = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0
 stokes_xy.bodyforce = Rayleigh * t_init_xy * unit_rvec
 stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_rvec
+# -
+
+with meshball_xyz.access(r_xy):
+    r_xy.data[:, 0] = uw.function.evaluate(
+        r, coords=r_xy.coords, coord_sys=meshball_xyz.N
+    )
 
 # +
 from underworld3 import timing
+
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
 pressure_solver.solve()
 # -
-
+stokes_xy.tolerance = 1.0e-8
 
 
 from underworld3 import timing
+
 timing.start()
 stokes_xy.solve(zero_init_guess=True)
 timing.print_table()
@@ -332,9 +342,7 @@ if uw.mpi.size == 1:
     )
 
     pl.add_arrows(arrow_loc, arrow_length_xy, mag=0.00005, color="Blue")
-    pl.add_arrows(
-        arrow_loc + (0.0, 0.0, 0.0), arrow_length, mag=0.00005, color="Red"
-    )
+    pl.add_arrows(arrow_loc + (0.0, 0.0, 0.0), arrow_length, mag=0.00005, color="Red")
 
     pl.show(cpos="xy")
 # +
@@ -359,5 +367,3 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # -
 
 stokes
-
-
