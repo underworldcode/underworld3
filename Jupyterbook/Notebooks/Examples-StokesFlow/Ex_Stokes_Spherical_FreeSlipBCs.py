@@ -123,10 +123,10 @@ elif problem_size == 3:
     cell_size = 0.05
 elif problem_size == 4: 
     cell_size = 0.02
-elif problem_size == 5: 
+elif problem_size == 5:  # Pretty extreme to mesh this on proc0
+    cell_size = 0.015
+elif problem_size >= 6:  # should consider refinement (or prebuild)
     cell_size = 0.01
-elif problem_size >= 6: 
-    cell_size = 0.005
     
 res = cell_size
 
@@ -278,12 +278,18 @@ with meshball.access(t_soln):
 
 
 # +
+
+
 from underworld3 import timing
 
 timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
+
+
+meshball.dm.view()
+exit()
 
 # +
 
