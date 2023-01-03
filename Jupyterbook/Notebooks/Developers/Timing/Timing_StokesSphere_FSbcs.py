@@ -79,12 +79,14 @@ elif problem_size == 2:
 elif problem_size == 3: 
     cell_size = 0.05
 elif problem_size == 4: 
-    cell_size = 0.02
+    cell_size = 0.03
 elif problem_size == 5: 
+    cell_size = 0.02
+elif problem_size == 6: 
     cell_size = 0.01
-elif problem_size >= 6: 
+elif problem_size == 7: 
     cell_size = 0.005
-    
+   
 res = cell_size
 
 expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
@@ -95,13 +97,23 @@ timing.reset()
 timing.start()
 
 # +
+from pathlib import Path
+from underworld3.coordinates import CoordinateSystemType
 
-meshball = uw.meshing.SphericalShell(
-    radiusInner=r_i,
-    radiusOuter=r_o,
-    cellSize=cell_size,
-    qdegree=2,
-)
+mesh_cache_file = f".meshes/uw_spherical_shell_ro{r_o}_ri{r_i}_csize{res}.msh.h5"
+path = Path(mesh_cache_file)
+
+if path.is_file():
+    meshball = uw.discretisation.Mesh(mesh_cache_file, 
+                                      coordinate_system_type=CoordinateSystemType.SPHERICAL,
+                                      qdegree=2, )   
+else:
+    meshball = uw.meshing.SphericalShell(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        cellSize=cell_size,
+        qdegree=2,
+    )
 
 meshball.dm.view()
 # -

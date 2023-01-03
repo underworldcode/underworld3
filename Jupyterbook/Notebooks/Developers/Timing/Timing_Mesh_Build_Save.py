@@ -14,9 +14,11 @@
 
 # # Mesh save / load from hdf5
 #
-# Build meshes for various resolutions and save them as hdf5 files. Then reload the mesh.
+# Build (`gmsh`) meshes for various resolutions and then save them as hdf5 files. After that, reload the mesh. Note that the gmsh part is serial so we are really checking that this is properly managed and that the parallel save does not blow up. 
 #
 # The script can be run with a negative testing level which will skip the build and re-use the old mesh. This is designed to evaluate the loading of hdf5 dmplex mesh checkpoints for decomposed meshes cleanly.
+#
+# For most 3D cases, the serial bottleneck is enough that we probably prefer to create the meshes in advance and read them from the h5 checkpoint (we know that because of this timing file !).
 #
 
 # +
@@ -122,8 +124,10 @@ elif problem_size == 4:
     cell_size = 0.03
 elif problem_size == 5: 
     cell_size = 0.02
-elif problem_size >= 6: 
+elif problem_size == 6: 
     cell_size = 0.01
+elif problem_size == 7: 
+    cell_size = 0.005
     
 res = cell_size
 
