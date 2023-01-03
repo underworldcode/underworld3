@@ -131,6 +131,10 @@ res = cell_size
 
 expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
 
+from underworld3 import timing
+
+timing.reset()
+timing.start()
 
 # +
 options = PETSc.Options()
@@ -142,6 +146,9 @@ meshball = uw.meshing.SphericalShell(
     cellSize=cell_size,
     qdegree=2,
 )
+
+meshball.dm.view()
+
 
 # meshball = uw.meshing.SegmentedSphere(radiusInner=r_i,
 #                            radiusOuter=r_o,
@@ -281,16 +288,14 @@ with meshball.access(t_soln):
 
 # +
 
-
-from underworld3 import timing
-
+timing.print_table()
 timing.reset()
 timing.start()
+
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
 
-meshball.dm.view()
 exit()
 
 # +
