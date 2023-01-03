@@ -135,7 +135,9 @@ def get_data(group_by="line_routine"):
     elif group_by == "line_routine":
         keyfunc = lambda key: "{}   {}".format(linefunc(key), key[0])
     else:
-        raise ValueError("'group_by' parameter should specify 'line', 'routine' 'line_routine'")
+        raise ValueError(
+            "'group_by' parameter should specify 'line', 'routine' 'line_routine'"
+        )
 
     # regroup data
     regrouped_dict = _dd(lambda: [0, 0.0])
@@ -148,7 +150,12 @@ def get_data(group_by="line_routine"):
 
 
 def print_table(
-    group_by="line_routine", sort_by="total", display_fraction=0.95, float_precision=".3f", output_file=None, **kwargs
+    group_by="line_routine",
+    sort_by="total",
+    display_fraction=0.95,
+    float_precision=".3f",
+    output_file=None,
+    **kwargs
 ):
     """
     Print timing results to stdout or to a provided file. Call this function
@@ -189,7 +196,9 @@ def print_table(
 
     sort_col = {"total": 2, "average": 3}
     if sort_by not in sort_col.keys():
-        raise ValueError("'sort_by' parameter should specify one of {}".format(sort_col.keys()))
+        raise ValueError(
+            "'sort_by' parameter should specify one of {}".format(sort_col.keys())
+        )
     table_data = sorted(table_data, key=lambda x: x[sort_col[sort_by]], reverse=True)
 
     # max sure columns widths accommodate titles
@@ -236,10 +245,20 @@ def print_table(
             from IPython.display import HTML, display
 
             display(
-                HTML(tabulate(table_data[0:stop_row] + footerrow, row_title, tablefmt="html", floatfmt=".3f", **kwargs))
+                HTML(
+                    tabulate(
+                        table_data[0:stop_row] + footerrow,
+                        row_title,
+                        tablefmt="html",
+                        floatfmt=".3f",
+                        **kwargs
+                    )
+                )
             )
         else:
-            tabstr = tabulate(table_data[0:stop_row] + footerrow, row_title, floatfmt=".3f", **kwargs)
+            tabstr = tabulate(
+                table_data[0:stop_row] + footerrow, row_title, floatfmt=".3f", **kwargs
+            )
             tabstr += "\n"
     except:  # otherwise use homebake.. our hipster snowflake friends (and colleague) are not forgotten!
         # add header
@@ -413,7 +432,9 @@ def _class_timer_decorator(cls):
 
         setattr(cls, attr[0], timedroutine)
         print("   " + attr[0])
-        _timedroutines.add(timedroutine)  # add to set of timed routines to avoid doubling up
+        _timedroutines.add(
+            timedroutine
+        )  # add to set of timed routines to avoid doubling up
     return cls
 
 

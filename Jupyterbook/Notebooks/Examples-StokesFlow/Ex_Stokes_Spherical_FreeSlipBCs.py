@@ -75,7 +75,7 @@ import numpy as np
 import sympy
 import os
 
-os.environ["UW_TIMING_ENABLE"] = "1"
+os.environ['UW_TIMING_ENABLE'] = "1"
 
 if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)
@@ -83,19 +83,20 @@ else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
 
+
 # +
-# Define the problem size
+# Define the problem size 
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size = 1
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
+uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
@@ -114,19 +115,19 @@ r_i = 0.5
 Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # + tags=[]
-if problem_size <= 1:
+if problem_size <= 1: 
     cell_size = 0.30
-elif problem_size == 2:
+elif problem_size == 2: 
     cell_size = 0.15
-elif problem_size == 3:
+elif problem_size == 3: 
     cell_size = 0.05
-elif problem_size == 4:
+elif problem_size == 4: 
     cell_size = 0.02
-elif problem_size == 5:
+elif problem_size == 5: 
     cell_size = 0.01
-elif problem_size >= 6:
+elif problem_size >= 6: 
     cell_size = 0.005
-
+    
 res = cell_size
 
 expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
@@ -134,7 +135,7 @@ expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
 
 # +
 options = PETSc.Options()
-# options["dm_adaptor"] = "parmmg"
+options["dm_adaptor"] = "parmmg"
 
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
@@ -143,20 +144,20 @@ meshball = uw.meshing.SphericalShell(
     qdegree=2,
 )
 
-# meshball = uw.meshing.SegmentedSphere(radiusInner=r_i,
-#                            radiusOuter=r_o,
+# meshball = uw.meshing.SegmentedSphere(radiusInner=r_i, 
+#                            radiusOuter=r_o, 
 #                            cellSize=cell_size,
 #                            qdegree=2,
 #                           )
 
 # -
 
-v_soln = uw.discretisation.MeshVariable(
-    r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR
-)
+v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR)
 p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
+
+
 
 
 # +
@@ -235,14 +236,6 @@ stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
 stokes.penalty = 0.1
 
-## This is ONLY for timing runs to ensure there are no
-## special cases where the snes iteration cuts short
-stokes.petsc_options["snes_rtol"] = 1.0e-6
-stokes.petsc_options["snes_max_it"] = 2
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     meshball.dim
 )
@@ -274,9 +267,7 @@ with meshball.access(meshr):
     )  # cf radius_fn which is 0->1
 
 with meshball.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(
-        t_forcing_fn, t_soln.coords, meshball.N
-    ).reshape(-1, 1)
+    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
 
 
 # +
@@ -369,9 +360,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     meshball.vtk("tmp_meshball.vtk")
     pvmesh = pv.read("tmp_meshball.vtk")
 
-    pvmesh.point_data["T"] = uw.function.evaluate(
-        t_forcing_fn, meshball.data, meshball.N
-    )
+    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data, meshball.N)
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
     pvmesh.point_data["S"] = uw.function.evaluate(
         v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
@@ -384,7 +373,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     arrow_length[...] = uw.function.evaluate(stokes.u.fn, stokes.u.coords)
 
     clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
-    # -
+# -
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()

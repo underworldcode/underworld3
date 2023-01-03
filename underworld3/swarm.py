@@ -49,7 +49,9 @@ class SwarmVariable(_api_tools.Stateful):
     ):
 
         if name in swarm.vars.keys():
-            raise ValueError("Variable with name {} already exists on swarm.".format(name))
+            raise ValueError(
+                "Variable with name {} already exists on swarm.".format(name)
+            )
 
         self.name = name
         self.swarm = swarm
@@ -58,14 +60,23 @@ class SwarmVariable(_api_tools.Stateful):
         if (dtype == float) or (dtype == "float") or (dtype == np.float64):
             self.dtype = float
             petsc_type = PETSc.ScalarType
-        elif (dtype == int) or (dtype == "int") or (dtype == np.int32) or (dtype == np.int64):
+        elif (
+            (dtype == int)
+            or (dtype == "int")
+            or (dtype == np.int32)
+            or (dtype == np.int64)
+        ):
             self.dtype = int
             petsc_type = PETSc.IntType
         else:
-            raise TypeError(f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'.")
+            raise TypeError(
+                f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'."
+            )
 
         if _register:
-            self.swarm.dm.registerField(self.name, self.num_components, dtype=petsc_type)
+            self.swarm.dm.registerField(
+                self.name, self.num_components, dtype=petsc_type
+            )
 
         self._data = None
         # add to swarms dict
@@ -78,7 +89,12 @@ class SwarmVariable(_api_tools.Stateful):
             self.proxy_degree = proxy_degree
             self.proxy_continuous = proxy_continuous
             self._meshVar = uw.discretisation.MeshVariable(
-                name, self.swarm.mesh, num_components, vtype, degree=proxy_degree, continuous=proxy_continuous
+                name,
+                self.swarm.mesh,
+                num_components,
+                vtype,
+                degree=proxy_degree,
+                continuous=proxy_continuous,
             )
 
         self._register = _register
@@ -123,7 +139,9 @@ class SwarmVariable(_api_tools.Stateful):
                         node_values[n[i], :] += self.data[i, :] / (1.0e-16 + d[i])
                         w[n[i]] += 1.0 / (1.0e-16 + d[i])
 
-                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
+                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(
+                    -1, 1
+                )
 
         # 2 - set NN vals on mesh var where w == 0.0
 
@@ -131,7 +149,9 @@ class SwarmVariable(_api_tools.Stateful):
 
         with self.swarm.mesh.access(self._meshVar), self.swarm.access():
             self._meshVar.data[...] = node_values[...]
-            self._meshVar.data[np.where(w == 0.0), :] = self.data[p_nnmap[np.where(w == 0.0)], :]
+            self._meshVar.data[np.where(w == 0.0), :] = self.data[
+                p_nnmap[np.where(w == 0.0)], :
+            ]
 
         return
 
@@ -181,7 +201,9 @@ class SwarmVariable(_api_tools.Stateful):
     @property
     def data(self):
         if self._data is None:
-            raise RuntimeError("Data must be accessed via the swarm `access()` context manager.")
+            raise RuntimeError(
+                "Data must be accessed via the swarm `access()` context manager."
+            )
         return self._data
 
     # @property
@@ -193,7 +215,9 @@ class SwarmVariable(_api_tools.Stateful):
         return self._meshVar.sym
 
     @timing.routine_timer_decorator
-    def save(self, filename: str, name: Optional[str] = None, index: Optional[int] = None):
+    def save(
+        self, filename: str, name: Optional[str] = None, index: Optional[int] = None
+    ):
         """
         Append variable data to the specified mesh
         checkpoint file. The file must already exist.
@@ -312,7 +336,9 @@ class IndexSwarmVariable(SwarmVariable):
 
                 for i in range(self.data.shape[0]):
                     if b[i]:
-                        node_values[n[i]] += np.isclose(self.data[i], ii) / (1.0e-16 + d[i])
+                        node_values[n[i]] += np.isclose(self.data[i], ii) / (
+                            1.0e-16 + d[i]
+                        )
                         w[n[i]] += 1.0 / (1.0e-16 + d[i])
 
                 node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
@@ -359,13 +385,24 @@ class Swarm(_api_tools.Stateful):
         self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords
-        self._coord_var = SwarmVariable("DMSwarmPIC_coor", self, self.cdim, dtype=float, _register=False, _proxy=False)
+        self._coord_var = SwarmVariable(
+            "DMSwarmPIC_coor",
+            self,
+            self.cdim,
+            dtype=float,
+            _register=False,
+            _proxy=False,
+        )
 
         # add variable to handle particle cell id
-        self._cellid_var = SwarmVariable("DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False)
+        self._cellid_var = SwarmVariable(
+            "DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False
+        )
 
         # add variable to hold swarm coordinates during position updates
-        self._X0 = uw.swarm.SwarmVariable("DMSwarm_X0", self, self.cdim, dtype=float, _register=True, _proxy=False)
+        self._X0 = uw.swarm.SwarmVariable(
+            "DMSwarm_X0", self, self.cdim, dtype=float, _register=True, _proxy=False
+        )
         self._X0_uninitialised = True
 
         self._index = None
@@ -454,12 +491,12 @@ class Swarm(_api_tools.Stateful):
         return  # self # LM: Is there any reason to return self ?
 
     @timing.routine_timer_decorator
-    def add_particles_with_coordinates( self, coordinatesArray ):
+    def add_particles_with_coordinates(self, coordinatesArray):
         """
         This method adds particles to the swarm using particle coordinates provided
         using a numpy array.
         Note that particles with coordinates NOT local to the current processor will
-        be reject/ignored. Either include an array with all coordinates to all processors 
+        be reject/ignored. Either include an array with all coordinates to all processors
         or an array with the local coordinates.
         Parameters
         ----------
@@ -469,15 +506,19 @@ class Swarm(_api_tools.Stateful):
             dim is the dimensionality of the swarm's supporting mesh.
         """
 
-        if not isinstance( coordinatesArray, np.ndarray ):
+        if not isinstance(coordinatesArray, np.ndarray):
             raise TypeError("'coordinateArray' must be provided as a numpy array")
-        if not len(coordinatesArray.shape) == 2 :
+        if not len(coordinatesArray.shape) == 2:
             raise ValueError("The 'coordinateArray' is expected to be two dimensional.")
-        if not coordinatesArray.shape[1] == self.mesh.dim :
+        if not coordinatesArray.shape[1] == self.mesh.dim:
             #### petsc appears to ignore columns that are greater than the mesh dim, but still worth including
-            raise ValueError("""The 'coordinateArray' must have shape n*dim, where 'n' is the
+            raise ValueError(
+                """The 'coordinateArray' must have shape n*dim, where 'n' is the
                               number of particles to add, and 'dim' is the dimensionality of
-                              the supporting mesh ({}).""".format(self.mesh.dim) )
+                              the supporting mesh ({}).""".format(
+                    self.mesh.dim
+                )
+            )
 
         self.dm.finalizeFieldRegister()
 
@@ -488,8 +529,17 @@ class Swarm(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def add_variable(self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False):
-        return SwarmVariable(name, self, num_components, dtype=dtype, proxy_degree=proxy_degree, _nn_proxy=_nn_proxy)
+    def add_variable(
+        self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False
+    ):
+        return SwarmVariable(
+            name,
+            self,
+            num_components,
+            dtype=dtype,
+            proxy_degree=proxy_degree,
+            _nn_proxy=_nn_proxy,
+        )
 
     @property
     def vars(self):
@@ -577,7 +627,9 @@ class Swarm(_api_tools.Stateful):
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
                     cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
-                    coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, self.em_swarm.dim))
+                    coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
+                        (-1, self.em_swarm.dim)
+                    )
                     cellid[:] = self.em_swarm.mesh.get_closest_cells(coords).reshape(-1)
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
@@ -590,7 +642,9 @@ class Swarm(_api_tools.Stateful):
                 for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all.
                     # if var updated, update var.
-                    if (self.em_swarm.particle_coordinates in writeable_vars) or (var in writeable_vars):
+                    if (self.em_swarm.particle_coordinates in writeable_vars) or (
+                        var in writeable_vars
+                    ):
                         var._update()
 
                 uw.timing._decrementDepth()
@@ -598,6 +652,7 @@ class Swarm(_api_tools.Stateful):
 
         return exit_manager(self)
 
+    @timing.routine_timer_decorator
     def _get_map(self, var):
         # generate tree if not avaiable
         if not self._index:
@@ -619,7 +674,15 @@ class Swarm(_api_tools.Stateful):
             self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
         return self._nnmapdict[digest]
 
-    def advection(self, V_fn, delta_t, order=2, corrector=False, restore_points_to_domain_func=None):
+    @timing.routine_timer_decorator
+    def advection(
+        self,
+        V_fn,
+        delta_t,
+        order=2,
+        corrector=False,
+        restore_points_to_domain_func=None,
+    ):
 
         X0 = self._X0
 
@@ -635,18 +698,24 @@ class Swarm(_api_tools.Stateful):
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(
+                        V_fn_matrix[d], self.data
+                    ).reshape(-1)
 
                 corrected_position = X0.data + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
-                    corrected_position = restore_points_to_domain_func(corrected_position)
+                    corrected_position = restore_points_to_domain_func(
+                        corrected_position
+                    )
 
                 updated_current_coords = 0.5 * (corrected_position + self.data)
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
                 if restore_points_to_domain_func is not None:
-                    updated_current_coords = restore_points_to_domain_func(updated_current_coords)
+                    updated_current_coords = restore_points_to_domain_func(
+                        updated_current_coords
+                    )
 
                 self.data[...] = updated_current_coords
 
@@ -661,7 +730,9 @@ class Swarm(_api_tools.Stateful):
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(
+                        V_fn_matrix[d], self.data
+                    ).reshape(-1)
 
                 mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
 
@@ -682,7 +753,9 @@ class Swarm(_api_tools.Stateful):
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn_matrix[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(
+                        V_fn_matrix[d], self.data
+                    ).reshape(-1)
 
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
@@ -708,7 +781,9 @@ class Swarm(_api_tools.Stateful):
         else:
             with self.access(self.particle_coordinates):
                 for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(-1)
+                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(
+                        -1
+                    )
 
                 new_coords = self.data + delta_t * v_at_Vpts
 
