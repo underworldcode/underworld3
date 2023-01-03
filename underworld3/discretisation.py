@@ -54,85 +54,7 @@ def _from_gmsh(
     else:
         options.delValue("dm_plex_gmsh_mark_vertices")
 
-    gmsh_plex = PETSc.DMPlex().createFromFile(filename)
-
-    """
-    # Extract Physical groups from the gmsh file
-
-    ## NOTE: should we be doing this is parallel ??
-    ## 1) Race conditions on gmsh files / locking etc
-    ## 2) Why not pass in these collections from the gmsh generator and process accordingly
-
-    import gmsh
-
-    gmsh.initialize()
-    gmsh.model.add("Model")
-    gmsh.open(filename)
-
-    ## What about cells and vertices ?
-
-    physical_groups = {}
-    for dim, tag in gmsh.model.get_physical_groups():
-
-        name = gmsh.model.get_physical_name(dim, tag)
-
-        physical_groups[name] = tag
-
-        gmsh_plex.createLabel(name)
-        label = gmsh_plex.getLabel(name)
-
-        for elem in ["Face Sets"]:
-            indexSet = gmsh_plex.getStratumIS(elem, tag)
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            indexSet.destroy()
-
-    # cell sets / face sets / vertex sets by numerical tag (by hand for the case where  gmsh has no physical groups)
-
-    if cellSets is not None:
-        for cellSet in cellSets:
-            label_name = cellSet["name"]
-            label_id = cellSet["id"]
-
-            gmsh_plex.createLabel(label_name)
-            label = gmsh_plex.getLabel(label_name)
-            indexSet = gmsh_plex.getStratumIS("Cell Sets", label_id)
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            else:
-                gmsh_plex.removeLabel(label_name)
-            indexSet.destroy()
-
-    if faceSets is not None:
-        for faceSet in faceSets:
-            label_name = faceSet["name"]
-            label_id = faceSet["id"]
-
-            gmsh_plex.createLabel(label_name)
-            label = gmsh_plex.getLabel(label_name)
-            indexSet = gmsh_plex.getStratumIS("Face Sets", label_id)
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            else:
-                gmsh_plex.removeLabel(label_name)
-            indexSet.destroy()
-
-    if vertexSets is not None:
-        for vertexSet in vertexSets:
-            label_name = vertexSet["name"]
-            label_id = vertexSet["id"]
-
-            gmsh_plex.createLabel(label_name)
-            label = gmsh_plex.getLabel(label_name)
-            indexSet = gmsh_plex.getStratumIS("Vertex Sets", label_id)
-            if indexSet:
-                label.insertIS(indexSet, 1)
-            else:
-                gmsh_plex.removeLabel(label_name)
-            indexSet.destroy()
-
-    gmsh.finalize()
-    """
+    gmsh_plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
 
     return gmsh_plex
 
@@ -717,12 +639,12 @@ class Mesh(_api_tools.Stateful):
                     tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
                 )
 
-        if len(coords) > 0 :
+        if len(coords) > 0:
             closest_points, dist, found = self._index.find_closest_point(coords)
         else:
             ### returns an empty array if no coords are on a proc
             closest_points, dist, found = False, False, numpy.array([None])
-        
+
         if found.any() != None:
             if not numpy.allclose(found, True):
                 raise RuntimeError(

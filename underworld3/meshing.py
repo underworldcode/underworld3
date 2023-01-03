@@ -3,6 +3,7 @@ from enum import Enum
 
 import tempfile
 import numpy as np
+import petsc4py
 from petsc4py import PETSc
 import os
 
@@ -10,6 +11,7 @@ import underworld3 as uw
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
+from underworld3.discretisation import _from_gmsh as gmsh2dmplex
 import underworld3.timing as timing
 
 import sympy
@@ -164,6 +166,7 @@ def UnstructuredSimplexBox(
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
         gmsh.write(uw_filename)
+
         gmsh.finalize()
 
     new_mesh = Mesh(
@@ -582,14 +585,27 @@ def Annulus(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+
     new_mesh = Mesh(
-        uw_filename,
+        gmsh_plex,
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
-        useMultipleTags=True,
-        useRegions=True,
-        markVertices=True,
     )
 
     return new_mesh
@@ -698,14 +714,27 @@ def AnnulusFixedStars(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+
     new_mesh = Mesh(
-        uw_filename,
+        gmsh_plex,
         degree=degree,
         qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.SPHERICAL,
-        useMultipleTags=True,
-        useRegions=True,
-        markVertices=True,  # only if required !!
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
     )
 
     return new_mesh
@@ -847,14 +876,27 @@ def CubedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+
     new_mesh = Mesh(
-        uw_filename,
+        gmsh_plex,
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
-        useMultipleTags=True,
-        useRegions=True,
-        markVertices=True,
     )
 
     return new_mesh
@@ -969,32 +1011,45 @@ def SegmentedSphericalSurface2D(
         # Generate Mesh
         gmsh.model.mesh.generate(2)
         gmsh.write(uw_filename)
+
+        # xyz coordinates of the mesh
+        xyz = gmsh.model.mesh.get_nodes()[1].reshape(-1, 3)
         gmsh.finalize()
 
-    plex = PETSc.DMPlex().createFromFile(uw_filename)
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
 
-    # xyz coordinates of the mesh (how to do this in parallel ?)
-    xyz = gmsh.model.mesh.get_nodes()[1].reshape(-1, 3)
+        # Re-interpret the DM coordinates
+        lonlat_vec = plex_0.getCoordinates()
+        lonlat = np.empty_like(xyz[:, 0:2])
+        lonlat[:, 0] = np.mod(np.arctan2(xyz[:, 1], xyz[:, 0]), 2.0 * np.pi) - np.pi
+        lonlat[:, 1] = np.arcsin(xyz[:, 2])
+        lonlat_vec.array[...] = lonlat.reshape(-1)
+        plex_0.setCoordinates(lonlat_vec)
 
-    # Re-interpret the DM coordinates
-    lonlat_vec = plex.getCoordinates()
-    lonlat = np.empty_like(xyz[:, 0:2])
-    lonlat[:, 0] = np.mod(np.arctan2(xyz[:, 1], xyz[:, 0]), 2.0 * np.pi) - np.pi
-    lonlat[:, 1] = np.arcsin(xyz[:, 2])
-    lonlat_vec.array[...] = lonlat.reshape(-1)
-    plex.setCoordinates(lonlat_vec)
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
     # This mesh will always be periodic in the longitudinal coordinate
-    uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-        plex, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
-    )
 
+    uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+        gmsh_plex, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
+    )
     new_mesh = Mesh(
-        plex,
+        gmsh_plex,
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERE_SURFACE_NATIVE,
-        filename=filename,
     )
 
     return new_mesh
@@ -1031,7 +1086,6 @@ def SegmentedSphere(
 
         options = PETSc.Options()
         options["dm_plex_gmsh_multiple_tags"] = None
-        # options["dm_plex_gmsh_spacedim"] = 2
         options["dm_plex_gmsh_use_regions"] = None
         options["dm_plex_gmsh_mark_vertices"] = None
 
@@ -1237,7 +1291,21 @@ def SegmentedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-    plex = PETSc.DMPlex().createFromFile(fp.name)
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
     if coordinatesNative:
         xyz_vec = plex.getCoordinates()
@@ -1262,5 +1330,4 @@ def SegmentedSphere(
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=coordinate_system,
-        filename=filename,
     )

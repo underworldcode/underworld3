@@ -41,7 +41,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size = 7
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -79,10 +79,31 @@ timing.reset()
 timing.start()
 # -
 
-mesh1 = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
+# Annulus first, then sphere !
+mesh1 = uw.meshing.Annulus(radiusOuter=r_o, 
+                           radiusInner=r_i, 
+                           cellSize=res,
+                           filename="testmesh.msh")
 
 
 mesh1.dm.view()
+
+# +
+print(f"Plex from gmsh (rank {uw.mpi.rank})", flush=True)
+if uw.mpi.rank == 0:
+    gmsh_plex = PETSc.DMPlex().createFromFile("testmesh.msh", comm=PETSc.COMM_SELF)
+    viewer = PETSc.ViewerHDF5().create("testmesh.h5", "w", comm=PETSc.COMM_SELF)
+    viewer(gmsh_plex)
+
+print(f"Plex from gmsh ... done (rank {uw.mpi.rank})", flush=True)
+
+gmsh_plex2 = petsc4py.PETSc.DMPlex().createFromFile("testmesh.h5")
+mesh_g2 = uw.discretisation.Mesh(gmsh_plex2)
+
+print("--------", flush=True)
+
+mesh_g2.dm.view()
+# -
 
 savefile = f"uw_mesh_h5_test_res{problem_size}.h5"
 mesh1.save(savefile)
