@@ -17,6 +17,7 @@
 # +
 import os
 os.environ["UW_TIMING_ENABLE"] = "1"
+os.environ["SYMPY_USE_CACHE"] = "no"
 
 import petsc4py
 from petsc4py import PETSc
@@ -30,10 +31,6 @@ import sympy
 
 free_slip_upper = True
 
-import os
-
-os.environ["SYMPY_USE_CACHE"] = "no"
-os.environ["UW_TIMING_ENABLE"] = "1"
 
 # Define the problem size
 #      1 - ultra low res for automatic checking
@@ -41,7 +38,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 7
+problem_size = 5
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -53,7 +50,7 @@ if uw_testing_level:
     except ValueError:
         # Accept the default value
         pass
-
+    
 r_o = 1.0
 r_i = 0.5
 
@@ -83,27 +80,10 @@ timing.start()
 mesh1 = uw.meshing.Annulus(radiusOuter=r_o, 
                            radiusInner=r_i, 
                            cellSize=res,
-                           filename="testmesh.msh")
+                           filename="testmesh1.msh")
 
 
 mesh1.dm.view()
-
-# +
-print(f"Plex from gmsh (rank {uw.mpi.rank})", flush=True)
-if uw.mpi.rank == 0:
-    gmsh_plex = PETSc.DMPlex().createFromFile("testmesh.msh", comm=PETSc.COMM_SELF)
-    viewer = PETSc.ViewerHDF5().create("testmesh.h5", "w", comm=PETSc.COMM_SELF)
-    viewer(gmsh_plex)
-
-print(f"Plex from gmsh ... done (rank {uw.mpi.rank})", flush=True)
-
-gmsh_plex2 = petsc4py.PETSc.DMPlex().createFromFile("testmesh.h5")
-mesh_g2 = uw.discretisation.Mesh(gmsh_plex2)
-
-print("--------", flush=True)
-
-mesh_g2.dm.view()
-# -
 
 savefile = f"uw_mesh_h5_test_res{problem_size}.h5"
 mesh1.save(savefile)
@@ -116,4 +96,22 @@ mesh2.dm.view()
 
 timing.print_table(display_fraction=0.999)
 
+# +
+if uw.mpi.rank == 0:
+    gmsh_plex = PETSc.DMPlex().createFromFile("testmesh1.msh", comm=PETSc.COMM_SELF)
+    viewer = PETSc.ViewerHDF5().create("testmesh2.h5", "w", comm=PETSc.COMM_SELF)
+    viewer(gmsh_plex)
 
+gmsh_plex2 = petsc4py.PETSc.DMPlex().createFromFile("testmesh2.h5")
+mesh_g2 = uw.discretisation.Mesh(gmsh_plex2)
+
+if uw.mpi.rank == 0:
+    print(f"------")
+    
+mesh_g2.dm.view()
+
+if uw.mpi.rank == 0:
+    print(f"------")
+# -
+
+timing.print_table(display_fraction=0.999)
