@@ -19,7 +19,7 @@ import underworld3.timing as timing
 import weakref
 
 
-@PETSc.Log.EventDecorator()
+@timing.routine_timer_decorator
 def _from_gmsh(
     filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True
 ):
@@ -28,6 +28,10 @@ def _from_gmsh(
     :kwarg comm: Optional communicator to build the mesh on (defaults to
         COMM_WORLD).
     """
+
+    ## NOTE: - this should be smart enough to serialise the msh conversion
+    ## and then read back in parallel via h5.  This is currently done
+    ## by every gmesh mesh
 
     comm = comm or PETSc.COMM_WORLD
     options = PETSc.Options()
@@ -53,6 +57,22 @@ def _from_gmsh(
         options.setValue("dm_plex_gmsh_mark_vertices", True)
     else:
         options.delValue("dm_plex_gmsh_mark_vertices")
+
+    gmsh_plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
+
+    return gmsh_plex
+
+
+@timing.routine_timer_decorator
+def _from_plexh5(
+    filename,
+    comm=None,
+):
+    """Read a dmplex .h5 file from `filename` provided.
+
+    comm: Optional communicator to build the mesh on (defaults to
+    COMM_WORLD).
+    """
 
     gmsh_plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
 
@@ -96,6 +116,9 @@ class Mesh(_api_tools.Stateful):
                     useRegions=useRegions,
                     useMultipleTags=useMultipleTags,
                 )
+            elif ext.lower() == ".h5":
+                self.dm = _from_plexh5(plex_or_meshfile, comm)
+
             else:
                 raise RuntimeError(
                     "Mesh file %s has unknown format '%s'."
