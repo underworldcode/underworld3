@@ -77,10 +77,14 @@ elif problem_size == 4:
     cell_size = 0.03
 elif problem_size == 5: 
     cell_size = 0.02
-elif problem_size >= 6: 
+elif problem_size == 6: 
     cell_size = 0.01
-    
+elif problem_size == 7: 
+    cell_size = 0.005
+   
 res = cell_size
+
+expt_name = f"Stokes_Sphere_RT_{cell_size}"
 # -
 
 Rayleigh = 1.0e6 / (r_o - r_i) ** 3
@@ -91,13 +95,31 @@ from underworld3 import timing
 
 timing.reset()
 timing.start()
+
+# +
+from pathlib import Path
+from underworld3.coordinates import CoordinateSystemType
+
+mesh_cache_file = f".meshes/uw_spherical_shell_ro{r_o}_ri{r_i}_csize{res}.msh.h5"
+path = Path(mesh_cache_file)
+
+if path.is_file():
+    if uw.mpi.rank == 0:
+        print(f"Re-using mesh: {mesh_cache_file}", flush=True)
+        
+    mesh = uw.discretisation.Mesh(mesh_cache_file, 
+                                      coordinate_system_type=CoordinateSystemType.SPHERICAL,
+                                      qdegree=2, )   
+else:
+    mesh = uw.meshing.SphericalShell(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        cellSize=cell_size,
+        qdegree=2,
+    )
+
+mesh.dm.view()
 # -
-
-mesh = uw.meshing.SphericalShell(
-    radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2
-)
-
-
 
 v_soln = uw.discretisation.MeshVariable(r"U", mesh, mesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable(r"P", mesh, 1, degree=1)
@@ -131,15 +153,11 @@ surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
 
 base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
 base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
+# -
 
-
-# +
 
 density = sympy.Piecewise((0.0, material.sym[0] < 0.0), (1.0, True))
-display(density)
-
 viscosity = sympy.Piecewise((1.0, material.sym[0] < 0.0), (viscosityRatio, True))
-display(viscosity)
 
 
 # +
@@ -186,8 +204,6 @@ t_step = 0
 # +
 # Update in time
 
-expt_name = "output/swarm_rt_sph"
-
 for step in range(0, 3):
 
     stokes.solve(zero_init_guess=False)
@@ -206,11 +222,9 @@ for step in range(0, 3):
 # -
 
 
-savefile = "output/swarm_rt.h5".format(step)
+savefile = f"output/{expt_name}.ts{t_step}.h5"
 mesh.save(savefile)
 v_soln.save(savefile)
 # mesh.generate_xdmf(savefile)
 
 timing.print_table(display_fraction=0.999)
-
-
