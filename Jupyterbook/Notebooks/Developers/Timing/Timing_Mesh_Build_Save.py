@@ -99,8 +99,16 @@ if not skip_gmsh:
                                radiusInner=r_i, 
                                cellSize=res,
                                filename=tmp_filename)
+
+    if uw.mpi.rank == 0:
+        print("2d mesh generation complete", flush=True)
+
+    mesh1.dm.view()    
+    
 # -
 
+if uw.mpi.rank == 0:
+    print("Read back 2d mesh", flush=True)
 
 mesh2 = uw.discretisation.Mesh(tmp_filename + ".h5")
 mesh2.dm.view()
@@ -142,6 +150,15 @@ if not skip_gmsh:
         qdegree=2,
         filename = tmp_filename
     )
+
+    if uw.mpi.rank == 0:
+        print("3d mesh generation complete", flush=True)
+
+    mesh1.dm.view()
+
+if uw.mpi.rank == 0:
+    print("Read back 3d mesh", flush=True)
+
 # -
 
 mesh4 = uw.discretisation.Mesh(tmp_filename+".h5")

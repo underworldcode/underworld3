@@ -76,8 +76,10 @@ elif problem_size == 4:
     res = 48
 elif problem_size == 5:
     res = 64
-elif problem_size >= 6:
+elif problem_size == 6:
     res = 128
+elif problem_size >= 7:
+    res = 256
 
 
 # Set size and position of dense sphere.
@@ -101,7 +103,7 @@ densitySphere = 10.0
 x_pos = sphereCentre[0]
 y_pos = sphereCentre[1] - sphereRadius
 
-nsteps = 3
+nsteps = 5
 
 swarmGPC = 2
 
@@ -115,6 +117,8 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     regular=False,
     qdegree=3,
 )
+
+mesh.dm.view()
 
 # ## Create / initialise Stokes solver
 
@@ -135,9 +139,9 @@ stokes.add_dirichlet_bc(
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable(
-    "M", swarm, indices=2, proxy_continuous=False, proxy_degree=1
+    "M", swarm, indices=2, proxy_continuous=True, proxy_degree=1
 )
-swarm.populate(fill_param=2)
+swarm.populate(fill_param=10)
 
 blob = np.array([[sphereCentre[0], sphereCentre[1], sphereRadius, 1]])
 
@@ -171,20 +175,23 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 # We set these values to ensure a repeatable iteration
 # for different values of the resolution and decomposition
 
-snes_rtol = 1.0e-8
+snes_rtol = 1.0e-6
 stokes.tolerance = snes_rtol
 
+stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_max_it"] = 3
-stokes.petsc_options["snes_atol"] = 1.0e-8
-stokes.petsc_options["ksp_type"] = "gmres"
-stokes.petsc_options["ksp_rtol"] = 1.0e-9
-stokes.petsc_options["ksp_atol"] = 1.0e-12
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-6
+# stokes.petsc_options["snes_atol"] = 1.0e-8
+# stokes.petsc_options["ksp_type"] = "gmres"
+# stokes.petsc_options["ksp_rtol"] = 1.0e-9
+# stokes.petsc_options["ksp_atol"] = 1.0e-12
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-6
+# stokes.petsc_options["fieldsplit_pressure_ksp_atol"] = 1.0e-12
+# stokes.petsc_options["fieldsplit_velocity_ksp_atol"] = 1.0e-12
 
-stokes.petsc_options["ksp_monitor"] = None
-
+# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 
 # -
 
@@ -196,20 +203,25 @@ nprint = 0.0
 stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 
-stokes.solve(zero_init_guess=False)
+# stokes.solve(zero_init_guess=False) # Validation only
+
+timing.print_table(display_fraction=0.999)
+timing.reset()
+timing.start()
+
 
 while step < nsteps:
 
-    stokes.solve(zero_init_guess=True)
-
     ### estimate dt
-    dt = stokes.estimate_dt()
-
+    dt = 0.1 * stokes.estimate_dt()
     swarm.advection(stokes.u.sym, dt, corrector=True)
 
     ### print updates
     if uw.mpi.rank == 0:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}")
+        
+    # stokes.solve(zero_init_guess=False)
+
 
     step += 1
     time += dt
