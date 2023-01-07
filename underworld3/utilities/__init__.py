@@ -9,5 +9,6 @@ conf = petsc4py.get_config()
 petsc_dir = conf["PETSC_DIR"]
 if not petsc_dir+'/lib/petsc/bin' in sys.path:
     sys.path.append(petsc_dir+'/lib/petsc/bin')
-from petsc_gen_xdmf import *
+
+from .uw_petsc_gen_xdmf import *
 
