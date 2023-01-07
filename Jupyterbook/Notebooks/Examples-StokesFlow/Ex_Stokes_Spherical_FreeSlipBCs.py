@@ -234,6 +234,7 @@ stokes = uw.systems.Stokes(
 
 stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
+stokes.petsc_options["snes_max_it"] = 1 # for timing cases only - force 1 snes iteration for all examples
 stokes.penalty = 0.1
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(

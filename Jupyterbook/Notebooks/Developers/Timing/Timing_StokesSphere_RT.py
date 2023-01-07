@@ -20,6 +20,7 @@
 # Enable timing (before uw imports)
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 import petsc4py
@@ -59,29 +60,29 @@ problem_size = 1
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
     except ValueError:
         # Accept the default value
         pass
-    
-if problem_size <= 1: 
+
+if problem_size <= 1:
     cell_size = 0.30
-elif problem_size == 2: 
+elif problem_size == 2:
     cell_size = 0.15
-elif problem_size == 3: 
+elif problem_size == 3:
     cell_size = 0.05
-elif problem_size == 4: 
+elif problem_size == 4:
     cell_size = 0.03
-elif problem_size == 5: 
+elif problem_size == 5:
     cell_size = 0.02
-elif problem_size == 6: 
+elif problem_size == 6:
     cell_size = 0.01
-elif problem_size == 7: 
+elif problem_size == 7:
     cell_size = 0.005
-   
+
 res = cell_size
 
 expt_name = f"Stokes_Sphere_RT_{cell_size}"
@@ -106,11 +107,16 @@ path = Path(mesh_cache_file)
 if path.is_file():
     if uw.mpi.rank == 0:
         print(f"Re-using mesh: {mesh_cache_file}", flush=True)
-        
-    mesh = uw.discretisation.Mesh(mesh_cache_file, 
-                                      coordinate_system_type=CoordinateSystemType.SPHERICAL,
-                                      qdegree=2, )   
+
+    mesh = uw.discretisation.Mesh(
+        mesh_cache_file,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        qdegree=2,
+    )
 else:
+    if uw.mpi.rank == 0:
+        print(f"Building mesh: {mesh_cache_file}", flush=True)
+
     mesh = uw.meshing.SphericalShell(
         radiusInner=r_i,
         radiusOuter=r_o,
@@ -126,9 +132,15 @@ p_soln = uw.discretisation.MeshVariable(r"P", mesh, 1, degree=1)
 meshr = uw.discretisation.MeshVariable(r"r", mesh, 1, degree=1)
 
 
+if uw.mpi.rank == 0:
+    print(f"Populate swarm", flush=True)
+
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_components=1)
 swarm.populate(fill_param=2)
+
+if uw.mpi.rank == 0:
+    print(f"Set values on swarm", flush=True)
 
 
 with swarm.access(material):
@@ -139,6 +151,10 @@ with swarm.access(material):
     )
 
     material.data[:, 0] = r - r_layer
+
+if uw.mpi.rank == 0:
+    print(f"Set values on swarm ... done", flush=True)
+
 
 # +
 
@@ -151,10 +167,9 @@ hw = 1000.0 / res
 surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
 surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
 
-base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
+# base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
+# base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 # -
-
 
 density = sympy.Piecewise((0.0, material.sym[0] < 0.0), (1.0, True))
 viscosity = sympy.Piecewise((1.0, material.sym[0] < 0.0), (viscosityRatio, True))
@@ -169,24 +184,28 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.tolerance = 1.0e-4 
+stokes.add_dirichlet_bc((0.0, 0.0, 0.0), ["Lower"], [0, 1, 2])
+
+stokes.penalty = 0.1
+
+stokes.tolerance = 1.0e-4
+stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
-buoyancy = Rayleigh * density # * (1 - surface_fn) * (1 - base_fn)
+buoyancy = Rayleigh * density  # * (1 - surface_fn) * (1 - base_fn)
 
 unit_vec_r = mesh.CoordinateSystem.unit_e_0
 
 # Free slip condition by penalizing radial velocity at the surface (non-linear term)
-free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn
-free_slip_penalty_lower = v_soln.sym.dot(unit_vec_r) * unit_vec_r * base_fn
+free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn_a
+# free_slip_penalty_lower = v_soln.sym.dot(unit_vec_r) * unit_vec_r * base_fn_a
 
 stokes.bodyforce = -unit_vec_r * buoyancy
-stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
-
+stokes.bodyforce -= 1000000 * (free_slip_penalty_upper)  #  + free_slip_penalty_lower)
 stokes.saddle_preconditioner = 1 / viscosity
 
 # -
@@ -204,27 +223,26 @@ t_step = 0
 # +
 # Update in time
 
-for step in range(0, 3):
+for step in range(0, 100):
 
     stokes.solve(zero_init_guess=False)
-    delta_t = 2.0 * stokes.estimate_dt()
+    delta_t = stokes.estimate_dt()
 
     # update swarm / swarm variables
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(t_step, delta_t))
+        print("Timestep {}, dt {}".format(t_step, delta_t), flush=True)
 
     # advect swarm
-    swarm.advection(v_soln.sym, delta_t)
+    swarm.advection(v_soln.sym, delta_t)  # , corrector=True)
 
     t_step += 1
 
 # -
 
-
 savefile = f"output/{expt_name}.ts{t_step}.h5"
 mesh.save(savefile)
 v_soln.save(savefile)
-# mesh.generate_xdmf(savefile)
+mesh.generate_xdmf(savefile)
 
 timing.print_table(display_fraction=0.999)

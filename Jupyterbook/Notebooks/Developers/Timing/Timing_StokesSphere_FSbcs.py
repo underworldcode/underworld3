@@ -104,6 +104,9 @@ mesh_cache_file = f".meshes/uw_spherical_shell_ro{r_o}_ri{r_i}_csize{res}.msh.h5
 path = Path(mesh_cache_file)
 
 if path.is_file():
+    if uw.mpi.rank == 0:
+        print(f"Re-using mesh: {mesh_cache_file}", flush=True)
+
     meshball = uw.discretisation.Mesh(mesh_cache_file, 
                                       coordinate_system_type=CoordinateSystemType.SPHERICAL,
                                       qdegree=2, )   
@@ -168,6 +171,7 @@ stokes = uw.systems.Stokes(
 
 stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
+stokes.petsc_options["snes_max_it"] = 1   # Only for timing examples  
 stokes.penalty = 0.1
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
@@ -192,8 +196,9 @@ stokes.saddle_preconditioner = 1.0
 # stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Lower", (0,1,2))
 # -
 
-stokes._setup_terms()
-
+timing.print_table(display_fraction=0.999)
+timing.reset()
+timing.start()
 # +
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
@@ -203,10 +208,9 @@ with meshball.access(meshr):
 with meshball.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
 
-
 # +
-from underworld3 import timing
 
+stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 # -
 
