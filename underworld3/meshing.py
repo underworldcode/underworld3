@@ -166,17 +166,28 @@ def UnstructuredSimplexBox(
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
         gmsh.write(uw_filename)
-
         gmsh.finalize()
 
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+        viewer(plex_0)
+
+    # Now do this collectively
+    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+
     new_mesh = Mesh(
-        uw_filename,
+        gmsh_plex,
         degree=degree,
         qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.SPHERICAL,
-        useMultipleTags=True,
-        useRegions=True,
-        markVertices=True,
     )
 
     return new_mesh
