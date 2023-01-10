@@ -116,6 +116,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     cellSize=1.0 / res,
     regular=False,
     qdegree=3,
+    filename="testSimplexMesh.msh"
 )
 
 mesh.dm.view()
@@ -222,6 +223,15 @@ while step < nsteps:
         
     # stokes.solve(zero_init_guess=False)
 
+    savefile = "{}_ts_{}.h5".format(expt_name, 0)
+    mesh.save(savefile)
+    uw.mpi.barrier()
+    # v.save(savefile)
+    uw.mpi.barrier()
+    # p.save(savefile)
+    uw.mpi.barrier()
+    # Is this breaking something ?
+    # mesh.generate_xdmf(savefile)
 
     step += 1
     time += dt
