@@ -457,12 +457,14 @@ def generateXdmf(hdfFilename, xdmfFilename=None):
     else:
         geomPath = "geometry"
         geom = h5["geometry"]
+
     if "viz" in h5 and "topology" in h5["viz"]:
         topoPath = "viz/topology"
         topo = h5["viz"]["topology"]
     else:
         topoPath = "topology"
         topo = h5["topology"]
+
     if "viz" in h5 and "hybrid_topology" in h5["viz"]:
         htopoPath = "viz/hybrid_topology"
         htopo = h5["viz"]["hybrid_topology"]
@@ -521,6 +523,89 @@ def generateXdmf(hdfFilename, xdmfFilename=None):
         numParticles,
         pfields,
     )
+    h5.close()
+    return
+
+
+def generate_uw_Xdmf(hdfFilename, xdmfFilename=None):
+    if xdmfFilename is None:
+        xdmfFilename = os.path.splitext(hdfFilename)[0] + ".xmf"
+
+    # Read mesh
+    h5 = h5py.File(hdfFilename, "r")
+    if "viz" in h5 and "geometry" in h5["viz"]:
+        geomPath = "viz/geometry"
+        geom = h5["viz"]["geometry"]
+    else:
+        geomPath = "geometry"
+        geom = h5["geometry"]
+
+    if "viz" in h5 and "topology" in h5["viz"]:
+        topoPath = "viz/topology"
+        topo = h5["viz"]["topology"]
+    else:
+        topoPath = "topology"
+        topo = h5["topology"]
+
+    if "viz" in h5 and "hybrid_topology" in h5["viz"]:
+        htopoPath = "viz/hybrid_topology"
+        htopo = h5["viz"]["hybrid_topology"]
+    else:
+        htopoPath = None
+        htopo = None
+
+    vertices = geom["vertices"]
+    numVertices = vertices.shape[0]
+    spaceDim = vertices.shape[1]
+    cells = topo["cells"]
+    numCells = cells.shape[0]
+    numCorners = cells.shape[1]
+    cellDim = topo["cells"].attrs["cell_dim"]
+    if htopo:
+        hcells = htopo["cells"]
+        numHCells = hcells.shape[0]
+        numHCorners = hcells.shape[1]
+    else:
+        numHCells = 0
+        numHCorners = 0
+    if "time" in h5:
+        time = np.array(h5["time"]).flatten()
+    else:
+        time = [-1]
+    vfields = []
+    cfields = []
+    pfields = []
+    pfields = []
+    if "vertex_fields" in h5:
+        vfields = h5["vertex_fields"].items()
+    if "cell_fields" in h5:
+        cfields = h5["cell_fields"].items()
+    numParticles = 0
+    if "particles" in h5:
+        numParticles = h5["particles"]["coordinates"].shape[0]
+    if "particle_fields" in h5:
+        pfields = h5["particle_fields"].items()
+
+    # Write Xdmf
+    Xdmf(xdmfFilename).write(
+        hdfFilename,
+        topoPath,
+        numCells,
+        numCorners,
+        cellDim,
+        htopoPath,
+        numHCells,
+        numHCorners,
+        geomPath,
+        numVertices,
+        spaceDim,
+        time,
+        vfields,
+        cfields,
+        numParticles,
+        pfields,
+    )
+
     h5.close()
     return
 

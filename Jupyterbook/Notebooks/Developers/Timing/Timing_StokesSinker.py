@@ -16,12 +16,13 @@
 #
 # Timing test for a sinking viscous blob (see [Stokes Sinker Example](../../Examples-StokesFlow/Ex_Stokes_Sinker.py) for the full notebook.
 #
-# This is a challenging solver test and may not be suitable to evaluate weak scaling since the gradients in the viscosity are resolution dependent. 
+# This is a challenging solver test and may not be suitable to evaluate weak scaling since the gradients in the viscosity are resolution dependent.
 
 # +
 # Enable timing (before uw imports)
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 from petsc4py import PETSc
@@ -39,16 +40,15 @@ else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
 
-
 # +
 # Define the problem size
 #      1  - ultra low res for automatic checking
 #      2  - low res problem to play with this notebook
 #      3  - medium resolution (be prepared to wait)
-#      4  - highest resolution for parallel tests
+#      4  - highest resolution
 #      5+ - v. high resolution (parallel only)
 
-problem_size = 3
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -76,10 +76,8 @@ elif problem_size == 4:
     res = 48
 elif problem_size == 5:
     res = 64
-elif problem_size == 6:
+elif problem_size >= 6:
     res = 128
-elif problem_size >= 7:
-    res = 256
 
 
 # Set size and position of dense sphere.
@@ -179,20 +177,17 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 snes_rtol = 1.0e-6
 stokes.tolerance = snes_rtol
 
-stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["snes_max_it"] = 3
-# stokes.petsc_options["snes_atol"] = 1.0e-8
+# stokes.petsc_options["snes_converged_reason"] = None
+# stokes.petsc_options["snes_max_it"] = 3
+# stokes.petsc_options["snes_atol"] = 1.0e-9
 # stokes.petsc_options["ksp_type"] = "gmres"
 # stokes.petsc_options["ksp_rtol"] = 1.0e-9
 # stokes.petsc_options["ksp_atol"] = 1.0e-12
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-6
-# stokes.petsc_options["fieldsplit_pressure_ksp_atol"] = 1.0e-12
-# stokes.petsc_options["fieldsplit_velocity_ksp_atol"] = 1.0e-12
 
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+stokes.petsc_options["ksp_monitor"] = None
+
 
 # -
 
@@ -210,28 +205,19 @@ timing.print_table(display_fraction=0.999)
 timing.reset()
 timing.start()
 
+stokes.solve(zero_init_guess=False)
 
 while step < nsteps:
 
     ### estimate dt
-    dt = 0.1 * stokes.estimate_dt()
+    dt = stokes.estimate_dt()
+
     swarm.advection(stokes.u.sym, dt, corrector=True)
 
     ### print updates
     if uw.mpi.rank == 0:
-        print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}")
-        
-    # stokes.solve(zero_init_guess=False)
+        print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}", flush=True)
 
-    savefile = "{}_ts_{}.h5".format(expt_name, 0)
-    mesh.save(savefile)
-    uw.mpi.barrier()
-    # v.save(savefile)
-    uw.mpi.barrier()
-    # p.save(savefile)
-    uw.mpi.barrier()
-    # Is this breaking something ?
-    # mesh.generate_xdmf(savefile)
 
     step += 1
     time += dt
@@ -240,5 +226,4 @@ while step < nsteps:
 # + tags=[]
 timing.print_table(display_fraction=0.999)
 # -
-
-
+mesh.write_checkpoint("stokesSinkerTiming", meshUpdates=False, meshVars=[p, v])

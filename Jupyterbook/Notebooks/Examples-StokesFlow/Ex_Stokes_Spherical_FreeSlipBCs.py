@@ -215,11 +215,13 @@ v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 # -
 
+'''
 I = uw.maths.Integral(meshball, surface_fn_a)
 s_norm = I.evaluate()
 I.fn = base_fn_a
 b_norm = I.evaluate()
 s_norm, b_norm
+'''
 
 # +
 # Create NS object
@@ -280,16 +282,13 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-
-exit()
-
 # +
 
 # Note: we should remove the rigid body rotation nullspace
 # This should be done during the solve, but it is also reasonable to
 # remove it from the force terms and solution to prevent it growing if present
 
-
+'''
 I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
 norm = I0.evaluate()
 I0.fn = v_soln.sym.dot(v_soln.sym)
@@ -336,12 +335,21 @@ for i in range(10):
                 )
             )
         break
+'''
 # -
-savefile = "output/{}_ts_{}.h5".format(expt_name, 0)
+savefile = "output/stokesSphere_orig.h5"
 meshball.save(savefile)
-v_soln.save(savefile)
-p_soln.save(savefile)
-# meshball.generate_xdmf(savefile)
+# v_soln.save(savefile)
+# p_soln.save(savefile)
+meshball.generate_xdmf(savefile)
+meshball.write_checkpoint("output/stokesSphere", 
+                          meshUpdates=True, 
+                          meshVars=[p_soln,v_soln], 
+                          index=0)
+
+
+meshball.dm.view()
+
 # +
 # OR
 
