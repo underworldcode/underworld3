@@ -142,7 +142,7 @@ swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable(
     "M", swarm, indices=2, proxy_continuous=False, proxy_degree=1
 )
-swarm.populate(fill_param=2)
+swarm.populate(fill_param=4)
 
 # +
 # print("Coarsening", flush=True)
@@ -244,18 +244,15 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 # +
 # stokes.petsc_options.view()
 
-snes_rtol = 1.0e-8
-
+snes_rtol = 1.0e-6
 stokes.tolerance = snes_rtol
 
-stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["snes_max_it"] = 3
-stokes.petsc_options["ksp_type"] = "gmres"
-stokes.petsc_options["ksp_rtol"] = 1.0e-9
-stokes.petsc_options["ksp_atol"] = 1.0e-12
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-6
-
+# stokes.petsc_options["snes_converged_reason"] = None
+# stokes.petsc_options["ksp_type"] = "gmres"
+# stokes.petsc_options["ksp_rtol"] = 1.0e-9
+# stokes.petsc_options["ksp_atol"] = 1.0e-12
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-8
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-8
 # stokes.petsc_options["snes_atol"] = 0.1 * snes_rtol # by inspection
 stokes.petsc_options["ksp_monitor"] = None
 
@@ -263,15 +260,15 @@ stokes.petsc_options["ksp_monitor"] = None
 # -
 
 
-nstep = 1
+nstep = 10
 
 step = 0
 time = 0.0
 nprint = 0.0
 
 # %%
-tSinker = np.zeros(nsteps)
-ySinker = np.zeros(nsteps)
+tSinker = np.zeros(nstep)
+ySinker = np.zeros(nstep)
 
 # +
 from underworld3 import timing
@@ -282,41 +279,12 @@ stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-# + [markdown] tags=[]
-# ## Timing results
-#
-# $\Delta \eta$ fixed mesh size (`res = 32`, `penalty = 1`)
-#
-# $\Delta \eta = 10^{0}$, 3.4s
-#
-# $\Delta \eta = 10^{2}$, 5.8s
-#
-# $\Delta \eta = 10^{4}$, 9.0s
-#
-# $\Delta \eta = 10^{6}$, 17.3s
-#
-# $\Delta \eta = 10^{8}$, 60.0s
-#
-#
-# $\Delta \eta = 10^{4}$ changin mesh size (`penalty = 1`)
-#
-# `res = 16`, 2.0s
-#
-# `res = 32`, 9.0s
-#
-# `res = 48`, 64.0s
-#
-# `res = 64`, 154.0s  (19000 elements / 38000 v-nodes)
-#
-# -
-
-stokes.solve(zero_init_guess=False)
+# +
+# stokes.solve(zero_init_guess=False)
 
 # +
 # stokes.snes.view()
 # -
-
-exit()
 
 while step < nstep:
     ### Get the position of the sinking ball
@@ -330,12 +298,14 @@ while step < nstep:
 
     ### estimate dt
     dt = stokes.estimate_dt()
+    if uw.mpi.rank == 0:
+        print(f"dt = {dt}", flush=True)
 
     ## This way should be a bit safer in parallel where particles can move
     ## processors in the middle of the calculation if you are not careful
     ## PS - the function.evaluate needs fixing to take sympy.Matrix functions
 
-    swarm.advection(stokes.u.sym, dt, corrector=False)
+    swarm.advection(stokes.u.sym, dt, corrector=True)
 
     ### get velocity on particles
     #     with swarm.access():
@@ -346,13 +316,17 @@ while step < nstep:
     #         swarm.particle_coordinates.data[:] += dt * vel_on_particles
 
     ### advect tracer
-    vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
-    tracer += dt * vel_on_tracer
+    # vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
+    # tracer += dt * vel_on_tracer
 
     ### print some stuff
-    if uw.mpi.rank == 0:
+    if uw.mpi.size == 1:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
         plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
+
+    mesh.write_checkpoint(
+        "stokesSinker", meshUpdates=False, meshVars=[p, v], index=step
+    )
 
     step += 1
     time += dt
@@ -461,8 +435,6 @@ if uw.mpi.size == 1:
 
     pl.remove_scalar_bar("M")
     pl.remove_scalar_bar("V")
-    pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000, 2000))
+    # pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000, 2000))
 
     pl.show(cpos="xy")
-
-v.coords.shape

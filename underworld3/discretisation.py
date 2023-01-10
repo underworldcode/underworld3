@@ -498,6 +498,43 @@ class Mesh(_api_tools.Stateful):
         return arr.reshape(-1, self.cdim)
 
     @timing.routine_timer_decorator
+    def write_checkpoint(
+        self,
+        filename: str,
+        meshUpdates: bool = True,
+        meshVars: Optional[list] = [],
+        swarmVars: Optional[list] = [],
+        index: Optional[int] = 0,
+    ):
+
+        # Checkpoint the mesh file itself if required
+        if meshUpdates or index == 0:
+            if uw.mpi.rank == 0:
+                print("Saving mesh file")
+            self.save(filename + f".mesh.{index}.h5")
+
+        if meshVars is not None:
+            for var in meshVars:
+                save_location = filename + f".{var.clean_name}.{index}.h5"
+                var.simple_save(save_location)
+
+        ## Not implemented yet
+        if swarmVars is not None:
+            for var in meshVars:
+                pass
+
+        if uw.mpi.rank == 0:
+            checkpoint_xdmf(
+                filename,
+                meshUpdates,
+                meshVars,
+                swarmVars,
+                index,
+            )
+
+        return
+
+    @timing.routine_timer_decorator
     def save(self, filename: str, index: Optional[int] = None):
         """
         Save mesh data to the specified hdf5 file.
@@ -523,6 +560,7 @@ class Mesh(_api_tools.Stateful):
             ## the PETSc xdmf script.
             # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
+
         viewer(self.dm)
 
     def vtk(self, filename: str):
@@ -548,7 +586,10 @@ class Mesh(_api_tools.Stateful):
         """
         from underworld3.utilities import generateXdmf
 
-        generateXdmf(filename)
+        if uw.mpi.rank == 0:
+            generateXdmf(filename)
+
+        return
 
     @property
     def vars(self):
@@ -780,6 +821,8 @@ def MeshVariable(
     ----------
     name :
         A textual name for this variable.
+    symbol:
+        A symbolic form for printing etc (sympy / latex)
     mesh :
         The supporting underworld mesh.
     num_components :
@@ -838,6 +881,8 @@ class _MeshVariable(_api_tools.Stateful):
         ----------
         name :
             A textual name for this variable.
+        symbol :
+            A symbolic form for printing etc (sympy / latex)
         mesh :
             The supporting underworld mesh.
         num_components :
@@ -976,7 +1021,10 @@ class _MeshVariable(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(
-        self, filename: str, name: Optional[str] = None, index: Optional[int] = None
+        self,
+        filename: str,
+        name: Optional[str] = None,
+        index: Optional[int] = None,
     ):
         """
         Append variable data to the specified mesh hdf5
@@ -995,6 +1043,7 @@ class _MeshVariable(_api_tools.Stateful):
             Not currently supported. An optional index which
             might correspond to the timestep (for example).
         """
+
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
@@ -1010,6 +1059,24 @@ class _MeshVariable(_api_tools.Stateful):
         viewer(self._gvec)
         if name:
             self._gvec.setName(oldname)
+
+    @timing.routine_timer_decorator
+    def simple_save(
+        self,
+        filename: str,
+    ):
+        """
+        Append variable data to the specified mesh hdf5
+        data file. The file must already exist.
+
+        Parameters
+        ----------
+        filename :
+            The filename of the mesh checkpoint file
+        """
+
+        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
+        viewer(self._gvec)
 
     @property
     def fn(self) -> sympy.Basic:
@@ -1233,3 +1300,167 @@ class _MeshVariable(_api_tools.Stateful):
     def jacobian(self):
         ## validate if this is a vector ?
         return self.mesh.vector.jacobian(self.sym)
+
+
+## This is a temporary replacement for the PETSc xdmf generator
+## Simplified to allow us to decide how we want to checkpoint
+
+
+def checkpoint_xdmf(
+    filename: str,
+    meshUpdates: bool = True,
+    meshVars: Optional[list] = [],
+    swarmVars: Optional[list] = [],
+    index: Optional[int] = 0,
+):
+
+    import h5py
+    import os
+
+    """Create xdmf file for checkpoints"""
+
+    ## Identify the mesh file. Use the
+    ## zeroth one if this option is turned off
+
+    if not meshUpdates:
+        mesh_filename = filename + ".mesh.0.h5"
+    else:
+        mesh_filename = filename + f".mesh.{index}.h5"
+
+    ## Obtain the mesh information
+
+    h5 = h5py.File(mesh_filename, "r")
+    if "viz" in h5 and "geometry" in h5["viz"]:
+        geomPath = "viz/geometry"
+        geom = h5["viz"]["geometry"]
+    else:
+        geomPath = "geometry"
+        geom = h5["geometry"]
+
+    if "viz" in h5 and "topology" in h5["viz"]:
+        topoPath = "viz/topology"
+        topo = h5["viz"]["topology"]
+    else:
+        topoPath = "topology"
+        topo = h5["topology"]
+
+    vertices = geom["vertices"]
+    numVertices = vertices.shape[0]
+    spaceDim = vertices.shape[1]
+    cells = topo["cells"]
+    numCells = cells.shape[0]
+    numCorners = cells.shape[1]
+    cellDim = topo["cells"].attrs["cell_dim"]
+
+    h5.close()
+
+    # We only use a subset of the possible cell types
+    if spaceDim == 2:
+        if numCorners == 3:
+            topology_type = "Triangle"
+        else:
+            topology_type = "Quadrilateral"
+        geomType = "XY"
+    else:
+        if numCorners == 4:
+            topology_type = "Tetrahedron"
+        else:
+            topology_type = "Hexahedron"
+        geomType = "XYZ"
+
+    ## Create the header
+
+    header = f"""<?xml version="1.0" ?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" [
+<!ENTITY MeshData "{os.path.basename(mesh_filename)}">
+"""
+    for var in meshVars:
+        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        header += f"""
+<!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
+    header += """
+]>
+"""
+
+    xdmf_start = f"""
+<Xdmf>
+  <Domain Name="domain">
+    <DataItem Name="cells"
+              ItemType="Uniform"
+              Format="HDF"
+              NumberType="Float" Precision="8"
+              Dimensions="{numCells} {numCorners}">
+      &MeshData;:/{topoPath}/cells
+    </DataItem>
+    <DataItem Name="vertices"
+              Format="HDF"
+              Dimensions="{numVertices} {spaceDim}">
+      &MeshData;:/{geomPath}/vertices
+    </DataItem>
+    <!-- ============================================================ -->
+      <Grid Name="domain" GridType="Uniform">
+        <Topology
+           TopologyType="{topology_type}"
+           NumberOfElements="{numCells}">
+          <DataItem Reference="XML">
+            /Xdmf/Domain/DataItem[@Name="cells"]
+          </DataItem>
+        </Topology>
+        <Geometry GeometryType="{geomType}">
+          <DataItem Reference="XML">
+            /Xdmf/Domain/DataItem[@Name="vertices"]
+          </DataItem>
+        </Geometry>
+"""
+
+    ## The mesh Var attributes
+
+    attributes = ""
+    for var in meshVars:
+        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        if var.num_components == 1:
+            variable_type = "Scalar"
+        else:
+            variable_type = "Vector"
+        # We should add a tensor type here ...
+
+        var_attribute = f"""
+        <Attribute
+           Name="{var.clean_name}"
+           Type="{variable_type}"
+           Center="Node">
+          <DataItem ItemType="HyperSlab"
+        	    Dimensions="1 {numVertices} {var.num_components}"
+        	    Type="HyperSlab">
+            <DataItem
+               Dimensions="3 3"
+               Format="XML">
+              0 0 0
+              1 1 1
+              1 {numVertices} {var.num_components}
+            </DataItem>
+            <DataItem
+               DataType="Float" Precision="8"
+               Dimensions="1 {numVertices} {var.num_components}"
+               Format="HDF">
+              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_P"+str(var.degree)}
+            </DataItem>
+          </DataItem>
+        </Attribute>
+    """
+        attributes += var_attribute
+
+    xdmf_end = f"""
+    </Grid>
+  </Domain>
+</Xdmf>
+    """
+
+    xdmf_filename = filename + f".{index}.xdmf"
+    with open(xdmf_filename, "w") as fp:
+        fp.write(header)
+        fp.write(xdmf_start)
+        fp.write(attributes)
+        fp.write(xdmf_end)
+
+    return
