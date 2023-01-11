@@ -104,3 +104,13 @@ __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
 ## Add an options dictionary for arbitrary underworld things
 
 options = PETSc.Options("uw_")
+
+
+def require_dirs(ListOfDirs):
+    """
+    List of directories required by this run
+    """
+    import os
+
+    for dir in ListOfDirs:
+        os.makedirs(dir, exist_ok=True)

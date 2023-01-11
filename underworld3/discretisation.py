@@ -508,7 +508,16 @@ class Mesh(_api_tools.Stateful):
     ):
 
         # Checkpoint the mesh file itself if required
-        if meshUpdates or index == 0:
+
+        if not meshUpdates:
+            from pathlib import Path
+
+            mesh_file = filename + ".mesh.0.h5"
+            path = Path(mesh_file)
+            if not path.is_file():
+                self.save(mesh_file)
+
+        else:
             if uw.mpi.rank == 0:
                 print("Saving mesh file")
             self.save(filename + f".mesh.{index}.h5")
@@ -518,10 +527,10 @@ class Mesh(_api_tools.Stateful):
                 save_location = filename + f".{var.clean_name}.{index}.h5"
                 var.simple_save(save_location)
 
-        ## Not implemented yet
         if swarmVars is not None:
-            for var in meshVars:
-                pass
+            for svar in swarmVars:
+                save_location = filename + f".proxy.{svar.clean_name}.{index}.h5"
+                svar.simple_save(save_location)
 
         if uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -1378,9 +1387,14 @@ def checkpoint_xdmf(
         var_filename = filename + f".{var.clean_name}.{index}.h5"
         header += f"""
 <!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
+
+    for var in swarmVars:
+        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        header += f"""
+<!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
+
     header += """
-]>
-"""
+]>"""
 
     xdmf_start = f"""
 <Xdmf>
@@ -1444,6 +1458,40 @@ def checkpoint_xdmf(
                Dimensions="1 {numVertices} {var.num_components}"
                Format="HDF">
               &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_P"+str(var.degree)}
+            </DataItem>
+          </DataItem>
+        </Attribute>
+    """
+        attributes += var_attribute
+
+    for var in swarmVars:
+        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        if var.num_components == 1:
+            variable_type = "Scalar"
+        else:
+            variable_type = "Vector"
+        # We should add a tensor type here ...
+
+        var_attribute = f"""
+        <Attribute
+           Name="{var.clean_name}"
+           Type="{variable_type}"
+           Center="Node">
+          <DataItem ItemType="HyperSlab"
+        	    Dimensions="1 {numVertices} {var.num_components}"
+        	    Type="HyperSlab">
+            <DataItem
+               Dimensions="3 3"
+               Format="XML">
+              0 0 0
+              1 1 1
+              1 {numVertices} {var.num_components}
+            </DataItem>
+            <DataItem
+               DataType="Float" Precision="8"
+               Dimensions="1 {numVertices} {var.num_components}"
+               Format="HDF">
+              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_P"+str(var._meshVar.degree)}
             </DataItem>
           </DataItem>
         </Attribute>

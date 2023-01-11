@@ -54,6 +54,11 @@ class SwarmVariable(_api_tools.Stateful):
             )
 
         self.name = name
+
+        import re
+
+        self.clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+
         self.swarm = swarm
         self.num_components = num_components
 
@@ -246,10 +251,23 @@ class SwarmVariable(_api_tools.Stateful):
 
         # if not proxied, nothing to do. return.
         if not self._meshVar:
-            print("No proxy mesh variable that can be saved")
+            if uw.mpi.rank == 0:
+                print("No proxy mesh variable that can be saved", flush=True)
             return
 
         self._meshVar.save(filename, name, index)
+
+        return
+
+    def simple_save(self, filename: str):
+
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            if uw.mpi.rank == 0:
+                print("No proxy mesh variable that can be saved", flush=True)
+            return
+
+        self._meshVar.simple_save(filename)
 
         return
 

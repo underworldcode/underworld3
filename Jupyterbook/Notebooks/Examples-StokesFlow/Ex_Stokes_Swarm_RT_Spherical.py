@@ -41,8 +41,7 @@ r_layer = 0.7
 r_o = 1.0
 r_i = 0.5
 
-elements = 7
-res = 1.0 / elements
+res = 0.1
 
 Rayleigh = 1.0e6 / (r_o - r_i) ** 3
 
@@ -50,15 +49,10 @@ offset = 0.5 * res
 
 
 # +
-# mesh = uw.meshing.CubedSphere(
-#     radiusInner=r_i,
-#     radiusOuter=r_o,
-#     numElements=elements,
-#     simplex=True,
-#     qdegree=2,
-# )
+cell_size = uw.options.getReal("mesh_cell_size", default=0.1)
+particle_fill = uw.options.getInt("particle_fill", default=5)
+viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 
-# or
 
 mesh = uw.meshing.SphericalShell(
     radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2
@@ -213,8 +207,6 @@ with mesh.access(meshr):
         sympy.sqrt(x**2 + y**2 + z**2), mesh.data
     )  # cf radius_fn which is 0->1
 
-
-stokes._setup_terms(verbose=False)
 
 stokes.solve(zero_init_guess=True)
 

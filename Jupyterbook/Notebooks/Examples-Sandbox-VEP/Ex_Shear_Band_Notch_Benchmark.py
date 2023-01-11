@@ -46,7 +46,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size = 1
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -60,10 +60,6 @@ if uw_testing_level:
         pass
 
 # -
-options = PETSc.Options()
-options["dm_adaptor"] = "pragmatic"
-
-
 from underworld3.cython import petsc_discretisation
 
 
@@ -226,6 +222,10 @@ if uw.mpi.rank == 0:
 # -
 
 
+from underworld3 import timing
+timing.reset()
+timing.start()
+
 mesh1 = uw.discretisation.Mesh(
     f"./meshes/notch_mesh{problem_size}.msh",
     simplex=True,
@@ -387,21 +387,6 @@ stokes.petsc_options[
     "fieldsplit_pressure_pc_gamg_type"
 ] = "classical"  # can use gasm / gamg / lu here
 stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
-# # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-# # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
-
-
-# # Fast: preonly plus gasm / gamg / mumps
-# # Robust: gmres plus gasm / gamg / mumps
-
-# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-# stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
 stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 # -
@@ -481,12 +466,9 @@ stokes.petsc_options["snes_atol"] = 1.0e-2
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
 
-from underworld3 import timing
 
-timing.reset()
-timing.start()
+
 stokes.solve(zero_init_guess=True)
-timing.print_table()
 
 if uw.mpi.rank == 0:
     print("Linear solve complete", flush=True)
@@ -521,10 +503,7 @@ for i in range(10):
     # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
     # stokes.snes.atol = 1e-3
 
-    timing.reset()
-    timing.start()
     stokes.solve(zero_init_guess=False)
-    timing.print_table()
     if uw.mpi.rank == 0:
         print(f"Completed: Mu - {mu}, C = {C}", flush=True)
 # -
@@ -543,12 +522,11 @@ stress_calc.solve()
 # +
 ## Save data ...
 
-savefile = f"output/notched_beam_mesh{problem_size}.h5"
-mesh1.save(savefile)
-v_soln.save(savefile)
-p_soln.save(savefile)
-# mesh1.generate_xdmf(savefile)
+savefile = f"output/notched_beam_mesh_{problem_size}"
+mesh1.write_checkpoint(savefile, meshUpdates=False, meshVars=[p_soln,v_soln,edot])
 # -
+
+# ls -trl output
 
 # check the mesh if in a notebook / serial
 
@@ -604,9 +582,9 @@ if uw.mpi.size == 1:
         cmap="RdYlGn",
         scalars="edot",
         edge_color="Grey",
-        # show_edges=True,
+        show_edges=True,
         use_transparency=False,
-        clim=[0.1, 1.25],
+        clim=[0.1, 1.5],
         opacity=1.0,
     )
 
@@ -619,19 +597,6 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
-
-# # What works:
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.0 (step from C=1500)
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.3
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.6
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.9
-#
-# Coarse mesh, small penalty (1.0) - C >= 75, mu 0.9
-#
 
 # +
 # %%
