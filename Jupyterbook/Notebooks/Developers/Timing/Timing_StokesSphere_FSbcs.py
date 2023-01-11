@@ -48,18 +48,8 @@ else:
 #      4  - highest resolution for parallel tests
 #      5+ - v. high resolution (parallel only)
 
-problem_size = 1
+problem_size = uw.options.getInt("problem_size", default=2)
 
-# For testing and automatic generation of notebook output,
-# over-ride the problem size if the UW_TESTING_LEVEL is set
-
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
-if uw_testing_level:
-    try:
-        problem_size = int(uw_testing_level)
-    except ValueError:
-        # Accept the default value
-        pass
 
 # +
 visuals = 1
@@ -86,7 +76,7 @@ elif problem_size == 6:
     cell_size = 0.01
 elif problem_size == 7: 
     cell_size = 0.005
-   
+
 res = cell_size
 
 expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
@@ -194,11 +184,7 @@ stokes.saddle_preconditioner = 1.0
 # Velocity boundary conditions
 # stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Upper", (0,1,2))
 # stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Lower", (0,1,2))
-# -
 
-timing.print_table(display_fraction=0.999)
-timing.reset()
-timing.start()
 # +
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
@@ -207,12 +193,10 @@ with meshball.access(meshr):
 
 with meshball.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
-
-# +
+# -
 
 stokes._setup_terms()
-stokes.solve(zero_init_guess=True)
-# -
+stokes.solve(zero_init_guess=True
 
 timing.print_table(display_fraction=0.999)
 

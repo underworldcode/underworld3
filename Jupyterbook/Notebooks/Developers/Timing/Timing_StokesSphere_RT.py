@@ -40,12 +40,17 @@ render = True
 lightIndex = 0
 denseIndex = 1
 
-viscosityRatio = 0.1
-
 r_layer = 0.7
 r_o = 1.0
 r_i = 0.5
 
+
+# +
+problem_size = uw.options.getInt("model_size", default=2)
+particle_fill = uw.options.getInt("particle_fill", default=3)
+viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
+
+viscosityRatio = viscosity_ratio
 
 # +
 # Define the problem size
@@ -54,19 +59,6 @@ r_i = 0.5
 #      3  - medium resolution (be prepared to wait)
 #      4  - highest resolution for parallel tests
 #      5+ - v. high resolution (parallel only)
-
-problem_size = 1
-
-# For testing and automatic generation of notebook output,
-# over-ride the problem size if the UW_TESTING_LEVEL is set
-
-uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
-if uw_testing_level:
-    try:
-        problem_size = int(uw_testing_level)
-    except ValueError:
-        # Accept the default value
-        pass
 
 if problem_size <= 1:
     cell_size = 0.30
@@ -137,7 +129,7 @@ if uw.mpi.rank == 0:
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_components=1)
-swarm.populate(fill_param=2)
+swarm.populate(fill_param=5)
 
 if uw.mpi.rank == 0:
     print(f"Set values on swarm", flush=True)
@@ -223,7 +215,7 @@ t_step = 0
 # +
 # Update in time
 
-for step in range(0, 250):
+for step in range(0, 10):
 
     stokes.solve(zero_init_guess=False)
     delta_t = stokes.estimate_dt()
@@ -234,7 +226,15 @@ for step in range(0, 250):
         print("Timestep {}, dt {}".format(t_step, delta_t), flush=True)
 
     # advect swarm
-    swarm.advection(v_soln.sym, delta_t)  # , corrector=True)
+    swarm.advection(v_soln.sym, delta_t, corrector=True)
+    
+    if t_step % 1 == 0:
+        savefile = f"output/{expt_name}"
+        mesh.write_checkpoint(savefile, 
+                              meshUpdates=False, 
+                              meshVars=[p_soln,v_soln], 
+                              swarmVars=[material],
+                              index=t_step)
 
     savefile = f"output/{expt_name}.ts{t_step}.h5"
     mesh.save(savefile)
@@ -251,5 +251,12 @@ for step in range(0, 250):
 # mesh.save(savefile)
 # v_soln.save(savefile)
 # mesh.generate_xdmf(savefile)
+
+
+mesh.write_checkpoint(savefile, 
+                      meshUpdates=False, 
+                      meshVars=[p_soln,v_soln], 
+                      swarmVars=[material],
+                      index=t_step)
 
 timing.print_table(display_fraction=0.999)

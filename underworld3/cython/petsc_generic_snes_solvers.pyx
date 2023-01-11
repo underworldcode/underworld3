@@ -1598,15 +1598,6 @@ class SNES_SaddlePoint:
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" 
         self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
 
-
-
-
-
-
-
-
-
-
         self._u = velocityField
         self._p = pressureField
 

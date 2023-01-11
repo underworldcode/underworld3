@@ -38,15 +38,19 @@ import sympy
 
 render = True
 
+cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
+particle_fill = uw.options.getInt("particle_fill", default=7)
+viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
+
+
+
 # +
 lightIndex = 0
 denseIndex = 1
 
 boxLength = 0.9142
 boxHeight = 1.0
-viscosityRatio = 1.0
-stokes_inner_tol = 1e-6
-stokes_outer_tol = 1e-5
+viscosityRatio = viscosity_ratio
 amplitude = 0.02
 offset = 0.2
 model_end_time = 300.0
@@ -59,7 +63,7 @@ k = 2.0 * np.pi / wavelength
 meshbox = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0),
     maxCoords=(boxLength, boxHeight),
-    cellSize=1.0 / 32.0,
+    cellSize=cell_size,
     regular=False,
     qdegree=2,
 )
@@ -83,7 +87,7 @@ swarm = uw.swarm.Swarm(mesh=meshbox)
 material = uw.swarm.IndexSwarmVariable(
     r"M", swarm, indices=2, proxy_degree=1, proxy_continuous=False
 )
-swarm.populate(fill_param=3)
+swarm.populate(fill_param=particle_fill)
 
 
 # +
@@ -110,7 +114,7 @@ density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
 mat_viscosity = np.array([viscosityRatio, 1])
 viscosity = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
 
-if render:
+if render and uw.mpi.size == 1:
 
     import numpy as np
     import pyvista as pv
@@ -189,15 +193,17 @@ stokes.add_dirichlet_bc(
 
 
 # +
-stokes.petsc_options["snes_rtol"] = 1.0e-3
-stokes.petsc_options[
-    "snes_atol"
-] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
+stokes.rtol = 1.0e-3
 
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
-stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
+# stokes.petsc_options["snes_rtol"] = 1.0e-3
+# stokes.petsc_options[
+#     "snes_atol"
+# ] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
+
+# # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
+# # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
+# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
 
 
 # -
@@ -317,16 +323,18 @@ import numpy as np
 import pyvista as pv
 import vtk
 
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "pythreejs"
-pv.global_theme.smooth_shading = False
-pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+if uw.mpi.size == 1:
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.smooth_shading = False
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
 
-pl = pv.Plotter()
+    pl = pv.Plotter()
 
 
 def plot_mesh(filename):
@@ -439,16 +447,12 @@ for step in range(0, 200):
     if t_step % 5 == 0:
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
-    # "Checkpoints"
-    savefile = "output/swarm_rt_{}.h5".format(t_step)
-    meshbox.save(savefile)
-    v_soln.save(savefile)
-    meshbox.generate_xdmf(savefile)
+        # "Checkpoints"
+        savefile = f"output/swarm_rt_xy"    
+        meshbox.write_checkpoint(savefile, 
+                              meshUpdates=False, 
+                              meshVars=[p_soln,v_soln, m_cont], 
+                              index=step)
+
 
     t_step += 1
-
-# -
-savefile = "output/swarm_rt.h5".format(step)
-meshbox.save(savefile)
-v_soln.save(savefile)
-meshbox.generate_xdmf(savefile)

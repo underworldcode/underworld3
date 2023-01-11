@@ -70,12 +70,12 @@ import petsc4py
 from petsc4py import PETSc
 import mpi4py
 
+os.environ['UW_TIMING_ENABLE'] = "1"
+
 import underworld3 as uw
 import numpy as np
 import sympy
 import os
-
-os.environ['UW_TIMING_ENABLE'] = "1"
 
 if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)

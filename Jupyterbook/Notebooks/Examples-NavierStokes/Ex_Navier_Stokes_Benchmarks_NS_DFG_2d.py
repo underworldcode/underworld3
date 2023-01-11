@@ -31,42 +31,51 @@
 #
 #
 
-# +
-model = 4
-
-if model == 1:
-    U0 = 0.3
-    expt_name = "NS_benchmark_DFG2d_1"
-    
-elif model == 2:
-    U0 = 0.3
-    expt_name = "NS_benchmark_DFG2d_1_ss"
-
-elif model == 3:
-    U0 = 1.5
-    expt_name = "NS_benchmark_DFG2d_2iii"
-
-elif model == 4:
-    U0 = 3.75
-    expt_name = "NS_test_Re_250"
-    
-elif model == 5:
-    U0 = 15
-    expt_name = "NS_test_Re_1000"
-# -
-
+import os
 import petsc4py
 import underworld3 as uw
 import numpy as np
 import sympy
 
 # +
+# Parameters that define the notebook
+# These can be set when launching the script as
+# mpirun python3 scriptname -uw_resolution=0.1 etc 
+
+resolution = uw.options.getReal("model_resolution", default=0.1)
+model = uw.options.getInt("model_number", default=1)
+
+# +
+if model == 1:
+    U0 = 0.3
+    expt_name = f"NS_benchmark_DFG2d_1_{resolution}"
+    
+elif model == 2:
+    U0 = 0.3
+    expt_name = f"NS_benchmark_DFG2d_1_ss_{resolution}"
+
+elif model == 3:
+    U0 = 1.5
+    expt_name = f"NS_benchmark_DFG2d_2iii_{resolution}"
+
+elif model == 4:
+    U0 = 3.75
+    expt_name = f"NS_test_Re_250_{resolution}"
+    
+elif model == 5:
+    U0 = 15
+    expt_name = f"NS_test_Re_1000_{resolution}"
+# -
+
+os.makedirs(".meshes", exist_ok=True)
+
+# +
 import pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = 0.033
-csize_circle = 0.015
+csize = resolution
+csize_circle = 0.5 * csize
 res = csize_circle
 
 width = 2.2
@@ -103,9 +112,13 @@ if uw.mpi.rank == 0:
         geom.add_physical(domain.surface, label="Elements")
 
         geom.generate_mesh(dim=2, verbose=False)
-        geom.save_geometry("ns_pipe_flow.msh")
+        geom.save_geometry(f".meshes/ns_pipe_flow_{resolution}.msh")
 
-pipemesh = uw.discretisation.Mesh("ns_pipe_flow.msh", qdegree=3)
+pipemesh = uw.discretisation.Mesh(f".meshes/ns_pipe_flow_{resolution}.msh", 
+                                  markVertices=True, 
+                                  useMultipleTags=True, 
+                                  useRegions=True,
+                                  qdegree=3)
 pipemesh.dm.view()
 
 
@@ -221,7 +234,10 @@ navier_stokes.add_dirichlet_bc((0.0, 0.0), "top", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom", (0, 1))
 navier_stokes.add_dirichlet_bc((Vb, 0.0), "left", (0, 1))
 
+# -
 
+
+navier_stokes._setup_terms()
 
 # + tags=[]
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
@@ -241,7 +257,7 @@ with swarm.access(v_star, remeshed, X_0):
 
 swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
 
-# + tags=[] jupyter={"outputs_hidden": true}
+# + tags=[]
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
@@ -258,7 +274,7 @@ if uw.mpi.size == 1:
     pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
     pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read("ns_pipe_flow.msh")
+    pvmesh = pv.read(f".meshes/ns_pipe_flow_{resolution}.msh")
 
     #     points = np.zeros((t_soln.coords.shape[0],3))
     #     points[:,0] = t_soln.coords[:,0]
@@ -326,15 +342,17 @@ if uw.mpi.size == 1:
 
     pl.show()
 # +
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [1250, 1000]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = True
-# pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-# pv.global_theme.camera['position'] = [0.0, 0.0, 2.0]
+if uw.mpi.size == 1:
 
-pl = pv.Plotter()
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [1250, 1000]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+    # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
+    # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0]
+
+    pl = pv.Plotter()
 
 
 def plot_V_mesh(filename):
@@ -348,7 +366,7 @@ def plot_V_mesh(filename):
         ## Plotting into existing pl (memory leak in pyvista)
         pl.clear()
         
-        pvmesh = pv.read("ns_pipe_flow.msh")
+        pvmesh = pv.read(f".meshes/ns_pipe_flow_{resolution}.msh")
 
         with passive_swarm.access():
             points = np.zeros((passive_swarm.data.shape[0], 3))
@@ -491,23 +509,25 @@ for step in range(0, 250):
     if ts % 1 == 0:
         nodal_vorticity_from_v.solve()
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name, ts))
+        
+        
+        savefile = f"output/{expt_name}"
+        pipemesh.write_checkpoint(savefile, 
+                                  meshUpdates=False, 
+                                  meshVars=[p_soln,v_soln], 
+                                  index=ts)
 
-        # savefile = "output/{}_ts_{}.h5".format(expt_name,step)
-        # pipemesh.save(savefile)
-        # v_soln.save(savefile)
-        # p_soln.save(savefile)
-        # vorticity.save(savefile)
-        # pipemesh.generate_xdmf(savefile)
-
+        
     ts += 1
 
 
 # +
 # check the mesh if in a notebook / serial
 
-pl.close()
 
 if uw.mpi.size == 1:
+    
+    pl.close()
 
     import numpy as np
     import pyvista as pv
@@ -521,7 +541,7 @@ if uw.mpi.size == 1:
     # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
     # pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read("ns_pipe_flow.msh")
+    pvmesh = pv.read(f".meshes/ns_pipe_flow_{resolution}.msh")
 
     #     points = np.zeros((t_soln.coords.shape[0],3))
     #     points[:,0] = t_soln.coords[:,0]
@@ -606,5 +626,4 @@ if uw.mpi.size == 1:
 ## Pressure difference at front/rear of the cylinder should be 117
 
 p = uw.function.evaluate(p_soln.fn, np.array([(0.15, 0.2), (0.25, 0.2)]))
-
 p[0] - p[1]
