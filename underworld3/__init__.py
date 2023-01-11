@@ -16,7 +16,10 @@ class VarType(_Enum):
     MATRIX = 3
     NVECTOR = 4
     COMPOSITE = 5
-    OTHER = 6  # add as required
+    TENSOR = 6
+    SYM_TENSOR = 7
+    OTHER = 8  # add as required
+
 
 # Needed everywhere
 from underworld3.utilities import _api_tools
@@ -96,3 +99,8 @@ __pdoc__["function.analytic"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
+
+
+## Add an options dictionary for arbitrary underworld things
+
+options = PETSc.Options("uw_")
