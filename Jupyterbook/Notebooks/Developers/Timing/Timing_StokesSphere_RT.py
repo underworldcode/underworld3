@@ -223,7 +223,7 @@ t_step = 0
 # +
 # Update in time
 
-for step in range(0, 100):
+for step in range(0, 250):
 
     stokes.solve(zero_init_guess=False)
     delta_t = stokes.estimate_dt()
@@ -236,13 +236,20 @@ for step in range(0, 100):
     # advect swarm
     swarm.advection(v_soln.sym, delta_t)  # , corrector=True)
 
+    savefile = f"output/{expt_name}.ts{t_step}.h5"
+    mesh.save(savefile)
+    v_soln.save(savefile)
+    p_soln.save(savefile)
+
+    mesh.generate_xdmf(savefile)
+    
     t_step += 1
 
 # -
 
-savefile = f"output/{expt_name}.ts{t_step}.h5"
-mesh.save(savefile)
-v_soln.save(savefile)
-mesh.generate_xdmf(savefile)
+# savefile = f"output/{expt_name}.ts{t_step}.h5"
+# mesh.save(savefile)
+# v_soln.save(savefile)
+# mesh.generate_xdmf(savefile)
 
 timing.print_table(display_fraction=0.999)

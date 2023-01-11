@@ -216,8 +216,12 @@ stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
 
-savefile = "output/{}_ts_{}.h5".format(expt_name, 0)
-meshball.save(savefile)
-v_soln.save(savefile)
-p_soln.save(savefile)
+
+meshball.write_checkpoint(f"output/{expt_name}", meshUpdates=False, meshVars=[p_soln,v_soln])
+
+
+# savefile = "output/{}_ts_{}.h5".format(expt_name, 0)
+# meshball.save(savefile)
+# v_soln.save(savefile)
+# p_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
