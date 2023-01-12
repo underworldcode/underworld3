@@ -204,26 +204,25 @@ class CoordinateSystem:
             self._r = sympy.Matrix([sympy.symbols(R"r, \theta, \phi")])
 
             x, y, z = self.X
+
             r = sympy.sqrt(x**2 + y**2 + z**2)
-            l1 = sympy.acos(z / r)
-            l2 = sympy.atan2(y, x)
+            th = sympy.acos(z / r)
+            ph = sympy.atan2(y, x)
 
-            self._R = sympy.Matrix([[r, l1, l2]])
-
-            # l1 is longitude, l2 is latitude
+            self._R = sympy.Matrix([[r, th, ph]])
             r1 = self._R[1]
             r2 = self._R[2]
-            self._rRotN_sym = sympy.Matrix(
+            rRotN_sym = sympy.Matrix(
                 [
                     [
                         sympy.sin(r1) * sympy.cos(r2),
                         sympy.sin(r1) * sympy.sin(r2),
-                        sympy.cos(r2),
+                        sympy.cos(r1),
                     ],
                     [
                         sympy.cos(r1) * sympy.cos(r2),
                         sympy.cos(r1) * sympy.sin(r2),
-                        -sympy.cos(r2),
+                        -sympy.sin(r1),
                     ],
                     [
                         -sympy.sin(r2),
@@ -231,9 +230,14 @@ class CoordinateSystem:
                         0,
                     ],
                 ]
-            ).transpose()
+            )
 
-            self._rRotN = self._rRotN_sym.subs((r1, l1), (r2, l2))
+            ## simplify has trouble with all the nested square roots
+            R2 = sympy.simplify(rRotN_sym.applyfunc(lambda a: a**2))
+            R2r = sympy.simplify(R2.applyfunc(lambda a: sympy.sqrt(a)))
+            self._rRotN_sym = R2r
+
+            self._rRotN = self._rRotN_sym.subs((r1, th), (r2, ph))
             self._xRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:
@@ -255,10 +259,9 @@ class CoordinateSystem:
             self._X = sympy.Matrix([[x, y, z]])
             self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
 
-            # l1 is longitude, l2 is latitude
             r1 = self._R[1]
             r2 = self._R[2]
-            self._Rot = sympy.Matrix(
+            self._Rot = sympy.Matrix(  ## Check this next !
                 [
                     [
                         sympy.sin(r1) * sympy.cos(r2),

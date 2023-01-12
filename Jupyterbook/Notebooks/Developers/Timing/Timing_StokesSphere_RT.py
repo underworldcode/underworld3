@@ -51,6 +51,9 @@ particle_fill = uw.options.getInt("particle_fill", default=3)
 viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 
 viscosityRatio = viscosity_ratio
+# -
+
+problem_size=1
 
 # +
 # Define the problem size
