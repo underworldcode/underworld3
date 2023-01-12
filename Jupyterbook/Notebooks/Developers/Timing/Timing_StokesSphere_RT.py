@@ -239,10 +239,21 @@ for step in range(0, 10):
                               swarmVars=[material],
                               index=t_step)
 
+    savefile = f"output/{expt_name}.ts{t_step}.h5"
+    mesh.save(savefile)
+    v_soln.save(savefile)
+    p_soln.save(savefile)
+
+    mesh.generate_xdmf(savefile)
+    
     t_step += 1
 
 # -
 
+# savefile = f"output/{expt_name}.ts{t_step}.h5"
+# mesh.save(savefile)
+# v_soln.save(savefile)
+# mesh.generate_xdmf(savefile)
 
 
 mesh.write_checkpoint(savefile, 
