@@ -28,11 +28,16 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
     
     '''
     
+    if h5py.h5.get_config().mpi == False:
+        import warnings
+        warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+
     if not isinstance(fields, list):
         raise RuntimeError("`swarm_h5()` function parameter `fields` does not appear to be a list.")
+
         
-    elif h5py.h5.get_config().mpi == False and size > 1:
-        raise RuntimeError("Unable to save swarm in parallel due to hdf5 installed for serial IO only. To check, 'h5py.h5.get_config().mpi' should return 'True' for parallel IO")
+    # elif h5py.h5.get_config().mpi == False and uw.mpi.size > 1:
+    #     raise RuntimeError("Unable to save swarm in parallel due to hdf5 installed for serial IO only. To check, 'h5py.h5.get_config().mpi' should return 'True' for parallel IO")
         
     else:     
         ### save the swarm particle location
@@ -41,9 +46,23 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
                 with swarm.access():
                     h5f.create_dataset('coordinates', data=swarm.data[:])
         else:
-            with h5py.File(f'{outputPath}swarm-{timestep:04d}.h5', 'w') as h5f:
-                 with swarm.access():
-                    h5f.create_dataset('coordinates', data=swarm.data[:])
+            with swarm.access():
+                if rank == 0:
+                    print(f'start swarm on {rank}')
+                    with h5py.File(f'{outputPath}swarm-{timestep:04d}.h5', 'w') as h5f:
+                        h5f.create_dataset('coordinates', data=swarm.data[:], chunks=True, maxshape=(None,swarm.data.shape[1]))
+                    print(f'finish swarm on {rank}')
+
+                comm.barrier()
+                for i in range(1, size):
+                    if rank == i:
+                        print(f'start swarm on {rank}')
+                        with h5py.File(f'{outputPath}swarm-{timestep:04d}.h5', 'a') as h5f:
+                            h5f['coordinates'].resize((h5f['coordinates'].shape[0] + swarm.data.shape[0]), axis=0)
+                            h5f['coordinates'][-swarm.data.shape[0]:] = swarm.data[:]
+                        print(f'finish swarm on {rank}')
+                    comm.barrier()
+                comm.barrier()
 
         #### Generate a h5 file for each field
         if fields != None:
@@ -53,9 +72,25 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
                         with swarm.access(i):
                             h5f.create_dataset('data', data=i.data[:])
                 else:
-                    with h5py.File(f'{outputPath}{i.name}-{timestep:04d}.h5', 'w') as h5f:
-                        with swarm.access(i):
-                            h5f.create_dataset('data', data=i.data[:])
+                    with swarm.access(i):
+                        if rank == 0: 
+                            print(f'start {i.name} on {rank}')
+                            with h5py.File(f'{outputPath}{i.name}-{timestep:04d}.h5', 'w') as h5f:
+                                h5f.create_dataset('data', data=i.data[:], chunks=True, maxshape=(None,i.data.shape[1]))
+                            print(f'finish {i.name} on {rank}')
+                        comm.barrier()  
+                        for proc in range(1, size):
+                            if rank == proc:          
+                                print(f'start {i.name} on {rank}')
+                                with h5py.File(f'{outputPath}{i.name}-{timestep:04d}.h5', 'a') as h5f:
+                                    h5f['data'].resize((h5f['data'].shape[0] + i.data.shape[0]), axis=0)
+                                    h5f['data'][-i.data.shape[0]:] = i.data[:] 
+                                print(f'finish {i.name} on {rank}')
+                            comm.barrier()
+                        comm.barrier() 
+
+            print(i.name + ' added')    
+
         else:
             pass
 
@@ -136,5 +171,3 @@ def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
             xdmf.write('</Grid>\n')
             xdmf.write('</Domain>\n')
             xdmf.write('</Xdmf>\n')
-            
-    comm.barrier()
