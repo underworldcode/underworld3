@@ -1087,6 +1087,31 @@ class _MeshVariable(_api_tools.Stateful):
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self._gvec)
 
+    @timing.routine_timer_decorator
+    def load(
+        self,
+        filename: str,
+        data_name: Optional[str] = None,
+    ):
+
+        if data_name is None:
+            data_name = self.clean_name
+
+        ## Should this be in the access manager ?
+
+        with self.mesh.access(self):
+
+            old_name = self._gvec.getName()
+            viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
+            self._gvec.setName(data_name)
+            self._gvec.load(viewer)
+            self._gvec.setName(old_name)
+
+            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+            subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+
+        return
+
     @property
     def fn(self) -> sympy.Basic:
         """

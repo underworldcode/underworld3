@@ -45,8 +45,6 @@ if uw.mpi.size == 1:
 else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
 
-options = PETSc.Options()
-options["dm_adaptor"] = "parmmg"
 
 
 # +
@@ -88,9 +86,11 @@ elif problem_size >= 6:
     res = 128
 
 
+# + tags=[]
 # Set size and position of dense sphere.
 sphereRadius = 0.1
 sphereCentre = (0.0, 0.7)
+# -
 
 # define some names for our index
 materialLightIndex = 0

@@ -193,7 +193,7 @@ stokes.constitutive_model.Parameters.viscosity = viscosity
 # buoyancy (magnitude)
 buoyancy = Rayleigh * density  # * (1 - surface_fn) * (1 - base_fn)
 
-unit_vec_r = mesh.CoordinateSystem.unit_e_0
+unit_vec_r = mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]
 
 # Free slip condition by penalizing radial velocity at the surface (non-linear term)
 free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn_a

@@ -196,7 +196,7 @@ with meshball.access(t_soln):
 # -
 
 stokes._setup_terms()
-stokes.solve(zero_init_guess=True
+stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
 
