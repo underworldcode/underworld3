@@ -11,4 +11,5 @@ if not petsc_dir+'/lib/petsc/bin' in sys.path:
     sys.path.append(petsc_dir+'/lib/petsc/bin')
 
 from .uw_petsc_gen_xdmf import *
+from .uw_swarmIO import *
 
