@@ -9,6 +9,8 @@ import underworld3 as uw
 from underworld3.utilities import _api_tools
 import underworld3.timing as timing
 
+import h5py
+
 comm = MPI.COMM_WORLD
 
 from enum import Enum
@@ -219,46 +221,52 @@ class SwarmVariable(_api_tools.Stateful):
     def sym(self):
         return self._meshVar.sym
 
+
     @timing.routine_timer_decorator
     def save(
-        self, filename: str, name: Optional[str] = None, index: Optional[int] = None
+        self, filename: int, timestep: int
     ):
         """
-        Append variable data to the specified mesh
-        checkpoint file. The file must already exist.
 
-        For swarm data, we currently save the proxy
-        variable (so this will fail if the variable has
-        no proxy value). This allows some form of
-        reconstruction of the information on a swarm
-        even if it is not an exact mapping.
-
-        This is not ideal for discontinuous fields.
+        Save the swarm variable to a h5 file.
 
         Parameters
         ----------
         filename :
             The filename of the mesh checkpoint file. It
             must already exist.
-        name :
-            Textual name for dataset. In particular, this
-            will be used for XDMF generation. If not
-            provided, the variable name will be used.
-        index :
-            Not currently supported. An optional index which
-            might correspond to the timestep (for example).
+        timestep :
+            current timestep of the model.
         """
+        if h5py.h5.get_config().mpi == False and comm.size > 1:
+            import warnings
+            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
 
-        # if not proxied, nothing to do. return.
-        if not self._meshVar:
-            if uw.mpi.rank == 0:
-                print("No proxy mesh variable that can be saved", flush=True)
-            return
-
-        self._meshVar.save(filename, name, index)
+        if h5py.h5.get_config().mpi == True:
+            with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
+                with swarm.access(i):
+                    h5f.create_dataset('data', data=self.data[:])
+        else:
+            with self.swarm.access(self):
+                if comm.rank == 0: 
+                    print(f'start {self.name} on {comm.rank}')
+                    with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w') as h5f:
+                        h5f.create_dataset('data', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
+                    print(f'finish {self.name} on {comm.rank}')
+                comm.barrier()  
+                for proc in range(1, comm.size):
+                    if comm.rank == proc:          
+                        print(f'start {self.name} on {comm.rank}')
+                        with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'a') as h5f:
+                            h5f['data'].resize((h5f['data'].shape[0] + self.data.shape[0]), axis=0)
+                            h5f['data'][-self.data.shape[0]:] = self.data[:] 
+                        print(f'finish {self.name} on {comm.rank}')
+                    comm.barrier()
+                comm.barrier() 
 
         return
 
+    @timing.routine_timer_decorator
     def simple_save(self, filename: str):
 
         # if not proxied, nothing to do. return.
@@ -268,6 +276,33 @@ class SwarmVariable(_api_tools.Stateful):
             return
 
         self._meshVar.simple_save(filename)
+
+        return
+
+    @timing.routine_timer_decorator
+    def load(
+        self,
+        filename: str,
+        swarmFilename: str,
+    ):
+        ### open up file with coords on all procs
+        with h5py.File(f'{swarmFilename}', 'r') as h5f:
+            coordinates = h5f['coordinates'][:]
+        ### open up data on all procs
+        with h5py.File(f'{filename}', 'r') as h5f:
+            data = h5f['data'][:]
+
+        ### use the coords to seperate the data on each CPU
+        with self.swarm.access(self):
+            #### this produces a shape mismatch, would be quicker not to do it in a loop
+            # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
+            # # self.data[:] = data[ind]
+
+            ### loops through the coords to load the data
+            for i in self.swarm.data:
+                ind_data  = np.isin(coordinates, i.data).all(axis=1)
+                ind_swarm = np.isin(self.swarm.data, i.data).all(axis=1)
+                self.data[ind_swarm] = data[ind_data]
 
         return
 
@@ -543,6 +578,63 @@ class Swarm(_api_tools.Stateful):
         self.dm.addNPoints(npoints=len(coordinatesArray))
 
         self.dm.setPointCoordinates(coordinatesArray)
+
+        return
+
+    @timing.routine_timer_decorator
+    def save(
+        self, filename: int, timestep: int
+    ):
+        """
+
+        Save the swarm variable to a h5 file.
+
+        Parameters
+        ----------
+        filename :
+            The filename of the mesh checkpoint file. It
+            must already exist.
+        timestep :
+            Timestep of the model.
+
+        """
+        if h5py.h5.get_config().mpi == False and comm.size > 1:
+            import warnings
+            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+
+        if h5py.h5.get_config().mpi == True:
+            with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
+                with self.access():
+                    h5f.create_dataset('coordinates', data=self.data[:])
+        else:
+            with self.access():
+                if comm.rank == 0:
+                    with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w') as h5f:
+                        h5f.create_dataset('coordinates', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
+
+                comm.barrier()
+                for i in range(1, comm.size):
+                    if comm.rank == i:
+                        with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'a') as h5f:
+                            h5f['coordinates'].resize((h5f['coordinates'].shape[0] + self.data.shape[0]), axis=0)
+                            h5f['coordinates'][-self.data.shape[0]:] = self.data[:]
+                    comm.barrier()
+                comm.barrier()
+
+        return
+
+
+    @timing.routine_timer_decorator
+    def load(
+        self,
+        filename: str,
+    ):
+        ### open up file with coords on all procs
+        with h5py.File(f'{filename}', 'r') as h5f:
+            coordinates = h5f['coordinates'][:]
+            
+        #### utilises the UW function for adding a swarm by an array 
+        self.add_particles_with_coordinates(coordinates)
 
         return
 
