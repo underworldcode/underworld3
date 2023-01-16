@@ -224,7 +224,7 @@ class SwarmVariable(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(
-        self, filename: int, timestep: int
+        self, filename: int,
     ):
         """
 
@@ -233,34 +233,36 @@ class SwarmVariable(_api_tools.Stateful):
         Parameters
         ----------
         filename :
-            The filename of the mesh checkpoint file. It
-            must already exist.
-        timestep :
-            current timestep of the model.
+            The filename of the swarm variable to save to disk.
+
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
             import warnings
             warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+        if filename.endswith('.h5') == False:
+            raise RuntimeError("The filename must end with .h5")
+
+
 
         if h5py.h5.get_config().mpi == True:
-            with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
+            with h5py.File(f'{filename[:-3]}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
                 with swarm.access(i):
                     h5f.create_dataset('data', data=self.data[:])
         else:
             with self.swarm.access(self):
                 if comm.rank == 0: 
-                    print(f'start {self.name} on {comm.rank}')
-                    with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w') as h5f:
+                    # print(f'start {self.name} on {comm.rank}')
+                    with h5py.File(f'{filename[:-3]}.h5', 'w') as h5f:
                         h5f.create_dataset('data', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
-                    print(f'finish {self.name} on {comm.rank}')
+                    # print(f'finish {self.name} on {comm.rank}')
                 comm.barrier()  
                 for proc in range(1, comm.size):
                     if comm.rank == proc:          
-                        print(f'start {self.name} on {comm.rank}')
-                        with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'a') as h5f:
+                        # print(f'start {self.name} on {comm.rank}')
+                        with h5py.File(f'{filename[:-3]}.h5', 'a') as h5f:
                             h5f['data'].resize((h5f['data'].shape[0] + self.data.shape[0]), axis=0)
                             h5f['data'][-self.data.shape[0]:] = self.data[:] 
-                        print(f'finish {self.name} on {comm.rank}')
+                        # print(f'finish {self.name} on {comm.rank}')
                     comm.barrier()
                 comm.barrier() 
 
@@ -583,39 +585,39 @@ class Swarm(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(
-        self, filename: int, timestep: int
+        self, filename: int,
     ):
         """
 
-        Save the swarm variable to a h5 file.
+        Save the swarm coordinates to a h5 file.
 
         Parameters
         ----------
         filename :
-            The filename of the mesh checkpoint file. It
-            must already exist.
-        timestep :
-            Timestep of the model.
+            The filename of the swarm checkpoint file to save to disk.
+
 
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
             import warnings
             warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+        if filename.endswith('.h5') == False:
+            raise RuntimeError("The filename must end with .h5")
 
         if h5py.h5.get_config().mpi == True:
-            with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
+            with h5py.File(f'{filename[:-3]}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
                 with self.access():
                     h5f.create_dataset('coordinates', data=self.data[:])
         else:
             with self.access():
                 if comm.rank == 0:
-                    with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'w') as h5f:
+                    with h5py.File(f'{filename[:-3]}.h5', 'w') as h5f:
                         h5f.create_dataset('coordinates', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
 
                 comm.barrier()
                 for i in range(1, comm.size):
                     if comm.rank == i:
-                        with h5py.File(f'{filename[:-3]}-{timestep:04d}.h5', 'a') as h5f:
+                        with h5py.File(f'{filename[:-3]}.h5', 'a') as h5f:
                             h5f['coordinates'].resize((h5f['coordinates'].shape[0] + self.data.shape[0]), axis=0)
                             h5f['coordinates'][-self.data.shape[0]:] = self.data[:]
                     comm.barrier()

@@ -41,12 +41,12 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
         
     else:     
         ### save the swarm particle location
-        swarm.save(filename=f'{outputPath}swarm.h5', timestep=timestep)
+        swarm.save(filename=f'{outputPath}swarm-{timestep:04d}.h5')
 
         #### Generate a h5 file for each field
         if fields != None:
-            for i in fields:
-                i.save(filename=f'{outputPath}{i.name}.h5', timestep=timestep)
+            for field in fields:
+                field.save(filename=f'{outputPath}{field.name}-{timestep:04d}.h5')
 
 
 def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
@@ -70,9 +70,9 @@ def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
     if not isinstance(fields, list):
         raise RuntimeError("`swarm_xdmf()` function parameter `fields` does not appear to be a list.")
     
-    for i in fields:
-        if not os.path.exists(f'{outputPath}{i.name}-{timestep:04d}.h5'):
-            raise RuntimeError(f"`swarm_xdmf()` could not find '{i.name}-{timestep:04d}.h5'.") 
+    for field in fields:
+        if not os.path.exists(f'{outputPath}{field.name}-{timestep:04d}.h5'):
+            raise RuntimeError(f"`swarm_xdmf()` could not find '{field.name}-{timestep:04d}.h5'.") 
             
     if rank == 0:
         ''' only need to combine the h5 to a single xdmf on one proc '''
@@ -102,19 +102,19 @@ def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
 
             # Write the attribute element for the field
             if fields != None:
-                for i in fields:
-                    with h5py.File(f'{outputPath}{i.name}-{timestep:04d}.h5', "r") as h5f:
+                for field in fields:
+                    with h5py.File(f'{outputPath}{field.name}-{timestep:04d}.h5', "r") as h5f:
                         if h5f['data'].dtype == np.int32:
-                            xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{i.name}">\n')
+                            xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
                             xdmf.write(f'			<DataItem Format="HDF" NumberType="Int" Precision="4" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
                         elif h5f['data'].shape[1] == 1:
-                            xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{i.name}">\n')
+                            xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
                             xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
                         elif h5f['data'].shape[1] == 2 or h5f['data'].shape[1] == 3:
-                            xdmf.write(f'	<Attribute Type="Vector" Center="Node" Name="{i.name}">\n')
+                            xdmf.write(f'	<Attribute Type="Vector" Center="Node" Name="{field.name}">\n')
                             xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
                         else:
-                            xdmf.write(f'	<Attribute Type="Tensor" Center="Node" Name="{i.name}">\n')
+                            xdmf.write(f'	<Attribute Type="Tensor" Center="Node" Name="{field.name}">\n')
                             xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
 
                         xdmf.write('	</Attribute>\n')
@@ -126,15 +126,6 @@ def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
             xdmf.write('</Grid>\n')
             xdmf.write('</Domain>\n')
             xdmf.write('</Xdmf>\n')
-
-
-
-
-def load_swarm_field(filename, swarm):
-    with h5py.File(f'{filename}', 'r') as h5f:
-        data = h5f['data'][:]
-
-    swarm.data[:,0] 
 
 
 
