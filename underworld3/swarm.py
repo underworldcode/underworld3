@@ -238,7 +238,8 @@ class SwarmVariable(_api_tools.Stateful):
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
             import warnings
-            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+            if comm.rank == 0:
+                warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
 
@@ -599,8 +600,9 @@ class Swarm(_api_tools.Stateful):
 
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
-            import warnings
-            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
+            if comm.rank == 0:
+                import warnings
+                warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
 

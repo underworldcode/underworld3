@@ -27,18 +27,10 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
     <<<<
     
     '''
-    
-    if h5py.h5.get_config().mpi == False and size > 1:
-        import warnings
-        warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors")
 
     if not isinstance(fields, list):
         raise RuntimeError("`swarm_h5()` function parameter `fields` does not appear to be a list.")
 
-        
-    # elif h5py.h5.get_config().mpi == False and uw.mpi.size > 1:
-    #     raise RuntimeError("Unable to save swarm in parallel due to hdf5 installed for serial IO only. To check, 'h5py.h5.get_config().mpi' should return 'True' for parallel IO")
-        
     else:     
         ### save the swarm particle location
         swarm.save(filename=f'{outputPath}swarm-{timestep:04d}.h5')
@@ -75,7 +67,7 @@ def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
             raise RuntimeError(f"`swarm_xdmf()` could not find '{field.name}-{timestep:04d}.h5'.") 
             
     if rank == 0:
-        ''' only need to combine the h5 to a single xdmf on one proc '''
+        ''' only need to combine the h5 files to a single xdmf on one proc '''
         
         with open(f"{outputPath}swarm-{timestep:04d}.xmf", "w") as xdmf:
             # Write the XDMF header
