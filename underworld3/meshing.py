@@ -26,6 +26,7 @@ def UnstructuredSimplexBox(
     qdegree: int = 2,
     regular: bool = False,
     filename=None,
+    verbosity=0,
 ):
 
     """
@@ -64,7 +65,7 @@ def UnstructuredSimplexBox(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Box")
 
         # Create Box Geometry
@@ -201,6 +202,7 @@ def StructuredQuadBox(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    verbosity=0,
 ):
 
     """
@@ -225,7 +227,7 @@ def StructuredQuadBox(
     boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 0)
+    gmsh.option.setNumber("General.Verbosity", verbosity)
     gmsh.model.add("Box")
 
     # Create Box Geometry
@@ -439,6 +441,7 @@ def SphericalShell(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    verbosity=0,
 ):
 
     boundaries = {"Lower": 11, "Upper": 12}
@@ -456,7 +459,7 @@ def SphericalShell(
 
     if uw.mpi.rank == 0:
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Sphere")
 
         p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -549,6 +552,7 @@ def Annulus(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    verbosity=0,
 ):
 
     boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
@@ -569,7 +573,7 @@ def Annulus(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Annulus")
 
         p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -654,6 +658,7 @@ def AnnulusFixedStars(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    verbosity=0,
 ):
 
     boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
@@ -672,7 +677,7 @@ def AnnulusFixedStars(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("AnnulusFS")
 
         p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -781,6 +786,7 @@ def CubedSphere(
     qdegree: int = 2,
     simplex: bool = False,
     filename=None,
+    verbosity=0,
 ):
 
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
@@ -803,7 +809,7 @@ def CubedSphere(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Cubed Sphere")
 
@@ -942,6 +948,7 @@ def SegmentedSphericalSurface2D(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    verbosity=0,
 ):
 
     if filename is None:
@@ -963,7 +970,7 @@ def SegmentedSphericalSurface2D(
         options["dm_plex_gmsh_mark_vertices"] = None
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Segmented Sphere 2D Surface")
 
         # Mesh like an orange
@@ -1097,6 +1104,7 @@ def SegmentedSphere(
     qdegree: int = 2,
     filename=None,
     coordinatesNative=False,
+    verbosity=0,
 ):
 
     if coordinatesNative == True:
@@ -1124,7 +1132,7 @@ def SegmentedSphere(
         ## Follow the lead of the cubed sphere and make copies of a segment
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", 0)
+        gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Segmented Sphere 3D")
 

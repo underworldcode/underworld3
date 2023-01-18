@@ -208,10 +208,10 @@ class CoordinateSystem:
             r = sympy.sqrt(x**2 + y**2 + z**2)
             th = sympy.acos(z / r)
             ph = sympy.atan2(y, x)
-
             self._R = sympy.Matrix([[r, th, ph]])
-            r1 = self._R[1]
-            r2 = self._R[2]
+
+            r1 = self._r[1]
+            r2 = self._r[2]
             rRotN_sym = sympy.Matrix(
                 [
                     [
@@ -232,12 +232,32 @@ class CoordinateSystem:
                 ]
             )
 
-            ## simplify has trouble with all the nested square roots
-            R2 = sympy.simplify(rRotN_sym.applyfunc(lambda a: a**2))
-            R2r = sympy.simplify(R2.applyfunc(lambda a: sympy.sqrt(a)))
-            self._rRotN_sym = R2r
+            rz = sympy.sqrt(x**2 + y**2)
+            r_x_rz = sympy.sqrt((x**2 + y**2 + z**2) * (x**2 + y**2))
 
-            self._rRotN = self._rRotN_sym.subs((r1, th), (r2, ph))
+            rRotN = sympy.Matrix(
+                [
+                    [
+                        x / r,
+                        y / r,
+                        z / r,
+                    ],
+                    [
+                        (x * z) / r_x_rz,
+                        (y * z) / r_x_rz,
+                        -(x**2 + y**2) / r_x_rz,
+                    ],
+                    [
+                        -y / rz,
+                        +x / rz,
+                        0,
+                    ],
+                ]
+            )
+
+            self._rRotN_sym = rRotN_sym
+            self._rRotN = rRotN
+
             self._xRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:

@@ -1592,7 +1592,6 @@ class SNES_SaddlePoint:
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
         self.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
 
-
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
         self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" 

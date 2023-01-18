@@ -45,43 +45,42 @@ free_slip_upper = True
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
-
-# For testing and automatic generation of notebook output,
-# over-ride the problem size if the UW_TESTING_LEVEL is set
-
-uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
-if uw_testing_level:
-    try:
-        problem_size = int(uw_testing_level)
-    except ValueError:
-        # Accept the default value
-        pass
     
+# Earth-like ratio of inner to outer
 r_o = 1.0
-r_i = 0.5
+r_i = 0.547
 
+problem_size = uw.options.getInt("problem_size", default=1)
+
+print(f"problem size {problem_size}")
 
 if problem_size < 0:
     problem_size = -problem_size
     skip_gmsh = True
 else:
     skip_gmsh = False
+       
+if problem_size <= 1: 
+	element_kms = 300
+elif problem_size == 2: 
+	element_kms = 150
+elif problem_size == 3: 
+	element_kms = 100
+elif problem_size == 4: 
+	element_kms = 50
+elif problem_size == 5: 
+	element_kms = 25
+elif problem_size == 6: 
+	element_kms = 10
+elif problem_size == 7: 
+	element_kms = 5
+elif problem_size >= 8: 
+	element_kms = 1
+    
+cell_size = element_kms / 6370
+res = cell_size
 
-if problem_size <= 1:
-    res = 0.05
-elif problem_size == 2:
-    res = 0.025
-elif problem_size == 3:
-    res = 0.01
-elif problem_size == 4:
-    res = 0.005
-elif problem_size == 5:
-    res = 0.002
-elif problem_size == 6:
-    res = 0.001
-elif problem_size == 7:
-    res = 0.0005
+element_kms, res
 
 # +
 from underworld3 import timing
@@ -89,10 +88,14 @@ from underworld3 import timing
 timing.reset()
 timing.start()
 
+if uw.mpi.rank == 0:
+	print(f"2d mesh generation @ {element_kms}km", flush=True)
+
+
 # +
 # Annulus first, then sphere !
 
-tmp_filename = f".meshes/uw_mesh_h5_test2d_res{problem_size}.msh"
+tmp_filename = f".meshes/uw_mesh_h5_test2d_res{element_kms}km.msh"
 
 if not skip_gmsh:
     mesh1 = uw.meshing.Annulus(radiusOuter=r_o, 
@@ -121,26 +124,35 @@ timing.print_table(display_fraction=0.999)
 timing.reset()
 timing.start()
 
-# +
-if problem_size <= 1: 
-    cell_size = 0.30
-elif problem_size == 2: 
-    cell_size = 0.15
-elif problem_size == 3: 
-    cell_size = 0.05
-elif problem_size == 4: 
-    cell_size = 0.03
-elif problem_size == 5: 
-    cell_size = 0.02
-elif problem_size == 6: 
-    cell_size = 0.01
-elif problem_size == 7: 
-    cell_size = 0.005
-    
-res = cell_size
+## "Standard" Resolution Meshes:
 
 # +
-tmp_filename = f".meshes/uw_mesh_h5_test3d_res{problem_size}.msh"
+if problem_size <= 1: 
+	element_kms = 1000 
+elif problem_size == 2: 
+	element_kms = 500 
+elif problem_size == 3: 
+	element_kms = 333 
+elif problem_size == 4: 
+	element_kms = 200 
+elif problem_size == 5: 
+	element_kms = 100
+elif problem_size == 6: 
+	element_kms = 50
+elif problem_size == 7: 
+	element_kms = 33
+elif problem_size >= 8: 
+	element_kms = 25
+    
+cell_size = element_kms / 6370
+res = cell_size
+
+if uw.mpi.rank == 0:
+	print(f"3d mesh generation @ {element_kms}km", flush=True)
+
+
+# +
+tmp_filename = f".meshes/uw_mesh_h5_test3d_res{element_kms}km.msh"
 
 if not skip_gmsh:
     mesh3 = uw.meshing.SphericalShell(
@@ -148,13 +160,14 @@ if not skip_gmsh:
         radiusOuter=r_o, 
         cellSize=res, 
         qdegree=2,
-        filename = tmp_filename
+        filename = tmp_filename,
+        verbosity=0,
     )
 
     if uw.mpi.rank == 0:
         print("3d mesh generation complete", flush=True)
 
-    mesh1.dm.view()
+    mesh3.dm.view()
 
 if uw.mpi.rank == 0:
     print("Read back 3d mesh", flush=True)
@@ -165,5 +178,7 @@ mesh4 = uw.discretisation.Mesh(tmp_filename+".h5")
 mesh4.dm.view()
 
 timing.print_table(display_fraction=1)
+
+mesh3.CoordinateSystem.unit_e_2
 
 
