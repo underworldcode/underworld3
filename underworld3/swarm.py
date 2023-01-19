@@ -288,24 +288,19 @@ class SwarmVariable(_api_tools.Stateful):
         filename: str,
         swarmFilename: str,
     ):
-        ### open up file with coords on all procs
-        with h5py.File(f'{swarmFilename}', 'r') as h5f:
-            coordinates = h5f['coordinates'][:]
-        ### open up data on all procs
-        with h5py.File(f'{filename}', 'r') as h5f:
-            data = h5f['data'][:]
+        ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
+        with h5py.File(f'{filename}', 'r') as h5f_data, h5py.File(f'{swarmFilename}', 'r') as h5f_swarm:
+            ### use the coords to seperate the data on each CPU
+            with self.swarm.access(self):
+                #### this produces a shape mismatch, would be quicker not to do it in a loop
+                # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
+                # # self.data[:] = data[ind]
 
-        ### use the coords to seperate the data on each CPU
-        with self.swarm.access(self):
-            #### this produces a shape mismatch, would be quicker not to do it in a loop
-            # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
-            # # self.data[:] = data[ind]
-
-            ### loops through the coords to load the data
-            for i in self.swarm.data:
-                ind_data  = np.isin(coordinates, i.data).all(axis=1)
-                ind_swarm = np.isin(self.swarm.data, i.data).all(axis=1)
-                self.data[ind_swarm] = data[ind_data]
+                ### loops through the coords to load the data
+                for coord in self.swarm.data:
+                    ind_data  = np.isin(h5f_swarm['coordinates'][:], coord.data).all(axis=1)
+                    ind_swarm = np.isin(self.swarm.data, coord.data).all(axis=1)
+                    self.data[ind_swarm] = h5f_data['data'][:][ind_data]
 
         return
 
