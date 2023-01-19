@@ -10,6 +10,8 @@ from underworld3.utilities import _api_tools
 import underworld3.timing as timing
 
 import h5py
+import os
+import warnings
 
 comm = MPI.COMM_WORLD
 
@@ -237,7 +239,6 @@ class SwarmVariable(_api_tools.Stateful):
 
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
-            import warnings
             if comm.rank == 0:
                 warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
         if filename.endswith('.h5') == False:
@@ -292,6 +293,12 @@ class SwarmVariable(_api_tools.Stateful):
         with h5py.File(f'{filename}', 'r') as h5f_data, h5py.File(f'{swarmFilename}', 'r') as h5f_swarm:
             ### use the coords to seperate the data on each CPU
             with self.swarm.access(self):
+                var_dtype = self.data.dtype
+                file_dtype = h5f_data['data'][:].dtype
+                if var_dtype != file_dtype:
+                    if comm.rank == 0:
+                        warnings.warn(f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.", stacklevel=2)
+
                 #### this produces a shape mismatch, would be quicker not to do it in a loop
                 # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
                 # # self.data[:] = data[ind]
@@ -596,7 +603,6 @@ class Swarm(_api_tools.Stateful):
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
             if comm.rank == 0:
-                import warnings
                 warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
