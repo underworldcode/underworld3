@@ -226,7 +226,7 @@ class SwarmVariable(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(
-        self, filename: int,
+        self, filename: int, compression: Optional[bool] = False, compressionType: Optional[str] = 'gzip'
     ):
         """
 
@@ -236,26 +236,38 @@ class SwarmVariable(_api_tools.Stateful):
         ----------
         filename :
             The filename of the swarm variable to save to disk.
+        compression :
+            Add compression to the h5 files (saves space but increases write times with increasing no. of processors)
+        compressionType :
+            Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compression also needs to be set to 'True'.
 
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1:
             if comm.rank == 0:
                 warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
+        if compression == True:
+            if comm.rank == 0 and comm.size > 1:
+                warnings.warn("Compression will slow down write times on multiple processors.", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
-
 
 
         if h5py.h5.get_config().mpi == True:
             with h5py.File(f'{filename[:-3]}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
                 with swarm.access(i):
-                    h5f.create_dataset('data', data=self.data[:])
+                    if compression == True:
+                        h5f.create_dataset('data', data=self.data[:], compression=compressionType)
+                    else:
+                        h5f.create_dataset('data', data=self.data[:])
         else:
             with self.swarm.access(self):
                 if comm.rank == 0: 
                     # print(f'start {self.name} on {comm.rank}')
                     with h5py.File(f'{filename[:-3]}.h5', 'w') as h5f:
-                        h5f.create_dataset('data', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
+                        if compression == True:
+                            h5f.create_dataset('data', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]), compression=compressionType)
+                        else:
+                            h5f.create_dataset('data', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
                     # print(f'finish {self.name} on {comm.rank}')
                 comm.barrier()  
                 for proc in range(1, comm.size):
@@ -588,7 +600,7 @@ class Swarm(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def save(
-        self, filename: int,
+        self, filename: int, compression: Optional[bool] = False, compressionType: Optional[str] = 'gzip'
     ):
         """
 
@@ -598,6 +610,11 @@ class Swarm(_api_tools.Stateful):
         ----------
         filename :
             The filename of the swarm checkpoint file to save to disk.
+        compression :
+            Add compression to the h5 files (saves space but increases write times with increasing no. of processors)
+        compressionType :
+            Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compression also needs to be set to 'True'.
+
 
 
         """
@@ -610,12 +627,18 @@ class Swarm(_api_tools.Stateful):
         if h5py.h5.get_config().mpi == True:
             with h5py.File(f'{filename[:-3]}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:
                 with self.access():
-                    h5f.create_dataset('coordinates', data=self.data[:])
+                    if compression == True:
+                        h5f.create_dataset('coordinates', data=self.data[:], compression=compressionType)
+                    else:
+                        h5f.create_dataset('coordinates', data=self.data[:])
         else:
             with self.access():
                 if comm.rank == 0:
                     with h5py.File(f'{filename[:-3]}.h5', 'w') as h5f:
-                        h5f.create_dataset('coordinates', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
+                        if compression == True:
+                            h5f.create_dataset('coordinates', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]), compression=compressionType)
+                        else:
+                            h5f.create_dataset('coordinates', data=self.data[:], chunks=True, maxshape=(None,self.data.shape[1]))
 
                 comm.barrier()
                 for i in range(1, comm.size):
