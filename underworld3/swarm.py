@@ -242,12 +242,10 @@ class SwarmVariable(_api_tools.Stateful):
             Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compression also needs to be set to 'True'.
 
         """
-        if h5py.h5.get_config().mpi == False and comm.size > 1:
-            if comm.rank == 0:
-                warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
-        if compression == True:
-            if comm.rank == 0 and comm.size > 1:
-                warnings.warn("Compression will slow down write times on multiple processors.", stacklevel=2)
+        if h5py.h5.get_config().mpi == False and comm.size > 1 and comm.rank == 0:
+            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
+        if compression == True and comm.rank == 0:
+            warnings.warn("Compression may slow down write times", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
 
@@ -303,23 +301,31 @@ class SwarmVariable(_api_tools.Stateful):
     ):
         ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
         with h5py.File(f'{filename}', 'r') as h5f_data, h5py.File(f'{swarmFilename}', 'r') as h5f_swarm:
-            ### use the coords to seperate the data on each CPU
-            with self.swarm.access(self):
+             with self.swarm.access(self):
                 var_dtype = self.data.dtype
                 file_dtype = h5f_data['data'][:].dtype
+                file_length = h5f_data['data'][:].shape[0]
+
                 if var_dtype != file_dtype:
                     if comm.rank == 0:
                         warnings.warn(f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.", stacklevel=2)
 
-                #### this produces a shape mismatch, would be quicker not to do it in a loop
+            #### this produces a shape mismatch, would be quicker not to do it in a loop
                 # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
                 # # self.data[:] = data[ind]
+            ### loops through the coords to load the data
+                # for coord in self.swarm.data:
+                #     ind_data  = np.isin(h5f_swarm['coordinates'][:], coord.data).all(axis=1)
+                #     ind_swarm = np.isin(self.swarm.data, coord.data).all(axis=1)
+                #     self.data[ind_swarm] = h5f_data['data'][:][ind_data]
+                ### loops through the coords in the file 
+                for i in range(0, file_length):
+                    coord = h5f_swarm['coordinates'][i]
+                    data  = h5f_data['data'][i]
+                    ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
 
-                ### loops through the coords to load the data
-                for coord in self.swarm.data:
-                    ind_data  = np.isin(h5f_swarm['coordinates'][:], coord.data).all(axis=1)
-                    ind_swarm = np.isin(self.swarm.data, coord.data).all(axis=1)
-                    self.data[ind_swarm] = h5f_data['data'][:][ind_data]
+                    self.data[ind_swarm] = data
+                    
 
         return
 
@@ -618,11 +624,12 @@ class Swarm(_api_tools.Stateful):
 
 
         """
-        if h5py.h5.get_config().mpi == False and comm.size > 1:
-            if comm.rank == 0:
-                warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
+        if h5py.h5.get_config().mpi == False and comm.size > 1 and comm.rank == 0:
+            warnings.warn("Collective IO not possible as h5py not available in parallel mode. Switching to sequential. This will be slow for models running on multiple processors", stacklevel=2)
         if filename.endswith('.h5') == False:
             raise RuntimeError("The filename must end with .h5")
+        if compression == True and comm.rank == 0:
+            warnings.warn("Compression may slow down write times", stacklevel=2)
 
         if h5py.h5.get_config().mpi == True:
             with h5py.File(f'{filename[:-3]}.h5', 'w', driver='mpio', comm=MPI.COMM_WORLD) as h5f:

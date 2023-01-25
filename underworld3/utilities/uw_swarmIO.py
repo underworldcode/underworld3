@@ -10,7 +10,7 @@ size = comm.size
 rank = comm.rank
 
 
-def swarm_h5(swarm, timestep, fields=None, outputPath=''):
+def swarm_h5(swarm, timestep, fields=None, outputPath='', compression=False, compressionType='gzip'):
     '''
     Function to save swarm fields to h5 file for checkpointing purposes.
     
@@ -18,11 +18,16 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
     fields : UW swarm variables that contain the data to save. Should be passed as a list.
     timestep : timestep of the model to save
     outputPath : Folder to save the data, can be left undefined to save in the current working directory
+    compression : Whether to compress the h5 files [bool]
+    compressionType : The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.
     
     >>> 
     example usage:
-    
+    without compression:
     swarm_h5(swarm=swarm, fields=[material, strainRate], timestep=0)
+    
+    with compression:
+    swarm_h5(swarm=swarm, fields=[material, strainRate], timestep=0, compression=True, compressionType='gzip')
     
     <<<<
     
@@ -33,12 +38,12 @@ def swarm_h5(swarm, timestep, fields=None, outputPath=''):
 
     else:     
         ### save the swarm particle location
-        swarm.save(filename=f'{outputPath}swarm-{timestep:04d}.h5')
+        swarm.save(filename=f'{outputPath}swarm-{timestep:04d}.h5', compression=compression, compressionType=compressionType)
 
         #### Generate a h5 file for each field
         if fields != None:
             for field in fields:
-                field.save(filename=f'{outputPath}{field.name}-{timestep:04d}.h5')
+                field.save(filename=f'{outputPath}{field.name}-{timestep:04d}.h5', compression=compression, compressionType=compressionType)
 
 
 def swarm_xdmf(timestep, fields=None, outputPath='', time=None):
