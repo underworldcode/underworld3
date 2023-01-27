@@ -169,26 +169,28 @@ def UnstructuredSimplexBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        plex_0 = gmsh2dmplex(
-            uw_filename,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-            comm=PETSc.COMM_SELF,
-        )
+        # plex_0 = gmsh2dmplex(
+        #     uw_filename,
+        #     useMultipleTags=True,
+        #     useRegions=True,
+        #     markVertices=True,
+        #     comm=PETSc.COMM_SELF,
+        # )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
-        viewer(plex_0)
+        # viewer = PETSc.ViewerHDF5().create(
+        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        # )
+        # viewer(plex_0)
 
     # Now do this collectively
-    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
     new_mesh = Mesh(
-        gmsh_plex,
+        uw_filename,
         degree=degree,
         qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
     )
 
     return new_mesh
@@ -412,7 +414,7 @@ def StructuredQuadBox(
         gmsh.model.addPhysicalGroup(3, [volume], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
-    # Generate Mesh
+    # Generate Mesh - probably we should ditch this tmp file stuff
     with tempfile.NamedTemporaryFile(mode="w", suffix=".msh") as fp:
         gmsh.model.mesh.generate(dim)
         gmsh.write(fp.name)
@@ -507,38 +509,38 @@ def SphericalShell(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        plex_0 = gmsh2dmplex(
-            uw_filename,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-            comm=PETSc.COMM_SELF,
-        )
+        # plex_0 = gmsh2dmplex(
+        #     uw_filename,
+        #     useMultipleTags=True,
+        #     useRegions=True,
+        #     markVertices=True,
+        #     comm=PETSc.COMM_SELF,
+        # )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
-        viewer(plex_0)
+        # viewer = PETSc.ViewerHDF5().create(
+        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        # )
+        # viewer(plex_0)
 
     # Now do this collectively
-    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
-
-    new_mesh = Mesh(
-        gmsh_plex,
-        degree=degree,
-        qdegree=qdegree,
-        coordinate_system_type=CoordinateSystemType.SPHERICAL,
-    )
+    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
     # new_mesh = Mesh(
-    #     uw_filename,
+    #     gmsh_plex,
     #     degree=degree,
     #     qdegree=qdegree,
     #     coordinate_system_type=CoordinateSystemType.SPHERICAL,
-    #     useMultipleTags=True,
-    #     useRegions=True,
-    #     markVertices=True,
     # )
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+    )
 
     return new_mesh
 
@@ -621,26 +623,29 @@ def Annulus(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        plex_0 = gmsh2dmplex(
-            uw_filename,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-            comm=PETSc.COMM_SELF,
-        )
+        # plex_0 = gmsh2dmplex(
+        #     uw_filename,
+        #     useMultipleTags=True,
+        #     useRegions=True,
+        #     markVertices=True,
+        #     comm=PETSc.COMM_SELF,
+        # )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
-        viewer(plex_0)
+        # viewer = PETSc.ViewerHDF5().create(
+        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        # )
+        # viewer(plex_0)
 
     # Now do this collectively
-    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
     new_mesh = Mesh(
-        gmsh_plex,
+        uw_filename,
         degree=degree,
         qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
     )
 
@@ -771,6 +776,9 @@ def AnnulusFixedStars(
         gmsh_plex,
         degree=degree,
         qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
     )
 
@@ -914,26 +922,30 @@ def CubedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        plex_0 = gmsh2dmplex(
-            uw_filename,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-            comm=PETSc.COMM_SELF,
-        )
+        # plex_0 = gmsh2dmplex(
+        #     uw_filename,
+        #     useMultipleTags=True,
+        #     useRegions=True,
+        #     markVertices=True,
+        #     comm=PETSc.COMM_SELF,
+        # )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
-        viewer(plex_0)
+        # viewer = PETSc.ViewerHDF5().create(
+        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        # )
+        # viewer(plex_0)
 
     # Now do this collectively
-    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+    # sf, plex = gmsh2dmplex(uw_filename, comm)
 
     new_mesh = Mesh(
-        gmsh_plex,
+        uw_filename,
         degree=degree,
         qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
     )
 
@@ -1071,24 +1083,28 @@ def SegmentedSphericalSurface2D(
         lonlat_vec.array[...] = lonlat.reshape(-1)
         plex_0.setCoordinates(lonlat_vec)
 
+        # Does this get saved by the viewer ?
+        uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+            plex_0, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
+        )
+
         viewer = PETSc.ViewerHDF5().create(
             uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
         )
         viewer(plex_0)
 
     # Now do this collectively
-    gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
-    # This mesh will always be periodic in the longitudinal coordinate
-
-    uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-        gmsh_plex, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
-    )
     new_mesh = Mesh(
-        gmsh_plex,
+        uw_filename + ".h5",
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERE_SURFACE_NATIVE,
+    )
+
+    # This may not be needed
+    uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+        new_mesh.dm, [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
     )
 
     return new_mesh
@@ -1331,6 +1347,8 @@ def SegmentedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+        # We need to build the plex here in order to make some changes
+        # before the mesh gets built
         plex_0 = gmsh2dmplex(
             uw_filename,
             useMultipleTags=True,
@@ -1339,33 +1357,50 @@ def SegmentedSphere(
             comm=PETSc.COMM_SELF,
         )
 
+        if coordinatesNative:
+            xyz_vec = plex_0.getCoordinates()
+            xyz = xyz_vec.array.reshape(-1, 3)
+
+            rthph = np.empty_like(xyz)
+            rthph[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
+            rthph[:, 1] = np.arccos((xyz[:, 2]) / (rthph[:, 0] + 1.0e-6))
+            rthph[:, 2] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-6) - np.pi
+
+            rthph_vec = xyz_vec.copy()
+            rthph_vec.array[...] = rthph.reshape(-1)[...]
+            plex_0.setCoordinates(rthph_vec)
+
+            uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+                plex_0, [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
+            )
+
         viewer = PETSc.ViewerHDF5().create(
             uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
         )
         viewer(plex_0)
 
-    # Now do this collectively
-    plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+    # # Now do this collectively
+    # plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
 
-    if coordinatesNative:
-        xyz_vec = plex.getCoordinates()
-        xyz = xyz_vec.array.reshape(-1, 3)
+    # if coordinatesNative:
+    #     xyz_vec = plex.getCoordinates()
+    #     xyz = xyz_vec.array.reshape(-1, 3)
 
-        rthph = np.empty_like(xyz)
-        rthph[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
-        rthph[:, 1] = np.arccos((xyz[:, 2]) / (rthph[:, 0] + 1.0e-6))
-        rthph[:, 2] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-6) - np.pi
+    #     rthph = np.empty_like(xyz)
+    #     rthph[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
+    #     rthph[:, 1] = np.arccos((xyz[:, 2]) / (rthph[:, 0] + 1.0e-6))
+    #     rthph[:, 2] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-6) - np.pi
 
-        rthph_vec = xyz_vec.copy()
-        rthph_vec.array[...] = rthph.reshape(-1)[...]
-        plex.setCoordinates(rthph_vec)
+    #     rthph_vec = xyz_vec.copy()
+    #     rthph_vec.array[...] = rthph.reshape(-1)[...]
+    #     plex.setCoordinates(rthph_vec)
 
-        uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-            plex, [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
-        )
+    #     uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+    #         plex, [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
+    #     )
 
     return Mesh(
-        plex,
+        uw_filename + ".h5",
         simplex=True,
         degree=degree,
         qdegree=qdegree,

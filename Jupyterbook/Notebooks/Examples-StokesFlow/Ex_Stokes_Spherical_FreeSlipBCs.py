@@ -69,13 +69,13 @@
 import petsc4py
 from petsc4py import PETSc
 import mpi4py
+import os
 
 os.environ['UW_TIMING_ENABLE'] = "1"
 
 import underworld3 as uw
 import numpy as np
 import sympy
-import os
 
 if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)
@@ -91,18 +91,10 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 1
 
-# For testing and automatic generation of notebook output,
-# over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
-if uw_testing_level:
-    try:
-        problem_size = int(uw_testing_level)
-    except ValueError:
-        # Accept the default value
-        pass
+problem_size = uw.options.getInt("problem_size", default=1)
+
 
 # +
 visuals = 1
@@ -157,9 +149,6 @@ p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
 
-
-
-
 # +
 # Create a density structure / buoyancy force
 # gravity will vary linearly from zero at the centre
@@ -174,7 +163,7 @@ gravity_fn = radius_fn
 # Some useful coordinate stuff
 
 x, y, z = meshball.CoordinateSystem.N
-ra, l1, l2 = meshball.CoordinateSystem.xR
+ra, l1, l2 = meshball.CoordinateSystem.R
 
 hw = 1000.0 / res
 surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
@@ -252,7 +241,7 @@ free_slip_penalty_upper = v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
 free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
 
 stokes.bodyforce = unit_rvec * buoyancy_force
-stokes.bodyforce -= 100000 * (free_slip_penalty_upper + free_slip_penalty_lower)
+stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
 stokes.saddle_preconditioner = 1.0
 
@@ -274,7 +263,6 @@ with meshball.access(t_soln):
 
 
 # +
-
 timing.print_table()
 timing.reset()
 timing.start()

@@ -58,15 +58,33 @@ def _from_gmsh(
     else:
         options.delValue("dm_plex_gmsh_mark_vertices")
 
-    gmsh_plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
+    # this process is more efficient done on the root process and then distributed
+    # we do this by saving the mesh as h5 which is more flexible to re-use later
 
-    return gmsh_plex
+    if uw.mpi.rank == 0:
+        print(f"Processing gmsh file {filename}")
+
+        plex_0 = PETSc.DMPlex().createFromFile(filename, comm=PETSc.COMM_SELF)
+
+        plex_0.setName("uw_mesh")
+        plex_0.markBoundaryFaces("All_Boundaries", 1001)
+
+        viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+        viewer(plex_0)
+        viewer.destroy()
+
+        print(f"Mesh saved to {filename}.h5")
+
+    # Now we have an h5 file and we can hand this to _from_plexh5
+
+    return _from_plexh5(filename + ".h5", comm, return_sf=True)
 
 
 @timing.routine_timer_decorator
 def _from_plexh5(
     filename,
     comm=None,
+    return_sf=False,
 ):
     """Read a dmplex .h5 file from `filename` provided.
 
@@ -74,9 +92,25 @@ def _from_plexh5(
     COMM_WORLD).
     """
 
-    gmsh_plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
+    if comm == None:
+        comm = PETSc.COMM_WORLD
 
-    return gmsh_plex
+    viewer = PETSc.ViewerHDF5().create(filename, "r", comm=comm)
+
+    # h5plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
+    h5plex = PETSc.DMPlex().create(comm=comm)
+    sf0 = h5plex.topologyLoad(viewer)
+    h5plex.coordinatesLoad(viewer, sf0)
+    h5plex.labelsLoad(viewer, sf0)
+
+    # Do this as well
+    h5plex.setName("uw_mesh")
+    h5plex.markBoundaryFaces("All_Boundaries", 1001)
+
+    if not return_sf:
+        return h5plex
+    else:
+        return sf0, h5plex
 
 
 class Mesh(_api_tools.Stateful):
@@ -95,6 +129,7 @@ class Mesh(_api_tools.Stateful):
         useRegions=None,
         useMultipleTags=None,
         filename=None,
+        distribute=True,
         *args,
         **kwargs,
     ):
@@ -102,6 +137,7 @@ class Mesh(_api_tools.Stateful):
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             name = "plexmesh"
             self.dm = plex_or_meshfile
+            self.sf0 = None  # Should we build one ?
         else:
             comm = kwargs.get("comm", PETSc.COMM_WORLD)
             name = plex_or_meshfile
@@ -109,7 +145,7 @@ class Mesh(_api_tools.Stateful):
 
             # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
-                self.dm = _from_gmsh(
+                self.sf0, self.dm = _from_gmsh(
                     plex_or_meshfile,
                     comm,
                     markVertices=markVertices,
@@ -117,7 +153,7 @@ class Mesh(_api_tools.Stateful):
                     useMultipleTags=useMultipleTags,
                 )
             elif ext.lower() == ".h5":
-                self.dm = _from_plexh5(plex_or_meshfile, comm)
+                self.sf0, self.dm = _from_plexh5(plex_or_meshfile, comm, return_sf=True)
 
             else:
                 raise RuntimeError(
@@ -126,8 +162,29 @@ class Mesh(_api_tools.Stateful):
                 )
 
         self.filename = filename
-        self.dm.markBoundaryFaces("All_Boundaries", 1001)
-        self.dm.distribute()
+
+        ## Does this work or does it mess stuff up if the dm is already distributed
+        ## by reading in from the file (etc)
+
+        # print(f"dm distributed ? {self.dm.isDistributed()}", flush=True)
+        # self.dm.view()
+
+        # isset_ordering = self.dm.getOrdering(PETSc.Mat.OrderingType.NATURAL)
+        # self.dm = self.dm.permute(isset_ordering)
+
+        self.dm0 = self.dm.clone()
+
+        self.sf1 = self.dm.distribute()
+
+        if self.sf1:
+            self.sf = self.sf0.compose(self.sf1)
+        else:
+            self.sf = self.sf0
+
+        self.dm.setName("uw_mesh")
+
+        # # print(f"dm distributed ? {self.dm.isDistributed()}", flush=True)
+        # self.dm.view()
 
         Mesh.mesh_instances += 1
 
@@ -183,7 +240,8 @@ class Mesh(_api_tools.Stateful):
         # This is defined now since we cannot make a new one
         # once the init phase of uw3 is complete.
 
-        self._work_MeshVar = MeshVariable("work_array_1", self, 1, degree=2)
+        self._work_MeshVar = MeshVariable("work_array_1", self, 1, degree=1)
+        self._work_MeshVec = MeshVariable("work_vector_1", self, self.dim, degree=1)
 
         # This looks a bit strange, but we'd like to
         # put these mesh-dependent vector calculus functions
@@ -498,7 +556,7 @@ class Mesh(_api_tools.Stateful):
         return arr.reshape(-1, self.cdim)
 
     @timing.routine_timer_decorator
-    def write_checkpoint(
+    def write_visualisation_xdmf(
         self,
         filename: str,
         meshUpdates: bool = True,
@@ -506,6 +564,14 @@ class Mesh(_api_tools.Stateful):
         swarmVars: Optional[list] = [],
         index: Optional[int] = 0,
     ):
+        """
+        Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
+        An xdmf file is generated and the overall package can then be read by paraview or pyvista.
+        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order"""
+
+        options = PETSc.Options()
+        options.setValue("viewer_hdf5_sp_output", True)
+        # options.setValue("viewer_hdf5_collective", True)
 
         # Checkpoint the mesh file itself if required
 
@@ -542,6 +608,70 @@ class Mesh(_api_tools.Stateful):
             )
 
         return
+
+    @timing.routine_timer_decorator
+    def write_checkpoint(
+        self,
+        filename: str,
+        meshUpdates: bool = True,
+        meshVars: Optional[list] = [],
+        swarmVars: Optional[list] = [],
+        index: Optional[int] = 0,
+        unique_id: Optional[bool] = False,
+    ):
+        """Write data in a format that can be restored for restarting the simulation
+        The difference between this and the visualisation is 1) the parallel section needs
+        to be stored to reload the data correctly, and 2) the visualisation information (vertex form of fields)
+        is not stored. This routines uses dmplex *VectorView and *VectorLoad functionality
+
+        """
+
+        # The mesh checkpoint is the same as the one required for visualisation
+
+        if not meshUpdates:
+            from pathlib import Path
+
+            mesh_file = filename + ".mesh.0.h5"
+            path = Path(mesh_file)
+            if not path.is_file():
+                self.save(mesh_file)
+
+        else:
+            if uw.mpi.rank == 0:
+                print("Saving mesh file")
+            self.save(filename + f".mesh.{index}.h5")
+
+        # Checkpoint file
+
+        if unique_id:
+            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index}.h5"
+        else:
+            checkpoint_file = filename + f".checkpoint.{index}.h5"
+
+        self.dm.setName("uw_mesh")
+        viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
+
+        # Store the parallel-mesh section information for restoring the checkpoint.
+        self.dm.sectionView(viewer, self.dm)
+
+        if meshVars is not None:
+            for var in meshVars:
+                iset, subdm = self.dm.createSubDM(var.field_id)
+                subdm.setName(var.clean_name)
+                self.dm.globalVectorView(viewer, subdm, var._gvec)
+                self.dm.sectionView(viewer, subdm)
+                # v._gvec.view(viewer) # would add viz information plus a duplicate of the data
+
+        if swarmVars is not None:
+            for svar in swarmVars:
+                var = svar._meshVar
+                iset, subdm = self.dm.createSubDM(var.field_id)
+                subdm.setName(var.clean_name)
+                self.dm.globalVectorView(viewer, subdm, var._gvec)
+                self.dm.sectionView(viewer, subdm)
+
+        uw.mpi.barrier()  # should not be required
+        viewer.destroy()
 
     @timing.routine_timer_decorator
     def save(self, filename: str, index: Optional[int] = None):
@@ -1075,8 +1205,8 @@ class _MeshVariable(_api_tools.Stateful):
         filename: str,
     ):
         """
-        Append variable data to the specified mesh hdf5
-        data file. The file must already exist.
+        Write variable data to the specified mesh hdf5
+        data file. The file will be over-written.
 
         Parameters
         ----------
@@ -1088,7 +1218,139 @@ class _MeshVariable(_api_tools.Stateful):
         viewer(self._gvec)
 
     @timing.routine_timer_decorator
-    def load(
+    def load_from_vertex_checkpoint(
+        self,
+        mesh_file,
+        data_file,
+        data_name,
+        data_degree,
+    ):
+        """
+        Read a mesh variable from an arbitrary vertex-based checkpoint file
+        and reconstruct/interpolate the data field accordingly. The data sizes / meshes can be
+        different and will be matched using a kd-tree / inverse-distance weighting
+        to the new mesh. Mesh projection is used to map from linear variables to higher-degree
+        ones. Currently, scalar and vector variables can be recovered.
+
+        Note: data_name, data_degree refer to the checkpointed data - this can be inferred from
+        the file if the checkpoints are one file per unknown, but that's not necessarily what
+        we will be using.
+        """
+
+        import h5py
+        import numpy as np
+
+        ## Sub functions that are used to read / interpolate the mesh.
+        def field_from_checkpoint_vertices(
+            mesh_file,
+            data_file=None,
+            data_name=None,
+            data_degree=1,
+        ):
+
+            data_field_name = (
+                data_name + f"_P{data_degree}"
+            )  # What if it's not continuous ?
+
+            h5f = h5py.File(data_file)
+            D_vertex = h5f["vertex_fields"][data_field_name][()]
+            h5f.close()
+
+            h5f = h5py.File(mesh_file)
+            X_vertex = h5f["geometry"]["vertices"][()]
+            h5f.close()
+
+            if len(D_vertex.shape) == 1:
+                D_vertex = D_vertex.reshape(-1, 1)
+
+            return X_vertex, D_vertex
+
+        def map_to_vertex_values(X_vertex, D_vertex):
+
+            # An inverse-distance mapping is quite robust here ... as long
+            # as we take care of the case where nodes coincide (quite likely)
+
+            mesh = self.mesh
+
+            mesh_kdt = uw.kdtree.KDTree(mesh.data)
+            mesh_kdt.build_index()
+
+            closest, distance, found = mesh_kdt.find_closest_point(X_vertex)
+
+            num_local_vertices = mesh.data.shape[0]
+            data_size = D_vertex.shape[1]
+
+            Values = np.zeros((num_local_vertices, data_size))
+            Weights = np.zeros((num_local_vertices, 1))
+
+            epsilon = 1.0e-8
+            for i in range(D_vertex.shape[0]):
+                nearest = closest[i]
+                Values[nearest, :] += D_vertex[i, :] / (epsilon + distance[i])
+                Weights[nearest] += 1.0 / (epsilon + distance[i])
+
+            Values[...] /= Weights[:]
+
+            return Values
+
+        def values_to_mesh_var(mesh_variable, Values):
+
+            degree = mesh_variable.degree
+            mesh = mesh_variable.mesh
+
+            if degree == 1:
+                with mesh.access(mesh_variable):
+                    mesh_variable.data[...] = Values[...]
+
+            else:
+
+                if mesh_variable.num_components == 1:
+
+                    vertex_var = mesh._work_MeshVar
+                    with mesh.access(vertex_var):
+                        vertex_var.data[...] = Values[...]
+
+                    projector = uw.systems.Projection(mesh, mesh_variable)
+                    projector.uw_function = vertex_var.sym[0]
+                    projector.smoothing = 1.0e-6
+                    projector.petsc_options.delValue("snes_converged_reason")
+                    projector.petsc_options.delValue("ksp_monitor")
+                    projector.petsc_options.delValue("snes_monitor")
+                    projector.petsc_options.delValue("snes_monitor_short")
+                    projector.solve()
+
+                elif mesh_variable.num_components == mesh.dim:
+
+                    vertex_var = mesh._work_MeshVec
+                    with mesh.access(vertex_var):
+                        vertex_var.data[...] = Values[...]
+
+                    projector = uw.systems.Vector_Projection(mesh, mesh_variable)
+                    projector.smoothing = 1.0e-6
+                    projector.petsc_options.delValue("snes_converged_reason")
+                    projector.petsc_options.delValue("ksp_monitor")
+                    projector.petsc_options.delValue("snes_monitor")
+                    projector.petsc_options.delValue("snes_monitor_short")
+                    projector.uw_function = vertex_var.sym
+                    projector.solve()
+
+                else:
+                    raise NotImplementedError()
+
+                return
+
+        X_vertex, D_vertex = field_from_checkpoint_vertices(
+            mesh_file, data_file, data_name, data_degree
+        )
+
+        D = map_to_vertex_values(X_vertex, D_vertex)
+
+        values_to_mesh_var(self, D)
+
+        return
+
+    @timing.routine_timer_decorator
+    def load_from_checkpoint(
         self,
         filename: str,
         data_name: Optional[str] = None,
@@ -1097,18 +1359,20 @@ class _MeshVariable(_api_tools.Stateful):
         if data_name is None:
             data_name = self.clean_name
 
-        ## Should this be in the access manager ?
-
         with self.mesh.access(self):
+
+            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
             old_name = self._gvec.getName()
             viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
+
             self._gvec.setName(data_name)
             self._gvec.load(viewer)
             self._gvec.setName(old_name)
 
-            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
             subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+
+            viewer.destroy()
 
         return
 

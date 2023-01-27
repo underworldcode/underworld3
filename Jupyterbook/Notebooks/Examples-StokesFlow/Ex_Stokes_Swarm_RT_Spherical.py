@@ -220,9 +220,6 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table()
-# -
-
-0/0
 
 # +
 # check the solution

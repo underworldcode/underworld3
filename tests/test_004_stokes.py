@@ -105,8 +105,11 @@ def test_stokes_sphere(mesh):
         mesh.dim
     )
     stokes.constitutive_model.Parameters.viscosity = 1
+    stokes.saddle_preconditioner = 1.0
 
-    mesh.dm.view()
+    stokes.tolerance = 1.0e-4
+    stokes.petsc_options["ksp_monitor"] = None
+    stokes.penalty = 1.0
 
     if mesh.dim == 2:
         stokes.bodyforce = sympy.Matrix([0, x])
@@ -122,3 +125,5 @@ def test_stokes_sphere(mesh):
     assert stokes.snes.getConvergedReason() > 0
 
     return
+
+

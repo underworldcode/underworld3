@@ -941,8 +941,8 @@ class SNES_Stokes:
         else:
             self.petsc_options_prefix = solver_name
 
-        options = PETSc.Options()
-        options["dm_adaptor"]= "pragmatic"
+        # options = PETSc.Options()
+        # options["dm_adaptor"]= "pragmatic"
 
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 

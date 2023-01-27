@@ -107,7 +107,7 @@ cdef class KDTree:
         count = coords.shape[0]
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
-        found    = np.empty(count, dtype=np.bool8,   order='C')
+        found    = np.empty(count, dtype=np.bool_,   order='C')
         cdef long unsigned int[::1]  c_indices = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
         cdef              bool[::1]    c_found = found

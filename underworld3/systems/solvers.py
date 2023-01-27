@@ -861,9 +861,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         self._Lstar = self.mesh.vector.jacobian(self._u_star.sym)
 
-
         ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
-        self.k = uw.discretisation.MeshVariable(f"k{self.instances}", self.mesh, num_components=1, degree=1)
+        self.k = uw.discretisation.MeshVariable(
+            f"k{self.instances}", self.mesh, num_components=1, degree=1
+        )
 
         return
 
@@ -914,23 +915,25 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         ## update the diffusivity values
         self.k_proj = uw.systems.Projection(self.mesh, self.k)
         self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
-        self.k_proj.smoothing = 0.
+        self.k_proj.smoothing = 0.0
         self.k_proj.solve(_force_setup=True)
-        
+
         ## extract a max global diffusivity value
         import math
+
         ## get local max dif value
         with self.mesh.access(self.k):
-            max_diffusivity = self.k.data[:,0].max()
+            max_diffusivity = self.k.data[:, 0].max()
 
         from mpi4py import MPI
+
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ## calculate dt
         min_dx = self.mesh.get_min_radius()
-        return (min_dx ** 2) / diffusivity_glob
+        return (min_dx**2) / diffusivity_glob
 
     @timing.routine_timer_decorator
     def solve(
@@ -1055,7 +1058,9 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.u_star_is_valid = False
 
         ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
-        self.k = uw.discretisation.MeshVariable(f"k{self.instances}", self.mesh, num_components=1, degree=1)
+        self.k = uw.discretisation.MeshVariable(
+            f"k{self.instances}", self.mesh, num_components=1, degree=1
+        )
 
         if projection:
             # set up a projection solver
@@ -1142,23 +1147,25 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         ## update the diffusivity values
         self.k_proj = uw.systems.Projection(self.mesh, self.k)
         self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
-        self.k_proj.smoothing = 0.
+        self.k_proj.smoothing = 0.0
         self.k_proj.solve(_force_setup=True)
-        
+
         ## extract a max global diffusivity value
         import math
+
         ## get local max dif value
         with self.mesh.access(self.k):
-            max_diffusivity = self.k.data[:,0].max()
+            max_diffusivity = self.k.data[:, 0].max()
 
         from mpi4py import MPI
+
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ## calculate dt
         min_dx = self.mesh.get_min_radius()
-        return (min_dx ** 2) / diffusivity_glob
+        return (min_dx**2) / diffusivity_glob
 
     @timing.routine_timer_decorator
     def solve(
