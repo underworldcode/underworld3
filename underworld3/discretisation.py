@@ -556,7 +556,7 @@ class Mesh(_api_tools.Stateful):
         return arr.reshape(-1, self.cdim)
 
     @timing.routine_timer_decorator
-    def write_visualisation_xdmf(
+    def write_timestep_xdmf(
         self,
         filename: str,
         meshUpdates: bool = True,
@@ -763,7 +763,6 @@ class Mesh(_api_tools.Stateful):
 
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
-
         dmnew = dmold.clone()
 
         options = PETSc.Options()
@@ -1199,6 +1198,8 @@ class _MeshVariable(_api_tools.Stateful):
         if name:
             self._gvec.setName(oldname)
 
+        lvec = self.mesh.dm.getCoordinates()
+
     @timing.routine_timer_decorator
     def simple_save(
         self,
@@ -1214,16 +1215,53 @@ class _MeshVariable(_api_tools.Stateful):
             The filename of the mesh checkpoint file
         """
 
+        # Variable coordinates - let's put those in the file to
+        # make it a standalone "swarm"
+
+        dmold = self.mesh.dm.getCoordinateDM()
+        dmold.createDS()
+        dmnew = dmold.clone()
+
+        options = PETSc.Options()
+        options["coordinterp_petscspace_degree"] = self.degree
+        options["coordinterp_petscdualspace_lagrange_continuity"] = self.continuous
+        options["coordinterp_petscdualspace_lagrange_node_endpoints"] = False
+
+        dmfe = PETSc.FE().createDefault(
+            self.mesh.dim,
+            self.mesh.cdim,
+            self.mesh.isSimplex,
+            self.mesh.qdegree,
+            "coordinterp_",
+            PETSc.COMM_WORLD,
+        )
+
+        dmnew.setField(0, dmfe)
+        dmnew.createDS()
+
+        lvec = dmnew.getLocalVec()
+        gvec = dmnew.getGlobalVec()
+
+        lvec.array[...] = self.coords.reshape(-1)[...]
+        dmnew.localToGlobal(lvec, gvec, addv=False)
+        gvec.setName("X")
+
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self._gvec)
+        viewer(gvec)
+        viewer.destroy()
+
+        return
 
     @timing.routine_timer_decorator
     def load_from_vertex_checkpoint(
         self,
-        mesh_file,
         data_file,
         data_name,
-        data_degree,
+        vertex_mesh_file=None,
+        vertex_field=False,
+        vertex_field_degree=1,
+        verbose=False,
     ):
         """
         Read a mesh variable from an arbitrary vertex-based checkpoint file
@@ -1241,55 +1279,82 @@ class _MeshVariable(_api_tools.Stateful):
         import numpy as np
 
         ## Sub functions that are used to read / interpolate the mesh.
-        def field_from_checkpoint_vertices(
-            mesh_file,
+        def field_from_checkpoint(
             data_file=None,
             data_name=None,
+        ):
+            """Read the mesh data as a swarm-like value"""
+
+            h5f = h5py.File(data_file)
+            D = h5f["fields"][data_name][()]
+            X = h5f["fields"]["X"][()]
+            h5f.close()
+
+            if len(D.shape) == 1:
+                D = D.reshape(-1, 1)
+
+            return X, D
+
+        def field_from_vertex_checkpoint(
+            data_file=None,
+            data_name=None,
+            mesh_file=None,
             data_degree=1,
         ):
+            """Read the mesh data as a swarm-like value"""
 
             data_field_name = (
                 data_name + f"_P{data_degree}"
             )  # What if it's not continuous ?
 
             h5f = h5py.File(data_file)
-            D_vertex = h5f["vertex_fields"][data_field_name][()]
+            D = h5f["vertex_fields"][data_field_name][()]
             h5f.close()
 
             h5f = h5py.File(mesh_file)
-            X_vertex = h5f["geometry"]["vertices"][()]
+            X = h5f["geometry"]["vertices"][()]
             h5f.close()
 
-            if len(D_vertex.shape) == 1:
-                D_vertex = D_vertex.reshape(-1, 1)
+            if len(D.shape) == 1:
+                D = D.reshape(-1, 1)
 
-            return X_vertex, D_vertex
+            return X, D
 
-        def map_to_vertex_values(X_vertex, D_vertex):
+        def map_to_vertex_values(X, D):
 
             # An inverse-distance mapping is quite robust here ... as long
             # as we take care of the case where nodes coincide (quite likely)
 
-            mesh = self.mesh
+            if verbose and uw.mpi.rank == 0:
+                print("Building K-D tree", flush=True)
 
-            mesh_kdt = uw.kdtree.KDTree(mesh.data)
+            mesh_kdt = uw.kdtree.KDTree(self.coords)
             mesh_kdt.build_index()
 
-            closest, distance, found = mesh_kdt.find_closest_point(X_vertex)
+            if verbose and uw.mpi.rank == 0:
+                print("Building K-D tree ... done", flush=True)
 
-            num_local_vertices = mesh.data.shape[0]
-            data_size = D_vertex.shape[1]
+            num_neighbours = 10
+
+            closest, distance = mesh_kdt.find_closest_n_points(num_neighbours, X)
+
+            num_local_vertices = self.coords.shape[0]
+            data_size = D.shape[1]
 
             Values = np.zeros((num_local_vertices, data_size))
             Weights = np.zeros((num_local_vertices, 1))
 
             epsilon = 1.0e-8
-            for i in range(D_vertex.shape[0]):
-                nearest = closest[i]
-                Values[nearest, :] += D_vertex[i, :] / (epsilon + distance[i])
-                Weights[nearest] += 1.0 / (epsilon + distance[i])
+            for i in range(D.shape[0]):
+                for j in range(num_neighbours):
+                    nearest = closest[i, j]
+                    Values[nearest, :] += D[i, :] / (epsilon + distance[i, j])
+                    Weights[nearest] += 1.0 / (epsilon + distance[i, j])
 
             Values[...] /= Weights[:]
+
+            if verbose and uw.mpi.rank == 0:
+                print("Mapping values to vertices ... done", flush=True)
 
             return Values
 
@@ -1298,59 +1363,77 @@ class _MeshVariable(_api_tools.Stateful):
             degree = mesh_variable.degree
             mesh = mesh_variable.mesh
 
-            if degree == 1:
-                with mesh.access(mesh_variable):
-                    mesh_variable.data[...] = Values[...]
+            # This should be trivial but there may be problems if
+            # the kdtree does not have enough neighbours to allocate
+            # values for every point. We handle that here.
 
-            else:
+            with mesh.access(mesh_variable):
+                mesh_variable.data[...] = Values[...]
 
-                if mesh_variable.num_components == 1:
+            # if degree == 1:
+            #     with mesh.access(mesh_variable):
+            #         mesh_variable.data[...] = Values[...]
 
-                    vertex_var = mesh._work_MeshVar
-                    with mesh.access(vertex_var):
-                        vertex_var.data[...] = Values[...]
+            # else:
 
-                    projector = uw.systems.Projection(mesh, mesh_variable)
-                    projector.uw_function = vertex_var.sym[0]
-                    projector.smoothing = 1.0e-6
-                    projector.petsc_options.delValue("snes_converged_reason")
-                    projector.petsc_options.delValue("ksp_monitor")
-                    projector.petsc_options.delValue("snes_monitor")
-                    projector.petsc_options.delValue("snes_monitor_short")
-                    projector.solve()
+            #     if mesh_variable.num_components == 1:
 
-                elif mesh_variable.num_components == mesh.dim:
+            #         vertex_var = mesh._work_MeshVar
+            #         with mesh.access(vertex_var):
+            #             vertex_var.data[...] = Values[...]
 
-                    vertex_var = mesh._work_MeshVec
-                    with mesh.access(vertex_var):
-                        vertex_var.data[...] = Values[...]
+            #         projector = uw.systems.Projection(mesh, mesh_variable)
+            #         projector.uw_function = vertex_var.sym[0]
+            #         projector.smoothing = 1.0e-3
+            #         if not verbose:
+            #             projector.petsc_options.delValue("snes_converged_reason")
+            #             projector.petsc_options.delValue("ksp_monitor")
+            #             projector.petsc_options.delValue("snes_monitor")
+            #             projector.petsc_options.delValue("snes_monitor_short")
+            #         projector.solve()
 
-                    projector = uw.systems.Vector_Projection(mesh, mesh_variable)
-                    projector.smoothing = 1.0e-6
-                    projector.petsc_options.delValue("snes_converged_reason")
-                    projector.petsc_options.delValue("ksp_monitor")
-                    projector.petsc_options.delValue("snes_monitor")
-                    projector.petsc_options.delValue("snes_monitor_short")
-                    projector.uw_function = vertex_var.sym
-                    projector.solve()
+            #     elif mesh_variable.num_components == mesh.dim:
 
-                else:
-                    raise NotImplementedError()
+            #         vertex_var = mesh._work_MeshVec
+            #         with mesh.access(vertex_var):
+            #             vertex_var.data[...] = Values[...]
 
-                return
+            #         projector = uw.systems.Vector_Projection(mesh, mesh_variable)
+            #         projector.smoothing = 1.0e-3
+            #         projector.uw_function = vertex_var.sym
+            #         if not verbose:
+            #             projector.petsc_options.delValue("snes_converged_reason")
+            #             projector.petsc_options.delValue("ksp_monitor")
+            #             projector.petsc_options.delValue("snes_monitor")
+            #             projector.petsc_options.delValue("snes_monitor_short")
+            #         projector.solve()
 
-        X_vertex, D_vertex = field_from_checkpoint_vertices(
-            mesh_file, data_file, data_name, data_degree
-        )
+            #     else:
+            #         raise NotImplementedError()
 
-        D = map_to_vertex_values(X_vertex, D_vertex)
+            return
 
-        values_to_mesh_var(self, D)
+        if not vertex_field:
+            X, D = field_from_checkpoint(
+                data_file,
+                data_name,
+            )
+        else:
+            X, D = field_from_vertex_checkpoint(
+                data_file,
+                data_name,
+                vertex_mesh_file,
+                vertex_field_degree,
+            )
+
+        remapped_D = map_to_vertex_values(X, D)
+
+        values_to_mesh_var(self, remapped_D)
 
         return
 
     @timing.routine_timer_decorator
-    def load_from_checkpoint(
+    def load_from_h5_plex_vector(
         self,
         filename: str,
         data_name: Optional[str] = None,

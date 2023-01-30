@@ -119,7 +119,7 @@ cdef class KDTree:
         return indices, dist_sqr, found
 
     @timing.routine_timer_decorator
-    def knnSearch(self, 
+    def find_closest_n_points(self, 
                   const int nCount                    :   numpy.int,
                   const double[: ,::1] coords not None:   numpy.ndarray):
         """
@@ -127,12 +127,13 @@ cdef class KDTree:
 
         Parameters
         ----------
-        coords:
-            An array of coordinates for which the kd-tree index will be searched for nearest
-            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
         nCount:
             The number of nearest neighbour points to find for each `coords`.
-
+        
+        coords:
+            Coordinates of the points for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
+ 
         Returns
         -------
         indices:
@@ -141,29 +142,35 @@ cdef class KDTree:
         dist_sqr:
             A float array of squred distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
-        found:
-            A bool array of flags which signals whether a nearest neighbour has been found for a given
-            coordinate. It will be of size (n_coords).
-
-
 
         """
+
         if coords.shape[1] != self.points.shape[1]:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
         nInput = coords.shape[0]
 
-        # allocate numpy arrays
+        # allocate numpy arrays - 
+
+        n_indices  = np.empty((coords.shape[0], nCount), dtype=np.uint64,  order='C')
+        n_dist_sqr = np.empty((coords.shape[0], nCount), dtype=np.float64,  order='C')
+
         indices  = np.empty(nCount, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(nCount, dtype=np.float64, order='C')
+
         # allocate memoryviews in C contiguous layout
         cdef long unsigned int[::1] c_indices  = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
 
-        # invoke cpp function
-        self.index.knnSearch( <const double *> &coords[0][0], 
-                              nCount,
-                              <long unsigned int*> &c_indices[0], 
-                              <           double*> &c_dist_sqr[0]) 
+        # Build the array one point at a time
+
+        for p in range(coords.shape[0]):
+            self.index.knnSearch( <const double *> &coords[p][0], 
+                                nCount,
+                                <long unsigned int*> &c_indices[0], 
+                                <           double*> &c_dist_sqr[0]) 
+
+            n_indices[p,:] = indices[:]
+            n_dist_sqr[p,:] = dist_sqr[:]
 
         # return numpy data
-        return indices, dist_sqr
+        return n_indices, n_dist_sqr

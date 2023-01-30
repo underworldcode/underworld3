@@ -18,7 +18,10 @@ def h5_scan(filename):
     h5file = h5py.File(filename)
     entities = []
     h5file.visit(entities.append)
+    h5file.close()
+    
     return entities
+
 
 display(h5_scan("./chkpt/test_checkpointing_np4.mesh.0.h5"))
 display(h5_scan("./chkpt/test_checkpointing_np4.P.0.h5"))
@@ -76,3 +79,5 @@ display(X4)
 
 # So we can see that the mesh vertices and the vector entries are saved consistently in each checkpoint but are different from the original ordering (inherent in the mesh produced / saved on a single process). 
 #
+
+
