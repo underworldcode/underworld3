@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -29,6 +29,9 @@ os.environ["SYMPY_USE_CACHE"] = "no"
 import petsc4py
 from petsc4py import PETSc
 
+from underworld3 import timing
+
+
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
@@ -51,134 +54,137 @@ r_o = 1.0
 r_i = 0.547
 
 problem_size = uw.options.getInt("problem_size", default=1)
-
-print(f"problem size {problem_size}")
+problem_dim = uw.options.getInt("problem_dim", default=3)
 
 if problem_size < 0:
     problem_size = -problem_size
     skip_gmsh = True
 else:
     skip_gmsh = False
-       
-if problem_size <= 1: 
-	element_kms = 300
-elif problem_size == 2: 
-	element_kms = 150
-elif problem_size == 3: 
-	element_kms = 100
-elif problem_size == 4: 
-	element_kms = 50
-elif problem_size == 5: 
-	element_kms = 25
-elif problem_size == 6: 
-	element_kms = 10
-elif problem_size == 7: 
-	element_kms = 5
-elif problem_size >= 8: 
-	element_kms = 1
-    
-cell_size = element_kms / 6370
-res = cell_size
 
-element_kms, res
 
-# +
-from underworld3 import timing
+print(f"problem size {problem_size}")
+print(f"problem dim {problem_dim}")
 
-timing.reset()
-timing.start()
-
-if uw.mpi.rank == 0:
-	print(f"2d mesh generation @ {element_kms}km", flush=True)
 
 
 # +
-# Annulus first, then sphere !
+if problem_dim == 2:
 
-tmp_filename = f".meshes/uw_mesh_h5_test2d_res{element_kms}km.msh"
 
-if not skip_gmsh:
-    mesh1 = uw.meshing.Annulus(radiusOuter=r_o, 
-                               radiusInner=r_i, 
-                               cellSize=res,
-                               filename=tmp_filename)
+    if problem_size <= 1: 
+        element_kms = 300
+    elif problem_size == 2: 
+        element_kms = 150
+    elif problem_size == 3: 
+        element_kms = 100
+    elif problem_size == 4: 
+        element_kms = 50
+    elif problem_size == 5: 
+        element_kms = 25
+    elif problem_size == 6: 
+        element_kms = 10
+    elif problem_size == 7: 
+        element_kms = 5
+    elif problem_size >= 8: 
+        element_kms = 1
+
+    cell_size = element_kms / 6370
+    res = cell_size
+
+    element_kms, res
+
+
+
+    timing.reset()
+    timing.start()
 
     if uw.mpi.rank == 0:
-        print("2d mesh generation complete", flush=True)
+        print(f"2d mesh generation @ {element_kms}km", flush=True)
 
-    mesh1.dm.view()    
-    
-# -
+    # Annulus in 2D
 
-if uw.mpi.rank == 0:
-    print("Read back 2d mesh", flush=True)
+    tmp_filename = f".meshes/uw_mesh_h5_test2d_res{element_kms}km.msh"
 
-mesh2 = uw.discretisation.Mesh(tmp_filename + ".h5")
-mesh2.dm.view()
+    if not skip_gmsh:
+        mesh1 = uw.meshing.Annulus(radiusOuter=r_o, 
+                                   radiusInner=r_i, 
+                                   cellSize=res,
+                                   filename=tmp_filename)
 
-timing.print_table(display_fraction=0.999)
+        if uw.mpi.rank == 0:
+            print("2d mesh generation complete", flush=True)
 
-# +
-## Now the sphere:
-
-timing.reset()
-timing.start()
-
-## "Standard" Resolution Meshes:
-
-# +
-if problem_size <= 1: 
-	element_kms = 1000 
-elif problem_size == 2: 
-	element_kms = 500 
-elif problem_size == 3: 
-	element_kms = 333 
-elif problem_size == 4: 
-	element_kms = 200 
-elif problem_size == 5: 
-	element_kms = 100
-elif problem_size == 6: 
-	element_kms = 50
-elif problem_size == 7: 
-	element_kms = 33
-elif problem_size >= 8: 
-	element_kms = 25
-    
-cell_size = element_kms / 6370
-res = cell_size
-
-if uw.mpi.rank == 0:
-	print(f"3d mesh generation @ {element_kms}km", flush=True)
-
-
-# +
-tmp_filename = f".meshes/uw_mesh_h5_test3d_res{element_kms}km.msh"
-
-if not skip_gmsh:
-    mesh3 = uw.meshing.SphericalShell(
-        radiusInner=r_i, 
-        radiusOuter=r_o, 
-        cellSize=res, 
-        qdegree=2,
-        filename = tmp_filename,
-        verbosity=0,
-    )
+        mesh1.dm.view()    
 
     if uw.mpi.rank == 0:
-        print("3d mesh generation complete", flush=True)
+        print("Read back 2d mesh", flush=True)
 
-    mesh3.dm.view()
+    mesh2 = uw.discretisation.Mesh(tmp_filename + ".h5")
+    mesh2.dm.view()
 
-if uw.mpi.rank == 0:
-    print("Read back 3d mesh", flush=True)
+    timing.print_table(display_fraction=0.999)
+
 
 # -
 
-mesh4 = uw.discretisation.Mesh(tmp_filename+".h5")
-mesh4.dm.view()
 
-timing.print_table(display_fraction=1)
+if problem_dim == 3: 
+    
+    ## The sphere:
 
-mesh3.CoordinateSystem.unit_e_2
+    timing.reset()
+    timing.start()
+
+    ## "Standard" Resolution Meshes:
+
+    if problem_size <= 1: 
+        element_kms = 1000 
+    elif problem_size == 2: 
+        element_kms = 500 
+    elif problem_size == 3: 
+        element_kms = 333 
+    elif problem_size == 4: 
+        element_kms = 200 
+    elif problem_size == 5: 
+        element_kms = 100
+    elif problem_size == 6: 
+        element_kms = 50
+    elif problem_size == 7: 
+        element_kms = 33
+    elif problem_size >= 8: 
+        element_kms = 25
+
+    cell_size = element_kms / 6370
+    res = cell_size
+
+    if uw.mpi.rank == 0:
+        print(f"3d mesh generation @ {element_kms}km", flush=True)
+
+    tmp_filename = f".meshes/uw_mesh_h5_test3d_res{element_kms}km.msh"
+
+    if not skip_gmsh:
+        mesh3 = uw.meshing.SphericalShell(
+            radiusInner=r_i, 
+            radiusOuter=r_o, 
+            cellSize=res, 
+            qdegree=2,
+            filename = tmp_filename,
+            verbosity=0,
+        )
+
+        if uw.mpi.rank == 0:
+            print("3d mesh generation complete", flush=True)
+
+        mesh3.dm.view()
+
+    if uw.mpi.rank == 0:
+        print("Read back 3d mesh", flush=True)
+
+
+    mesh4 = uw.discretisation.Mesh(tmp_filename+".h5")
+    mesh4.dm.view()
+
+    timing.print_table(display_fraction=1)
 
 
