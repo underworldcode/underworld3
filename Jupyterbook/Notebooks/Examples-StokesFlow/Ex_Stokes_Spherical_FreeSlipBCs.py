@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -102,7 +102,7 @@ output_dir = "output"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
-r_i = 0.5
+r_i = 0.547
 
 Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
@@ -141,7 +141,6 @@ meshball = uw.meshing.SphericalShell(
 )
 
 meshball.dm.view()
-
 # -
 
 v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR)
@@ -202,15 +201,20 @@ v_rbm_y_x = -meshr.fn * sympy.sin(orientation_wrt_y)
 v_rbm_y_z = meshr.fn * sympy.cos(orientation_wrt_y)
 v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
-# -
 
-'''
+# +
+
 I = uw.maths.Integral(meshball, surface_fn_a)
 s_norm = I.evaluate()
 I.fn = base_fn_a
+
 b_norm = I.evaluate()
 s_norm, b_norm
-'''
+
+
+# -
+
+
 
 # +
 # Create NS object
@@ -276,11 +280,13 @@ timing.print_table()
 # This should be done during the solve, but it is also reasonable to
 # remove it from the force terms and solution to prevent it growing if present
 
-'''
+
 I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
 norm = I0.evaluate()
 I0.fn = v_soln.sym.dot(v_soln.sym)
 vnorm = np.sqrt(I0.evaluate())
+
+print(f"Vnorm: {vnorm}")
 
 for i in range(10):
 
@@ -323,7 +329,7 @@ for i in range(10):
                 )
             )
         break
-'''
+
 # -
 savefile = "output/stokesSphere_orig.h5"
 meshball.save(savefile)
@@ -335,8 +341,6 @@ meshball.write_checkpoint("output/stokesSphere",
                           meshVars=[p_soln,v_soln], 
                           index=0)
 
-
-meshball.dm.view()
 
 # +
 # OR

@@ -72,15 +72,58 @@ def petsc_dm_project_coordinates(incoming_dm, incoming_petsc_fe=None):
         return 
 
 
-def petsc_fe_create_sub_dm(incoming_dm, field_id):
 
-        cdef DM subdm = PETSc.DM()
-        cdef DM dm = incoming_dm
-        cdef PetscInt fields = field_id
 
-        ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
 
-        return subdm
+def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False):
+    '''Identify local points associated with "Label" 
+        
+        dm -> expects a petscDM object 
+        label_name -> "String Name for Label"
+        sectionIndex -> False: leave points as indexed by the relevant section on the dm
+                        True: index into the local coordinate array
+    '''
+
+        
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+
+    label = dm.getLabel(label_name)
+    if not label:
+        return np.array([0])
+        
+    pointIS = dm.getStratumIS("celltype",0)
+    edgeIS = dm.getStratumIS("celltype",1)
+
+    _, iset_lab = label.convertToSection()
+
+    IndicesP = np.intersect1d(iset_lab.getIndices(), pointIS.getIndices()) 
+    IndicesE = np.intersect1d(iset_lab.getIndices(), edgeIS.getIndices()) 
+    
+    IndicesEp = np.empty((IndicesE.shape[0], 2), dtype=int)
+
+    for e in range(IndicesE.shape[0]):
+        IndicesEp[e] = dm.getCone(IndicesE[e])
+    
+    if sectionIndex:
+        Indices = np.union1d(IndicesP, IndicesEp)
+    else:
+        Indices = np.union1d(IndicesP, IndicesEp) - pStart
+
+    return Indices
+
+
+## This one seems to work from petsc4py 3.18.3 
+
+# def petsc_fe_create_sub_dm(incoming_dm, field_id):
+
+#         cdef DM subdm = PETSc.DM()
+#         cdef DM dm = incoming_dm
+#         cdef PetscInt fields = field_id
+
+#         ierr = DMCreateSubDM(dm.dm, 1, &fields, NULL, &subdm.dm);CHKERRQ(ierr)
+
+#         return subdm
 
 
 ## Todo !
@@ -155,4 +198,16 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         incoming_dm.localizeCoordinates()
 
         return 
+
+
+# def petsc_dm_create_isotropic_metric(incoming_dm, maxCell, Lstart, L):
+        """ 
+        Wrapper for PETSc :
+          - maxCell - Over distances greater than this, we can assume a point has crossed over to another sheet, when trying to localize cell coordinates. Pass NULL to remove such information.
+          - Lstart - If we assume the mesh is a torus, this is the start of each coordinate, or NULL for 0.0
+          - L - If we assume the mesh is a torus, this is the length of each coordinate, otherwise it is < 0.0
+        """
+
+
+ #       return 
 

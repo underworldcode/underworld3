@@ -26,6 +26,7 @@ def UnstructuredSimplexBox(
     qdegree: int = 2,
     regular: bool = False,
     filename=None,
+    refinement=None,
     verbosity=0,
 ):
 
@@ -169,21 +170,6 @@ def UnstructuredSimplexBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        # plex_0 = gmsh2dmplex(
-        #     uw_filename,
-        #     useMultipleTags=True,
-        #     useRegions=True,
-        #     markVertices=True,
-        #     comm=PETSc.COMM_SELF,
-        # )
-
-        # viewer = PETSc.ViewerHDF5().create(
-        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        # )
-        # viewer(plex_0)
-
-    # Now do this collectively
-
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -191,6 +177,8 @@ def UnstructuredSimplexBox(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        refinement=refinement,
+        refinement_callback=None,
     )
 
     return new_mesh
@@ -443,6 +431,7 @@ def SphericalShell(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    refinement=None,
     verbosity=0,
 ):
 
@@ -509,28 +498,42 @@ def SphericalShell(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        # plex_0 = gmsh2dmplex(
-        #     uw_filename,
-        #     useMultipleTags=True,
-        #     useRegions=True,
-        #     markVertices=True,
-        #     comm=PETSc.COMM_SELF,
-        # )
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
 
-        # viewer = PETSc.ViewerHDF5().create(
-        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        # )
-        # viewer(plex_0)
+    def spherical_mesh_refinement_callback(dm):
 
-    # Now do this collectively
-    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+        r_o = radiusOuter
+        r_i = radiusInner
 
-    # new_mesh = Mesh(
-    #     gmsh_plex,
-    #     degree=degree,
-    #     qdegree=qdegree,
-    #     coordinate_system_type=CoordinateSystemType.SPHERICAL,
-    # )
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
 
     new_mesh = Mesh(
         uw_filename,
@@ -540,6 +543,8 @@ def SphericalShell(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
     )
 
     return new_mesh
@@ -554,6 +559,7 @@ def Annulus(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    refinement=None,
     verbosity=0,
 ):
 
@@ -623,21 +629,42 @@ def Annulus(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        # plex_0 = gmsh2dmplex(
-        #     uw_filename,
-        #     useMultipleTags=True,
-        #     useRegions=True,
-        #     markVertices=True,
-        #     comm=PETSc.COMM_SELF,
-        # )
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
 
-        # viewer = PETSc.ViewerHDF5().create(
-        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        # )
-        # viewer(plex_0)
+    def annulus_mesh_refinement_callback(dm):
 
-    # Now do this collectively
-    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 2)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
 
     new_mesh = Mesh(
         uw_filename,
@@ -647,6 +674,8 @@ def Annulus(
         useRegions=True,
         markVertices=True,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        refinement=refinement,
+        refinement_callback=annulus_mesh_refinement_callback,
     )
 
     return new_mesh

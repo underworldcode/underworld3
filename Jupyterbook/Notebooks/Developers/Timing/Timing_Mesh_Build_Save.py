@@ -66,9 +66,9 @@ else:
 print(f"problem size {problem_size}")
 print(f"problem dim {problem_dim}")
 
+# -
 
 
-# +
 if problem_dim == 2:
 
 
@@ -124,9 +124,6 @@ if problem_dim == 2:
     mesh2.dm.view()
 
     timing.print_table(display_fraction=0.999)
-
-
-# -
 
 
 if problem_dim == 3: 

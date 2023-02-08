@@ -129,7 +129,8 @@ class Mesh(_api_tools.Stateful):
         useRegions=None,
         useMultipleTags=None,
         filename=None,
-        distribute=True,
+        refinement=None,
+        refinement_callback=None,
         *args,
         **kwargs,
     ):
@@ -163,18 +164,20 @@ class Mesh(_api_tools.Stateful):
 
         self.filename = filename
 
-        ## Does this work or does it mess stuff up if the dm is already distributed
-        ## by reading in from the file (etc)
-
-        # print(f"dm distributed ? {self.dm.isDistributed()}", flush=True)
-        # self.dm.view()
-
-        # isset_ordering = self.dm.getOrdering(PETSc.Mat.OrderingType.NATURAL)
-        # self.dm = self.dm.permute(isset_ordering)
-
         self.dm0 = self.dm.clone()
-
         self.sf1 = self.dm.distribute()
+
+        ## This is where we can refine the dm if required, and rebuild
+
+        if isinstance(refinement, int):
+            for i in range(refinement):
+                self.dm = self.dm.refine()
+
+        if callable(refinement_callback):
+            refinement_callback(self.dm)
+
+        ## Do we want to save the refined mesh or allow it to be reconstructed
+        ## from the coarse mesh ?
 
         if self.sf1:
             self.sf = self.sf0.compose(self.sf1)
@@ -240,14 +243,16 @@ class Mesh(_api_tools.Stateful):
         # This is defined now since we cannot make a new one
         # once the init phase of uw3 is complete.
 
-        self._work_MeshVar = MeshVariable("work_array_1", self, 1, degree=1)
-        self._work_MeshVec = MeshVariable("work_vector_1", self, self.dim, degree=1)
+        # Let's avoid defining this ... it triggers too much
+        # of the dm setup before we do other things.
+
+        # self._work_MeshVar = MeshVariable("work_array_1", self, 1, degree=1)
 
         # This looks a bit strange, but we'd like to
         # put these mesh-dependent vector calculus functions
         # and mesh-based tensor manipulation routines
         # in a bundle to avoid the mesh being required as an argument
-        # since this could lead to things going out of sync
+        # which prevents people using the wrong ones.
 
         if (
             self.CoordinateSystem.coordinate_type
@@ -895,7 +900,7 @@ class Mesh(_api_tools.Stateful):
     #     from underworld3.petsc_discretisation import petsc_create_surface_submesh
     #     return petsc_create_surface_submesh(self, "Boundary", 666, )
 
-    def stats(self, uw_function, basis=None):
+    def stats(self, uw_function, uw_meshVariable, basis=None):
         """
         Returns various norms on the mesh for the provided function.
           - size
@@ -918,14 +923,14 @@ class Mesh(_api_tools.Stateful):
 
         from petsc4py.PETSc import NormType
 
-        tmp = self._work_MeshVar
+        tmp = uw_meshVariable
 
         with self.access(tmp):
             tmp.data[...] = uw.function.evaluate(
                 uw_function, tmp.coords, basis
             ).reshape(-1, 1)
 
-        vsize = self._work_MeshVar._gvec.getSize()
+        vsize = tmp._gvec.getSize()
         vmean = tmp.mean()
         vmax = tmp.max()[1]
         vmin = tmp.min()[1]
@@ -935,8 +940,9 @@ class Mesh(_api_tools.Stateful):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
-        ## Here we check the existence of the meshVariable and so on before defining a new one
-        ## (and potentially losing the handle to the old one)
+
+## Here we check the existence of the meshVariable and so on before defining a new one
+## (and potentially losing the handle to the old one)
 
 
 def MeshVariable(
