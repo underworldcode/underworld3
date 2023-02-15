@@ -963,6 +963,11 @@ def SegmentedSphericalSurface2D(
     verbosity=0,
 ):
 
+
+
+    num_segments = numSegments
+    meshRes = cellSize
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
@@ -973,7 +978,6 @@ def SegmentedSphericalSurface2D(
     if uw.mpi.rank == 0:
 
         import gmsh
-        import underworld3 as uw
 
         options = PETSc.Options()
         options["dm_plex_gmsh_multiple_tags"] = None
@@ -987,8 +991,6 @@ def SegmentedSphericalSurface2D(
 
         # Mesh like an orange
 
-        num_segments = numSegments
-        meshRes = cellSize
 
         surflist = []
         longitudesN = []
@@ -1123,6 +1125,9 @@ def SegmentedSphere(
     verbosity=0,
 ):
 
+    meshRes = cellSize
+    num_segments = numSegments
+
     if coordinatesNative == True:
         coordinate_system = CoordinateSystemType.SPHERICAL_NATIVE
     else:
@@ -1138,7 +1143,6 @@ def SegmentedSphere(
     if uw.mpi.rank == 0:
 
         import gmsh
-        import underworld3 as uw
 
         options = PETSc.Options()
         options["dm_plex_gmsh_multiple_tags"] = None
@@ -1152,8 +1156,6 @@ def SegmentedSphere(
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Segmented Sphere 3D")
 
-        meshRes = cellSize
-        num_segments = numSegments
 
         centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1)
 
