@@ -89,28 +89,35 @@ class SwarmVariable(_api_tools.Stateful):
 
         self._data = None
         # add to swarms dict
-        swarm.vars[name] = self
+        swarm.vars[self.clean_name] = self
         self._is_accessed = False
 
-        # create proxy variable
-        self._meshVar = None
-        if _proxy:
-            self.proxy_degree = proxy_degree
-            self.proxy_continuous = proxy_continuous
-            self._meshVar = uw.discretisation.MeshVariable(
-                name,
-                self.swarm.mesh,
-                num_components,
-                vtype,
-                degree=proxy_degree,
-                continuous=proxy_continuous,
-            )
+        # proxy variable
+        self._proxy = _proxy
+        self._vtype = vtype
+        self._proxy_degree = proxy_degree
+        self._proxy_continuous = proxy_continuous
+        self._nn_proxy = _nn_proxy
+        self._create_proxy_variable()
 
         self._register = _register
-        self._proxy = _proxy
-        self._nn_proxy = _nn_proxy
 
         super().__init__()
+
+    def _create_proxy_variable(self):
+
+        # release if defined
+        self._meshVar = None
+
+        if self._proxy:
+            self._meshVar = uw.discretisation.MeshVariable(
+                self.name,
+                self.swarm.mesh,
+                self.num_components,
+                self._vtype,
+                degree=self._proxy_degree,
+                continuous=self._proxy_continuous,
+            )
 
     def _update(self):
         """
@@ -164,6 +171,7 @@ class SwarmVariable(_api_tools.Stateful):
 
         return
 
+    # ToDo: I don't think this is used / up to date
     @timing.routine_timer_decorator
     def project_from(self, meshvar):
         # use method found in
@@ -471,7 +479,7 @@ class Swarm(_api_tools.Stateful):
 
         Swarm.instances += 1
 
-        self.mesh = mesh
+        self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
         self.dm = PETSc.DMSwarm().create()
@@ -510,6 +518,27 @@ class Swarm(_api_tools.Stateful):
         self._nnmapdict = {}
 
         super().__init__()
+
+    @property
+    def mesh(self):
+        return self._mesh
+
+    @mesh.setter
+    def mesh(self, new_mesh):
+        self._mesh = new_mesh
+        self.dm.setCellDM(new_mesh.dm)
+
+        # k-d tree indexing is no longer valid
+        self._index = None
+        self._nnmapdict = {}
+
+        # Also need to re-proxy the swarm variables on the new mesh !!
+        for v in self.vars:
+            var = self.vars[v]
+            var._create_proxy_variable()
+            var._update()
+
+        return
 
     @property
     def data(self):
@@ -622,9 +651,7 @@ class Swarm(_api_tools.Stateful):
             )
 
         self.dm.finalizeFieldRegister()
-
         self.dm.addNPoints(npoints=len(coordinatesArray))
-
         self.dm.setPointCoordinates(coordinatesArray)
 
         return

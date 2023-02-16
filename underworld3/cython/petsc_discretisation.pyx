@@ -10,6 +10,8 @@ import underworld3.timing as timing
 
 include "petsc_extras.pxi"
 
+## This is currently wrapped in petsc4py but returns zero
+
 def petsc_fvm_get_min_radius(mesh) -> double:
         """
         This method returns the minimum distance from any cell centroid to a face.
@@ -198,16 +200,3 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         incoming_dm.localizeCoordinates()
 
         return 
-
-
-# def petsc_dm_create_isotropic_metric(incoming_dm, maxCell, Lstart, L):
-        """ 
-        Wrapper for PETSc :
-          - maxCell - Over distances greater than this, we can assume a point has crossed over to another sheet, when trying to localize cell coordinates. Pass NULL to remove such information.
-          - Lstart - If we assume the mesh is a torus, this is the start of each coordinate, or NULL for 0.0
-          - L - If we assume the mesh is a torus, this is the length of each coordinate, otherwise it is < 0.0
-        """
-
-
- #       return 
-

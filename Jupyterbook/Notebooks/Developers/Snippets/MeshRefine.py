@@ -60,50 +60,6 @@ mesh1 = uw.meshing.SphericalShell(radiusOuter=r_o,
 mesh1.dm.view()
 
 # +
-# mesh0.dm.computeGradientClementInterpolant()
-# -
-
-0/0
-
-dm_r1 = mesh0.dm.refine()
-dm_r2 = dm_r1.refine()
-
-dms = mesh0.dm.refineHierarchy(2)
-
-# +
-dm2 = dm_r2
-
-c2 = dm2.getCoordinatesLocal()
-coords = c2.array.reshape(-1,3)
-Rdm2 = np.sqrt(coords[:,0]**2 + coords[:,1]**2 + coords[:,2]**2 )
-
-upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(dm2, "Upper")
-coords[upperIndices] *= r_o / Rdm2[upperIndices].reshape(-1,1)
-
-lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(dm2, "Lower")
-coords[lowerIndices] *= r_i / Rdm2[lowerIndices].reshape(-1,1)
-
-c2.array[...] = coords.reshape(-1)
-dm2.setCoordinatesLocal(c2)
-
-# -
-
-
-
-
-
-0/0
-
-# +
-from underworld3.coordinates import CoordinateSystemType
-mesh2 = uw.discretisation.Mesh(dm2, coordinate_system_type=CoordinateSystemType.SPHERICAL)
-
-r2 = uw.discretisation.MeshVariable("R", mesh2, 1)
-
-with mesh2.access(r2):
-    r2.data[:,0] = Rdm2[:]
-
-# +
 import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
@@ -114,19 +70,17 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "ssaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
     mesh0.vtk("tmp_meshball0.vtk")
     pvmesh0 = pv.read("tmp_meshball0.vtk")
 
-    mesh2.vtk("tmp_meshball.vtk")
+    mesh1.vtk("tmp_meshball.vtk")
     pvmesh = pv.read("tmp_meshball.vtk")
     
-    with mesh2.access():
-        pvmesh.point_data["R"] = r2.data.copy()
-        
+
 
 # -
 
@@ -143,7 +97,6 @@ pl.add_mesh(
     clim=[0.997, 1.0],
     edge_color="Black",
     style="surface",
-    scalars="R",
     show_edges=True,
 )
 

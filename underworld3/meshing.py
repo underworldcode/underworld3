@@ -214,7 +214,15 @@ def StructuredQuadBox(
 
     import gmsh
 
-    boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
+    # boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
+
+    class boundaries(Enum):
+        Bottom = 1
+        Top = 2
+        Right = 3
+        Left = 4
+        Front = 5
+        Back = 6
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", verbosity)
@@ -233,25 +241,25 @@ def StructuredQuadBox(
         p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, tag=3)
         p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, tag=4)
 
-        l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries["Bottom"])
-        l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries["Right"])
-        l3 = gmsh.model.geo.add_line(p4, p3, tag=boundaries["Top"])
-        l4 = gmsh.model.geo.add_line(p3, p1, tag=boundaries["Left"])
+        l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries.Bottom.value)
+        l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries.Right.value)
+        l3 = gmsh.model.geo.add_line(p4, p3, tag=boundaries.Top.value)
+        l4 = gmsh.model.geo.add_line(p3, p1, tag=boundaries.Left.value)
 
         cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
         surface = gmsh.model.geo.add_plane_surface([cl])
 
         gmsh.model.geo.synchronize()
 
-        # Add Physical groups
+        # Add Physical groups for boundaries
         gmsh.model.add_physical_group(1, [l1], l1)
-        gmsh.model.set_physical_name(1, l1, "Bottom")
+        gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
         gmsh.model.add_physical_group(1, [l2], l2)
-        gmsh.model.set_physical_name(1, l2, "Right")
+        gmsh.model.set_physical_name(1, l2, boundaries.Right.name)
         gmsh.model.add_physical_group(1, [l3], l3)
-        gmsh.model.set_physical_name(1, l3, "Top")
+        gmsh.model.set_physical_name(1, l3, boundaries.Top.name)
         gmsh.model.add_physical_group(1, [l4], l4)
-        gmsh.model.set_physical_name(1, l4, "Left")
+        gmsh.model.set_physical_name(1, l4, boundaries.Left.name)
 
         gmsh.model.add_physical_group(2, [surface], 99999)
         gmsh.model.set_physical_name(2, 99999, "Elements")
@@ -303,22 +311,22 @@ def StructuredQuadBox(
         l12 = gmsh.model.geo.add_line(p4, p8)
 
         cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
-        bottom = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Bottom"])
+        bottom = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Bottom.value)
 
         cl = gmsh.model.geo.add_curve_loop((l5, l6, l7, l8))
-        top = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Top"])
+        top = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Top.value)
 
         cl = gmsh.model.geo.add_curve_loop((l10, l6, -l12, -l2))
-        right = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Right"])
+        right = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Right.value)
 
         cl = gmsh.model.geo.add_curve_loop((l9, -l4, -l11, l8))
-        left = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Left"])
+        left = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Left.value)
 
         cl = gmsh.model.geo.add_curve_loop((l1, l10, -l5, l9))
-        front = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Front"])
+        front = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Front.value)
 
         cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
-        back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries["Back"])
+        back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Back.value)
 
         sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
         volume = gmsh.model.geo.add_volume([sloop])
@@ -395,7 +403,9 @@ def StructuredQuadBox(
         )
 
         # Add Physical groups
-        for name, tag in boundaries.items():
+        for b in boundaries:
+            tag = b.value
+            name = b.name
             gmsh.model.add_physical_group(2, [tag], tag)
             gmsh.model.set_physical_name(2, tag, name)
 
@@ -438,6 +448,11 @@ def SphericalShell(
     boundaries = {"Lower": 11, "Upper": 12}
     vertices = {"Centre": 1}
 
+    class boundaries(Enum):
+        Lower = 11
+        Upper = 12
+        Centre = 1
+
     import gmsh
 
     if filename is None:
@@ -473,10 +488,16 @@ def SphericalShell(
             outerSurface, innerSurface = surfaces
 
             gmsh.model.addPhysicalGroup(
-                innerSurface[0], [innerSurface[1]], boundaries["Lower"], name="Lower"
+                innerSurface[0],
+                [innerSurface[1]],
+                boundaries.Lower.value,
+                name=boundaries.Lower.name,
             )
             gmsh.model.addPhysicalGroup(
-                outerSurface[0], [outerSurface[1]], boundaries["Upper"], name="Upper"
+                outerSurface[0],
+                [outerSurface[1]],
+                boundaries.Upper.value,
+                name=boundaries.Upper.name,
             )
             gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
             gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
@@ -484,13 +505,19 @@ def SphericalShell(
         else:
             outerSurface = surfaces[0]
             gmsh.model.addPhysicalGroup(
-                outerSurface[0], [outerSurface[1]], boundaries["Upper"]
+                outerSurface[0],
+                [outerSurface[1]],
+                boundaries.Upper.value,
+                name=boundaries.Upper.name,
             )
-            gmsh.model.setPhysicalName(outerSurface[1], boundaries["Upper"], "Upper")
             gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
             gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
-            gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"])
-            gmsh.model.setPhysicalName(0, vertices["Centre"], "Centre")
+            gmsh.model.addPhysicalGroup(0, [p1], tag=boundaries.Centre.value)
+            gmsh.model.setPhysicalName(
+                0,
+                boundaries.Centre.value,
+                boundaries.Centre.name,
+            )
 
         gmsh.model.occ.synchronize()
 
@@ -543,6 +570,7 @@ def SphericalShell(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        boundaries=boundaries,
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
     )
@@ -565,6 +593,11 @@ def Annulus(
 
     boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
     vertices = {"Centre": 10}
+
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
+        Centre = 10
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -595,7 +628,7 @@ def Annulus(
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
 
-            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"])
+            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries.Lower.value)
 
             loops = [cl1] + loops
 
@@ -607,7 +640,7 @@ def Annulus(
 
         # l1 = gmsh.model.geo.add_line(p5, p4)
 
-        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
+        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries.Upper.value)
 
         loops = [cl2] + loops
 
@@ -616,11 +649,20 @@ def Annulus(
         gmsh.model.mesh.embed(0, [p1], 2, s)
 
         if radiusInner > 0.0:
-            gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"], name="Lower")
+            gmsh.model.addPhysicalGroup(
+                1,
+                [c1, c2],
+                boundaries.Lower.value,
+                name=boundaries.Lower.name,
+            )
         else:
-            gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"], name="Centre")
+            gmsh.model.addPhysicalGroup(
+                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+            )
 
-        gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries["Upper"], name="Upper")
+        gmsh.model.addPhysicalGroup(
+            1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
+        )
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
 
         gmsh.model.geo.synchronize()
@@ -673,6 +715,7 @@ def Annulus(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        boundaries=boundaries,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
         refinement=refinement,
         refinement_callback=annulus_mesh_refinement_callback,
@@ -694,6 +737,11 @@ def AnnulusFixedStars(
     filename=None,
     verbosity=0,
 ):
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
+        FixedStars = 3
+        Centre = 10
 
     boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
     vertices = {"Centre": 10}
@@ -808,6 +856,7 @@ def AnnulusFixedStars(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        boundaries=boundaries,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
     )
 

@@ -24,6 +24,7 @@ class VarType(_Enum):
 # Needed everywhere
 from underworld3.utilities import _api_tools
 
+import underworld3.adaptivity
 import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing

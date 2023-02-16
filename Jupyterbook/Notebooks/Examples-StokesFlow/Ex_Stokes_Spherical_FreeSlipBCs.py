@@ -212,9 +212,6 @@ b_norm = I.evaluate()
 s_norm, b_norm
 
 
-# -
-
-
 
 # +
 # Create NS object
@@ -272,7 +269,7 @@ timing.reset()
 timing.start()
 
 stokes.solve(zero_init_guess=True)
-timing.print_table()
+
 
 # +
 
@@ -285,8 +282,6 @@ I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
 norm = I0.evaluate()
 I0.fn = v_soln.sym.dot(v_soln.sym)
 vnorm = np.sqrt(I0.evaluate())
-
-print(f"Vnorm: {vnorm}")
 
 for i in range(10):
 
@@ -324,13 +319,15 @@ for i in range(10):
     if null_space_err < 1.0e-6:
         if uw.mpi.rank == 0:
             print(
-                "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-                    i, x_ns, y_ns, z_ns, null_space_err
+                "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total) - |V| ({:.4})".format(
+                    i, x_ns, y_ns, z_ns, null_space_err, vnorm
                 )
             )
         break
 
 # -
+timing.print_table()
+
 savefile = "output/stokesSphere_orig.h5"
 meshball.save(savefile)
 # v_soln.save(savefile)
@@ -358,8 +355,8 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.anti_aliasing = "fxaa"
+    pv.global_theme.jupyter_backend = "pythreejs"
     pv.global_theme.smooth_shading = True
 
     meshball.vtk("tmp_meshball.vtk")
@@ -400,9 +397,3 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
-
-# +
-# meshball.dm.view()
-
-# +
-# stokes.snes.view()

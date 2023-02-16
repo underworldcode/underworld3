@@ -131,6 +131,7 @@ class Mesh(_api_tools.Stateful):
         filename=None,
         refinement=None,
         refinement_callback=None,
+        boundaries=None,
         *args,
         **kwargs,
     ):
@@ -163,6 +164,8 @@ class Mesh(_api_tools.Stateful):
                 )
 
         self.filename = filename
+        self.boundaries = boundaries
+        self.refinement_callback = refinement_callback
 
         self.dm0 = self.dm.clone()
         self.sf1 = self.dm.distribute()
@@ -172,6 +175,9 @@ class Mesh(_api_tools.Stateful):
         if isinstance(refinement, int):
             for i in range(refinement):
                 self.dm = self.dm.refine()
+
+        # This will be done anyway - the mesh maybe in a
+        # partially adapted state
 
         if callable(refinement_callback):
             refinement_callback(self.dm)
@@ -185,9 +191,6 @@ class Mesh(_api_tools.Stateful):
             self.sf = self.sf0
 
         self.dm.setName("uw_mesh")
-
-        # # print(f"dm distributed ? {self.dm.isDistributed()}", flush=True)
-        # self.dm.view()
 
         Mesh.mesh_instances += 1
 
@@ -325,6 +328,7 @@ class Mesh(_api_tools.Stateful):
             PETSc.COMM_WORLD,
         )
 
+        ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
         if self.degree != 1:
 
             # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
@@ -900,6 +904,7 @@ class Mesh(_api_tools.Stateful):
     #     from underworld3.petsc_discretisation import petsc_create_surface_submesh
     #     return petsc_create_surface_submesh(self, "Boundary", 666, )
 
+    # This should be deprecated in favour of using integrals
     def stats(self, uw_function, uw_meshVariable, basis=None):
         """
         Returns various norms on the mesh for the provided function.
@@ -987,18 +992,22 @@ def MeshVariable(
     else:
         name = varname
 
+    ## Smash if already defined (we should check this BEFORE the old meshVariable object is destroyed)
+
+    import re
+
+    clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+
+    if clean_name in mesh.vars.keys():
+        print(f"Variable with name {name} already exists on the mesh - Skipping.")
+        return mesh.vars[clean_name]
+
     if mesh._accessed:
         print(
             "It is not possible to add new variables to a mesh after existing variables have been accessed"
         )
         print("Variable {name} has NOT been added")
         return
-
-    ## Smash if already defined (we should check this BEFORE the old meshVariable object is destroyed)
-
-    if name in mesh.vars.keys():
-        print(f"Variable with name {name} already exists on the mesh - Skipping.")
-        return mesh.vars[name]
 
     return _MeshVariable(varname, mesh, num_components, vtype, degree, continuous)
 
@@ -1103,6 +1112,8 @@ class _MeshVariable(_api_tools.Stateful):
 
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.setField(self.field_id, self.petsc_fe)
+        field, _ = self.mesh.dm.getField(self.field_id)
+        field.setName(self.clean_name)
 
         # self.mesh.dm.clearDS()
         # self.mesh.dm.createDS()
@@ -1156,12 +1167,58 @@ class _MeshVariable(_api_tools.Stateful):
 
         super().__init__()
 
-        self.mesh.vars[name] = self
+        self.mesh.vars[self.clean_name] = self
 
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
         return
+
+    def rbf_interpolate(self, new_coords, verbose=False):
+
+        # An inverse-distance mapping is quite robust here ... as long
+        # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+
+        import numpy as np
+
+        with self.mesh.access(self):
+            D = self.data.copy()
+
+        if verbose and uw.mpi.rank == 0:
+            print("Building K-D tree", flush=True)
+
+        mesh_kdt = uw.kdtree.KDTree(self.coords)
+        mesh_kdt.build_index()
+
+        if verbose and uw.mpi.rank == 0:
+            print("Building K-D tree ... done", flush=True)
+
+        # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
+        # old mesh points if we have a near-uniform mesh spacing.
+
+        num_neighbours = 10
+
+        closest, distance = mesh_kdt.find_closest_n_points(num_neighbours, new_coords)
+
+        num_local_vertices = new_coords.shape[0]
+        data_size = D.shape[1]
+
+        Values = np.zeros((num_local_vertices, data_size))
+        Weights = np.zeros((num_local_vertices, 1))
+
+        epsilon = 1.0e-8
+        for i in range(num_local_vertices):
+            for j in range(num_neighbours):
+                nearest = closest[i, j]
+                Values[i, :] += D[nearest, :] / (epsilon + distance[i, j])
+                Weights[i] += 1.0 / (epsilon + distance[i, j])
+
+        Values[...] /= Weights[:]
+
+        if verbose and uw.mpi.rank == 0:
+            print("Mapping values to vertices ... done", flush=True)
+
+        return Values
 
     @timing.routine_timer_decorator
     def save(
@@ -1260,7 +1317,7 @@ class _MeshVariable(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def load_from_vertex_checkpoint(
+    def read_from_vertex_checkpoint(
         self,
         data_file,
         data_name,
@@ -1273,8 +1330,7 @@ class _MeshVariable(_api_tools.Stateful):
         Read a mesh variable from an arbitrary vertex-based checkpoint file
         and reconstruct/interpolate the data field accordingly. The data sizes / meshes can be
         different and will be matched using a kd-tree / inverse-distance weighting
-        to the new mesh. Mesh projection is used to map from linear variables to higher-degree
-        ones. Currently, scalar and vector variables can be recovered.
+        to the new mesh.
 
         Note: data_name, data_degree refer to the checkpointed data - this can be inferred from
         the file if the checkpoints are one file per unknown, but that's not necessarily what
@@ -1339,6 +1395,9 @@ class _MeshVariable(_api_tools.Stateful):
 
             if verbose and uw.mpi.rank == 0:
                 print("Building K-D tree ... done", flush=True)
+
+            # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
+            # old mesh points if we have a near-uniform mesh spacing.
 
             num_neighbours = 10
 
@@ -1532,6 +1591,8 @@ class _MeshVariable(_api_tools.Stateful):
                 "Data must be accessed via the mesh `access()` context manager."
             )
         return self._data
+
+    ## ToDo: We should probably deprecate this in favour of using integrals
 
     def min(self) -> Union[float, tuple]:
         """

@@ -58,6 +58,7 @@ class Integral:
                                "This is a PETSc limitation.")
                                
         # Create JIT extension.
+        # 
         # Note that - we pass in the mesh variables as primary variables, as this
         # is how they are represented on the mesh DM.
 

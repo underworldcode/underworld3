@@ -54,3 +54,5 @@ cdef extern from "petsc.h" nogil:
     # Changed recently: Commit 6858538e  
     # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
     PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 
+
+    
