@@ -918,22 +918,36 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self.k_proj.smoothing = 0.0
         self.k_proj.solve(_force_setup=True)
 
-        ## extract a max global diffusivity value
+        ### required modules
         import math
-
-        ## get local max dif value
-        with self.mesh.access(self.k):
-            max_diffusivity = self.k.data[:, 0].max()
-
         from mpi4py import MPI
+
+        
+        with self.mesh.access(self.k):
+            ## get local max diff value
+            max_diffusivity = self.k.data[:, 0].max()
+            ### get the velocity values
+            vel = self.u.data
 
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ## calculate dt
+
+        ### Auto
+        max_magvel = np.linalg.norm(vel, axis=0).max()
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        ## get radius
         min_dx = self.mesh.get_min_radius()
-        return (min_dx**2) / diffusivity_glob
+
+        ## estimate dt of adv and diff components
+        dt_diff = (min_dx**2) / diffusivity_glob
+        dt_adv  = min_dx / max_magvel_glob
+
+        dt_estimate = min(dt_diff, dt_adv)
+
+        return dt_estimate
 
     @timing.routine_timer_decorator
     def solve(
@@ -1150,22 +1164,35 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.k_proj.smoothing = 0.0
         self.k_proj.solve(_force_setup=True)
 
-        ## extract a max global diffusivity value
+        ### required modules
         import math
-
-        ## get local max dif value
-        with self.mesh.access(self.k):
-            max_diffusivity = self.k.data[:, 0].max()
-
         from mpi4py import MPI
+
+        with self.mesh.access(self.k):
+            ## get local max dif value
+            max_diffusivity = self.k.data[:, 0].max()
+            ### get the velocity values
+            vel = self.u.data
 
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ## calculate dt
+        ### get global velocity from velocity field
+        vel = self.u.data
+        max_magvel = np.linalg.norm(vel, axis=0).max()
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        ## get radius
         min_dx = self.mesh.get_min_radius()
-        return (min_dx**2) / diffusivity_glob
+
+        ## estimate dt of adv and diff components
+        dt_diff = (min_dx**2) / diffusivity_glob
+        dt_adv  = min_dx / max_magvel_glob
+
+        dt_estimate = min(dt_diff, dt_adv)
+
+        return dt_estimate
 
     @timing.routine_timer_decorator
     def solve(
