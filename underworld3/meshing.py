@@ -100,13 +100,6 @@ def UnstructuredSimplexBox(
 
             gmsh.model.geo.synchronize()
 
-            # Add Physical groups
-            for b in boundaries:
-                tag = b.value
-                name = b.name
-                gmsh.model.add_physical_group(2, [tag], tag)
-                gmsh.model.set_physical_name(2, tag, name)
-
             gmsh.model.addPhysicalGroup(2, [surface], 99999)
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
@@ -167,13 +160,16 @@ def UnstructuredSimplexBox(
 
             gmsh.model.geo.synchronize()
 
-            # Add Physical groups
-            for name, tag in boundaries.items():
-                gmsh.model.add_physical_group(2, [tag], tag)
-                gmsh.model.set_physical_name(2, tag, name)
-
             gmsh.model.addPhysicalGroup(3, [volume], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+
+        # Add Physical groups
+        for b in boundaries:
+            tag = b.value
+            name = b.name
+            gmsh.model.add_physical_group(2, [tag], tag)
+            gmsh.model.set_physical_name(2, tag, name)
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
@@ -228,12 +224,12 @@ def StructuredQuadBox(
     # boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
 
     class boundaries(Enum):
-        Bottom = 1
-        Top = 2
-        Right = 3
-        Left = 4
-        Front = 5
-        Back = 6
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+        Front = 15
+        Back = 16
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -257,10 +253,10 @@ def StructuredQuadBox(
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
-            p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, tag=1)
-            p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0, tag=2)
-            p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, tag=3)
-            p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, tag=4)
+            p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0)
+            p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0)
+            p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0)
+            p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0)
 
             l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries.Bottom.value)
             l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries.Right.value)
@@ -423,15 +419,15 @@ def StructuredQuadBox(
                 volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7]
             )
 
-            # Add Physical groups
-            for b in boundaries:
-                tag = b.value
-                name = b.name
-                gmsh.model.add_physical_group(2, [tag], tag)
-                gmsh.model.set_physical_name(2, tag, name)
-
             gmsh.model.addPhysicalGroup(3, [volume], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        # Add Physical groups
+        for b in boundaries:
+            tag = b.value
+            name = b.name
+            gmsh.model.add_physical_group(2, [tag], tag)
+            gmsh.model.set_physical_name(2, tag, name)
 
          # Generate Mesh
         gmsh.model.mesh.generate(dim)
