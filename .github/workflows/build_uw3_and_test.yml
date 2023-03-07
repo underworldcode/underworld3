@@ -49,5 +49,5 @@ jobs:
       - name: Run pytest
         shell: bash -l {0}
         run: |
-          pytest tests/test0???_*
-          pytest tests/test1???_*
+          pytest tests/test_0???_*
+          pytest tests/test_1???_*
