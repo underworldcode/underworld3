@@ -541,7 +541,7 @@ if uw.mpi.size == 1:
         point_cloud0 = pv.PolyData(points0)
 
 
-    pl.add_points(point_cloud, colormap="coolwarm", scalars="strain", point_size=10.0, clim=[0.0,0.75])
+    pl.add_points(point_cloud, colormap="coolwarm", scalars="strain", point_size=10.0, clim=[0.1,0.75])
     pl.add_points(point_cloud0, color="green", point_size=1.0)
 
 
@@ -552,5 +552,7 @@ if uw.mpi.size == 1:
 
     pl.show()
 # -
+stokes.constitutive_model.Parameters.viscosity
+
 
 
