@@ -266,7 +266,7 @@ class SwarmVariable(_api_tools.Stateful):
             with h5py.File(
                 f"{filename[:-3]}.h5", "w", driver="mpio", comm=MPI.COMM_WORLD
             ) as h5f:
-                with swarm.access(i):
+                with self.swarm.access(self):
                     if compression == True:
                         h5f.create_dataset(
                             "data", data=self.data[:], compression=compressionType
