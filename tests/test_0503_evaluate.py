@@ -151,6 +151,30 @@ def test_polynomial_mesh_var_degree():
         )
 
 
+def test_many_many_scalar_mult_var():
+    mesh = uw.meshing.StructuredQuadBox()
+    # Note that this test fails for n>~15. Something something subdm segfault.
+    # Must investigate.
+    nn = 15
+    vars = []
+    for i in range(nn):
+        vars.append(
+            uw.discretisation.MeshVariable(
+                varname=f"var_{i}", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
+            )
+        )
+    factorial = 1.0
+    with mesh.access(*vars):
+        for i, var in enumerate(vars):
+            var.data[:] = float(i)
+            factorial *= float(i)
+    multexpr = vars[0].fn
+    for var in vars[1:]:
+        multexpr *= var.fn
+    result = uw.function.evaluate(multexpr, coords)
+    assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)
+
+
 # Let's now do the same, but instead do it Sympy wise.
 # We don't really need any UW infrastructure for this test, but it's useful
 # to stress our `evaluate()` function. It should however simply reduce
@@ -239,27 +263,3 @@ def test_3d_cross_product():
         var_vector2.data[:] = (4.0, 5.0, 6.0)
     result = uw.function.evaluate(var_vector1.fn.cross(var_vector2.fn), coords)
     assert np.allclose(np.array(((-3, 6, -3),)), result, rtol=1e-05, atol=1e-08)
-
-
-def test_many_many_scalar_mult_var():
-    mesh = uw.meshing.StructuredQuadBox()
-    # Note that this test fails for n>~15. Something something subdm segfault.
-    # Must investigate.
-    nn = 6
-    vars = []
-    for i in range(nn):
-        vars.append(
-            uw.discretisation.MeshVariable(
-                varname=f"var_{i}", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
-            )
-        )
-    factorial = 1.0
-    with mesh.access(*vars):
-        for i, var in enumerate(vars):
-            var.data[:] = float(i)
-            factorial *= float(i)
-    multexpr = vars[0].fn
-    for var in vars[1:]:
-        multexpr *= var.fn
-    result = uw.function.evaluate(multexpr, coords)
-    assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)
