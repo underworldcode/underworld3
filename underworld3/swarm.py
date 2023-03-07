@@ -735,9 +735,10 @@ class Swarm(_api_tools.Stateful):
 
         # Here we update the swarm cycle values as required
 
-        with self.access(self._Xorig, self._remeshed):
-            self._Xorig.data[...] = coordinatesArray
-            self._remeshed.data[...] = 0
+        if self.recycle_rate > 1:
+            with self.access(self._Xorig, self._remeshed):
+                self._Xorig.data[...] = coordinatesArray
+                self._remeshed.data[...] = 0
 
         # We need to call dm.migrate when this has been done, but
         # we also need to update swarm variables before we do.
