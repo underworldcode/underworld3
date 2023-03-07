@@ -100,6 +100,16 @@ def UnstructuredSimplexBox(
 
             gmsh.model.geo.synchronize()
 
+            # Add Physical groups for boundaries
+            gmsh.model.add_physical_group(1, [l1], l1)
+            gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
+            gmsh.model.add_physical_group(1, [l2], l2)
+            gmsh.model.set_physical_name(1, l2, boundaries.Right.name)
+            gmsh.model.add_physical_group(1, [l3], l3)
+            gmsh.model.set_physical_name(1, l3, boundaries.Top.name)
+            gmsh.model.add_physical_group(1, [l4], l4)
+            gmsh.model.set_physical_name(1, l4, boundaries.Left.name)
+
             gmsh.model.addPhysicalGroup(2, [surface], 99999)
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
@@ -160,16 +170,17 @@ def UnstructuredSimplexBox(
 
             gmsh.model.geo.synchronize()
 
+            # Add Physical groups
+            for b in boundaries:
+                tag = b.value
+                name = b.name
+                gmsh.model.add_physical_group(2, [tag], tag)
+                gmsh.model.set_physical_name(2, tag, name)
+
             gmsh.model.addPhysicalGroup(3, [volume], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
 
 
-        # Add Physical groups
-        for b in boundaries:
-            tag = b.value
-            name = b.name
-            gmsh.model.add_physical_group(2, [tag], tag)
-            gmsh.model.set_physical_name(2, tag, name)
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
@@ -419,15 +430,15 @@ def StructuredQuadBox(
                 volume, cornerTags=[p1, p2, p4, p3, p5, p6, p8, p7]
             )
 
+            # Add Physical groups
+            for b in boundaries:
+                tag = b.value
+                name = b.name
+                gmsh.model.add_physical_group(2, [tag], tag)
+                gmsh.model.set_physical_name(2, tag, name)
+
             gmsh.model.addPhysicalGroup(3, [volume], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
-
-        # Add Physical groups
-        for b in boundaries:
-            tag = b.value
-            name = b.name
-            gmsh.model.add_physical_group(2, [tag], tag)
-            gmsh.model.set_physical_name(2, tag, name)
 
          # Generate Mesh
         gmsh.model.mesh.generate(dim)
@@ -435,15 +446,16 @@ def StructuredQuadBox(
         gmsh.finalize()
 
     new_mesh = Mesh(
-    uw_filename,
-    degree=degree,
-    qdegree=qdegree,
-    useMultipleTags=True,
-    useRegions=True,
-    markVertices=True,
-    refinement=refinement,
-    refinement_callback=None,
-)
+                    uw_filename,
+                    degree=degree,
+                    qdegree=qdegree,
+                    useMultipleTags=True,
+                    useRegions=True,
+                    markVertices=True,
+                    refinement=refinement,
+                    refinement_callback=None,
+                    )
+    new_mesh.bound = boundaries
 
     return new_mesh
 
@@ -1527,5 +1539,6 @@ def SegmentedSphere(
                     qdegree=qdegree,
                     coordinate_system_type=coordinate_system,
                     )
+    
 
     return new_mesh
