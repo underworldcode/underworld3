@@ -36,7 +36,9 @@ def test_single_coord(n, dim, coords):
     brutept = np.argmin(dot2)
 
     assert found[0], "KDTree did not appear to find a point close to coord."
-    assert kdpt[0] == brutept, "KDTree and brute force method did not find the same point."
+    assert (
+        kdpt[0] == brutept
+    ), "KDTree and brute force method did not find the same point."
     assert np.allclose(dist[0], dot2[brutept]), (
         "KDTree and Numpy did not find the same distance squared.\n"
         f"KDTree distance={dist[0]} Numpy distance={dot2[brutept]} "
@@ -89,7 +91,9 @@ def test_mesh_verts(res, dim):
     (kdpt, dist, found) = index.find_closest_point(coords)
     assert np.allclose(True, found), "All points should have been found."
     # `find_closest_point` should return index of pts.
-    assert np.allclose(np.arange(mesh.data.shape[0]), kdpt), "Point indices weren't as expected."
+    assert np.allclose(
+        np.arange(mesh.data.shape[0]), kdpt
+    ), "Point indices weren't as expected."
     # Calc distances
     diff = mesh.data - coords
     dot2 = np.sum(np.multiply(diff, diff), 1)
@@ -122,4 +126,6 @@ def test_mesh_centroid(res, dim, ppcell):
 
         assert np.allclose(True, found), "All points should have been found."
         # `find_closest_point` should return index of pts.
-        assert np.allclose(swarm.particle_cellid.data[:, 0], kdpt), "Point indices weren't as expected."
+        assert np.allclose(
+            swarm.particle_cellid.data[:, 0], kdpt
+        ), "Point indices weren't as expected."

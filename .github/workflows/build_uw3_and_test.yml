@@ -43,7 +43,11 @@ jobs:
           python3 setup.py develop
           pip3 install -e .
 
+      # Test - split into short, low memory tests 0???_*
+      #        and longer, solver-based tests 1???_*
+
       - name: Run pytest
         shell: bash -l {0}
         run: |
-          pytest
+          pytest tests/test0???_*
+          pytest tests/test1???_*

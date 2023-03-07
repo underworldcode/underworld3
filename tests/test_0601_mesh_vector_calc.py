@@ -11,6 +11,7 @@ import sympy
 import pytest
 from IPython.display import display  # since pytest runs pure python
 
+
 # ### Mesh based data types
 #
 # For illustration, we define two and three dimensional meshes and some vector, scalar fields on each one. The validation tests below are designed to run on each of these meshes.

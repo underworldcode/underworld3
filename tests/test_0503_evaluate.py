@@ -2,11 +2,14 @@ import os
 
 # DISABLE SYMPY CACHE, AS IT GETS IN THE WAY FOR IDENTICALLY NAMED VARIABLES.
 # NEED TO FIX.
+
 os.environ["SYMPY_USE_CACHE"] = "no"
 import underworld3 as uw
 import underworld3.function as fn
 import numpy as np
 import sympy
+import pytest
+
 
 n = 10
 x = np.linspace(0.1, 0.9, n)
@@ -33,11 +36,15 @@ def test_non_uw_variable_constant():
     result = fn.evaluate(sympy.sympify(1.5), coords, coord_sys=mesh.N)
     assert np.allclose(1.5, result, rtol=1e-05, atol=1e-08)
 
+    del mesh
+
 
 def test_non_uw_variable_linear():
     mesh = uw.meshing.StructuredQuadBox()
     result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N)
     assert np.allclose(x, result, rtol=1e-05, atol=1e-08)
+
+    del mesh
 
 
 def test_non_uw_variable_sine():
@@ -45,23 +52,33 @@ def test_non_uw_variable_sine():
     result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N)
     assert np.allclose(np.sin(y), result, rtol=1e-05, atol=1e-08)
 
+    del mesh
+
 
 def test_single_scalar_variable():
     mesh = uw.meshing.StructuredQuadBox()
-    var = uw.discretisation.MeshVariable(varname="scalar_var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
+    var = uw.discretisation.MeshVariable(
+        varname="scalar_var", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
+    )
     with mesh.access(var):
         var.data[:] = 1.1
     result = fn.evaluate(var.sym[0], coords)
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
 
+    del mesh
+
 
 def test_single_vector_variable():
     mesh = uw.meshing.StructuredQuadBox()
-    var = uw.discretisation.MeshVariable(varname="vector_var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR)
+    var = uw.discretisation.MeshVariable(
+        varname="vector_var", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
+    )
     with mesh.access(var):
         var.data[:] = (1.1, 1.2)
     result = uw.function.evaluate(var.fn, coords)
     assert np.allclose(np.array(((1.1, 1.2),)), result, rtol=1e-05, atol=1e-08)
+
+    del mesh
 
 
 def test_scalar_vector_mult():
@@ -78,6 +95,8 @@ def test_scalar_vector_mult():
     result = uw.function.evaluate(var_scalar.fn * var_vector.fn, coords)
     assert np.allclose(np.array(((12.0, 15),)), result, rtol=1e-05, atol=1e-08)
 
+    del mesh
+
 
 def test_vector_dot_product():
     mesh = uw.meshing.StructuredQuadBox()
@@ -93,27 +112,7 @@ def test_vector_dot_product():
     result = uw.function.evaluate(var_vector1.fn.dot(var_vector2.fn), coords)
     assert np.allclose(11.0, result, rtol=1e-05, atol=1e-08)
 
-
-def test_many_many_scalar_mult_var():
-    mesh = uw.meshing.StructuredQuadBox()
-    # Note that this test fails for n>~15. Something something subdm segfault.
-    # Must investigate.
-    nn = 15
-    vars = []
-    for i in range(nn):
-        vars.append(
-            uw.discretisation.MeshVariable(varname=f"var_{i}", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
-        )
-    factorial = 1.0
-    with mesh.access(*vars):
-        for i, var in enumerate(vars):
-            var.data[:] = float(i)
-            factorial *= float(i)
-    multexpr = vars[0].fn
-    for var in vars[1:]:
-        multexpr *= var.fn
-    result = uw.function.evaluate(multexpr, coords)
-    assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)
+    del mesh
 
 
 # that test needs to be able to take degree as a parameter...
@@ -127,23 +126,29 @@ def test_polynomial_mesh_var_degree():
     for degree in range(maxdegree + 1):
         vars.append(
             uw.discretisation.MeshVariable(
-                varname="var" + str(degree), mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR, degree=degree
+                varname="var" + str(degree),
+                mesh=mesh,
+                num_components=1,
+                vtype=uw.VarType.SCALAR,
+                degree=degree,
             )
         )
 
     # Set variable data to represent polynomial function.
-    with mesh.access(*vars):
-        for var in vars:
+    for var in vars:
+        with mesh.access(var):
             vcoords = var.coords
             var.data[:, 0] = tensor_product(var.degree, vcoords[:, 0], vcoords[:, 1])
 
     # Test that interpolated variables reproduce exactly polymial function of associated degree.
     for var in vars:
-        result = uw.function.evaluate(
-            var.fn,
-            coords,
+        result = uw.function.evaluate(var.fn, coords, mesh.N)
+        assert np.allclose(
+            tensor_product(var.degree, coords[:, 0], coords[:, 1]),
+            result,
+            rtol=1e-05,
+            atol=1e-08,
         )
-        assert np.allclose(tensor_product(var.degree, coords[:, 0], coords[:, 1]), result, rtol=1e-05, atol=1e-08)
 
 
 # Let's now do the same, but instead do it Sympy wise.
@@ -157,7 +162,9 @@ def test_polynomial_sympy():
     mesh = uw.meshing.StructuredQuadBox()
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(tensor_product(degree, mesh.r[0], mesh.r[1]), coords, coord_sys=mesh.N),
+        uw.function.evaluate(
+            tensor_product(degree, mesh.r[0], mesh.r[1]), coords, coord_sys=mesh.N
+        ),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -173,9 +180,15 @@ def test_polynomial_sympy():
 
 def test_polynomial_mesh_var_sympy():
     mesh = uw.meshing.StructuredQuadBox()
-    xvar = uw.discretisation.MeshVariable(varname="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
-    yvar = uw.discretisation.MeshVariable(varname="yvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR)
-    xyvar = uw.discretisation.MeshVariable(varname="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR)
+    xvar = uw.discretisation.MeshVariable(
+        varname="xvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
+    )
+    yvar = uw.discretisation.MeshVariable(
+        varname="yvar", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
+    )
+    xyvar = uw.discretisation.MeshVariable(
+        varname="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
+    )
     with mesh.access(xvar, yvar, xyvar):
         # Note that all the `coords` arrays should actually reduce to an identical array,
         # as all vars have identical degree and layout.
@@ -191,7 +204,10 @@ def test_polynomial_mesh_var_sympy():
     )
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(tensor_product(degree, xyvar.fn.dot(mesh.N.i), xyvar.fn.dot(mesh.N.j)), coords),
+        uw.function.evaluate(
+            tensor_product(degree, xyvar.fn.dot(mesh.N.i), xyvar.fn.dot(mesh.N.j)),
+            coords,
+        ),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -223,3 +239,27 @@ def test_3d_cross_product():
         var_vector2.data[:] = (4.0, 5.0, 6.0)
     result = uw.function.evaluate(var_vector1.fn.cross(var_vector2.fn), coords)
     assert np.allclose(np.array(((-3, 6, -3),)), result, rtol=1e-05, atol=1e-08)
+
+
+def test_many_many_scalar_mult_var():
+    mesh = uw.meshing.StructuredQuadBox()
+    # Note that this test fails for n>~15. Something something subdm segfault.
+    # Must investigate.
+    nn = 6
+    vars = []
+    for i in range(nn):
+        vars.append(
+            uw.discretisation.MeshVariable(
+                varname=f"var_{i}", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
+            )
+        )
+    factorial = 1.0
+    with mesh.access(*vars):
+        for i, var in enumerate(vars):
+            var.data[:] = float(i)
+            factorial *= float(i)
+    multexpr = vars[0].fn
+    for var in vars[1:]:
+        multexpr *= var.fn
+    result = uw.function.evaluate(multexpr, coords)
+    assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)

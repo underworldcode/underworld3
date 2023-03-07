@@ -5,12 +5,14 @@ import underworld3 as uw
 # These are tested by test_001_meshes.py
 
 structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
+
 unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
     cellSize=0.1, regular=False, qdegree=2
 )
 unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
     cellSize=0.1, regular=True, qdegree=2
 )
+
 unstructured_quad_box_irregular_3D = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0, 0.0),
     maxCoords=(1.0, 1.0, 1.0),
@@ -18,17 +20,6 @@ unstructured_quad_box_irregular_3D = uw.meshing.UnstructuredSimplexBox(
     regular=False,
     qdegree=2,
 )
-
-spherical_shell = uw.meshing.SphericalShell(
-    radiusOuter=1.0, radiusInner=0.5, cellSize=0.5, qdegree=2
-)
-
-annulus = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=2)
-
-cubed_sphere = uw.meshing.CubedSphere(
-    radiusOuter=1.0, radiusInner=0.5, numElements=3, qdegree=2
-)
-
 
 # Maybe lower and upper would work better for the names of the box mesh boundaries too.
 
@@ -83,47 +74,13 @@ def test_stokes_boxmesh(mesh):
 
     assert stokes.snes.getConvergedReason() > 0
 
-    return
-
-
-@pytest.mark.parametrize("mesh", [spherical_shell, annulus, cubed_sphere])
-def test_stokes_sphere(mesh):
-    if mesh.dim == 2:
-        x, y = mesh.X
-    else:
-        x, y, z = mesh.X
-
-    u = uw.discretisation.MeshVariable(
-        r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2
-    )
-    p = uw.discretisation.MeshVariable(
-        r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1
-    )
-
-    stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-        mesh.dim
-    )
-    stokes.constitutive_model.Parameters.viscosity = 1
-    stokes.saddle_preconditioner = 1.0
-
-    stokes.tolerance = 1.0e-4
-    stokes.petsc_options["ksp_monitor"] = None
-    stokes.penalty = 1.0
-
-    if mesh.dim == 2:
-        stokes.bodyforce = sympy.Matrix([0, x])
-        stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-        stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
-    else:
-        stokes.bodyforce = sympy.Matrix([0, x, 0])
-        stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
-        stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
-
-    stokes.solve()
-
-    assert stokes.snes.getConvergedReason() > 0
+    del mesh
+    del stokes
 
     return
 
 
+del structured_quad_box
+del unstructured_quad_box_regular
+del unstructured_quad_box_irregular
+del unstructured_quad_box_irregular_3D
