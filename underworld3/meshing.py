@@ -424,6 +424,7 @@ def StructuredQuadBox(
             fp.name,
             degree=degree,
             qdegree=qdegree,
+            boundaries=boundaries,
             coordinate_system_type=CoordinateSystemType.SPHERICAL,
             useMultipleTags=True,
             useRegions=True,
@@ -445,8 +446,8 @@ def SphericalShell(
     verbosity=0,
 ):
 
-    boundaries = {"Lower": 11, "Upper": 12}
-    vertices = {"Centre": 1}
+    # boundaries = {"Lower": 11, "Upper": 12}
+    # vertices = {"Centre": 1}
 
     class boundaries(Enum):
         Lower = 11
@@ -538,6 +539,8 @@ def SphericalShell(
 
         import underworld3 as uw
 
+        # print(f"Refinement callback - spherical", flush=True)
+
         c2 = dm.getCoordinatesLocal()
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
@@ -548,6 +551,7 @@ def SphericalShell(
             )
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
         lowerIndices = (
             uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
@@ -556,6 +560,7 @@ def SphericalShell(
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
 
         c2.array[...] = coords.reshape(-1)
         dm.setCoordinatesLocal(c2)
@@ -591,8 +596,8 @@ def Annulus(
     verbosity=0,
 ):
 
-    boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
-    vertices = {"Centre": 10}
+    # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
+    # vertices = {"Centre": 10}
 
     class boundaries(Enum):
         Lower = 1
@@ -743,8 +748,8 @@ def AnnulusFixedStars(
         FixedStars = 3
         Centre = 10
 
-    boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
-    vertices = {"Centre": 10}
+    # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
+    # vertices = {"Centre": 10}
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -773,7 +778,7 @@ def AnnulusFixedStars(
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
 
-            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"])
+            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"].value)
 
             loops = [cl1] + loops
 
@@ -791,8 +796,10 @@ def AnnulusFixedStars(
         c5 = gmsh.model.geo.add_circle_arc(p6, p1, p7)
         c6 = gmsh.model.geo.add_circle_arc(p7, p1, p6)
 
-        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"])
-        cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries["FixedStars"])
+        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"].value)
+        cl3 = gmsh.model.geo.add_curve_loop(
+            [c5, c6], tag=boundaries["FixedStars"].value
+        )
 
         loops = [cl3] + loops
 
@@ -809,9 +816,13 @@ def AnnulusFixedStars(
         gmsh.model.geo.synchronize()
 
         if radiusInner > 0.0:
-            gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries["Lower"], name="Lower")
+            gmsh.model.addPhysicalGroup(
+                1, [c1, c2], boundaries["Lower"].value, name="Lower"
+            )
         else:
-            gmsh.model.addPhysicalGroup(0, [p1], tag=vertices["Centre"], name="Centre")
+            gmsh.model.addPhysicalGroup(
+                0, [p1], tag=vertices["Centre"].value, name="Centre"
+            )
 
         gmsh.model.addPhysicalGroup(
             1,
@@ -861,6 +872,9 @@ def AnnulusFixedStars(
     )
 
     return new_mesh
+
+
+## ToDo: Not sure if this works really ...
 
 
 @timing.routine_timer_decorator
@@ -1030,6 +1044,9 @@ def CubedSphere(
     return new_mesh
 
 
+# ToDo: if keeping, we need to add boundaries etc.
+
+
 @timing.routine_timer_decorator
 def SegmentedSphericalSurface2D(
     radius: float = 1.0,
@@ -1040,8 +1057,6 @@ def SegmentedSphericalSurface2D(
     filename=None,
     verbosity=0,
 ):
-
-
 
     num_segments = numSegments
     meshRes = cellSize
@@ -1068,7 +1083,6 @@ def SegmentedSphericalSurface2D(
         gmsh.model.add("Segmented Sphere 2D Surface")
 
         # Mesh like an orange
-
 
         surflist = []
         longitudesN = []
@@ -1233,7 +1247,6 @@ def SegmentedSphere(
         gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Segmented Sphere 3D")
-
 
         centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1)
 

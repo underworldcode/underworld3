@@ -1,9 +1,11 @@
 import underworld3
+import underworld3 as uw
 import underworld3.timing as timing
 import numpy
 import numpy as np
 
 from libcpp cimport bool
+
 
 cdef extern from "kdtree_interface.hpp" nogil:
     cdef cppclass KDTree_Interface:
@@ -174,3 +176,61 @@ cdef class KDTree:
 
         # return numpy data
         return n_indices, n_dist_sqr
+
+
+## A general point-to-point rbf interpolator here
+## NOTE this is not using cython optimisation for numpy
+
+    def rbf_interpolator_local(self, 
+            coords,
+            data,
+            nnn = 10,
+            verbose = False,
+        ):
+
+        '''
+        An inverse (squared) distance weighted mapping of a numpy array from one
+        set of coordinates to another. This assumes all points are local to the
+        same processor. If that is not the case, it is best to use a particle swarm
+        to migrate data.
+        '''
+
+        if coords.shape[1] != self.points.shape[1]:
+            raise RuntimeError(f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.points.shape[1]}).")
+        nInput = coords.shape[0]
+
+        if data.shape[0] != self.points.shape[0]:
+                raise RuntimeError(f"Data does not match kD-tree size array ({data.shape[0]}) v ({self.points.shape[0]}).")
+
+        coords_contiguous = np.ascontiguousarray(coords)
+
+        closest_n, distance_n = self.find_closest_n_points(nnn, coords_contiguous)
+
+        num_local_points = coords.shape[0]
+        data_size = data.shape[1]
+
+        Values = np.zeros((num_local_points, data_size))
+        Weights = np.zeros((num_local_points, 1))
+
+        if verbose and uw.mpi.rank == 0:
+            print("Mapping values  ... start", flush=True)
+
+        epsilon = 1.0e-24
+        for j in range(nnn):
+            j_distance = epsilon + distance_n[:, j]
+            Weights[:, 0] += 1.0 / j_distance[:]
+
+
+        epsilon = 1.0e-24
+        for d in range(data_size):
+            for j in range(nnn):
+                j_distance = epsilon + distance_n[:, j]
+                j_nearest = closest_n[:, j]
+                Values[:, d] += data[j_nearest, d] / j_distance
+
+        Values[...] /= Weights[:]
+
+        if verbose and uw.mpi.rank == 0:
+            print("Mapping values ... done", flush=True)
+
+        return Values

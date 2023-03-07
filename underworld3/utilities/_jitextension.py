@@ -33,7 +33,9 @@ _ext_dict = {}
 
 
 @timing.routine_timer_decorator
-def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=False):
+def getext(
+    mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=False
+):
     """
     Check if we've already created an equivalent extension
     and use if available.
@@ -54,7 +56,15 @@ def getext(mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbos
         jitname = abs(hash((mesh, fns)))
     # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
-        _createext(jitname, mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=verbose)
+        _createext(
+            jitname,
+            mesh,
+            fns_residual,
+            fns_jacobian,
+            fns_bcs,
+            primary_field_list,
+            verbose=verbose,
+        )
     module = _ext_dict[jitname]
     ptrobj = module.getptrobj()
     # print(f'jit time {time.time()-time_s}')
@@ -156,7 +166,11 @@ def _createext(
                     var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
                     var.fn._diff[ind]._ccode = lambdafunc
                     u_x_i += 1
-            elif var.vtype == VarType.VECTOR or var.vtype == VarType.COMPOSITE:
+            elif (
+                var.vtype == VarType.VECTOR
+                or var.vtype == VarType.COMPOSITE
+                or var.vtype == VarType.TENSOR
+            ):
                 # Pull out individual sub components
                 for comp in var.sym:
                     # monkey patch
@@ -170,7 +184,9 @@ def _createext(
                         comp._diff[ind]._ccode = lambdafunc
                         u_x_i += 1
             else:
-                raise RuntimeError("Unsupported type for code generation. Please contact developers.")
+                raise RuntimeError(
+                    "Unsupported type for code generation. Please contact developers."
+                )
 
     # Patch in `_code` methods. Note that the order here
     # is important, as the secondary call will overwrite
@@ -195,7 +211,10 @@ def _createext(
 
     custom_functions = {
         "Heaviside": [
-            (lambda *args: len(args) == 1, "Heaviside_1"),  # for single arg Heaviside  (defaults to 0.5 at jump).
+            (
+                lambda *args: len(args) == 1,
+                "Heaviside_1",
+            ),  # for single arg Heaviside  (defaults to 0.5 at jump).
             (lambda *args: len(args) == 2, "Heaviside_2"),
         ]  # for two arg Heavisides    (second arg is jump value).
     }
@@ -331,11 +350,15 @@ cdef extern from "cy_ext.h" nogil:
     h_str += "\n"
     # Print equations
     for eqn in eqns[0:count_residual_sig]:
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(randstr, eqn[0], residual_sig, eqn[1])
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+            randstr, eqn[0], residual_sig, eqn[1]
+        )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
 
     for eqn in eqns[count_residual_sig:]:
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(randstr, eqn[0], jacobian_sig, eqn[1])
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+            randstr, eqn[0], jacobian_sig, eqn[1]
+        )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
 
     codeguys.append(["cy_ext.h", h_str])
@@ -352,11 +375,17 @@ cpdef PtrContainer getptrobj():
     )
 
     for index, eqn in enumerate(eqns[0 : len(fns_residual)]):
-        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
+        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
     for index, eqn in enumerate(eqns[count_residual_sig:]):
-        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
+        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
     for index, eqn in enumerate(eqns[len(fns_residual) : count_residual_sig]):
-        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
+        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
     pyx_str += "    return clsguy"
     codeguys.append(["cy_ext.pyx", pyx_str])
 

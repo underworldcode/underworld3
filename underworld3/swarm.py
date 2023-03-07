@@ -50,6 +50,8 @@ class SwarmVariable(_api_tools.Stateful):
         _register=True,
         _proxy=True,
         _nn_proxy=False,
+        varsymbol=None,
+        rebuild_on_cycle=True,
     ):
 
         if name in swarm.vars.keys():
@@ -57,11 +59,14 @@ class SwarmVariable(_api_tools.Stateful):
                 "Variable with name {} already exists on swarm.".format(name)
             )
 
-        self.name = name
-
         import re
 
-        self.clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+        if varsymbol is None:
+            varsymbol = name
+
+        self.name = name
+        self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
+        self.symbol = varsymbol
 
         self.swarm = swarm
         self.num_components = num_components
@@ -84,12 +89,13 @@ class SwarmVariable(_api_tools.Stateful):
 
         if _register:
             self.swarm.dm.registerField(
-                self.name, self.num_components, dtype=petsc_type
+                self.clean_name, self.num_components, dtype=petsc_type
             )
 
         self._data = None
         # add to swarms dict
-        swarm.vars[self.clean_name] = self
+
+        self.swarm._vars[self.clean_name] = self
         self._is_accessed = False
 
         # proxy variable
@@ -100,9 +106,14 @@ class SwarmVariable(_api_tools.Stateful):
         self._nn_proxy = _nn_proxy
         self._create_proxy_variable()
 
+        # recycle swarm
+        self._rebuild_on_cycle = rebuild_on_cycle
+
         self._register = _register
 
         super().__init__()
+
+        return
 
     def _create_proxy_variable(self):
 
@@ -111,19 +122,33 @@ class SwarmVariable(_api_tools.Stateful):
 
         if self._proxy:
             self._meshVar = uw.discretisation.MeshVariable(
-                self.name,
-                self.swarm.mesh,
+                "proxy_" + self.clean_name,
+                self.swarm._mesh,
                 self.num_components,
                 self._vtype,
                 degree=self._proxy_degree,
                 continuous=self._proxy_continuous,
+                varsymbol=r"\cal{P}\left(" + self.symbol + r"\right)",
             )
 
     def _update(self):
         """
         This method updates the proxy mesh variable for the current
         swarm & particle variable state.
+        """
 
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            return
+
+        else:
+            self._rbf_to_meshVar(self._meshVar)
+
+        return
+
+    # Maybe rbf_interpolate for this one and meshVar is a special case
+    def _rbf_to_meshVar(self, meshVar, nns=10, verbose=False):
+        """
         Here is how it works:
 
             1) for each particle, create a distance-weighted average on the node data
@@ -131,45 +156,36 @@ class SwarmVariable(_api_tools.Stateful):
 
         Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
         Todo: some form of global fall-back for when there are no particles on a processor
-
         """
 
-        # if not proxied, nothing to do. return.
-        if not self._meshVar:
-            return
+        # Mapping to the coordinates of the variable from the
+        # particle coords
 
-        # 1 - Average particles to nodes with distance weighted average
+        if meshVar.mesh != self.swarm.mesh:
+            raise RuntimeError("Cannot map a swarm to a different mesh")
 
-        kd = uw.kdtree.KDTree(self._meshVar.coords)
-        kd.build_index()
+        new_coords = meshVar.coords
 
-        with self.swarm.access():
-            n, d, b = kd.find_closest_point(self.swarm.data)
+        Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=10)
 
-            node_values = np.zeros((self._meshVar.coords.shape[0], self.num_components))
-            w = np.zeros(self._meshVar.coords.shape[0])
-
-            if not self._nn_proxy:
-                for i in range(self.data.shape[0]):
-                    if b[i]:
-                        node_values[n[i], :] += self.data[i, :] / (1.0e-16 + d[i])
-                        w[n[i]] += 1.0 / (1.0e-16 + d[i])
-
-                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(
-                    -1, 1
-                )
-
-        # 2 - set NN vals on mesh var where w == 0.0
-
-        p_nnmap = self.swarm._get_map(self)
-
-        with self.swarm.mesh.access(self._meshVar), self.swarm.access():
-            self._meshVar.data[...] = node_values[...]
-            self._meshVar.data[np.where(w == 0.0), :] = self.data[
-                p_nnmap[np.where(w == 0.0)], :
-            ]
+        with meshVar.mesh.access(meshVar):
+            meshVar.data[...] = Values[...]
 
         return
+
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
+
+        # An inverse-distance mapping is quite robust here ... as long
+        # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+
+        import numpy as np
+
+        with self.swarm.access():
+            D = self.data.copy()
+            kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+            kdt.build_index()
+
+        return kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
 
     # ToDo: I don't think this is used / up to date
     @timing.routine_timer_decorator
@@ -198,7 +214,7 @@ class SwarmVariable(_api_tools.Stateful):
         M_p = self.swarm.dm.createMassMatrix(meshvardm)
 
         # make particle weight vector
-        f = self.swarm.createGlobalVectorFromField(self.name)
+        f = self.swarm.createGlobalVectorFromField(self.clean_name)
 
         # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
         M = meshvardm.createMassMatrix(meshvardm)
@@ -208,7 +224,7 @@ class SwarmVariable(_api_tools.Stateful):
         ksp.setOperators(M_p, M_p)
         ksp.solveTranspose(rhs, f)
 
-        self.swarm.dm.destroyGlobalVectorFromField(self.name)
+        self.swarm.dm.destroyGlobalVectorFromField(self.clean_name)
         meshvardm.restoreGlobalVec(rhs)
         meshvardm.destroy()
         ksp.destroy()
@@ -428,6 +444,8 @@ class IndexSwarmVariable(SwarmVariable):
 
         NOTE: If no material is identified with a given nodal value, the default is to material zero
 
+        ## ToDo: This should be revisited to match the updated master copy of _update
+
         """
 
         kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
@@ -475,7 +493,7 @@ class Swarm(_api_tools.Stateful):
     instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, mesh):
+    def __init__(self, mesh, recycle_rate=0):
 
         Swarm.instances += 1
 
@@ -488,12 +506,17 @@ class Swarm(_api_tools.Stateful):
         self.dm.setCellDM(mesh.dm)
         self._data = None
 
+        # Is the swarm a streak-swarm ?
+        self.recycle_rate = recycle_rate
+        self.cycle = 0
+
         # dictionary for variables
-        import weakref
 
-        self._vars = weakref.WeakValueDictionary()
+        # import weakref (not helpful as garbage collection does not remove the fields from the DM)
+        # self._vars = weakref.WeakValueDictionary()
+        self._vars = {}
 
-        # add variable to handle particle coords
+        # add variable to handle particle coords - predefined by DMSwarm, expose to UW
         self._coord_var = SwarmVariable(
             "DMSwarmPIC_coor",
             self,
@@ -501,19 +524,57 @@ class Swarm(_api_tools.Stateful):
             dtype=float,
             _register=False,
             _proxy=False,
+            rebuild_on_cycle=False,
         )
 
-        # add variable to handle particle cell id
+        # add variable to handle particle cell id - predefined by DMSwarm, expose to UW
         self._cellid_var = SwarmVariable(
-            "DMSwarm_cellid", self, 1, dtype=int, _register=False, _proxy=False
+            "DMSwarm_cellid",
+            self,
+            1,
+            dtype=int,
+            _register=False,
+            _proxy=False,
+            rebuild_on_cycle=False,
         )
 
         # add variable to hold swarm coordinates during position updates
         self._X0 = uw.swarm.SwarmVariable(
-            "DMSwarm_X0", self, self.cdim, dtype=float, _register=True, _proxy=False
+            "DMSwarm_X0",
+            self,
+            self.cdim,
+            dtype=float,
+            _register=True,
+            _proxy=False,
+            rebuild_on_cycle=False,
         )
-        self._X0_uninitialised = True
 
+        # This is for swarm streak management:
+        # add variable to hold swarm origins
+
+        if self.recycle_rate > 1:
+            self._Xorig = uw.swarm.SwarmVariable(
+                "DMSwarm_Xorig",
+                self,
+                self.cdim,
+                dtype=float,
+                _register=True,
+                _proxy=False,
+                rebuild_on_cycle=False,
+            )
+
+            self._remeshed = uw.swarm.SwarmVariable(
+                "DMSwarm_remeshed",
+                self,
+                1,
+                dtype=int,
+                _register=True,
+                _proxy=False,
+                rebuild_on_cycle=False,
+            )
+
+        self._X0_uninitialised = True
+        self._Xorig_uninitialised = True
         self._index = None
         self._nnmapdict = {}
 
@@ -523,22 +584,30 @@ class Swarm(_api_tools.Stateful):
     def mesh(self):
         return self._mesh
 
-    @mesh.setter
-    def mesh(self, new_mesh):
-        self._mesh = new_mesh
-        self.dm.setCellDM(new_mesh.dm)
+    # The setter needs updating to account for re-distribution of the DM
+    # in the general case - see adaptivity.mesh2mesh_swarm()
 
-        # k-d tree indexing is no longer valid
-        self._index = None
-        self._nnmapdict = {}
+    # @mesh.setter
+    # def mesh(self, new_mesh):
+    #     self._mesh = new_mesh
+    #     self.dm.setCellDM(new_mesh.dm)
 
-        # Also need to re-proxy the swarm variables on the new mesh !!
-        for v in self.vars:
-            var = self.vars[v]
-            var._create_proxy_variable()
-            var._update()
+    #     # k-d tree indexing is no longer valid
+    #     self._index = None
+    #     self._nnmapdict = {}
 
-        return
+    #     cellid = self.dm.getField("DMSwarm_cellid")
+    #     cellid[:] = 0  # new_mesh.get_closest_cells(coords).reshape(-1)
+    #     self.dm.restoreField("DMSwarm_cellid")
+    #     self.dm.migrate(remove_sent_points=True)
+
+    #     # Also need to re-proxy the swarm variables on the new mesh !!
+    #     for v in self.vars:
+    #         var = self.vars[v]
+    #         var._create_proxy_variable()
+    #         var._update()
+
+    #     return
 
     @property
     def data(self):
@@ -618,8 +687,16 @@ class Swarm(_api_tools.Stateful):
         # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
 
         self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
+
+        if self.recycle_rate > 1:
+            with self.access(self._Xorig):
+                self._Xorig.data[...] = self.particle_coordinates.data[...]
+                self._Xorig_uninitialised = False
+
         return  # self # LM: Is there any reason to return self ?
 
+    ## This is actually an initial population routine.
+    ## We can't use this to add particles / manage variables (LM)
     @timing.routine_timer_decorator
     def add_particles_with_coordinates(self, coordinatesArray):
         """
@@ -650,9 +727,20 @@ class Swarm(_api_tools.Stateful):
                 )
             )
 
+        npoints = len(coordinatesArray)
+
         self.dm.finalizeFieldRegister()
-        self.dm.addNPoints(npoints=len(coordinatesArray))
+        self.dm.addNPoints(npoints=npoints)
         self.dm.setPointCoordinates(coordinatesArray)
+
+        # Here we update the swarm cycle values as required
+
+        with self.access(self._Xorig, self._remeshed):
+            self._Xorig.data[...] = coordinatesArray
+            self._remeshed.data[...] = 0
+
+        # We need to call dm.migrate when this has been done, but
+        # we also need to update swarm variables before we do.
 
         return
 
@@ -801,7 +889,7 @@ class Swarm(_api_tools.Stateful):
         stime = time.time()
 
         deaccess_list = []
-        for var in self.vars.values():
+        for var in self._vars.values():
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
@@ -810,7 +898,9 @@ class Swarm(_api_tools.Stateful):
             # add to de-access list to rewind this later
             deaccess_list.append(var)
             # grab numpy object, setting read only if necessary
-            var._data = self.dm.getField(var.name).reshape((-1, var.num_components))
+            var._data = self.dm.getField(var.clean_name).reshape(
+                (-1, var.num_components)
+            )
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -839,7 +929,7 @@ class Swarm(_api_tools.Stateful):
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
                     var._data = None
-                    self.em_swarm.dm.restoreField(var.name)
+                    self.em_swarm.dm.restoreField(var.clean_name)
                     var._is_accessed = False
                 # do particle migration if coords changes
                 if self.em_swarm.particle_coordinates in writeable_vars:
@@ -939,7 +1029,7 @@ class Swarm(_api_tools.Stateful):
                         updated_current_coords
                     )
 
-                self.data[...] = updated_current_coords
+                self.data[...] = updated_current_coords[...]
 
         with self.access(X0):
             X0.data[...] = self.data[...]
@@ -963,10 +1053,7 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                self.data[...] = mid_pt_coords
-
-                # if (uw.mpi.rank == 0):
-                #     print("Updated mid point position", flush=True)
+                self.data[...] = mid_pt_coords[...]
 
                 ## Let the swarm be updated, and then move the rest of the way
 
@@ -988,10 +1075,7 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
-                # if (uw.mpi.rank == 0):
-                #     print("Update", flush=True)
-
-                self.data[...] = new_coords
+                self.data[...] = new_coords[...]
 
         # Previous position algorithm (cf above) - we use the previous step as the
         # launch point using the current velocity field. This gives a correction to the previous
@@ -1015,5 +1099,45 @@ class Swarm(_api_tools.Stateful):
                     new_coords = restore_points_to_domain_func(new_coords)
 
                 self.data[...] = new_coords
+
+        ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
+        ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
+        ## original location.
+
+        if self.recycle_rate > 1:
+            # Restore a subset of points to start
+            offset_idx = self.cycle % self.recycle_rate
+
+            with self.access(self.particle_coordinates, self._remeshed):
+                self._remeshed.data[...] = 0
+                self._remeshed.data[offset_idx :: self.recycle_rate] = 1
+                remeshed = self._remeshed.data[:, 0]
+                self.data[remeshed] = self._Xorig.data[remeshed]
+
+                # when we let this go, the particles may be re-distributed to
+                # other processors, and we will need to rebuild the remeshed
+                # array before trying to compute / assign values to variables
+
+            for swarmVar in self.vars.values():
+                if swarmVar._rebuild_on_cycle:
+                    with self.access(swarmVar):
+                        remeshed = self._remeshed.data[:, 0]
+                        remeshed_coords = self.data[remeshed]
+
+                        if swarmVar.dtype is int:
+                            nnn = 1
+                        else:
+                            nnn = 10
+
+                        interpolated_values = (
+                            swarmVar.rbf_interpolate(remeshed_coords, nnn=nnn)
+                        ).astype(swarmVar.dtype)
+
+                        swarmVar.data[remeshed] = interpolated_values
+
+            with self.access(self._remeshed):
+                self._remeshed.data[...] = 0
+
+        self.cycle += 1
 
         return

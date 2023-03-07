@@ -132,9 +132,13 @@ class Mesh(_api_tools.Stateful):
         refinement=None,
         refinement_callback=None,
         boundaries=None,
+        distribute=True,
         *args,
         **kwargs,
     ):
+
+        self.instance = Mesh.mesh_instances
+        Mesh.mesh_instances += 1
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -168,7 +172,16 @@ class Mesh(_api_tools.Stateful):
         self.refinement_callback = refinement_callback
 
         self.dm0 = self.dm.clone()
-        self.sf1 = self.dm.distribute()
+        self.sf1 = None
+
+        # self.dm.view()
+
+        if distribute:
+            self.sf1 = self.dm.distribute()
+        else:
+            print("Warning - not distributing mesh !!")
+
+        # self.dm.view()
 
         ## This is where we can refine the dm if required, and rebuild
 
@@ -185,20 +198,18 @@ class Mesh(_api_tools.Stateful):
         ## Do we want to save the refined mesh or allow it to be reconstructed
         ## from the coarse mesh ?
 
-        if self.sf1:
+        if self.sf1 and self.sf0:
             self.sf = self.sf0.compose(self.sf1)
         else:
-            self.sf = self.sf0
+            self.sf = self.sf0  # could be None !
 
         self.dm.setName("uw_mesh")
-
-        Mesh.mesh_instances += 1
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
 
         # A unique set of vectors / names for each mesh instance
-        self._N = CoordSys3D(f"N{Mesh.mesh_instances}")
+        self._N = CoordSys3D(f"N{self.instance}")
 
         self._N.x._latex_form = r"\mathrm{\xi_0}"
         self._N.y._latex_form = r"\mathrm{\xi_1}"
@@ -224,7 +235,8 @@ class Mesh(_api_tools.Stateful):
         options["dm_plex_hash_location"] = None
         self.dm.setFromOptions()
 
-        self._vars = weakref.WeakValueDictionary()
+        # self._vars = weakref.WeakValueDictionary()
+        self._vars = {}
 
         # a list of equation systems that will
         # need to be rebuilt if the mesh coordinates change
@@ -242,20 +254,7 @@ class Mesh(_api_tools.Stateful):
 
         self.nuke_coords_and_rebuild()
 
-        # A private work array used in the stats routines.
-        # This is defined now since we cannot make a new one
-        # once the init phase of uw3 is complete.
-
-        # Let's avoid defining this ... it triggers too much
-        # of the dm setup before we do other things.
-
-        # self._work_MeshVar = MeshVariable("work_array_1", self, 1, degree=1)
-
-        # This looks a bit strange, but we'd like to
-        # put these mesh-dependent vector calculus functions
-        # and mesh-based tensor manipulation routines
-        # in a bundle to avoid the mesh being required as an argument
-        # which prevents people using the wrong ones.
+        ## Coordinate System
 
         if (
             self.CoordinateSystem.coordinate_type
@@ -300,6 +299,25 @@ class Mesh(_api_tools.Stateful):
         The mesh dimensionality.
         """
         return self.dm.getCoordinateDim()
+
+    def view(self):
+        if uw.mpi.rank == 0:
+
+            print(f"Mesh {self.instance}")
+
+            if len(self.vars.valuerefs()) > 0:
+                print(f"| Variable Name       | component | degree | type      |")
+                print(f"| ---------------------------------------------------- |")
+                for vname in self.vars.keys():
+                    v = self.vars[vname]
+                    print(
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^9} |"
+                    )
+
+                print(
+                    f"| ---------------------------------------------------- |",
+                    flush=True,
+                )
 
     def nuke_coords_and_rebuild(self):
 
@@ -354,11 +372,11 @@ class Mesh(_api_tools.Stateful):
 
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
-        # self._centroids = self._get_coords_for_basis(0, True)
-        self._centroids = self._get_mesh_centroids()
-
         # invalidate the cell-search k-d tree and the mesh centroid data
         self._index = None
+
+        ## Outdated self._centroids = self._get_coords_for_basis(0, True)
+        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
 
         return
 
@@ -739,6 +757,7 @@ class Mesh(_api_tools.Stateful):
 
         return
 
+    # ToDo: rename this so it does not clash with the vars built in
     @property
     def vars(self):
         """
@@ -802,13 +821,50 @@ class Mesh(_api_tools.Stateful):
 
         return arrcopy
 
+    def _build_kd_tree_index(self):
+
+        if hasattr(self, "_index") and self._index is not None:
+            return
+
+        from underworld3.swarm import Swarm, SwarmPICLayout
+
+        # Create a temp swarm which we'll use to populate particles
+        # at gauss points. These will then be used as basis for
+        # kd-tree indexing back to owning cells.
+
+        tempSwarm = Swarm(self)
+        # 4^dim pop is used. This number may need to be considered
+        # more carefully, or possibly should be coded to be set dynamically.
+        tempSwarm.populate(fill_param=4, layout=SwarmPICLayout.GAUSS)
+
+        with tempSwarm.access():
+            # Build index on particle coords
+            self._indexCoords = tempSwarm.particle_coordinates.data.copy()
+            self._index = uw.kdtree.KDTree(self._indexCoords)
+            self._index.build_index()
+
+            # Grab mapping back to cell_ids.
+            # Note that this is the numpy array that we eventually return from this
+            # method. As such, we take measures to ensure that we use `numpy.int64` here
+            # because we cast from this type in  `_function.evaluate` to construct
+            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
+            # will cause bugs that are difficult to find.
+
+            self._indexMap = numpy.array(
+                tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
+            )
+
+        return
+
     @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
         be exactly the owning cell, but if the mesh is deformed, this
-        is not guaranteed.
+        is not guaranteed. Note, the nearest point does may not be all
+        that close by - use get_closest_local_cells to filter out points
+        that are (probably) not within any local cell.
 
         Parameters:
         -----------
@@ -824,31 +880,8 @@ class Mesh(_api_tools.Stateful):
             coordinates. This will be a 1-dimensional array of
             shape (n_coords).
         """
-        # Create index if required
-        if not self._index:
-            from underworld3.swarm import Swarm, SwarmPICLayout
 
-            # Create a temp swarm which we'll use to populate particles
-            # at gauss points. These will then be used as basis for
-            # kd-tree indexing back to owning cells.
-            tempSwarm = Swarm(self)
-            # 4^dim pop is used. This number may need to be considered
-            # more carefully, or possibly should be coded to be set dynamically.
-            tempSwarm.populate(fill_param=4, layout=SwarmPICLayout.GAUSS)
-            with tempSwarm.access():
-                # Build index on particle coords
-                self._indexCoords = tempSwarm.particle_coordinates.data.copy()
-                self._index = uw.kdtree.KDTree(self._indexCoords)
-                self._index.build_index()
-                # Grab mapping back to cell_ids.
-                # Note that this is the numpy array that we eventually return from this
-                # method. As such, we take measures to ensure that we use `numpy.int64` here
-                # because we cast from this type in  `_function.evaluate` to construct
-                # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
-                # will cause bugs that are difficult to find.
-                self._indexMap = numpy.array(
-                    tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
-                )
+        self._build_kd_tree_index()
 
         if len(coords) > 0:
             closest_points, dist, found = self._index.find_closest_point(coords)
@@ -864,27 +897,105 @@ class Mesh(_api_tools.Stateful):
 
         return self._indexMap[closest_points]
 
+    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        """
+        This method uses a kd-tree algorithm to find the closest
+        cells to the provided coords. For a regular mesh, this should
+        be exactly the owning cell, but if the mesh is deformed, this
+        is not guaranteed. Also compares the distance from the cell to the
+        point - if this is larger than the "cell size" then returns -1
+
+        Parameters:
+        -----------
+        coords:
+            An array of the coordinates for which we wish to determine the
+            closest cells. This should be a 2-dimensional array of
+            shape (n_coords,dim).
+
+        Returns:
+        --------
+        closest_cells:
+            An array of indices representing the cells closest to the provided
+            coordinates. This will be a 1-dimensional array of
+            shape (n_coords).
+
+
+        """
+
+        # Create index if required
+        self._build_kd_tree_index()
+
+        if len(coords) > 0:
+            closest_points, dist, found = self._index.find_closest_point(coords)
+        else:
+            return -1
+
+        # This is tuned a little bit so that points on a single CPU are never lost
+
+        cells = self._indexMap[closest_points]
+        invalid = (
+            dist > 2.0 * self._search_lengths[cells]
+        )  # 0.25 * self._radii[cells] ** 2
+        cells[invalid] = -1
+
+        return cells
+
+    def _get_mesh_sizes(self):
+        """
+        Obtain the (local) mesh radii and centroids using
+        This routine is called when the mesh is built / rebuilt
+
+        """
+
+        # Create index if required
+        self._build_kd_tree_index()
+
+        (
+            sizes,
+            centroids,
+        ) = uw.cython.petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+
+        import numpy as np
+
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        pStart, pEnd = self.dm.getDepthStratum(0)
+        cell_length = np.empty_like(sizes)
+
+        for cell in range(cEnd - cStart):
+
+            cell_num_points = self.dm.getConeSize(cell)
+            cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
+            cell_coords = self.data[cell_points - pStart]
+
+            _, distsq, _ = self._index.find_closest_point(cell_coords)
+
+            cell_length[cell] = distsq.max()
+
+        return sizes, centroids, cell_length
+
+    # Deprecated in favour of _get_mesh_sizes (above)
     def _get_mesh_centroids(self):
         """
-        Obtain and cache the mesh centroids using underworld swarm technology.
+        Obtain and cache the (local) mesh centroids using underworld swarm technology.
         This routine is called when the mesh is built / rebuilt
+
+        The global cell number corresponding to a centroid is (supposed to be)
+        self.dm.getCellNumbering().array.min() + index
+
         """
 
-        from underworld3.swarm import Swarm, SwarmPICLayout
-
-        tempSwarm = Swarm(self)
-        tempSwarm.populate(fill_param=1, layout=SwarmPICLayout.GAUSS)
-
-        with tempSwarm.access():
-            # Build index on particle coords
-            centroids = tempSwarm.data.copy()
+        (
+            sizes,
+            centroids,
+        ) = uw.cython.petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
 
         return centroids
 
     def get_min_radius(self) -> float:
         """
-        This method returns the minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine.
+        This method returns the global minimum distance from any cell centroid to a face.
+        It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
+        returns zero.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
@@ -957,6 +1068,7 @@ def MeshVariable(
     vtype: Optional["underworld.VarType"] = None,
     degree: int = 1,
     continuous: bool = True,
+    varsymbol: Union[str, list] = None,
 ):
 
     """
@@ -968,10 +1080,8 @@ def MeshVariable(
 
     Parameters
     ----------
-    name :
+    varname :
         A textual name for this variable.
-    symbol:
-        A symbolic form for printing etc (sympy / latex)
     mesh :
         The supporting underworld mesh.
     num_components :
@@ -984,6 +1094,8 @@ def MeshVariable(
         if possible.
     degree :
         The polynomial degree for this variable.
+    varsymbol:
+        A symbolic form for printing etc (sympy / latex)
 
     """
 
@@ -996,7 +1108,7 @@ def MeshVariable(
 
     import re
 
-    clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+    clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
     if clean_name in mesh.vars.keys():
         print(f"Variable with name {name} already exists on the mesh - Skipping.")
@@ -1006,10 +1118,12 @@ def MeshVariable(
         print(
             "It is not possible to add new variables to a mesh after existing variables have been accessed"
         )
-        print("Variable {name} has NOT been added")
+        print(f"Variable {name} has NOT been added to mesh {mesh.instance}")
         return
 
-    return _MeshVariable(varname, mesh, num_components, vtype, degree, continuous)
+    return _MeshVariable(
+        varname, mesh, num_components, vtype, degree, continuous, varsymbol
+    )
 
 
 class _MeshVariable(_api_tools.Stateful):
@@ -1022,6 +1136,7 @@ class _MeshVariable(_api_tools.Stateful):
         vtype: Optional["underworld.VarType"] = None,
         degree: int = 1,
         continuous: bool = True,
+        varsymbol: Union[str, list] = None,
     ):
         """
         The MeshVariable class generates a variable supported by a finite element mesh and the
@@ -1032,10 +1147,9 @@ class _MeshVariable(_api_tools.Stateful):
 
         Parameters
         ----------
-        name :
+        varname :
             A textual name for this variable.
-        symbol :
-            A symbolic form for printing etc (sympy / latex)
+
         mesh :
             The supporting underworld mesh.
         num_components :
@@ -1051,12 +1165,21 @@ class _MeshVariable(_api_tools.Stateful):
         continuous:
             True for continuous element discretisation across element boundaries.
             False for discontinuous values across element boundaries.
+        varsymbol :
+            A symbolic form for printing etc (sympy / latex)
         """
 
+        import re
+
+        if varsymbol is None:
+            varsymbol = varname
+
         if isinstance(varname, list):
-            name = varname[0] + R"+ \dots"
+            name = varname[0] + R" ... "
+            symbol = varsymbol[0] + R"\cdots"
         else:
             name = varname
+            symbol = varsymbol
 
         self._lvec = None
         self._gvec = None
@@ -1065,16 +1188,16 @@ class _MeshVariable(_api_tools.Stateful):
         self._available = False
 
         self.name = name
-
-        import re
-
-        self.clean_name = re.sub(r"[^a-zA-Z0-9]", "", name)
+        self.symbol = symbol
+        self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
         if vtype == None:
             if num_components == 1:
                 vtype = uw.VarType.SCALAR
             elif num_components == mesh.dim:
                 vtype = uw.VarType.VECTOR
+            elif num_components == mesh.dim * mesh.dim:
+                vtype = uw.VarType.TENSOR
             else:
                 raise ValueError(
                     "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
@@ -1123,7 +1246,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         if vtype == uw.VarType.SCALAR:
             self._sym = sympy.Matrix.zeros(1, 1)
-            self._sym[0] = UnderworldFunction(name, self, vtype)(*self.mesh.r)
+            self._sym[0] = UnderworldFunction(self.symbol, self, vtype)(*self.mesh.r)
             self._sym[0].mesh = self.mesh
 
             self._ijk = self._sym[0]
@@ -1133,7 +1256,7 @@ class _MeshVariable(_api_tools.Stateful):
 
             # Matrix form (any number of components)
             for comp in range(num_components):
-                self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(
+                self._sym[0, comp] = UnderworldFunction(self.symbol, self, vtype, comp)(
                     *self.mesh.r
                 )
                 self._sym[0, comp].mesh = self.mesh
@@ -1143,15 +1266,27 @@ class _MeshVariable(_api_tools.Stateful):
                 self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
                 # self.mesh.vector.to_vector(self._sym)
 
+        elif vtype == uw.VarType.TENSOR:
+            self._sym = sympy.Matrix.zeros(1, self.mesh.dim * self.mesh.dim)
+
+            # Matrix form (any number of components)
+            for i in range(self.mesh.dim):
+                for j in range(self.mesh.dim):
+                    comp = i + j * self.mesh.dim
+                    self._sym[comp] = UnderworldFunction(
+                        self.symbol, self, vtype, (i, j)
+                    )(*self.mesh.r)
+                self._sym[0, comp].mesh = self.mesh
+
         elif (
             vtype == uw.VarType.COMPOSITE
         ):  # This is just to allow full control over the names of the components
             self._sym = sympy.Matrix.zeros(1, num_components)
-            if isinstance(varname, list):
-                if len(varname) == num_components:
+            if isinstance(varsymbol, list):
+                if len(varsymbol) == num_components:
                     for comp in range(num_components):
                         self._sym[0, comp] = UnderworldFunction(
-                            varname[comp], self, vtype, comp
+                            varsymbol[comp], self, vtype, comp
                         )(*self.mesh.r)
                         self._sym[0, comp].mesh = self.mesh
 
@@ -1161,20 +1296,23 @@ class _MeshVariable(_api_tools.Stateful):
                     )
             else:
                 for comp in range(num_components):
-                    self._sym[0, comp] = UnderworldFunction(name, self, vtype, comp)(
-                        *self.mesh.r
-                    )
+                    self._sym[0, comp] = UnderworldFunction(
+                        self.symbol, self, vtype, comp
+                    )(*self.mesh.r)
 
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
         return
 
-    def rbf_interpolate(self, new_coords, verbose=False):
+    # We should be careful - this is an INTERPOLATION
+    # that is stable when used for EXTRAPOLATION but
+    # not accurate.
+
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
 
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
@@ -1189,34 +1327,46 @@ class _MeshVariable(_api_tools.Stateful):
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
         mesh_kdt.build_index()
+        return mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
 
-        if verbose and uw.mpi.rank == 0:
-            print("Building K-D tree ... done", flush=True)
+        # if verbose and uw.mpi.rank == 0:
+        #     print("Building K-D tree ... done", flush=True)
 
-        # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
-        # old mesh points if we have a near-uniform mesh spacing.
+        # # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
+        # # old mesh points if we have a near-uniform mesh spacing.
 
-        num_neighbours = 10
+        # num_neighbours = nnn
 
-        closest, distance = mesh_kdt.find_closest_n_points(num_neighbours, new_coords)
+        # closest_n, distance_n = mesh_kdt.find_closest_n_points(
+        #     num_neighbours, new_coords
+        # )
 
-        num_local_vertices = new_coords.shape[0]
-        data_size = D.shape[1]
+        # num_local_vertices = new_coords.shape[0]
+        # data_size = D.shape[1]
 
-        Values = np.zeros((num_local_vertices, data_size))
-        Weights = np.zeros((num_local_vertices, 1))
+        # Values = np.zeros((num_local_vertices, data_size))
+        # Weights = np.zeros((num_local_vertices, 1))
 
-        epsilon = 1.0e-8
-        for i in range(num_local_vertices):
-            for j in range(num_neighbours):
-                nearest = closest[i, j]
-                Values[i, :] += D[nearest, :] / (epsilon + distance[i, j])
-                Weights[i] += 1.0 / (epsilon + distance[i, j])
+        # if verbose and uw.mpi.rank == 0:
+        #     print("Mapping values to vertices ... start", flush=True)
 
-        Values[...] /= Weights[:]
+        # epsilon = 1.0e-24
+        # for j in range(num_neighbours):
+        #     j_distance = epsilon + distance_n[:, j]
+        #     j_nearest = closest_n[:, j]
+        #     Weights[:, 0] += 1.0 / j_distance[:]
 
-        if verbose and uw.mpi.rank == 0:
-            print("Mapping values to vertices ... done", flush=True)
+        # epsilon = 1.0e-24
+        # for d in range(data_size):
+        #     for j in range(num_neighbours):
+        #         j_distance = epsilon + distance_n[:, j]
+        #         j_nearest = closest_n[:, j]
+        #         Values[:, d] += D[j_nearest[:], d] / j_distance[:]
+
+        # Values[...] /= Weights[:]
+
+        # if verbose and uw.mpi.rank == 0:
+        #     print("Mapping values to vertices ... done", flush=True)
 
         return Values
 
@@ -1244,6 +1394,8 @@ class _MeshVariable(_api_tools.Stateful):
             Not currently supported. An optional index which
             might correspond to the timestep (for example).
         """
+
+        self._set_vec(available=False)
 
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
@@ -1278,6 +1430,8 @@ class _MeshVariable(_api_tools.Stateful):
             The filename of the mesh checkpoint file
         """
 
+        self._set_vec(available=False)
+
         # Variable coordinates - let's put those in the file to
         # make it a standalone "swarm"
 
@@ -1309,9 +1463,14 @@ class _MeshVariable(_api_tools.Stateful):
         dmnew.localToGlobal(lvec, gvec, addv=False)
         gvec.setName("X")
 
+        # Check that this is also synchronised
+        # self.mesh.dm.localToGlobal(self._lvec, self._gvec, addv=False)
+
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self._gvec)
         viewer(gvec)
+
+        uw.mpi.barrier()
         viewer.destroy()
 
         return
@@ -1340,6 +1499,8 @@ class _MeshVariable(_api_tools.Stateful):
         import h5py
         import numpy as np
 
+        self._set_vec(available=False)
+
         ## Sub functions that are used to read / interpolate the mesh.
         def field_from_checkpoint(
             data_file=None,
@@ -1365,9 +1526,13 @@ class _MeshVariable(_api_tools.Stateful):
         ):
             """Read the mesh data as a swarm-like value"""
 
-            data_field_name = (
-                data_name + f"_P{data_degree}"
-            )  # What if it's not continuous ?
+            # data_field_name = data_name + f"_P{data_degree}"
+
+            h5f = h5py.File(data_file)
+            data_fields = h5f["vertex_fields"].keys()
+            data_field_name = next(
+                (field for field in data_fields if data_name in field), None
+            )
 
             h5f = h5py.File(data_file)
             D = h5f["vertex_fields"][data_field_name][()]
@@ -1382,50 +1547,19 @@ class _MeshVariable(_api_tools.Stateful):
 
             return X, D
 
-        def map_to_vertex_values(X, D):
+        def map_to_vertex_values(X, D, nnn=10, verbose=False):
 
-            # An inverse-distance mapping is quite robust here ... as long
-            # as we take care of the case where nodes coincide (quite likely)
-
-            if verbose and uw.mpi.rank == 0:
-                print("Building K-D tree", flush=True)
+            # Map from "swarm" of points to nodal points
+            # This is a permutation if we building on the checkpointed
+            # mesh file
 
             mesh_kdt = uw.kdtree.KDTree(self.coords)
             mesh_kdt.build_index()
 
-            if verbose and uw.mpi.rank == 0:
-                print("Building K-D tree ... done", flush=True)
-
-            # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
-            # old mesh points if we have a near-uniform mesh spacing.
-
-            num_neighbours = 10
-
-            closest, distance = mesh_kdt.find_closest_n_points(num_neighbours, X)
-
-            num_local_vertices = self.coords.shape[0]
-            data_size = D.shape[1]
-
-            Values = np.zeros((num_local_vertices, data_size))
-            Weights = np.zeros((num_local_vertices, 1))
-
-            epsilon = 1.0e-8
-            for i in range(D.shape[0]):
-                for j in range(num_neighbours):
-                    nearest = closest[i, j]
-                    Values[nearest, :] += D[i, :] / (epsilon + distance[i, j])
-                    Weights[nearest] += 1.0 / (epsilon + distance[i, j])
-
-            Values[...] /= Weights[:]
-
-            if verbose and uw.mpi.rank == 0:
-                print("Mapping values to vertices ... done", flush=True)
-
-            return Values
+            return mesh_kdt.rbf_interpolator_local(X, D, nnn, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
 
-            degree = mesh_variable.degree
             mesh = mesh_variable.mesh
 
             # This should be trivial but there may be problems if
@@ -1434,47 +1568,6 @@ class _MeshVariable(_api_tools.Stateful):
 
             with mesh.access(mesh_variable):
                 mesh_variable.data[...] = Values[...]
-
-            # if degree == 1:
-            #     with mesh.access(mesh_variable):
-            #         mesh_variable.data[...] = Values[...]
-
-            # else:
-
-            #     if mesh_variable.num_components == 1:
-
-            #         vertex_var = mesh._work_MeshVar
-            #         with mesh.access(vertex_var):
-            #             vertex_var.data[...] = Values[...]
-
-            #         projector = uw.systems.Projection(mesh, mesh_variable)
-            #         projector.uw_function = vertex_var.sym[0]
-            #         projector.smoothing = 1.0e-3
-            #         if not verbose:
-            #             projector.petsc_options.delValue("snes_converged_reason")
-            #             projector.petsc_options.delValue("ksp_monitor")
-            #             projector.petsc_options.delValue("snes_monitor")
-            #             projector.petsc_options.delValue("snes_monitor_short")
-            #         projector.solve()
-
-            #     elif mesh_variable.num_components == mesh.dim:
-
-            #         vertex_var = mesh._work_MeshVec
-            #         with mesh.access(vertex_var):
-            #             vertex_var.data[...] = Values[...]
-
-            #         projector = uw.systems.Vector_Projection(mesh, mesh_variable)
-            #         projector.smoothing = 1.0e-3
-            #         projector.uw_function = vertex_var.sym
-            #         if not verbose:
-            #             projector.petsc_options.delValue("snes_converged_reason")
-            #             projector.petsc_options.delValue("ksp_monitor")
-            #             projector.petsc_options.delValue("snes_monitor")
-            #             projector.petsc_options.delValue("snes_monitor_short")
-            #         projector.solve()
-
-            #     else:
-            #         raise NotImplementedError()
 
             return
 
@@ -1493,6 +1586,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         remapped_D = map_to_vertex_values(X, D)
 
+        # This is empty at the moment
         values_to_mesh_var(self, remapped_D)
 
         return

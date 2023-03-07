@@ -47,14 +47,20 @@ class SNES_Scalar:
             self.petsc_options_prefix = solver_name
 
         options = PETSc.Options()
-        options["dm_adaptor"]= "pragmatic"
+        # options["dm_adaptor"]= "pragmatic"
     
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "mg"
+        self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["pc_gamg_type"] = "agg"
+        self.petsc_options["pc_gamg_repartition"]  = True  
+        self.petsc_options["pc_mg_type"]  = "additive"
+        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self.petsc_options["mg_levels_ksp_converged_maxits"] = None        
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-4
@@ -455,7 +461,7 @@ class SNES_Vector:
             self.petsc_options_prefix = solver_name
 
         options = PETSc.Options()
-        options["dm_adaptor"]= "pragmatic"
+        # options["dm_adaptor"]= "pragmatic"
 
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
@@ -464,11 +470,16 @@ class SNES_Vector:
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_monitor"] = None
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "mg"
+        self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["pc_gamg_type"] = "agg"
+        self.petsc_options["pc_gamg_repartition"]  = True  
+        self.petsc_options["pc_mg_type"]  = "additive"
+        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
         self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
 
 
         ## Todo: some validity checking on the size / type of u_Field supplied
@@ -966,10 +977,19 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+
+        # Works / mostly quick
+        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+        # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
+        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+        # self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
+
+        ## may be more robust but usually slower
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
+        self.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "agg"
+        self.petsc_options["fieldsplit_pressure_pc_gamg_repartition"] = True
 
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1

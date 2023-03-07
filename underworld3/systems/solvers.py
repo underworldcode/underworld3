@@ -837,6 +837,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         nswarm.dm.addNPoints(
             self._u.coords.shape[0] + 1
         )  # why + 1 ? That's the number of spots actually allocated
+
         cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         coords[...] = self._u.coords[...]
@@ -922,7 +923,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         import math
         from mpi4py import MPI
 
-        
         with self.mesh.access(self.k):
             ## get local max diff value
             max_diffusivity = self.k.data[:, 0].max()
@@ -933,7 +933,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-
         ### Auto
         max_magvel = np.linalg.norm(vel, axis=0).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
@@ -943,7 +942,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         ## estimate dt of adv and diff components
         dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv  = min_dx / max_magvel_glob
+        dt_adv = min_dx / max_magvel_glob
 
         dt_estimate = min(dt_diff, dt_adv)
 
@@ -1052,6 +1051,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         verbose: bool = False,
     ):
 
+        self.instance = SNES_AdvectionDiffusion_Swarm.instances
         SNES_AdvectionDiffusion_Swarm.instances += 1
 
         if solver_name == "":
@@ -1188,7 +1188,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
         ## estimate dt of adv and diff components
         dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv  = min_dx / max_magvel_glob
+        dt_adv = min_dx / max_magvel_glob
 
         dt_estimate = min(dt_diff, dt_adv)
 

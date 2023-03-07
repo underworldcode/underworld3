@@ -1,4 +1,6 @@
 from libc.stdlib cimport malloc, free
+from typing import Optional, Tuple, Union
+
 
 import numpy as np
 import sympy
@@ -113,7 +115,7 @@ class UnderworldFunction(sympy.Function):
                 name     : str,
                 meshvar  : underworld3.discretisation.MeshVariable, 
                 vtype    : underworld3.VarType,
-                component: int = 0, 
+                component: Union[int, tuple] = 0, 
                 *args, **options):
         
         if vtype==uw.VarType.VECTOR:
@@ -133,6 +135,8 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{,"
         elif vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {},".format(component)
+        elif vtype==uw.VarType.TENSOR:
+            fname = name + "_{{ {}{},".format(component[0], component[1])
 
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
@@ -272,6 +276,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         mesh = varfns[0].meshvar().mesh
         # For now, eval over all vars
         vars = mesh.vars.values()
+
         cdef DM dm = mesh.dm
         # vars = mesh.vars.values()
         # Now construct and perform the PETSc evaluate of these variables
@@ -417,3 +422,76 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 # Note that we don't use the @decorator sugar here so that
 # we can pass in the `class_name` parameter. 
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
+
+
+# This is the interpolation routine used in function-evaluation above
+
+def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
+    """
+    This function performs the interpolation for the mesh variables
+    on a single mesh.
+    """
+    # Grab the mesh
+
+    mvars = mesh.vars.values()
+    cdef DM dm = mesh.dm
+
+    # Now construct and perform the PETSc evaluate of these variables
+    # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
+    # TODO: Investigate whether it makes sense to default to global operations here.
+
+    cdef DMInterpolationInfo ipInfo
+    cdef PetscErrorCode ierr
+    ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
+    ierr = DMInterpolationSetDim(ipInfo, mesh.dim); CHKERRQ(ierr)
+
+    # Get and set total count of dofs
+    dofcount = 0
+    var_start_index = {}
+    for var in mvars:
+        var_start_index[var] = dofcount
+        dofcount += var.num_components
+
+    ierr = DMInterpolationSetDof(ipInfo, dofcount); CHKERRQ(ierr)
+
+    # Add interpolation points
+    # Get c-pointer to data buffer
+    # First grab copy, as we're unsure about the underlying array's 
+    # memory layout
+
+    coords = np.ascontiguousarray(coords)
+    cdef double* coords_buff = <double*> coords.data
+    ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
+
+    # Generate a vector to hold the interpolation results.
+    # First create a numpy array of the required size.
+    cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
+    # Now create a PETSc vector to wrap the numpy memory.
+    cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
+
+    # INTERPOLATE ALL VARIABLES ON THE DM
+
+    # grab closest cells to use as hint for DMInterpolationSetUp
+    cdef np.ndarray cells = mesh.get_closest_cells(coords)
+    cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
+    ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
+    if ierr != 0:
+        raise RuntimeError(f"Error {ierr} encountered when trying to interpolate mesh variable.\n"
+                            "Interpolation location is possibly outside the domain.")
+    mesh.update_lvec()
+    cdef Vec pyfieldvec = mesh.lvec
+
+    # Use our custom routine as the PETSc one is broken. 
+    ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
+    ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
+
+    var_arrays = {}
+    for var in mesh.vars.values():
+            print(f"Variable {var.clean_name}")
+            var_start = var_start_index[var]
+            comps = var.num_components
+            arr = outarray[:,var_start:var_start+comps].copy()
+            var_arrays[var.clean_name] = arr
+
+    return var_arrays
+
