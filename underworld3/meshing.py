@@ -438,7 +438,7 @@ def StructuredQuadBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        new_mesh = Mesh(
+    new_mesh = Mesh(
             uw_filename,
             degree=degree,
             qdegree=qdegree,

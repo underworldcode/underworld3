@@ -927,14 +927,14 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             ## get local max diff value
             max_diffusivity = self.k.data[:, 0].max()
             ### get the velocity values
-            vel = self.u.data
+            vel = self._V.data
 
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### Auto
-        max_magvel = np.linalg.norm(vel, axis=0).max()
+        ### get global velocity from velocity field
+        max_magvel = np.linalg.norm(vel, axis=1).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         ## get radius
@@ -942,11 +942,18 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         ## estimate dt of adv and diff components
         dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv = min_dx / max_magvel_glob
-
-        dt_estimate = min(dt_diff, dt_adv)
+        dt_adv  = (min_dx / max_magvel_glob)
+        ### adv or diff could be 0 if only using one component
+        if dt_adv  == 0.:
+            dt_estimate = dt_diff
+        elif dt_diff == 0.:
+            dt_estimate = dt_adv
+        else:
+            dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
+
+
 
     @timing.routine_timer_decorator
     def solve(
@@ -1172,15 +1179,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             ## get local max dif value
             max_diffusivity = self.k.data[:, 0].max()
             ### get the velocity values
-            vel = self.u.data
+            vel = self._V.data
 
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ### get global velocity from velocity field
-        vel = self.u.data
-        max_magvel = np.linalg.norm(vel, axis=0).max()
+        max_magvel = np.linalg.norm(vel, axis=1).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         ## get radius
@@ -1188,9 +1194,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
         ## estimate dt of adv and diff components
         dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv = min_dx / max_magvel_glob
-
-        dt_estimate = min(dt_diff, dt_adv)
+        dt_adv  = (min_dx / max_magvel_glob)
+        ### adv or diff could be 0 if only using one component
+        if dt_adv  == 0.:
+            dt_estimate = dt_diff
+        elif dt_diff == 0.:
+            dt_estimate = dt_adv
+        else:
+            dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
 
