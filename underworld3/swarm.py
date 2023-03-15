@@ -266,6 +266,7 @@ class SwarmVariable(_api_tools.Stateful):
         filename: int,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
+        force_sequential=False,
     ):
         """
 
@@ -291,7 +292,7 @@ class SwarmVariable(_api_tools.Stateful):
         if filename.endswith(".h5") == False:
             raise RuntimeError("The filename must end with .h5")
 
-        if h5py.h5.get_config().mpi == True:
+        if h5py.h5.get_config().mpi == True and not force_sequential:
             with h5py.File(
                 f"{filename[:-3]}.h5", "w", driver="mpio", comm=MPI.COMM_WORLD
             ) as h5f:
