@@ -2,6 +2,24 @@ CHANGES: Underworld3
 ====================
 
 
+2023-03-01
+----------
+
+ - Use dmplex / dm adaptor to refine meshes
+ - use kd-tree to find points across a partitioned mesh
+ - use local kd-tree distances for fast, local rbf interpolants
+ - swarm cycling version of pop control
+
+
+2023-01-15
+----------
+
+ - >10000 core runs / timings
+ - swarm checkpointing
+ - mesh checkpointing
+ - read back from mesh using kd-tree in order to provide flexible reading across different decompositions / mesh resolutions
+
+
 2022-09-01
 ----------
 

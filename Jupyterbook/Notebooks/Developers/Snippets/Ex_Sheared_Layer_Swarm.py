@@ -393,13 +393,10 @@ def swarm_viz(filename):
         pl.add_points(point_cloud0, color="green", point_size=0.5)
 
         pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        # pl.add_mesh(pvstream)
-
-        # pl.remove_scalar_bar("mag")
         pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 1280), return_img=False)
 
         return
-        # pl.show()
+
 
 # +
 # Let's run a few steps to check the resetting thing works
@@ -415,7 +412,6 @@ for step in range(0,101):
      
     # Update the swarm locations
     swarm.advection(v_soln.sym, delta_t=delta_t, restore_points_to_domain_func=return_points_to_domain) 
-    
     
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))

@@ -177,12 +177,17 @@ class SwarmVariable(_api_tools.Stateful):
 
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+        # We try to eliminate contributions from recently remeshed particles
 
         import numpy as np
 
         with self.swarm.access():
-            D = self.data.copy()
-            kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+            not_remeshed = self.swarm._remeshed.data[:, 0] != 0
+            D = self.data[not_remeshed].copy()
+
+            kdt = uw.kdtree.KDTree(
+                self.swarm.particle_coordinates.data[not_remeshed, :]
+            )
             kdt.build_index()
 
         return kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
@@ -662,12 +667,13 @@ class Swarm(_api_tools.Stateful):
              (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
             (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
 
-        So this means, simplex mesh in 3D only supports GAUSS 
+        So this means, simplex mesh in 3D only supports GAUSS - This is based
+        on the tensor product locations so it is not even in the cells. 
 
         """
 
         if layout == None:
-            if self.mesh.isSimplex == True and self.dim == 2 and fill_param > 1:
+            if self.mesh.dim == 2:
                 layout = SwarmPICLayout.REGULAR
             else:
                 layout = SwarmPICLayout.GAUSS
@@ -677,20 +683,54 @@ class Swarm(_api_tools.Stateful):
 
         self.layout = layout
         self.dm.finalizeFieldRegister()
-
-        ## Commenting this out for now.
-        ## Code seems to operate fine without it, and the
-        ## existing values are wrong. It should be something like
-        ## `(elend-elstart)*fill_param^dim` for quads, and around
-        ## half that for simplices, depending on layout.
-        # elstart,elend = self.mesh.dm.getHeightStratum(0)
-        # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
-
         self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
 
+        ## Now make a series of copies to allow the swarm cycling to
+        ## work correctly (if required)
+
         if self.recycle_rate > 1:
+
+            with self.access():
+                swarm_orig_size = self.particle_coordinates.data.shape[0]
+                all_local_coords = np.vstack(
+                    (self.particle_coordinates.data,) * (self.recycle_rate)
+                )
+                all_local_cells = np.vstack(
+                    (self._cellid_var.data,) * (self.recycle_rate)
+                )
+
+                swarm_new_size = all_local_coords.data.shape[0]
+
+            # print(
+            #     f"{uw.mpi.rank} Swarm populate - size {swarm_orig_size} ->{swarm_new_size}",
+            #     flush=True,
+            # )
+
+            self.dm.addNPoints(swarm_new_size - swarm_orig_size)
+
+            cellid = self.dm.getField("DMSwarm_cellid")
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+
+            coords[...] = all_local_coords[...]
+            cellid[:] = all_local_cells[:, 0]
+
+            self.dm.restoreField("DMSwarmPIC_coor")
+            self.dm.restoreField("DMSwarm_cellid")
+
+            # print(
+            #     f"{uw.mpi.rank} Swarm population - done ",
+            #     flush=True,
+            # )
+
+            ## Now set the cycle values
+
+            with self.access(self._remeshed):
+                for i in range(0, self.recycle_rate):
+                    offset = swarm_orig_size * i
+                    self._remeshed.data[offset::, 0] = i
+
             with self.access(self._Xorig):
-                self._Xorig.data[...] = self.particle_coordinates.data[...]
+                self._Xorig.data[...] = self.data[...]
                 self._Xorig_uninitialised = False
 
         return  # self # LM: Is there any reason to return self ?
@@ -739,9 +779,6 @@ class Swarm(_api_tools.Stateful):
             with self.access(self._Xorig, self._remeshed):
                 self._Xorig.data[...] = coordinatesArray
                 self._remeshed.data[...] = 0
-
-        # We need to call dm.migrate when this has been done, but
-        # we also need to update swarm variables before we do.
 
         return
 
@@ -997,6 +1034,10 @@ class Swarm(_api_tools.Stateful):
         restore_points_to_domain_func=None,
     ):
 
+        # X0 holds the particle location at the start of advection
+        # This is needed because the particles may be migrated off-proc
+        # during timestepping.
+
         X0 = self._X0
 
         # Use current velocity to estimate where the particles would have
@@ -1106,14 +1147,15 @@ class Swarm(_api_tools.Stateful):
         ## original location.
 
         if self.recycle_rate > 1:
-            # Restore a subset of points to start
-            offset_idx = self.cycle % self.recycle_rate
+            # Restore particles which have cycle == cycle rate (use >= just in case)
 
             with self.access(self.particle_coordinates, self._remeshed):
-                self._remeshed.data[...] = 0
-                self._remeshed.data[offset_idx :: self.recycle_rate] = 1
-                remeshed = self._remeshed.data[:, 0]
+                remeshed = self._remeshed.data[:, 0] == 0
                 self.data[remeshed] = self._Xorig.data[remeshed]
+
+                # print(
+                #     f"Remeshed {np.count_nonzero(remeshed)} / {np.count_nonzero(~remeshed)} particles"
+                # )
 
                 # when we let this go, the particles may be re-distributed to
                 # other processors, and we will need to rebuild the remeshed
@@ -1122,23 +1164,26 @@ class Swarm(_api_tools.Stateful):
             for swarmVar in self.vars.values():
                 if swarmVar._rebuild_on_cycle:
                     with self.access(swarmVar):
-                        remeshed = self._remeshed.data[:, 0]
-                        remeshed_coords = self.data[remeshed]
+                        remeshed = self._remeshed.data[:, 0] == 0
+                        remeshed_coords = self._Xorig.data[remeshed]
 
                         if swarmVar.dtype is int:
                             nnn = 1
                         else:
-                            nnn = 10
+                            nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
 
                         interpolated_values = (
-                            swarmVar.rbf_interpolate(remeshed_coords, nnn=nnn)
+                            # swarmVar.rbf_interpolate(remeshed_coords, nnn=nnn)
+                            uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
                         ).astype(swarmVar.dtype)
 
                         swarmVar.data[remeshed] = interpolated_values
 
             with self.access(self._remeshed):
-                self._remeshed.data[...] = 0
+                self._remeshed.data[...] = np.mod(
+                    self._remeshed.data[...] - 1, self.recycle_rate
+                )
 
-        self.cycle += 1
+            self.cycle += 1
 
         return

@@ -258,7 +258,10 @@ class ViscousFlowModel(Constitutive_Model):
         individual instances of the class.
         """
 
-        def __init__(inner_self, viscosity: Union[float, sympy.Function] = 1):
+        def __init__(
+            inner_self,
+            viscosity: Union[float, sympy.Function] = 1,
+        ):
             inner_self._viscosity = viscosity
 
         @property
@@ -311,17 +314,194 @@ class ViscousFlowModel(Constitutive_Model):
         )
 
 
-###
+class ViscoPlasticFlowModel(ViscousFlowModel):
+    r"""
+    ```python
+    class ViscoPlasticFlowModel(Constitutive_Model)
+    ...
+    ```
+    ```python
+    viscoplastic_model = ViscousFlowModel(dim)
+    viscoplastic_model.material_properties = viscoplastic_model.Parameters(
+                                                                            viscosity=viscosity_fn)
+                                                                            yield_stress=yieldstress_fn,
+                                                                            yield_stress_min=float,
+                                                                            edot_II_fn=strain_rate_inv_fn
+                                                                            )
+    solver.constititutive_model = viscoplastic_model
+    ```
+    $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
+
+    where \( \eta \) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
+    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
+    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
 
 
-class ViscoElasticFlowModel(Constitutive_Model):
+    In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the *yield stress*.
+    In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
+    model needs to define the yield surface carefully and only a sub-set of possible cases is available in `Underworld`
+
+    This constitutive model is a convenience function that simplifies the code at run-time but can be reproduced easily by using the appropriate
+    `sympy` functions in the standard viscous constitutive model. **If you see `not~yet~defined` in the definition of the effective viscosity, this means
+    that you have not yet defined all the required functions. The behaviour is to default to the standard viscous constitutive law if yield terms are
+    not specified.
+
+    The Mandel constitutive matrix is available in `viscoplastic_model.C` and the rank 4 tensor form is
+    in `viscoplastic_model.c`.  Apply the constitutive model using:
+
+    ```python
+    tau = viscoplastic_model.flux(gradient_matrix)
+    ```
+    ---
+    """
+
+    # Init for VP class (not needed ??)
+    def __init__(self, dim):
+        super().__init__(dim)
+
+        return
+
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
+
+        def __init__(
+            inner_self,
+            bg_viscosity: Union[float, sympy.Function] = None,
+            yield_stress: Union[float, sympy.Function] = None,
+            yield_stress_min: Union[float, sympy.Function] = 0.001,
+            edot_II_fn: sympy.Function = None,
+            epsilon_edot_II: float = None,
+        ):
+
+            if bg_viscosity is None:
+                bg_viscosity = sympy.sympify(1)
+
+            if yield_stress is None:
+                yield_stress = sympy.symbols(
+                    r"\tau_y\rightarrow\textrm{not~yet~defined}"
+                )
+
+            if edot_II_fn is None:
+                edot_II_fn = sympy.symbols(
+                    r"\left|\dot\epsilon\right|\rightarrow\textrm{not~yet~defined}"
+                )
+
+            if epsilon_edot_II is None:
+                epsilon_edot_II = sympy.sympify(10) ** -10
+
+            inner_self._bg_viscosity = sympy.sympify(bg_viscosity)
+            inner_self._yield_stress = sympy.sympify(yield_stress)
+            inner_self._yield_stress_min = sympy.sympify(yield_stress_min)
+            inner_self._edot_II_fn = sympy.sympify(edot_II_fn)
+            inner_self._epsilon_edot_II = sympy.sympify(epsilon_edot_II)
+
+            return
+
+        @property
+        def bg_viscosity(inner_self):
+            return inner_self._bg_viscosity
+
+        @bg_viscosity.setter
+        def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
+            print(f"Setting BG viscosity to {value}")
+            inner_self._bg_viscosity = value
+            inner_self._reset()
+
+        @property
+        def yield_stress(inner_self):
+            return inner_self._yield_stress
+
+        @yield_stress.setter
+        def yield_stress(inner_self, value: Union[float, sympy.Function]):
+            inner_self._yield_stress = value
+            inner_self._reset()
+
+        @property
+        def yield_stress_min(inner_self):
+            return inner_self._yield_stress_min
+
+        @yield_stress_min.setter
+        def yield_stress_min(inner_self, value: Union[float, sympy.Function]):
+            inner_self._yield_stress_min = value
+            inner_self._reset()
+
+        @property
+        def edot_II_fn(inner_self):
+            return inner_self._edot_II_fn
+
+        @edot_II_fn.setter
+        def edot_II_fn(inner_self, value: sympy.Function):
+            inner_self._edot_II_fn = value
+            inner_self._reset()
+
+        @property
+        def epsilon_edot_II(inner_self):
+            return inner_self._epsilon_edot_II
+
+        @epsilon_edot_II.setter
+        def epsilon_edot_II(inner_self, value: float):
+            inner_self._epsilon_edot_II = sympy.sympify(value)
+            inner_self._reset()
+
+        # This has no setter !!
+        @property
+        def viscosity(inner_self):
+
+            if isinstance(inner_self.yield_stress, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
+
+            if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
+
+            viscosity_yield = inner_self.yield_stress / (
+                2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II
+            )
+
+            # inner_self.yield_stress_min,
+
+            effective_viscosity = sympy.Max(
+                inner_self.yield_stress_min,
+                sympy.Min(inner_self.bg_viscosity, viscosity_yield),
+            )
+
+            return effective_viscosity
+
+        ## ===== End of parameters sub_class
+
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._ipython_display_()
+
+        ## feedback on this instance
+        display(
+            Latex(
+                r"$\quad\eta_\textrm{bg} = $ "
+                + sympy.sympify(self.Parameters.bg_viscosity)._repr_latex_()
+            ),
+            Latex(
+                r"$\quad\tau_\textrm{y} = $ "
+                + sympy.sympify(self.Parameters.yield_stress)._repr_latex_(),
+            ),
+            Latex(
+                r"$\quad|\dot\epsilon| = $ "
+                + sympy.sympify(self.Parameters.edot_II_fn)._repr_latex_(),
+            ),
+        )
+
+
+class ViscoElasticFlowModel(ViscousFlowModel):
     r"""
     ```python
     class ViscoElasticFlowModel(Constitutive_Model)
     ...
     ```
     ```python
-    viscoelastic_model = ViscousFlowModel(dim)
+    viscoelastic_model = ViscoElasticFlowModel(dim)
     viscoelastic_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
     solver.constititutive_model = viscoelastic_model
     ```
@@ -383,6 +563,28 @@ class ViscoElasticFlowModel(Constitutive_Model):
         def deltaTe(inner_self, value: Union[float, sympy.Function]):
             inner_self._deltaTe = value
             inner_self._reset()
+
+        # Effective viscosity - defaults to
+        # background value though.
+        @property
+        def viscosity(inner_self):
+
+            if isinstance(inner_self.yield_stress, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
+
+            if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
+
+            viscosity_yield = inner_self.yield_stress / (
+                2.0 * (inner_self.edot_II_fn + inner_self.epsilon_edot_II)
+            )
+
+            effective_viscosity = sympy.Max(
+                inner_self.yield_stress_min,
+                1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
+            )
+
+            return effective_viscosity
 
     def __init__(self, dim):
 

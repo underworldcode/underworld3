@@ -1310,6 +1310,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                 self.mesh, self._u_star_projected
             )
 
+            options = self._u_star_projector.petsc_options
+            options.delValue("ksp_monitor")
+
             # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
             self._u_star_projector.smoothing = 0.0
             self._u_star_projector.uw_function = self._u_star_raw_fn

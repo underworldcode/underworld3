@@ -184,7 +184,7 @@ cdef class KDTree:
     def rbf_interpolator_local(self, 
             coords,
             data,
-            nnn = 10,
+            nnn = 4,
             verbose = False,
         ):
 
@@ -217,14 +217,14 @@ cdef class KDTree:
 
         epsilon = 1.0e-24
         for j in range(nnn):
-            j_distance = epsilon + distance_n[:, j]
+            j_distance = epsilon + np.sqrt(distance_n[:, j])
             Weights[:, 0] += 1.0 / j_distance[:]
 
 
         epsilon = 1.0e-24
         for d in range(data_size):
             for j in range(nnn):
-                j_distance = epsilon + distance_n[:, j]
+                j_distance = epsilon + np.sqrt(distance_n[:, j])
                 j_nearest = closest_n[:, j]
                 Values[:, d] += data[j_nearest, d] / j_distance
 

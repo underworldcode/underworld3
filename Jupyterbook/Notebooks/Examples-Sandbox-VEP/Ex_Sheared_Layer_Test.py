@@ -47,7 +47,7 @@ cellSize = csize
 
 width = 3.0
 height = 1.0
-radius = 0.1
+radius = 0.0
 
 eta1 = 1.
 eta2 = 1.
@@ -138,15 +138,30 @@ mesh1.vtk("tmp_shear_inclusion.vtk")
     
 # mesh1.dm.view()
 
-# -
 
-mesh1.data[:,0].min()
+# +
+# swarm = uw.swarm.Swarm(mesh=mesh1)
+# material = uw.swarm.SwarmVariable(
+#     "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=1
+# )
+# swarm.populate(fill_param=1)
 
-swarm = uw.swarm.Swarm(mesh=mesh1)
+swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=10)
+
 material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=1
+    "M", swarm, num_components=1, 
+    proxy_continuous=True, proxy_degree=2, dtype=int,
 )
-swarm.populate(fill_param=1)
+
+strain = uw.swarm.SwarmVariable(
+    "Strain", swarm, num_components=1, 
+    proxy_continuous=True, 
+    proxy_degree=2, varsymbol=r"\varepsilon", dtype=float,
+)
+
+swarm.populate(fill_param=4)
+
+
 
 # +
 # Define some functions on the mesh
@@ -183,8 +198,12 @@ r_inc = uw.discretisation.MeshVariable("R", mesh1, 1, degree=1)
 # -
 
 
-with swarm.access(material):
+with swarm.access(material, strain):
     material.data[:, 0] = 0.5 + 0.5 * np.sign(swarm.particle_coordinates.data[:, 1])
+    strain.data[:,0] = (1 - (swarm.particle_coordinates.data[:,1] * 2)**2) * np.random.random(swarm.particle_coordinates.data.shape[0]) * 0.2
+
+
+
 
 
 # +
@@ -199,29 +218,25 @@ stokes = uw.systems.Stokes(
 )
 
 viscosity_L = sympy.Piecewise(
-    (eta2, material.sym[0] < 0.0),
+    (eta2, material.sym[0] < 0.5),
     (eta1, True),
 )
-
-
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
-stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 1.0
-
-stokes.tolerance = 1.0e-6
 
 # -
 
 
-viscosity_L
+stokes.constitutive_model = uw.systems.constitutive_models.ViscoPlasticFlowModel(mesh1.dim)
+stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+stokes.constitutive_model
 
 # +
 nodal_strain_rate_inv2 = uw.systems.Projection(
     mesh1, strain_rate_inv2, solver_name="edot_II"
 )
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
-nodal_strain_rate_inv2.smoothing = 1.0e-3
+nodal_strain_rate_inv2.smoothing = 1.0e-6
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
@@ -238,7 +253,7 @@ yield_stress_calc.petsc_options.delValue("ksp_monitor")
 
 nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity, solver_name="visc")
 nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
-nodal_visc_calc.smoothing = 1.0e-3
+nodal_visc_calc.smoothing = 1.0e-6
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 
@@ -250,7 +265,7 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 stokes.penalty = 1.0
 stokes.bodyforce = (
-    -1.0 * mesh1.CoordinateSystem.unit_e_1 * x
+    -1.0 * mesh1.CoordinateSystem.unit_e_1.T * x
 )  # vertical force term (non-zero pressure)
 
 # hw = 1000.0 / res
@@ -265,46 +280,48 @@ stokes.add_dirichlet_bc((-1.0, 0.0), "Bottom", (0, 1))
 stokes.add_dirichlet_bc((0.0), "Left", (1))
 stokes.add_dirichlet_bc((0.0), "Right", (1))
 
-# -
 
-
-stokes.constitutive_model.Parameters.viscosity
 
 # +
 # linear solve first
 
 stokes.solve()
 # +
-# This should be the same as a linear function of viscosity with depth,
-# but the jacobian is different and will light up the SNES terms
+# Now add yield
 
-viscosity_L = 1.0 + 0.1 * p_soln.sym[0]
+C = 10 * sympy.exp(-strain.sym[0] / 0.5) + 1.0
+mu = 0.1 
 
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
-stokes.saddle_preconditioner = 1 / viscosity_L
+stokes.constitutive_model.Parameters.yield_stress = C  # + mu * p_soln.sym[0]
+stokes.constitutive_model.Parameters.edot_II_fn = stokes._Einv2
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+# stokes.solve(zero_init_guess=False)
 # -
 
+C.subs(strain.sym[0], 1.0)
 
 stokes.constitutive_model.Parameters.viscosity
 
 with mesh1.access():
-    print(0.01 * p_soln.data.min(), 0.01 * p_soln.data.max())
+    print(p_soln.data.min(), p_soln.data.max())
+
+stokes.solve(zero_init_guess=False)
+
 
 # +
-stokes.solve()
 
 S = stokes.stress_deviator
 nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace()) / 2))
 nodal_tau_inv2.solve()
 
+yield_stress_calc.uw_function = stokes.constitutive_model.Parameters.yield_stress
+yield_stress_calc.solve()
+
 nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.solve()
 
 nodal_strain_rate_inv2.solve()
-# -
-
-stokes.constitutive_model
-
 # + tags=[]
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
 # unexpected. This is a limitation we are stuck with for the moment.
@@ -320,9 +337,13 @@ if uw.mpi.size == 1:
 
     with mesh1.access():
         pvmesh.point_data["P"] = p_soln.rbf_interpolate(pvpoints)
-        pvmesh.point_data["Edot"] = np.exp(-0.1 * strain_rate_inv2.rbf_interpolate(pvpoints)**2)
-        pvmesh.point_data["Str"] = dev_stress_inv2.rbf_interpolate(pvpoints)
+        pvmesh.point_data["Edot"] = np.log(strain_rate_inv2.rbf_interpolate(pvpoints)**2)
+        pvmesh.point_data["Strs"] = dev_stress_inv2.rbf_interpolate(pvpoints)
+        pvmesh.point_data["StrY"] =  yield_stress.rbf_interpolate(pvpoints)
+        pvmesh.point_data["dStrY"] = pvmesh.point_data["Strs"] - pvmesh.point_data["StrY"]
         pvmesh.point_data["Visc"] = node_viscosity.rbf_interpolate(pvpoints)
+        pvmesh.point_data["Mat"] = material.rbf_interpolate(pvpoints)
+        pvmesh.point_data["Strn"] = strain._meshVar.rbf_interpolate(pvpoints)
 
     # Velocity arrows
     
@@ -333,6 +354,23 @@ if uw.mpi.size == 1:
     arrow_loc[:, 0:2] = v_soln.coords[...]
     arrow_length = np.zeros((v_soln.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
+    
+    # Points (swarm)
+    
+    with swarm.access():
+        points = np.zeros((swarm.data.shape[0], 3))
+        points[:, 0] = swarm.data[:,0]
+        points[:, 1] = swarm.data[:,1]
+        point_cloud = pv.PolyData(points)
+        point_cloud.point_data["strain"] = strain.data[:,0]
+
+        points0 = np.zeros((swarm._Xorig.data.shape[0], 3))
+        points0[:, 0] = swarm._Xorig.data[:,0]
+        points0[:, 1] = swarm._Xorig.data[:,1]
+        point_cloud0 = pv.PolyData(points0)
+
+
+    
 
     pl = pv.Plotter(window_size=(500, 500))
 
@@ -345,13 +383,56 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         # clim=[1.0,2.0],
-        scalars="Visc",
+        scalars="Edot",
         use_transparency=False,
         opacity=1.0,
     )
     
+ 
+    pl.add_points(point_cloud, colormap="coolwarm", scalars="strain", point_size=10.0, opacity=0.5)
+    
 
     pl.show()
+
+
+# -
+
+def return_points_to_domain(coords):
+    new_coords = coords.copy()
+    new_coords[:,0] = (coords[:,0] + 1.5)%3 - 1.5
+    return new_coords
+
+
+
+# +
+delta_t = stokes.estimate_dt()
+
+expt_name = "output/shear_test_resetting"
+
+for step in range(0, 50):
+    
+    stokes.solve(zero_init_guess=False)
+        
+    with swarm.access(strain), mesh1.access():
+        # failed = np.where(
+        strain.data[:,0] += delta_t * strain_rate_inv2.rbf_interpolate(swarm.data)[:,0]
+     
+    # Update the swarm locations
+    swarm.advection(v_soln.sym, delta_t=delta_t, 
+                 restore_points_to_domain_func=return_points_to_domain) 
+    
+    if uw.mpi.rank == 0:
+        print("Timestep {}, dt {}".format(step, delta_t))
+        
+    # if step%5 == 0:
+    #     swarm_viz(f"swarm_shear_recycle_{step}")
+
+
+# -
+
+
+
+0/0
 
 # +
 ## Now a velocity dependence - not really physical, but tests the jacobian etc
