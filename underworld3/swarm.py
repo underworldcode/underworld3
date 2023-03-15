@@ -362,24 +362,24 @@ class SwarmVariable(_api_tools.Stateful):
                     if comm.rank == 0:
                         warnings.warn(
                             f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.",
-                            stacklevel=2,
-                        )
+                            stacklevel=2)
 
                 #### this produces a shape mismatch, would be quicker not to do it in a loop
                 # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
                 # # self.data[:] = data[ind]
-                ### loops through the coords to load the data
-                # for coord in self.swarm.data:
-                #     ind_data  = np.isin(h5f_swarm['coordinates'][:], coord.data).all(axis=1)
-                #     ind_swarm = np.isin(self.swarm.data, coord.data).all(axis=1)
-                #     self.data[ind_swarm] = h5f_data['data'][:][ind_data]
-                ### loops through the coords in the file
-                for i in range(0, file_length):
-                    coord = h5f_swarm["coordinates"][i]
-                    data = h5f_data["data"][i]
-                    ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
 
-                    self.data[ind_swarm] = data
+                ### loops through the coords of the swarm to load the data
+                for coord in self.swarm.data:
+                    ind_data  = np.isin(h5f_swarm['coordinates'][:], coord).all(axis=1)
+                    ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
+                    self.data[ind_swarm] = h5f_data['data'][:][ind_data]
+                ### loops through the coords in the file
+                # for i in range(0, file_length):
+                #     coord = h5f_swarm["coordinates"][i]
+                #     data = h5f_data["data"][i]
+                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
+
+                #     self.data[ind_swarm] = data
 
         return
 
