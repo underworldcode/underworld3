@@ -825,51 +825,66 @@ class Swarm(_api_tools.Stateful):
             warnings.warn("Compression may slow down write times", stacklevel=2)
 
         if h5py.h5.get_config().mpi == True:
+
+            # It seems to be a bad idea to mix mpi barriers with the access
+            # context manager so the copy-free version of this seems to hang
+            # when there are many active cores. This is probably why the parallel
+            # h5py write hangs
+
+            with self.access():
+                data_copy = self.data[:].copy()
+
             with h5py.File(
                 f"{filename[:-3]}.h5", "w", driver="mpio", comm=MPI.COMM_WORLD
             ) as h5f:
-                with self.access():
+                if compression == True:
+                    h5f.create_dataset(
+                        "coordinates",
+                        data=data_copy[:],
+                        compression=compressionType,
+                    )
+                else:
+                    h5f.create_dataset("coordinates", data=data_copy[:])
+        else:
+
+            # It seems to be a bad idea to mix mpi barriers with the access
+            # context manager so the copy-free version of this seems to hang
+            # when there are many active cores
+
+            with self.access():
+                data_copy = self.data[:].copy()
+
+            if comm.rank == 0:
+                with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
                     if compression == True:
                         h5f.create_dataset(
                             "coordinates",
-                            data=self.data[:],
+                            data=data_copy,
+                            chunks=True,
+                            maxshape=(None, self.data.shape[1]),
                             compression=compressionType,
                         )
                     else:
-                        h5f.create_dataset("coordinates", data=self.data[:])
-        else:
-            with self.access():
-                if comm.rank == 0:
-                    with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
-                        if compression == True:
-                            h5f.create_dataset(
-                                "coordinates",
-                                data=self.data[:],
-                                chunks=True,
-                                maxshape=(None, self.data.shape[1]),
-                                compression=compressionType,
-                            )
-                        else:
-                            h5f.create_dataset(
-                                "coordinates",
-                                data=self.data[:],
-                                chunks=True,
-                                maxshape=(None, self.data.shape[1]),
-                            )
+                        h5f.create_dataset(
+                            "coordinates",
+                            data=data_copy,
+                            chunks=True,
+                            maxshape=(None, self.data.shape[1]),
+                        )
 
+            comm.barrier()
+            for i in range(1, comm.size):
+                if comm.rank == i:
+                    with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                        h5f["coordinates"].resize(
+                            (h5f["coordinates"].shape[0] + data_copy.shape[0]),
+                            axis=0,
+                        )
+                        # passive swarm, zero local particles is not unusual
+                        if self.data.shape[0] > 0:
+                            h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
                 comm.barrier()
-                for i in range(1, comm.size):
-                    if comm.rank == i:
-                        with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
-                            h5f["coordinates"].resize(
-                                (h5f["coordinates"].shape[0] + self.data.shape[0]),
-                                axis=0,
-                            )
-                            # passive swarm, zero local particles is not unusual
-                            if self.data.shape[0] > 0:
-                                h5f["coordinates"][-self.data.shape[0] :] = self.data[:]
-                    comm.barrier()
-                comm.barrier()
+            comm.barrier()
 
         return
 
