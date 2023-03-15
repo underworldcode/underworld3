@@ -798,6 +798,7 @@ class Swarm(_api_tools.Stateful):
         filename: int,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
+        force_sequential=False,
     ):
         """
 
@@ -825,7 +826,7 @@ class Swarm(_api_tools.Stateful):
         if compression == True and comm.rank == 0:
             warnings.warn("Compression may slow down write times", stacklevel=2)
 
-        if h5py.h5.get_config().mpi == True:
+        if h5py.h5.get_config().mpi == True and not force_sequential:
 
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
@@ -862,7 +863,7 @@ class Swarm(_api_tools.Stateful):
                             "coordinates",
                             data=data_copy,
                             chunks=True,
-                            maxshape=(None, self.data.shape[1]),
+                            maxshape=(None, data_copy.shape[1]),
                             compression=compressionType,
                         )
                     else:
@@ -870,7 +871,7 @@ class Swarm(_api_tools.Stateful):
                             "coordinates",
                             data=data_copy,
                             chunks=True,
-                            maxshape=(None, self.data.shape[1]),
+                            maxshape=(None, data_copy.shape[1]),
                         )
 
             comm.barrier()
@@ -882,7 +883,7 @@ class Swarm(_api_tools.Stateful):
                             axis=0,
                         )
                         # passive swarm, zero local particles is not unusual
-                        if self.data.shape[0] > 0:
+                        if data_copy.shape[0] > 0:
                             h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
                 comm.barrier()
             comm.barrier()
