@@ -1547,16 +1547,16 @@ class _MeshVariable(_api_tools.Stateful):
 
             return X, D
 
-        def map_to_vertex_values(X, D, nnn=10, verbose=False):
+        def map_to_vertex_values(X, D, nnn=4, verbose=False):
 
             # Map from "swarm" of points to nodal points
             # This is a permutation if we building on the checkpointed
             # mesh file
 
-            mesh_kdt = uw.kdtree.KDTree(self.coords)
+            mesh_kdt = uw.kdtree.KDTree(X)
             mesh_kdt.build_index()
 
-            return mesh_kdt.rbf_interpolator_local(X, D, nnn, verbose)
+            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
 

@@ -42,7 +42,7 @@ import sympy
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc 
 
-resolution = uw.options.getReal("model_resolution", default=0.04)
+resolution = uw.options.getReal("model_resolution", default=0.033)
 model = uw.options.getInt("model_number", default=4)
 
 # +
@@ -152,18 +152,12 @@ vorticity = uw.discretisation.MeshVariable("omega", pipemesh, 1, degree=1)
 r_inc = uw.discretisation.MeshVariable("R", pipemesh, 1, degree=1)
 
 
-print(f"{uw.mpi.rank} - active swarm allocate", flush=True)
-
 # +
 swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=20)
 v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, 
                             proxy_degree=2, proxy_continuous=True)
 
 swarm.populate(fill_param=2)
-# -
-
-print(f"{uw.mpi.rank} - active swarm allocated", flush=True)
-
 
 # + tags=[]
 passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -460,7 +454,7 @@ ts = 0
 dt_ns = 1.0e-2
 
 
-for step in range(0, 1):
+for step in range(0, 1500):
     delta_t_swarm = 2.0 * navier_stokes.estimate_dt()
     delta_t = min(delta_t_swarm, dt_ns)
     phi = min(1.0, delta_t / dt_ns)
@@ -493,23 +487,19 @@ for step in range(0, 1):
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}, dt_s {} phi {}".format(ts, delta_t, delta_t_swarm, phi))
 
-    if ts % 1 == 0:
+    if ts % 2 == 0:
         nodal_vorticity_from_v.solve()
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name, ts))
         
         
         savefile = f"output/{expt_name}"
-        # pipemesh.write_checkpoint(savefile, 
-        #                           meshUpdates=False, 
-        #                           meshVars=[p_soln,v_soln,vorticity], 
-        #                           index=ts)
         
         pipemesh.write_timestep_xdmf(savefile, 
                                      meshUpdates=True,
                                      meshVars=[p_soln,v_soln,vorticity], 
                                       index=ts)
         
-        passive_swarm.save(filename=f"{savefile}_passive_swarm.h5")
+        passive_swarm.save(filename=f"{savefile}.passive_swarm.{ts}.h5")
         
         
         
@@ -518,120 +508,4 @@ for step in range(0, 1):
 
         
     ts += 1
-
-
-# ls -trl output | tail
-
-0/0
-
-# +
-## Reading the checkpoints back in ... 
-
-# +
-mesh = uw.discretisation.Mesh("output/NS_test_Re_250_0.05.mesh.0.h5")
-
-v_soln_ckpt = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p_soln_ckpt = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
-vorticity_ckpt = uw.discretisation.MeshVariable("omega", mesh, 1, degree=1)
-
-passive_swarm_ckpt = uw.swarm.Swarm(mesh, recycle_rate=0)
-
-
-# +
-v_soln_ckpt.read_from_vertex_checkpoint("output/NS_test_Re_250_0.05.U.2.h5", "U")
-p_soln_ckpt.read_from_vertex_checkpoint("output/NS_test_Re_250_0.05.P.2.h5", "P")
-vorticity_ckpt.read_from_vertex_checkpoint("output/NS_test_Re_250_0.05.omega.2.h5", "omega")
-
-passive_swarm_ckpt.load("output/NS_test_Re_250_0.05_passive_swarm.h5")
-
-# +
-# check the mesh if in a notebook / serial
-
-
-if uw.mpi.size == 1:
-    
-    pl.close()
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pv.read("tmp_mesh.vtk")
-
-    with mesh.access():
-        usol = v_soln_ckpt.data.copy()
-
-    with mesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(
-            sympy.sqrt(v_soln_ckpt.fn.dot(v_soln_ckpt.fn)), mesh.data
-        )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln_ckpt.fn, mesh.data)
-        pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity_ckpt.fn, mesh.data)
-
-    v_vectors = np.zeros((mesh.data.shape[0], 3))
-    v_vectors[:, 0:2] = v_soln_ckpt.rbf_interpolate(mesh.data)
-    pvmesh.point_data["V"] = v_vectors
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    # swarm points
-
-    with passive_swarm_ckpt.access():
-        points = np.zeros((passive_swarm_ckpt.data.shape[0], 3))
-        points[:, 0] = passive_swarm_ckpt.data[:, 0]
-        points[:, 1] = passive_swarm_ckpt.data[:, 1]
-
-        swarm_point_cloud = pv.PolyData(points)
-
-    # point sources at cell centres
-
-    points = np.zeros((mesh._centroids.shape[0], 3))
-    points[:, 0] = mesh._centroids[:, 0]
-    points[:, 1] = mesh._centroids[:, 1]
-    point_cloud = pv.PolyData(points)
-
-    pvstream = pvmesh.streamlines_from_source(
-        point_cloud,
-        vectors="V",
-        integration_direction="forward",
-        max_time=0.5,
-    )
-
-    pl = pv.Plotter()
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.033/U0, opacity=0.75)
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=False,
-        scalars="Omega",
-        use_transparency=False,
-        opacity=1.0,
-    )
-
-    pl.add_points(swarm_point_cloud, color="Black",
-                  render_points_as_spheres=True,
-                  point_size=5, opacity=0.66
-                )
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    pl.add_mesh(pvstream, opacity=0.33)
-
-    # pl.remove_scalar_bar("S")
-    # pl.remove_scalar_bar("mag")
-
-    pl.show()
-# -
 
