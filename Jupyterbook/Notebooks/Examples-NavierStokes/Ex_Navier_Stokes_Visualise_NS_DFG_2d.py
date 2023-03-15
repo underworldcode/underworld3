@@ -37,12 +37,15 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+# ls ~/+Simulations/NS_benchmarks/Re250_res001
+
 # +
 ## Reading the checkpoints back in ... 
 
-step = 200
-res=0.033
-mesh_filename = f"output/NS_test_Re_250_{res}.mesh.0.h5"
+step = 300
+basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001/NS_test_Re_250_0.01"
+mesh_filename = f"{basename}.mesh.50.h5"
+mesh_filename
 
 # +
 mesh = uw.discretisation.Mesh(mesh_filename)
@@ -55,17 +58,16 @@ passive_swarm_ckpt = uw.swarm.Swarm(mesh, recycle_rate=0)
 
 
 # +
-v_soln_ckpt.read_from_vertex_checkpoint(f"output/NS_test_Re_250_{res}.U.{step}.h5", "U")
-p_soln_ckpt.read_from_vertex_checkpoint(f"output/NS_test_Re_250_{res}.P.{step}.h5", "P")
-vorticity_ckpt.read_from_vertex_checkpoint(f"output/NS_test_Re_250_{res}.omega.{step}.h5", "omega")
+v_soln_ckpt.read_from_vertex_checkpoint(f"{basename}.U.{step}.h5", "U")
+p_soln_ckpt.read_from_vertex_checkpoint(f"{basename}.P.{step}.h5", "P")
+vorticity_ckpt.read_from_vertex_checkpoint(f"{basename}.omega.{step}.h5", "omega")
 
-passive_swarm_ckpt.load(f"output/NS_test_Re_250_{res}.passive_swarm.{step}.h5")
+# passive_swarm_ckpt.load(f"output/NS_test_Re_250_{res}.passive_swarm.{step}.h5")
 
 # +
 # check the mesh if in a notebook / serial
 
 import pyvista as pv
-
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [1250, 1250]
@@ -94,14 +96,13 @@ if uw.mpi.size == 1:
         usol = v_soln_ckpt.data.copy()
 
     with mesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(
-            sympy.sqrt(v_soln_ckpt.fn.dot(v_soln_ckpt.fn)), mesh.data
-        )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln_ckpt.fn, mesh.data)
-        pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity_ckpt.fn, mesh.data)
+        # pvmesh.point_data["Vmag"] = v_soln_ckpt.rbf_interpolate(mesh.data)
+            
+        pvmesh.point_data["P"] = p_soln_ckpt.rbf_interpolate(mesh.data)
+        pvmesh.point_data["Omega"] = vorticity_ckpt.rbf_interpolate(mesh.data)
 
     v_vectors = np.zeros((mesh.data.shape[0], 3))
-    v_vectors[:, 0:2] = uw.function.evaluate(v_soln_ckpt.fn, mesh.data)
+    v_vectors[:, 0:2] = v_soln_ckpt.rbf_interpolate(mesh.data)
     pvmesh.point_data["V"] = v_vectors
 
     arrow_loc = np.zeros((v_soln_ckpt.coords.shape[0], 3))
@@ -112,18 +113,19 @@ if uw.mpi.size == 1:
 
     # swarm points
 
-    with passive_swarm_ckpt.access():
-        points = np.zeros((passive_swarm_ckpt.data.shape[0], 3))
-        points[:, 0] = passive_swarm_ckpt.data[:, 0]
-        points[:, 1] = passive_swarm_ckpt.data[:, 1]
+#     with passive_swarm_ckpt.access():
+#         points = np.zeros((passive_swarm_ckpt.data.shape[0], 3))
+#         points[:, 0] = passive_swarm_ckpt.data[:, 0]
+#         points[:, 1] = passive_swarm_ckpt.data[:, 1]
 
-        swarm_point_cloud = pv.PolyData(points)
+#         swarm_point_cloud = pv.PolyData(points)
 
     # point sources at cell centres
 
-    points = np.zeros((mesh._centroids.shape[0], 3))
-    points[:, 0] = mesh._centroids[:, 0]
-    points[:, 1] = mesh._centroids[:, 1]
+    skip = 10
+    points = np.zeros((mesh._centroids[::skip].shape[0], 3))
+    points[:, 0] = mesh._centroids[::skip, 0]
+    points[:, 1] = mesh._centroids[::skip, 1]
     point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
@@ -134,24 +136,24 @@ if uw.mpi.size == 1:
     )
 
     pl = pv.Plotter()
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.001, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=False,
-        scalars="P",
+        scalars="Omega",
         use_transparency=False,
         opacity=1.0,
     )
 
-    pl.add_points(swarm_point_cloud, color="Black",
-                  render_points_as_spheres=True,
-                  point_size=5, opacity=0.66
-                )
+    # pl.add_points(swarm_point_cloud, color="Black",
+    #               render_points_as_spheres=True,
+    #               point_size=5, opacity=0.66
+    #             )
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
     pl.add_mesh(pvstream, opacity=0.33)
 
     # pl.remove_scalar_bar("S")
@@ -159,8 +161,4 @@ if uw.mpi.size == 1:
 
     pl.show()
 # -
-
-
-
-
 

@@ -173,7 +173,7 @@ class SwarmVariable(_api_tools.Stateful):
 
         return
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
 
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
@@ -181,13 +181,21 @@ class SwarmVariable(_api_tools.Stateful):
 
         import numpy as np
 
-        with self.swarm.access():
-            not_remeshed = self.swarm._remeshed.data[:, 0] != 0
-            D = self.data[not_remeshed].copy()
+        if nnn is None:
+            nnn = self.swarm.mesh.dim + 1
 
-            kdt = uw.kdtree.KDTree(
-                self.swarm.particle_coordinates.data[not_remeshed, :]
-            )
+        with self.swarm.access():
+            if self.swarm.recycle_rate > 1:
+                not_remeshed = self.swarm._remeshed.data[:, 0] != 0
+                D = self.data[not_remeshed].copy()
+
+                kdt = uw.kdtree.KDTree(
+                    self.swarm.particle_coordinates.data[not_remeshed, :]
+                )
+            else:
+                D = self.data.copy()
+                kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data[:, :])
+
             kdt.build_index()
 
         return kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
@@ -674,7 +682,7 @@ class Swarm(_api_tools.Stateful):
         """
 
         if layout == None:
-            if self.mesh.dim == 2:
+            if self.mesh.dim == 2 and self.mesh.isSimplex:
                 layout = SwarmPICLayout.REGULAR
             else:
                 layout = SwarmPICLayout.GAUSS

@@ -44,6 +44,7 @@ import sympy
 
 resolution = uw.options.getReal("model_resolution", default=0.033)
 model = uw.options.getInt("model_number", default=4)
+maxsteps = uw.options.getInt("max_steps", default=500)
 
 # +
 if model == 1:
@@ -453,8 +454,7 @@ def plot_V_mesh(filename):
 ts = 0
 dt_ns = 1.0e-2
 
-
-for step in range(0, 1500):
+for step in range(0, maxsteps):
     delta_t_swarm = 2.0 * navier_stokes.estimate_dt()
     delta_t = min(delta_t_swarm, dt_ns)
     phi = min(1.0, delta_t / dt_ns)

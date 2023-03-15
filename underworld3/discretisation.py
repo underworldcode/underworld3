@@ -1215,7 +1215,7 @@ class _MeshVariable(_api_tools.Stateful):
         self.continuous = continuous
 
         options = PETSc.Options()
-        name0 = self.clean_name
+        name0 = ""  # self.clean_name
         options.setValue(f"{name0}_petscspace_degree", degree)
         options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
         options.setValue(
