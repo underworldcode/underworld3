@@ -149,10 +149,7 @@ class SwarmVariable(_api_tools.Stateful):
     # Maybe rbf_interpolate for this one and meshVar is a special case
     def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False):
         """
-        Here is how it works:
-
-            1) for each particle, create a distance-weighted average on the node data
-            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
+        Here is how it works: for each particle, create a distance-weighted average on the node data
 
         Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
         Todo: some form of global fall-back for when there are no particles on a processor
@@ -702,6 +699,12 @@ class Swarm(_api_tools.Stateful):
         ## work correctly (if required)
 
         if self.recycle_rate > 1:
+            with self.access():
+                # Actually, this is a mesh-local quantity, so let's just
+                # store it on the mesh
+
+                self.mesh.particle_X_orig = self.particle_coordinates.data.copy()
+                self.mesh.particle_CellID_orig = self._cellid_var.data.copy()
 
             with self.access():
                 swarm_orig_size = self.particle_coordinates.data.shape[0]
@@ -713,11 +716,6 @@ class Swarm(_api_tools.Stateful):
                 )
 
                 swarm_new_size = all_local_coords.data.shape[0]
-
-            # print(
-            #     f"{uw.mpi.rank} Swarm populate - size {swarm_orig_size} ->{swarm_new_size}",
-            #     flush=True,
-            # )
 
             self.dm.addNPoints(swarm_new_size - swarm_orig_size)
 
@@ -1180,17 +1178,33 @@ class Swarm(_api_tools.Stateful):
         if self.recycle_rate > 1:
             # Restore particles which have cycle == cycle rate (use >= just in case)
 
+            # Remove remesh points and recreate a new set at the mesh-local
+            # locations that we already have stored.
+
             with self.access(self.particle_coordinates, self._remeshed):
                 remeshed = self._remeshed.data[:, 0] == 0
-                self.data[remeshed] = self._Xorig.data[remeshed]
+                # This is one way to do it ... we can do this better though
+                self.data[remeshed, 0] = 1.0e100
 
-                # print(
-                #     f"Remeshed {np.count_nonzero(remeshed)} / {np.count_nonzero(~remeshed)} particles"
-                # )
+            swarm_size = self.dm.getLocalSize()
 
-                # when we let this go, the particles may be re-distributed to
-                # other processors, and we will need to rebuild the remeshed
-                # array before trying to compute / assign values to variables
+            self.dm.addNPoints(self.mesh.particle_X_orig.shape[0])
+
+            cellid = self.dm.getField("DMSwarm_cellid")
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            rmsh = self.dm.getField("DMSwarm_remeshed")
+
+            coords[swarm_size::] = self.mesh.particle_X_orig[:, :]
+            cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
+            rmsh[swarm_size::] = 0
+
+            self.dm.restoreField("DMSwarm_cellid")
+            self.dm.restoreField("DMSwarmPIC_coor")
+            self.dm.restoreField("DMSwarm_remeshed")
+
+            # when we let this go, the particles may be re-distributed to
+            # other processors, and we will need to rebuild the remeshed
+            # array before trying to compute / assign values to variables
 
             for swarmVar in self.vars.values():
                 if swarmVar._rebuild_on_cycle:
