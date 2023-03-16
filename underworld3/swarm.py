@@ -147,7 +147,7 @@ class SwarmVariable(_api_tools.Stateful):
         return
 
     # Maybe rbf_interpolate for this one and meshVar is a special case
-    def _rbf_to_meshVar(self, meshVar, nns=10, verbose=False):
+    def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False):
         """
         Here is how it works:
 
@@ -161,12 +161,15 @@ class SwarmVariable(_api_tools.Stateful):
         # Mapping to the coordinates of the variable from the
         # particle coords
 
+        if nnn is None:
+            nnn = self.swarm.mesh.dim + 1
+
         if meshVar.mesh != self.swarm.mesh:
             raise RuntimeError("Cannot map a swarm to a different mesh")
 
         new_coords = meshVar.coords
 
-        Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=10)
+        Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=nnn)
 
         with meshVar.mesh.access(meshVar):
             meshVar.data[...] = Values[...]
