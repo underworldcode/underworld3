@@ -1209,8 +1209,6 @@ class Swarm(_api_tools.Stateful):
             for swarmVar in self.vars.values():
                 if swarmVar._rebuild_on_cycle:
                     with self.access(swarmVar):
-                        remeshed = self._remeshed.data[:, 0] == 0
-                        remeshed_coords = self._Xorig.data[remeshed]
 
                         if swarmVar.dtype is int:
                             nnn = 1
@@ -1218,11 +1216,11 @@ class Swarm(_api_tools.Stateful):
                             nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
 
                         interpolated_values = (
-                            # swarmVar.rbf_interpolate(remeshed_coords, nnn=nnn)
-                            uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
+                            swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
+                            # uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
                         ).astype(swarmVar.dtype)
 
-                        swarmVar.data[remeshed] = interpolated_values
+                        swarmVar.data[swarm_size::] = interpolated_values
 
             with self.access(self._remeshed):
                 self._remeshed.data[...] = np.mod(
