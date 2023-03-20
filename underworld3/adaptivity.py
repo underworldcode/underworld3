@@ -201,9 +201,9 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     ## and we can hand it out to the new swarm
     ## =====================================
 
-    if swarm0.recycle_rate > 0:
-        if swarm0.vars["DMSwarm_Xorig"] not in swarmVarList:
-            swarmVarList.append(swarm0.vars["DMSwarm_Xorig"])
+    # if swarm0.recycle_rate > 0:
+    #     if swarm0.vars["DMSwarm_Xorig"] not in swarmVarList:
+    #         swarmVarList.append(swarm0.vars["DMSwarm_Xorig"])
 
     swarm1 = uw.swarm.Swarm(mesh=mesh1, cycle_rate=swarm0.recycle_rate)
 

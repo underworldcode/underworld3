@@ -231,7 +231,8 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         c_L[:]      = L3[:]
 
         ierr = DMSetPeriodicity( c_dm.dm, c_maxCell, c_Lstart , c_L); CHKERRQ(ierr)
+        ierr = DMLocalizeCoordinates(c_dm.dm); CHKERRQ(ierr)
 
-        incoming_dm.localizeCoordinates()
+        # incoming_dm.localizeCoordinates()
 
         return 

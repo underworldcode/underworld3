@@ -391,7 +391,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                 )
 
             if epsilon_edot_II is None:
-                epsilon_edot_II = sympy.sympify(10) ** -10
+                epsilon_edot_II = 0  # sympy.sympify(10) ** -10
 
             inner_self._bg_viscosity = sympy.sympify(bg_viscosity)
             inner_self._yield_stress = sympy.sympify(yield_stress)
@@ -465,7 +465,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
             effective_viscosity = sympy.Max(
                 inner_self.yield_stress_min,
-                sympy.Min(inner_self.bg_viscosity, viscosity_yield),
+                1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
             )
 
             return effective_viscosity
@@ -579,9 +579,8 @@ class ViscoElasticFlowModel(ViscousFlowModel):
                 2.0 * (inner_self.edot_II_fn + inner_self.epsilon_edot_II)
             )
 
-            effective_viscosity = sympy.Max(
-                inner_self.yield_stress_min,
-                1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
+            effective_viscosity = 1 / (
+                1 / inner_self.bg_viscosity + 1 / viscosity_yield
             )
 
             return effective_viscosity
