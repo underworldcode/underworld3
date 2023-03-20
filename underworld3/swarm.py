@@ -374,15 +374,45 @@ class SwarmVariable(_api_tools.Stateful):
                             stacklevel=2,
                         )
 
+                # First work out which are local points and ignore the rest
+                # This might help speed up the load by dropping lots of particles
+
+                all_coords = h5f_swarm["coordinates"][()]
+                all_data = h5f_data["data"][()]
+
+                cell = self.swarm.mesh.get_closest_local_cells(all_coords)
+                local = np.where(cell >= 0)[0]
+                # not_not_local = np.where(cell == -1)[0]
+
+                local_coords = all_coords[local]
+                local_data = all_data[local]
+
+                kdt = uw.kdtree.KDTree(local_coords)
+
+                self.data[:] = kdt.rbf_interpolator_local(
+                    self.swarm.data, local_data, nnn=1
+                )
+
                 #### this produces a shape mismatch, would be quicker not to do it in a loop
                 # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
                 # # self.data[:] = data[ind]
 
+                # print(f"Looping over coords for swarm load")
+                # i = 0
+
                 ### loops through the coords of the swarm to load the data
-                for coord in self.swarm.data:
-                    ind_data = np.isin(h5f_swarm["coordinates"][:], coord).all(axis=1)
-                    ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
-                    self.data[ind_swarm] = h5f_data["data"][:][ind_data]
+                # for coord in self.swarm.data:
+                #     ind_data = np.isin(h5f_swarm["coordinates"][:], coord).all(axis=1)
+                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
+                #     self.data[ind_swarm] = h5f_data["data"][:][ind_data]
+                #     i += 1
+                #     if i % 1000 == 0:
+                #         print(
+                #             f"Looping over coords for swarm load ... {i}/{self.swarm.data.shape[0]}"
+                #         )
+
+                # print(f"Looping over coords for swarm load ... done")
+
                 ### loops through the coords in the file
                 # for i in range(0, file_length):
                 #     coord = h5f_swarm["coordinates"][i]
