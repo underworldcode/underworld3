@@ -423,7 +423,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @bg_viscosity.setter
         def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
-            print(f"Setting BG viscosity to {value}")
             inner_self._bg_viscosity = value
             inner_self._reset()
 
