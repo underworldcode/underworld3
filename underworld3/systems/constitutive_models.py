@@ -260,9 +260,13 @@ class ViscousFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
-            viscosity: Union[float, sympy.Function] = 1,
+            viscosity: Union[float, sympy.Function]     = None,
         ):
-            inner_self._viscosity = viscosity
+            
+            if viscosity is None:
+                viscosity = sympy.sympify(1)
+
+            inner_self._viscosity = sympy.sympify(viscosity)
 
         @property
         def viscosity(inner_self):
@@ -321,10 +325,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     ...
     ```
     ```python
-    viscoplastic_model = ViscousFlowModel(dim)
+    viscoplastic_model = ViscoPlasticFlowModel(dim)
     viscoplastic_model.material_properties = viscoplastic_model.Parameters(
-                                                                            viscosity=viscosity_fn)
+                                                                            viscosity=viscosity_fn
                                                                             yield_stress=yieldstress_fn,
+                                                                            min_viscosity=min_viscosity_fn,
+                                                                            max_viscosity=max_viscosity_fn,
                                                                             yield_stress_min=float,
                                                                             edot_II_fn=strain_rate_inv_fn
                                                                             )
@@ -372,6 +378,8 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             inner_self,
             bg_viscosity: Union[float, sympy.Function] = None,
             yield_stress: Union[float, sympy.Function] = None,
+            min_viscosity: Union[float, sympy.Function] = None,
+            max_viscosity: Union[float, sympy.Function] = None,
             yield_stress_min: Union[float, sympy.Function] = 0.001,
             edot_II_fn: sympy.Function = None,
             epsilon_edot_II: float = None,
@@ -379,6 +387,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
             if bg_viscosity is None:
                 bg_viscosity = sympy.sympify(1)
+
+            if min_viscosity is None:
+                min_viscosity = sympy.sympify(0.01)
+            
+            if max_viscosity is None:
+                max_viscosity = sympy.sympify(100)
 
             if yield_stress is None:
                 yield_stress = sympy.symbols(
@@ -396,6 +410,8 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             inner_self._bg_viscosity = sympy.sympify(bg_viscosity)
             inner_self._yield_stress = sympy.sympify(yield_stress)
             inner_self._yield_stress_min = sympy.sympify(yield_stress_min)
+            inner_self._min_viscosity = sympy.sympify(min_viscosity)
+            inner_self._max_viscosity = sympy.sympify(max_viscosity)
             inner_self._edot_II_fn = sympy.sympify(edot_II_fn)
             inner_self._epsilon_edot_II = sympy.sympify(epsilon_edot_II)
 
@@ -409,6 +425,26 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
             print(f"Setting BG viscosity to {value}")
             inner_self._bg_viscosity = value
+            inner_self._reset()
+
+        @property
+        def min_viscosity(inner_self):
+            return inner_self._min_viscosity
+
+        @min_viscosity.setter
+        def min_viscosity(inner_self, value: Union[float, sympy.Function]):
+            print(f"Setting min viscosity to {value}")
+            inner_self._min_viscosity = value
+            inner_self._reset()
+
+        @property
+        def max_viscosity(inner_self):
+            return inner_self._max_viscosity
+
+        @max_viscosity.setter
+        def max_viscosity(inner_self, value: Union[float, sympy.Function]):
+            print(f"Setting max viscosity to {value}")
+            inner_self._max_viscosity = value
             inner_self._reset()
 
         @property
@@ -468,7 +504,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                 1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
             )
 
-            return effective_viscosity
+            viscosity_limit = sympy.Max(
+                sympy.Min(effective_viscosity, inner_self.max_viscosity),
+                inner_self.min_viscosity)
+
+            return viscosity_limit
 
         ## ===== End of parameters sub_class
 

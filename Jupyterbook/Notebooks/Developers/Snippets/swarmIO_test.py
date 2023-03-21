@@ -91,9 +91,9 @@ for i in [material, materialVariable]:
 fields = [material,materialVariable, test0, test1, rank]
 
 
-swarm_h5(swarm=swarm, fields=fields, timestep=0, outputPath=outputPath)
+swarm_h5(swarm=swarm, fileName='swarm', fields=fields, timestep=0, outputPath=outputPath)
 
-swarm_xdmf(fields=fields, timestep=0, outputPath=outputPath)
+swarm_xdmf(fields=fields, fileName='swarm', timestep=0, outputPath=outputPath)
 
 # %% [markdown]
 # #### create a block at that is smaller at base of the model
@@ -113,9 +113,9 @@ for i in [material, materialVariable]:
 fields = [material,materialVariable, test0, test1, rank]
 
 
-swarm_h5(swarm=swarm, fields=fields, timestep=1, outputPath=outputPath)
+swarm_h5(swarm=swarm, fileName='swarm', fields=fields, timestep=1, outputPath=outputPath)
 
-swarm_xdmf(fields=fields, timestep=1, outputPath=outputPath)
+swarm_xdmf(fields=fields, fileName='swarm', timestep=1, outputPath=outputPath)
 
 # %% [markdown]
 # #### Load the original material distribution back to the material field
@@ -133,9 +133,9 @@ material.load(outputPath+'material-0000.h5', outputPath+'swarm-0000.h5')
 fields = [material,materialVariable, test0, test1, rank]
 
 
-swarm_h5(swarm=swarm, fields=fields, timestep=2, outputPath=outputPath)
+swarm_h5(swarm=swarm, fileName='swarm', fields=fields, timestep=2, outputPath=outputPath)
 
-swarm_xdmf(fields=fields, timestep=2, outputPath=outputPath)
+swarm_xdmf(fields=fields, fileName='swarm', timestep=2, outputPath=outputPath)
 
 # %% [markdown]
 # Visualise in paraview to check:
