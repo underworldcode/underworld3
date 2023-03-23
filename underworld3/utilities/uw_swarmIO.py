@@ -25,10 +25,10 @@ def swarm_h5(swarm, fileName, timestep, fields=None, outputPath='', compression=
     >>> 
     example usage:
     without compression:
-    swarm_h5(swarm=swarm, fields=[material, strainRate], timestep=0)
+    swarm_h5(swarm=swarm, fileName='swarm', fields=[material, strainRate], timestep=0)
     
     with compression:
-    swarm_h5(swarm=swarm, fields=[material, strainRate], timestep=0, compression=True, compressionType='gzip')
+    swarm_h5(swarm=swarm, fileName='swarm', fields=[material, strainRate], timestep=0, compression=True, compressionType='gzip')
     
     <<<<
     
@@ -47,20 +47,20 @@ def swarm_h5(swarm, fileName, timestep, fields=None, outputPath='', compression=
                 field.save(filename=f'{outputPath}{field.name}-{timestep:04d}.h5', compression=compression, compressionType=compressionType)
 
 
-def swarm_xdmf(timestep, fileName, fields=None, outputPath='', time=None):
+def swarm_xdmf(fileName, timestep, fields=None, outputPath='', time=None):
     '''
     Function to combine h5 files to a single xdmf to visualise the swarm in paraview. Should be run after the 'swarm_h5' function.
     
-    fields     : UW swarm variables that contain the data to save. Should be passed as a list.
     fileName   : Name of file the file where the swarm data is stored.
     timestep   : timestep of the model to save
+    fields     : UW swarm variables that contain the data to save. Should be passed as a list.
     outputPath : Folder to save the data, can be left undefined to save in the current working directory. This directory should also contain the h5 files
     time       : Time of the model, can be left undefined and model output will be sequential but not contain the time data.
     
     >>> 
     example usage:
     
-    swarm_xdmf(fields=[material, strainRate], timestep=0)
+    swarm_xdmf(fileName='swarm', fields=[material, strainRate], timestep=0)
     
     <<<<
     

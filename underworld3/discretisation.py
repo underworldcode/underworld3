@@ -835,7 +835,7 @@ class Mesh(_api_tools.Stateful):
         tempSwarm = Swarm(self)
         # 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
-        tempSwarm.populate(fill_param=4, layout=SwarmPICLayout.GAUSS)
+        tempSwarm.populate(fill_param=3) # , layout=SwarmPICLayout.GAUSS)
 
         with tempSwarm.access():
             # Build index on particle coords

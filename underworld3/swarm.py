@@ -666,11 +666,56 @@ class Swarm(_api_tools.Stateful):
     def particle_cellid(self):
         return self._cellid_var
 
+    # @timing.routine_timer_decorator
+    # def populate(
+    #     self,
+    #     fill_param: Optional[int] = 3,
+    #     layout: Optional[SwarmPICLayout] = None,
+    # ):
+    #     (
+    #         """
+    #     Populate the swarm with particles throughout the domain.
+
+    #     """
+    #         + SwarmPICLayout.__doc__
+    #         + """
+
+    #     When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
+    #     When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
+    #     When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
+
+    #     Parameters
+    #     ----------
+    #     fill_param:
+    #         Parameter determining the particle count per cell for the given layout.
+    #     layout:
+    #         Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
+    #         type cells, and `SwarmPICLayout.GAUSS` otherwise.
+
+
+
+    #     """
+    #     )
+
+    #     self.fill_param = fill_param
+
+    #     """
+    #     Currently (2021.11.15) supported by PETSc release 3.16.x
+ 
+    #     When using a DMPLEX the following case are supported:
+    #           (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+    #          (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+    #         (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+
+    #     So this means, simplex mesh in 3D only supports GAUSS - This is based
+    #     on the tensor product locations so it is not even in the cells. 
+
+    #     """
+
     @timing.routine_timer_decorator
     def populate(
         self,
-        fill_param: Optional[int] = 3,
-        layout: Optional[SwarmPICLayout] = None,
+        fill_param: Optional[int] = 1,
     ):
         (
             """
@@ -680,50 +725,17 @@ class Swarm(_api_tools.Stateful):
             + SwarmPICLayout.__doc__
             + """
 
-        When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
-        When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
-        When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
-
         Parameters
         ----------
         fill_param:
-            Parameter determining the particle count per cell for the given layout.
-        layout:
-            Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
-            type cells, and `SwarmPICLayout.GAUSS` otherwise.
-
-
+            Parameter determining the particle count per cell for the given layout, using the mesh degree.
 
         """
         )
 
-        self.fill_param = fill_param
-
-        """
-        Currently (2021.11.15) supported by PETSc release 3.16.x
- 
-        When using a DMPLEX the following case are supported:
-              (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
-             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
-            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
-
-        So this means, simplex mesh in 3D only supports GAUSS - This is based
-        on the tensor product locations so it is not even in the cells. 
-
-        """
-
-        if layout == None:
-            if self.mesh.dim == 2 and self.mesh.isSimplex:
-                layout = SwarmPICLayout.REGULAR
-            else:
-                layout = SwarmPICLayout.GAUSS
-
-        if not isinstance(layout, SwarmPICLayout):
-            raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
-
-        self.layout = layout
-        self.dm.finalizeFieldRegister()
-        self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
+        coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
+        self.add_particles_with_coordinates(coords)
+        
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
