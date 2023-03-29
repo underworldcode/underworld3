@@ -1,6 +1,16 @@
 CHANGES: Underworld3
 ====================
 
+2023-03-29
+----------
+
+  - Swarm reading using kd-tree to speed up locations
+  - Swarm cycling now reverts to positions defined on the mesh and uses randomness to avoid 
+      unexpected jamming of particles in stagnant regions
+  - viscoplasticity seems to be doing the right thing
+
+
+
 
 2023-03-01
 ----------
@@ -9,6 +19,7 @@ CHANGES: Underworld3
  - use kd-tree to find points across a partitioned mesh
  - use local kd-tree distances for fast, local rbf interpolants
  - swarm cycling version of pop control
+ - integrals are working ok
 
 
 2023-01-15
