@@ -666,11 +666,56 @@ class Swarm(_api_tools.Stateful):
     def particle_cellid(self):
         return self._cellid_var
 
+    # @timing.routine_timer_decorator
+    # def populate(
+    #     self,
+    #     fill_param: Optional[int] = 3,
+    #     layout: Optional[SwarmPICLayout] = None,
+    # ):
+    #     (
+    #         """
+    #     Populate the swarm with particles throughout the domain.
+
+    #     """
+    #         + SwarmPICLayout.__doc__
+    #         + """
+
+    #     When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
+    #     When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
+    #     When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
+
+    #     Parameters
+    #     ----------
+    #     fill_param:
+    #         Parameter determining the particle count per cell for the given layout.
+    #     layout:
+    #         Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
+    #         type cells, and `SwarmPICLayout.GAUSS` otherwise.
+
+
+
+    #     """
+    #     )
+
+    #     self.fill_param = fill_param
+
+    #     """
+    #     Currently (2021.11.15) supported by PETSc release 3.16.x
+ 
+    #     When using a DMPLEX the following case are supported:
+    #           (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+    #          (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+    #         (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+
+    #     So this means, simplex mesh in 3D only supports GAUSS - This is based
+    #     on the tensor product locations so it is not even in the cells. 
+
+    #     """
+
     @timing.routine_timer_decorator
     def populate(
         self,
-        fill_param: Optional[int] = 3,
-        layout: Optional[SwarmPICLayout] = None,
+        fill_param: Optional[int] = 1,
     ):
         (
             """
@@ -680,50 +725,17 @@ class Swarm(_api_tools.Stateful):
             + SwarmPICLayout.__doc__
             + """
 
-        When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
-        When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
-        When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
-
         Parameters
         ----------
         fill_param:
-            Parameter determining the particle count per cell for the given layout.
-        layout:
-            Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
-            type cells, and `SwarmPICLayout.GAUSS` otherwise.
-
-
+            Parameter determining the particle count per cell for the given layout, using the mesh degree.
 
         """
         )
 
-        self.fill_param = fill_param
-
-        """
-        Currently (2021.11.15) supported by PETSc release 3.16.x
- 
-        When using a DMPLEX the following case are supported:
-              (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
-             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
-            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
-
-        So this means, simplex mesh in 3D only supports GAUSS - This is based
-        on the tensor product locations so it is not even in the cells. 
-
-        """
-
-        if layout == None:
-            if self.mesh.dim == 2 and self.mesh.isSimplex:
-                layout = SwarmPICLayout.REGULAR
-            else:
-                layout = SwarmPICLayout.GAUSS
-
-        if not isinstance(layout, SwarmPICLayout):
-            raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
-
-        self.layout = layout
-        self.dm.finalizeFieldRegister()
-        self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
+        coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
+        self.add_particles_with_coordinates(coords)
+        
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
@@ -952,6 +964,82 @@ class Swarm(_api_tools.Stateful):
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,
         )
+    
+    @timing.routine_timer_decorator
+    def save_checkpoint(
+        self,
+        outputPath: str,
+        swarmName: str,
+        swarmVars: list,
+        index: int,
+        time: float,
+        compression: Optional[bool] = False,
+        compressionType: Optional[str] = "gzip",
+        force_sequential=False,
+    ):
+        
+        if swarmVars != None and not isinstance(swarmVars, list):
+            raise RuntimeError("`swarmVars` does not appear to be a list.")
+
+        else:     
+            ### save the swarm particle location
+            self.save(filename=f'{outputPath}{swarmName}-{index:04d}.h5', compression=compression, compressionType=compressionType)
+
+        #### Generate a h5 file for each field
+        if swarmVars != None:
+            for field in swarmVars:
+                field.save(filename=f'{outputPath}{field.name}-{index:04d}.h5', compression=compression, compressionType=compressionType)
+
+        if uw.mpi.rank == 0:
+        ### only need to combine the h5 files to a single xdmf on one proc
+            with open(f"{outputPath}{swarmName}-{index:04d}.xmf", "w") as xdmf:
+                # Write the XDMF header
+                xdmf.write('<?xml version="1.0" ?>\n')
+                xdmf.write('<Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">\n')
+                xdmf.write('<Domain>\n')
+                xdmf.write(f'<Grid Name="{swarmName}-{index:04d}" GridType="Uniform">\n')    
+
+
+                if time != None:
+                    xdmf.write(f'	<Time Value="{time}" />\n')
+
+
+
+                # Write the grid element for the HDF5 dataset
+                with h5py.File(f"{outputPath}{swarmName}-{index:04}.h5", "r") as h5f:
+                    xdmf.write(f'	<Topology Type="POLYVERTEX" NodesPerElement="{h5f["coordinates"].shape[0]}"> </Topology>\n')
+                    if h5f['coordinates'].shape[1] == 2:
+                        xdmf.write('		<Geometry Type="XY">\n')
+                    elif h5f['coordinates'].shape[1] == 3:
+                        xdmf.write('		<Geometry Type="XYZ">\n') 
+                    xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["coordinates"].shape[0]} {h5f["coordinates"].shape[1]}">{os.path.basename(h5f.filename)}:/coordinates</DataItem>\n')
+                    xdmf.write('		</Geometry>\n')
+
+                # Write the attribute element for the field
+                if swarmVars != None:
+                    for field in swarmVars:
+                        with h5py.File(f'{outputPath}{field.name}-{index:04d}.h5', "r") as h5f:
+                            if h5f['data'].dtype == np.int32:
+                                xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
+                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Int" Precision="4" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+                            elif h5f['data'].shape[1] == 1:
+                                xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
+                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+                            elif h5f['data'].shape[1] == 2 or h5f['data'].shape[1] == 3:
+                                xdmf.write(f'	<Attribute Type="Vector" Center="Node" Name="{field.name}">\n')
+                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+                            else:
+                                xdmf.write(f'	<Attribute Type="Tensor" Center="Node" Name="{field.name}">\n')
+                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+
+                            xdmf.write('	</Attribute>\n')
+                else:
+                    pass
+
+                # Write the XDMF footer
+                xdmf.write('</Grid>\n')
+                xdmf.write('</Domain>\n')
+                xdmf.write('</Xdmf>\n')
 
     @property
     def vars(self):

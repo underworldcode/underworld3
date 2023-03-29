@@ -602,6 +602,167 @@ def SphericalShell(
 
     return new_mesh
 
+@timing.routine_timer_decorator
+def QuarterAnnulus(
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.3,
+    angle: float = 45,
+    cellSize: float = 0.1,
+    centre: bool = False,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    verbosity=0,
+):
+    
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
+        Left  = 3
+        Right = 4
+        Centre = 10
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = (
+            f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        )
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.model.add("QuarterAnnulus")
+
+        p0 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+
+        loops = []
+
+
+        if radiusInner > 0.0:
+            p1 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
+            p4 = gmsh.model.geo.add_point(0.0, radiusInner, 0.0, meshSize=cellSize)
+            
+        
+        print('add points')
+        
+        p2 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
+        p3 = gmsh.model.geo.add_point(0.0, radiusOuter, 0.0, meshSize=cellSize)
+        
+        
+        # gmsh.model.geo.rotate([(p2, p3)], 0, 0, 0, 0, 0.3, 0, math.pi / 2)
+        
+        
+
+        if radiusInner > 0.0:
+            gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+            gmsh.model.geo.rotate([(0, p3)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+
+            gmsh.model.geo.rotate([(0, p1)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+            gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+            
+            
+            l1 = gmsh.model.geo.add_line(p1, p2)
+            l3 = gmsh.model.geo.add_line(p3, p4)
+            
+            print('add lines')
+            
+            c_upper = gmsh.model.geo.add_circle_arc(p2, p0, p3)
+            c_lower = gmsh.model.geo.add_circle_arc(p4, p0, p1)
+            
+            print('add circles')
+            
+            loops = [l1, c_upper, l3, c_lower]
+
+        else:
+            gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+            gmsh.model.geo.rotate([(0, p3)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
+            
+            l1 = gmsh.model.geo.add_line(p0, p2)
+            l3 = gmsh.model.geo.add_line(p3, p0)
+            
+            c_upper = gmsh.model.geo.add_circle_arc(p2, p0, p3)
+            
+            loops = [l1, c_upper, l3]
+            
+        loop = gmsh.model.geo.add_curve_loop(loops)
+        
+        print('add loop')
+
+        s = gmsh.model.geo.add_plane_surface([loop])
+        
+        
+        
+        print('add plane surface')
+        
+        gmsh.model.geo.synchronize()
+        
+        print('synchronize')
+        
+        gmsh.model.mesh.embed(0, [p0], 2, s)
+        
+        print('embed')
+
+        if radiusInner > 0.0:
+            gmsh.model.addPhysicalGroup(
+                1,
+                [c_lower],
+                boundaries.Lower.value,
+                name=boundaries.Lower.name,
+            )
+        else:
+            gmsh.model.addPhysicalGroup(
+                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+            )
+
+        gmsh.model.addPhysicalGroup(
+            1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
+        )
+        
+        gmsh.model.addPhysicalGroup(
+            1, [l1], boundaries.Left.value, name=boundaries.Left.name
+        )
+        
+        gmsh.model.addPhysicalGroup(
+            1, [l3], boundaries.Right.value, name=boundaries.Right.name
+        )
+            
+        
+        print('add physical groups')
+            
+        gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
+        
+        print('add elements')
+
+        gmsh.model.geo.synchronize()
+        
+        print('synchronize')
+
+        gmsh.model.mesh.generate(2)
+        
+        print('generate')
+        
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    new_mesh = Mesh(
+                    uw_filename,
+                    degree=degree,
+                    qdegree=qdegree,
+                    useMultipleTags=True,
+                    useRegions=True,
+                    markVertices=True,
+                    boundaries=boundaries,
+                    coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+                    )
+
+    return new_mesh 
 
 @timing.routine_timer_decorator
 def Annulus(
@@ -750,12 +911,12 @@ def Annulus(
 
 
 @timing.routine_timer_decorator
-def AnnulusFixedStars(
-    radiusFixedStars: float = 1.5,
-    radiusOuter: float = 1.0,
+def AnnulusInternalBoundary(
+    radiusOuter: float = 1.5,
+    radiusInternal: float = 1.0,
     radiusInner: float = 0.5,
     cellSize: float = 0.1,
-    cellSize_FS: float = 0.2,
+    cellSize_Outer: float = 0.2,
     centre: bool = False,
     degree: int = 1,
     qdegree: int = 2,
@@ -764,8 +925,8 @@ def AnnulusFixedStars(
 ):
     class boundaries(Enum):
         Lower = 1
-        Upper = 2
-        FixedStars = 3
+        Internal = 2
+        Upper = 3
         Centre = 10
 
     # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
@@ -775,7 +936,7 @@ def AnnulusFixedStars(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = f".meshes/uw_annulus_fstars_rfs{radiusFixedStars}_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}_csizefs{cellSize_FS}.msh"
+        uw_filename = f".meshes/uw_annulus_internalBoundary_rO{radiusOuter}rInt{radiusInternal}_rI{radiusInner}_csize{cellSize}_csizefs{cellSize_Outer}.msh"
     else:
         uw_filename = filename
 
@@ -798,28 +959,32 @@ def AnnulusFixedStars(
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
 
-            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries["Lower"].value)
+            cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries.Lower.value)
 
             loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
-        p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize)
+        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize)
+        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
 
+        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries.Internal.value)
+
+        ### adding this curve loop results in the mesh not being generated correctly
+        ### although the internal boundary is still defined in the mesh dm
+        # loops = [cl2] + loops
+
         # Fixed Stars
 
-        p6 = gmsh.model.geo.add_point(radiusFixedStars, 0.0, 0.0, meshSize=cellSize_FS)
-        p7 = gmsh.model.geo.add_point(-radiusFixedStars, 0.0, 0.0, meshSize=cellSize_FS)
+        p6 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize_Outer)
+        p7 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize_Outer)
 
         c5 = gmsh.model.geo.add_circle_arc(p6, p1, p7)
         c6 = gmsh.model.geo.add_circle_arc(p7, p1, p6)
 
-        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries["Upper"].value)
-        cl3 = gmsh.model.geo.add_curve_loop(
-            [c5, c6], tag=boundaries["FixedStars"].value
-        )
+
+        cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries.Upper.value)
 
         loops = [cl3] + loops
 
@@ -837,24 +1002,24 @@ def AnnulusFixedStars(
 
         if radiusInner > 0.0:
             gmsh.model.addPhysicalGroup(
-                1, [c1, c2], boundaries["Lower"].value, name="Lower"
+                1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
             )
         else:
             gmsh.model.addPhysicalGroup(
-                0, [p1], tag=vertices["Centre"].value, name="Centre"
+                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
             )
 
         gmsh.model.addPhysicalGroup(
             1,
             [c3, c4],
-            boundaries["Upper"],
-            name="Upper",
+            boundaries.Internal.value,
+            name=boundaries.Internal.name,
         )
         gmsh.model.addPhysicalGroup(
             1,
             [c5, c6],
-            boundaries["FixedStars"],
-            name="FixedStars",
+            boundaries.Upper.value,
+            name=boundaries.Upper.name,
         )
 
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")

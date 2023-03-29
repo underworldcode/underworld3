@@ -1048,6 +1048,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
+        V_Field: uw.discretisation.MeshVariable = None,
         u_Star_fn=None,
         theta: float = 0.5,
         solver_name: str = "",
@@ -1069,6 +1070,8 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.theta = theta
         self.projection = projection
         self._u_star_raw_fn = u_Star_fn
+        
+        self._V = V_Field
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_swarm_problem_description
