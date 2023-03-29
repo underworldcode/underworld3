@@ -423,7 +423,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @bg_viscosity.setter
         def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
-            print(f"Setting BG viscosity to {value}")
             inner_self._bg_viscosity = value
             inner_self._reset()
 
@@ -502,29 +501,19 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                 inner_self.yield_stress_min, inner_self.yield_stress
             ) / (2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II)
 
-            # inner_self.yield_stress_min,
+            ## Question is, will sympy reliably differentiate something
+            ## with so many Max / Min statements. The smooth version would
+            ## be a reasonable alternative:
 
-            # effective_viscosity = sympy.Max(
-            #     inner_self.yield_stress_min,
+            # effective_viscosity = sympy.sympify(
             #     1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
             # )
-
-            effective_viscosity = sympy.sympify(
-                1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
-            )
-
-            # effective_viscosity = sympy.Max(
-            #     inner_self.yield_stress_min,
-            #     sympy.Min(inner_self.bg_viscosity, viscosity_yield),
-            # )
-
             effective_viscosity = sympy.Min(inner_self.bg_viscosity, viscosity_yield)
 
-            return effective_viscosity
+            # If we want to apply limits to the viscosity but see caveat above
 
-            # If we want to apply limits to the viscosity
             viscosity_limit = sympy.Max(
-                sympy.Min(effective_viscosity, inner_self.max_viscosity),
+                effective_viscosity,
                 inner_self.min_viscosity,
             )
 
@@ -551,6 +540,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                 r"$\quad|\dot\epsilon| = $ "
                 + sympy.sympify(self.Parameters.edot_II_fn)._repr_latex_(),
             ),
+            ## Todo: add all the other properties in here
         )
 
 
