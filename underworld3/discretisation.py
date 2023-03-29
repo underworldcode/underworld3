@@ -140,6 +140,11 @@ class Mesh(_api_tools.Stateful):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
+        if distribute:
+            comm = PETSc.COMM_WORLD
+        else:
+            comm = PETSc.COMM_SELF
+
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             name = "plexmesh"
             self.dm = plex_or_meshfile
@@ -159,7 +164,9 @@ class Mesh(_api_tools.Stateful):
                     useMultipleTags=useMultipleTags,
                 )
             elif ext.lower() == ".h5":
-                self.sf0, self.dm = _from_plexh5(plex_or_meshfile, comm, return_sf=True)
+                self.sf0, self.dm = _from_plexh5(
+                    plex_or_meshfile, PETSc.COMM_SELF, return_sf=True
+                )
 
             else:
                 raise RuntimeError(
@@ -179,7 +186,7 @@ class Mesh(_api_tools.Stateful):
         if distribute:
             self.sf1 = self.dm.distribute()
         else:
-            print("Warning - not distributing mesh !!")
+            print("Warning - not distributing mesh !!", flush=True)
 
         # self.dm.view()
 

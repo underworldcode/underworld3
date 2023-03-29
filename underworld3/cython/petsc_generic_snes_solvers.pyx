@@ -255,6 +255,8 @@ class SNES_Scalar:
         dim = self.mesh.dim
         cdim = self.mesh.cdim
 
+        sympy.core.cache.clear_cache()
+
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
@@ -675,6 +677,9 @@ class SNES_Vector:
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
+        sympy.core.cache.clear_cache()
+
+
         self._build_dm_and_mesh_discretisation()
         self._setup_problem_description()
 
@@ -979,7 +984,7 @@ class SNES_Stokes:
 
 
         # Works / mostly quick
-        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
+        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
         # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
         # self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
         # self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
@@ -1226,9 +1231,13 @@ class SNES_Stokes:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
+        import sympy
+
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         N = self.mesh.N
+
+        sympy.core.cache.clear_cache()
 
         r = self.mesh.CoordinateSystem.N[0]
 
@@ -1830,12 +1839,18 @@ class SNES_SaddlePoint:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
+
+        import sympy 
+
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         vdim = self.vdim
         pdim = self.pdim
 
         N = self.mesh.N
+
+        sympy.core.cache.clear_cache()
+
 
         self.dm.clearDS()
         self.dm.createDS()

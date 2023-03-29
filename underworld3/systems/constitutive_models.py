@@ -407,6 +407,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @bg_viscosity.setter
         def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
+            print(f"Setting BG viscosity to {value}")
             inner_self._bg_viscosity = value
             inner_self._reset()
 
@@ -450,22 +451,35 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         @property
         def viscosity(inner_self):
 
+            # detect if values we need are defined or are placeholder symbols
+
             if isinstance(inner_self.yield_stress, sympy.core.symbol.Symbol):
                 return inner_self.bg_viscosity
 
             if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
                 return inner_self.bg_viscosity
 
-            viscosity_yield = inner_self.yield_stress / (
-                2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II
-            )
+            viscosity_yield = sympy.Max(
+                inner_self.yield_stress_min, inner_self.yield_stress
+            ) / (2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II)
 
             # inner_self.yield_stress_min,
 
-            effective_viscosity = sympy.Max(
-                inner_self.yield_stress_min,
+            # effective_viscosity = sympy.Max(
+            #     inner_self.yield_stress_min,
+            #     1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
+            # )
+
+            effective_viscosity = sympy.sympify(
                 1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
             )
+
+            # effective_viscosity = sympy.Max(
+            #     inner_self.yield_stress_min,
+            #     sympy.Min(inner_self.bg_viscosity, viscosity_yield),
+            # )
+
+            effective_viscosity = sympy.Min(inner_self.bg_viscosity, viscosity_yield)
 
             return effective_viscosity
 

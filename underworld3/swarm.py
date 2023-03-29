@@ -598,15 +598,15 @@ class Swarm(_api_tools.Stateful):
         # add variable to hold swarm origins
 
         if self.recycle_rate > 1:
-            self._Xorig = uw.swarm.SwarmVariable(
-                "DMSwarm_Xorig",
-                self,
-                self.cdim,
-                dtype=float,
-                _register=True,
-                _proxy=False,
-                rebuild_on_cycle=False,
-            )
+            # self._Xorig = uw.swarm.SwarmVariable(
+            #     "DMSwarm_Xorig",
+            #     self,
+            #     self.cdim,
+            #     dtype=float,
+            #     _register=True,
+            #     _proxy=False,
+            #     rebuild_on_cycle=False,
+            # )
 
             self._remeshed = uw.swarm.SwarmVariable(
                 "DMSwarm_remeshed",
@@ -619,7 +619,7 @@ class Swarm(_api_tools.Stateful):
             )
 
         self._X0_uninitialised = True
-        self._Xorig_uninitialised = True
+        # self._Xorig_uninitialised = True
         self._index = None
         self._nnmapdict = {}
 
@@ -752,7 +752,12 @@ class Swarm(_api_tools.Stateful):
             cellid = self.dm.getField("DMSwarm_cellid")
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
 
-            coords[...] = all_local_coords[...]
+            coords[...] = (
+                all_local_coords[...]
+                + (0.75 / fill_param)
+                * (np.random.random(size=all_local_coords.shape) - 0.5)
+                * self.mesh._radii[all_local_cells]  # typical cell size
+            )
             cellid[:] = all_local_cells[:, 0]
 
             self.dm.restoreField("DMSwarmPIC_coor")
@@ -770,11 +775,11 @@ class Swarm(_api_tools.Stateful):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
 
-            with self.access(self._Xorig):
-                self._Xorig.data[...] = self.data[...]
-                self._Xorig_uninitialised = False
+            # with self.access(self._Xorig):
+            #     self._Xorig.data[...] = self.data[...]
+            #     self._Xorig_uninitialised = False
 
-        return  # self # LM: Is there any reason to return self ?
+        return
 
     ## This is actually an initial population routine.
     ## We can't use this to add particles / manage variables (LM)
@@ -817,8 +822,8 @@ class Swarm(_api_tools.Stateful):
         # Here we update the swarm cycle values as required
 
         if self.recycle_rate > 1:
-            with self.access(self._Xorig, self._remeshed):
-                self._Xorig.data[...] = coordinatesArray
+            with self.access(self._remeshed):
+                # self._Xorig.data[...] = coordinatesArray
                 self._remeshed.data[...] = 0
 
         return
@@ -1218,13 +1223,27 @@ class Swarm(_api_tools.Stateful):
 
             swarm_size = self.dm.getLocalSize()
 
-            self.dm.addNPoints(self.mesh.particle_X_orig.shape[0])
+            num_remeshed_points = self.mesh.particle_X_orig.shape[0]
+
+            self.dm.addNPoints(num_remeshed_points)
 
             cellid = self.dm.getField("DMSwarm_cellid")
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
             rmsh = self.dm.getField("DMSwarm_remeshed")
 
-            coords[swarm_size::] = self.mesh.particle_X_orig[:, :]
+            print(f"cellid -> {cellid.shape}")
+            print(f"particle coords -> {coords.shape}")
+            print(f"remeshed points  -> {num_remeshed_points}")
+
+            perturbation = (
+                (0.75 / self.fill_param)
+                * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
+                * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)
+            )
+
+            # print(f"{perturbation}")
+
+            coords[swarm_size::] = self.mesh.particle_X_orig[:, :] + perturbation
             cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
             rmsh[swarm_size::] = 0
 
