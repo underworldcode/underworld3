@@ -861,7 +861,7 @@ class Swarm(_api_tools.Stateful):
                 # self._Xorig.data[...] = coordinatesArray
                 self._remeshed.data[...] = 0
 
-        self.dm.migrate()
+        self.dm.migrate(remove_sent_points=True)
 
         return
 
