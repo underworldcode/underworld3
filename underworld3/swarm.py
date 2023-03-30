@@ -861,6 +861,8 @@ class Swarm(_api_tools.Stateful):
                 # self._Xorig.data[...] = coordinatesArray
                 self._remeshed.data[...] = 0
 
+        self.dm.migrate()
+
         return
 
     @timing.routine_timer_decorator
