@@ -714,20 +714,16 @@ class Swarm(_api_tools.Stateful):
     def populate(
         self,
         fill_param: Optional[int] = 1,
-        cell_search=True,
     ):
         (
             """
         Populate the swarm with particles throughout the domain.
 
-        """
-            + SwarmPICLayout.__doc__
-            + """
-
         Parameters
         ----------
         fill_param:
-            Parameter determining the particle count per cell for the given layout, using the mesh degree.
+            Parameter determining the particle count per cell (per dimension)
+            for the given layout, using the mesh degree.
 
         cell_search:
             Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)
@@ -736,9 +732,7 @@ class Swarm(_api_tools.Stateful):
         )
 
         newp_coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
-
-        if cell_search:
-            newp_cells = self.mesh.get_closest_local_cells(newp_coords)
+        newp_cells = self.mesh.get_closest_local_cells(newp_coords)
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(newp_coords.shape[0] + 1)
@@ -747,10 +741,7 @@ class Swarm(_api_tools.Stateful):
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
 
         coords[...] = newp_coords[...]
-        if cell_search:
-            cellid[:] = newp_cells[:]
-        else:
-            cellid[:] = 1
+        cellid[:] = newp_cells[:]
 
         self.dm.restoreField("DMSwarmPIC_coor")
         self.dm.restoreField("DMSwarm_cellid")
@@ -784,7 +775,7 @@ class Swarm(_api_tools.Stateful):
 
             coords[...] = (
                 all_local_coords[...]
-                + (0.75 / fill_param)
+                + (0.5 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
                 * self.mesh._radii[all_local_cells]  # typical cell size
             )
@@ -792,11 +783,6 @@ class Swarm(_api_tools.Stateful):
 
             self.dm.restoreField("DMSwarmPIC_coor")
             self.dm.restoreField("DMSwarm_cellid")
-
-            # print(
-            #     f"{uw.mpi.rank} Swarm population - done ",
-            #     flush=True,
-            # )
 
             ## Now set the cycle values
 
@@ -843,11 +829,30 @@ class Swarm(_api_tools.Stateful):
                 )
             )
 
-        npoints = len(coordinatesArray)
+        cells = self.mesh.get_closest_local_cells(coordinatesArray)
+
+        valid_coordinates = coordinatesArray[cells != -1]
+        valid_cells = cells[cells != -1]
+
+        npoints = len(valid_coordinates)
+        swarm_size = self.dm.getLocalSize()
+
+        # -1 means no particles have been added yet
+        if swarm_size == -1:
+            swarm_size = 0
+            npoints = npoints + 1
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
-        self.dm.setPointCoordinates(coordinatesArray)
+
+        cellid = self.dm.getField("DMSwarm_cellid")
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+
+        coords[swarm_size::, :] = valid_coordinates[:, :]
+        cellid[swarm_size::] = valid_cells[:]
+
+        self.dm.restoreField("DMSwarmPIC_coor")
+        self.dm.restoreField("DMSwarm_cellid")
 
         # Here we update the swarm cycle values as required
 

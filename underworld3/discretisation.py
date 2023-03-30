@@ -829,6 +829,9 @@ class Mesh(_api_tools.Stateful):
         if hasattr(self, "_index") and self._index is not None:
             return
 
+        ## Bootstrapping - the kd-tree is needed to build the index but
+        ## the index is also used in the kd-tree.
+
         from underworld3.swarm import Swarm, SwarmPICLayout
 
         # Create a temp swarm which we'll use to populate particles
@@ -839,9 +842,11 @@ class Mesh(_api_tools.Stateful):
         # 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
 
-        tempSwarm.populate(
-            fill_param=3, cell_search=False
-        )  # , layout=SwarmPICLayout.GAUSS)
+        # We can't use our own populate function since this needs THIS kd_tree to exist
+        # We will need to use a standard layout instead
+
+        tempSwarm.dm.finalizeFieldRegister()
+        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 3)
 
         with tempSwarm.access():
             # Build index on particle coords
@@ -859,6 +864,34 @@ class Mesh(_api_tools.Stateful):
             self._indexMap = numpy.array(
                 tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
             )
+
+        # Use the "OK" version above to find these lengths
+        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
+
+        ## Now, we can use this information to rebuild the index more carefully
+
+        tempSwarm2 = Swarm(self)
+        tempSwarm2.populate(fill_param=4)
+
+        with tempSwarm2.access():
+            # Build index on particle coords
+            self._indexCoords = tempSwarm2.particle_coordinates.data.copy()
+            self._index = uw.kdtree.KDTree(self._indexCoords)
+            self._index.build_index()
+
+            # Grab mapping back to cell_ids.
+            # Note that this is the numpy array that we eventually return from this
+            # method. As such, we take measures to ensure that we use `numpy.int64` here
+            # because we cast from this type in  `_function.evaluate` to construct
+            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
+            # will cause bugs that are difficult to find.
+
+            self._indexMap = numpy.array(
+                tempSwarm2.particle_cellid.data[:, 0], dtype=numpy.int64
+            )
+
+        # update these
+        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
 
         return
 
@@ -940,7 +973,7 @@ class Mesh(_api_tools.Stateful):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 2.0 * self._search_lengths[cells]
+            dist > 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
@@ -978,6 +1011,8 @@ class Mesh(_api_tools.Stateful):
             cell_length[cell] = distsq.max()
 
         return sizes, centroids, cell_length
+
+    # ==========
 
     # Deprecated in favour of _get_mesh_sizes (above)
     def _get_mesh_centroids(self):
