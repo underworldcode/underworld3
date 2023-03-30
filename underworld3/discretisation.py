@@ -181,14 +181,10 @@ class Mesh(_api_tools.Stateful):
         self.dm0 = self.dm.clone()
         self.sf1 = None
 
-        # self.dm.view()
-
         if distribute:
             self.sf1 = self.dm.distribute()
         else:
             print("Warning - not distributing mesh !!", flush=True)
-
-        # self.dm.view()
 
         ## This is where we can refine the dm if required, and rebuild
 
@@ -842,7 +838,10 @@ class Mesh(_api_tools.Stateful):
         tempSwarm = Swarm(self)
         # 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
-        tempSwarm.populate(fill_param=3) # , layout=SwarmPICLayout.GAUSS)
+
+        tempSwarm.populate(
+            fill_param=3, cell_search=False
+        )  # , layout=SwarmPICLayout.GAUSS)
 
         with tempSwarm.access():
             # Build index on particle coords

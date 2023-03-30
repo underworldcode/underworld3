@@ -692,8 +692,6 @@ class Swarm(_api_tools.Stateful):
     #         Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
     #         type cells, and `SwarmPICLayout.GAUSS` otherwise.
 
-
-
     #     """
     #     )
 
@@ -701,14 +699,14 @@ class Swarm(_api_tools.Stateful):
 
     #     """
     #     Currently (2021.11.15) supported by PETSc release 3.16.x
- 
+
     #     When using a DMPLEX the following case are supported:
     #           (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
     #          (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
     #         (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
 
     #     So this means, simplex mesh in 3D only supports GAUSS - This is based
-    #     on the tensor product locations so it is not even in the cells. 
+    #     on the tensor product locations so it is not even in the cells.
 
     #     """
 
@@ -716,6 +714,7 @@ class Swarm(_api_tools.Stateful):
     def populate(
         self,
         fill_param: Optional[int] = 1,
+        cell_search=True,
     ):
         (
             """
@@ -730,12 +729,31 @@ class Swarm(_api_tools.Stateful):
         fill_param:
             Parameter determining the particle count per cell for the given layout, using the mesh degree.
 
+        cell_search:
+            Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)
+
         """
         )
 
-        coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
-        self.add_particles_with_coordinates(coords)
-        
+        newp_coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
+
+        if cell_search:
+            newp_cells = self.mesh.get_closest_local_cells(newp_coords)
+
+        self.dm.finalizeFieldRegister()
+        self.dm.addNPoints(newp_coords.shape[0] + 1)
+
+        cellid = self.dm.getField("DMSwarm_cellid")
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+
+        coords[...] = newp_coords[...]
+        if cell_search:
+            cellid[:] = newp_cells[:]
+        else:
+            cellid[:] = 1
+
+        self.dm.restoreField("DMSwarmPIC_coor")
+        self.dm.restoreField("DMSwarm_cellid")
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
@@ -743,7 +761,7 @@ class Swarm(_api_tools.Stateful):
         if self.recycle_rate > 1:
             with self.access():
                 # Actually, this is a mesh-local quantity, so let's just
-                # store it on the mesh
+                # store it on the mesh in an ad_hoc fashion for now
 
                 self.mesh.particle_X_orig = self.particle_coordinates.data.copy()
                 self.mesh.particle_CellID_orig = self._cellid_var.data.copy()
@@ -964,7 +982,7 @@ class Swarm(_api_tools.Stateful):
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,
         )
-    
+
     @timing.routine_timer_decorator
     def save_checkpoint(
         self,
@@ -977,69 +995,100 @@ class Swarm(_api_tools.Stateful):
         compressionType: Optional[str] = "gzip",
         force_sequential=False,
     ):
-        
+
         if swarmVars != None and not isinstance(swarmVars, list):
             raise RuntimeError("`swarmVars` does not appear to be a list.")
 
-        else:     
+        else:
             ### save the swarm particle location
-            self.save(filename=f'{outputPath}{swarmName}-{index:04d}.h5', compression=compression, compressionType=compressionType)
+            self.save(
+                filename=f"{outputPath}{swarmName}-{index:04d}.h5",
+                compression=compression,
+                compressionType=compressionType,
+            )
 
         #### Generate a h5 file for each field
         if swarmVars != None:
             for field in swarmVars:
-                field.save(filename=f'{outputPath}{field.name}-{index:04d}.h5', compression=compression, compressionType=compressionType)
+                field.save(
+                    filename=f"{outputPath}{field.name}-{index:04d}.h5",
+                    compression=compression,
+                    compressionType=compressionType,
+                )
 
         if uw.mpi.rank == 0:
-        ### only need to combine the h5 files to a single xdmf on one proc
+            ### only need to combine the h5 files to a single xdmf on one proc
             with open(f"{outputPath}{swarmName}-{index:04d}.xmf", "w") as xdmf:
                 # Write the XDMF header
                 xdmf.write('<?xml version="1.0" ?>\n')
-                xdmf.write('<Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">\n')
-                xdmf.write('<Domain>\n')
-                xdmf.write(f'<Grid Name="{swarmName}-{index:04d}" GridType="Uniform">\n')    
-
+                xdmf.write(
+                    '<Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">\n'
+                )
+                xdmf.write("<Domain>\n")
+                xdmf.write(
+                    f'<Grid Name="{swarmName}-{index:04d}" GridType="Uniform">\n'
+                )
 
                 if time != None:
                     xdmf.write(f'	<Time Value="{time}" />\n')
 
-
-
                 # Write the grid element for the HDF5 dataset
                 with h5py.File(f"{outputPath}{swarmName}-{index:04}.h5", "r") as h5f:
-                    xdmf.write(f'	<Topology Type="POLYVERTEX" NodesPerElement="{h5f["coordinates"].shape[0]}"> </Topology>\n')
-                    if h5f['coordinates'].shape[1] == 2:
+                    xdmf.write(
+                        f'	<Topology Type="POLYVERTEX" NodesPerElement="{h5f["coordinates"].shape[0]}"> </Topology>\n'
+                    )
+                    if h5f["coordinates"].shape[1] == 2:
                         xdmf.write('		<Geometry Type="XY">\n')
-                    elif h5f['coordinates'].shape[1] == 3:
-                        xdmf.write('		<Geometry Type="XYZ">\n') 
-                    xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["coordinates"].shape[0]} {h5f["coordinates"].shape[1]}">{os.path.basename(h5f.filename)}:/coordinates</DataItem>\n')
-                    xdmf.write('		</Geometry>\n')
+                    elif h5f["coordinates"].shape[1] == 3:
+                        xdmf.write('		<Geometry Type="XYZ">\n')
+                    xdmf.write(
+                        f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["coordinates"].shape[0]} {h5f["coordinates"].shape[1]}">{os.path.basename(h5f.filename)}:/coordinates</DataItem>\n'
+                    )
+                    xdmf.write("		</Geometry>\n")
 
                 # Write the attribute element for the field
                 if swarmVars != None:
                     for field in swarmVars:
-                        with h5py.File(f'{outputPath}{field.name}-{index:04d}.h5', "r") as h5f:
-                            if h5f['data'].dtype == np.int32:
-                                xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
-                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Int" Precision="4" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
-                            elif h5f['data'].shape[1] == 1:
-                                xdmf.write(f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n')
-                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
-                            elif h5f['data'].shape[1] == 2 or h5f['data'].shape[1] == 3:
-                                xdmf.write(f'	<Attribute Type="Vector" Center="Node" Name="{field.name}">\n')
-                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+                        with h5py.File(
+                            f"{outputPath}{field.name}-{index:04d}.h5", "r"
+                        ) as h5f:
+                            if h5f["data"].dtype == np.int32:
+                                xdmf.write(
+                                    f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n'
+                                )
+                                xdmf.write(
+                                    f'			<DataItem Format="HDF" NumberType="Int" Precision="4" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n'
+                                )
+                            elif h5f["data"].shape[1] == 1:
+                                xdmf.write(
+                                    f'	<Attribute Type="Scalar" Center="Node" Name="{field.name}">\n'
+                                )
+                                xdmf.write(
+                                    f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n'
+                                )
+                            elif h5f["data"].shape[1] == 2 or h5f["data"].shape[1] == 3:
+                                xdmf.write(
+                                    f'	<Attribute Type="Vector" Center="Node" Name="{field.name}">\n'
+                                )
+                                xdmf.write(
+                                    f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n'
+                                )
                             else:
-                                xdmf.write(f'	<Attribute Type="Tensor" Center="Node" Name="{field.name}">\n')
-                                xdmf.write(f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n')
+                                xdmf.write(
+                                    f'	<Attribute Type="Tensor" Center="Node" Name="{field.name}">\n'
+                                )
+                                xdmf.write(
+                                    f'			<DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{h5f["data"].shape[0]} {h5f["data"].shape[1]}">{os.path.basename(h5f.filename)}:/data</DataItem>\n'
+                                )
 
-                            xdmf.write('	</Attribute>\n')
+                            xdmf.write("	</Attribute>\n")
                 else:
                     pass
 
                 # Write the XDMF footer
-                xdmf.write('</Grid>\n')
-                xdmf.write('</Domain>\n')
-                xdmf.write('</Xdmf>\n')
+                xdmf.write("</Grid>\n")
+                xdmf.write("</Domain>\n")
+                xdmf.write("</Xdmf>\n")
 
     @property
     def vars(self):

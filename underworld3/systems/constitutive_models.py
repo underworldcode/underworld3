@@ -380,7 +380,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             yield_stress: Union[float, sympy.Function] = None,
             min_viscosity: Union[float, sympy.Function] = None,
             max_viscosity: Union[float, sympy.Function] = None,
-            yield_stress_min: Union[float, sympy.Function] = 0.001,
+            yield_stress_min: Union[float, sympy.Function] = None,
             edot_II_fn: sympy.Function = None,
             epsilon_edot_II: float = None,
         ):
@@ -388,11 +388,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             if bg_viscosity is None:
                 bg_viscosity = sympy.sympify(1)
 
-            if min_viscosity is None:
-                min_viscosity = sympy.sympify(0.01)
+            # if min_viscosity is None:
+            #     min_viscosity = sympy.sympify(0.01)
 
-            if max_viscosity is None:
-                max_viscosity = sympy.sympify(100)
+            # if max_viscosity is None:
+            #     max_viscosity = sympy.sympify(100)
 
             if yield_stress is None:
                 yield_stress = sympy.symbols(
@@ -497,9 +497,19 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
                 return inner_self.bg_viscosity
 
-            viscosity_yield = sympy.Max(
-                inner_self.yield_stress_min, inner_self.yield_stress
-            ) / (2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II)
+            # Don't put conditional behaviour in the constitutive law
+            # where it is not needed
+
+            if inner_self.yield_stress_min is not None:
+                yield_stress = sympy.Max(
+                    inner_self.yield_stress_min, inner_self.yield_stress
+                )
+            else:
+                yield_stress = inner_self.yield_stress
+
+            viscosity_yield = yield_stress / (
+                2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II
+            )
 
             ## Question is, will sympy reliably differentiate something
             ## with so many Max / Min statements. The smooth version would
@@ -508,16 +518,19 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             # effective_viscosity = sympy.sympify(
             #     1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
             # )
+
             effective_viscosity = sympy.Min(inner_self.bg_viscosity, viscosity_yield)
 
             # If we want to apply limits to the viscosity but see caveat above
 
-            viscosity_limit = sympy.Max(
-                effective_viscosity,
-                inner_self.min_viscosity,
-            )
+            if inner_self.min_viscosity is not None:
+                return sympy.Max(
+                    effective_viscosity,
+                    inner_self.min_viscosity,
+                )
 
-            return viscosity_limit
+            else:
+                return effective_viscosity
 
         ## ===== End of parameters sub_class
 
