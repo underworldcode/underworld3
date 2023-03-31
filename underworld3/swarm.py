@@ -997,7 +997,7 @@ class Swarm(_api_tools.Stateful):
         swarmName: str,
         swarmVars: list,
         index: int,
-        time: float,
+        time: Optional[int] = None,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
         force_sequential=False,
