@@ -4,7 +4,7 @@
 	"name": "Miniconda demo",
 	"build": { 
 		"context": "..",
-		"dockerfile": "Dockerfile"
+		"dockerfile": "DOCKERFILE_GHCS"
 	},
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
