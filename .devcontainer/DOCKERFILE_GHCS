@@ -2,6 +2,9 @@ FROM mcr.microsoft.com/devcontainers/miniconda:0-3
 
 RUN conda install -n base -c conda-forge mamba
 
+# Here we can install all the dependencies using mamba (as we do in the test scripts)
+
+
 
 
 # [Optional] Uncomment to install a different version of Python than the default
