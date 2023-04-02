@@ -4,7 +4,7 @@ RUN conda install -n base -c conda-forge mamba
 
 # Here we can install all the dependencies using mamba (as we do in the test scripts)
 
-
+RUN  mamba env update -n base --file uw_environment.yml 
 
 
 # [Optional] Uncomment to install a different version of Python than the default
