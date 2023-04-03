@@ -12,6 +12,9 @@ RUN export PETSC_DIR=/opt/conda \
 
 RUN pip install gmsh
 
+# For launching later
+RUN pip install jupyterlab jupytext panel matplotlib
+
 # Add other dependencies that can't be installed correctly.
 
 ##

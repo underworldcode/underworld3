@@ -11,15 +11,16 @@
     // The following are needed by gmsh even though we don't want to use X
     "features": {
         "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
-            "packages": "libgl1,libcairo2-dev,libxcursor-dev, libxinerama-dev"
+            "packages": "libgl1,libcairo2-dev,libxcursor-dev, libxinerama-dev, libgl1-mesa-glx, xvfb"
         }
     },
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
     // "forwardPorts": []
     // Use 'postCreateCommand' to run commands after the container is created.
-    "postCreateCommand": "conda init && cd /workspaces/underworld3 && export PETSC_DIR=/opt/conda && python3 setup.py build_ext && sudo -E /opt/conda/bin/pip install .",
+    "postCreateCommand": "conda init && cd /workspaces/underworld3 && export PETSC_DIR=/opt/conda && python3 setup.py build_ext && pip install -e .",
     //
     "remoteEnv": {
+        "PETSC_DIR": "/opt/conda",
         "UW_PATH": "/workspaces/underworld3",
         "PYTHONPATH": "/workspaces/underworld3"
      },

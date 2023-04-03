@@ -26,8 +26,6 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
 )
 
 
-meshbox.quadrature.view()
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -36,10 +34,12 @@ if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
     import vtk
+    
+    pv.start_xvfb()
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -73,23 +73,14 @@ stokes = Stokes(
     solver_name="stokes",
 )
 
-# Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
-# stokes.petsc_options.delValue("ksp_monitor")
-
-# stokes.petsc_options["snes_rtol"] = 1.0e-6
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-2
-# stokes.petsc_options.delValue("pc_use_amat")
-
 # Constant viscosity
 
 viscosity = 1
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
 stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
+
+stokes.tolerance=1.0e-3
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
@@ -124,8 +115,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
-
+adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 
 
@@ -140,7 +130,7 @@ adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
 
 with meshbox.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords, meshbox.N).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 # -
 
@@ -330,7 +320,7 @@ t_step = 0
 
 expt_name = "output/Ra1e6"
 
-for step in range(0, 250):
+for step in range(0, 50):
 
     stokes.solve(zero_init_guess=True)
     delta_t = 5.0 * stokes.estimate_dt()
@@ -347,12 +337,6 @@ for step in range(0, 250):
         plot_T_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
     t_step += 1
-
-# savefile = "{}_ts_{}.h5".format(expt_name,step)
-# meshbox.save(savefile)
-# v_soln.save(savefile)
-# t_soln.save(savefile)
-# meshbox.generate_xdmf(savefile)
 
 # -
 
@@ -375,7 +359,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -384,19 +368,11 @@ if uw.mpi.size == 1:
     meshbox.vtk("tmp_box_mesh.vtk")
     pvmesh = pv.read("tmp_box_mesh.vtk")
 
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    with meshbox.access():
-        point_cloud.point_data["T"] = t_soln.data.copy()
 
     with meshbox.access():
         usol = stokes.u.data.copy()
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+    pvmesh.point_data["T"] = t_soln.rbf_interpolate(meshbox.data)
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -406,11 +382,14 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7.5, opacity=0.25)
+    # pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=7.5, opacity=0.25)
 
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+    pl.add_mesh(pvmesh, cmap="coolwarm", scalars="T", opacity=0.75)
 
     pl.show(cpos="xy")
+# -
+
+
