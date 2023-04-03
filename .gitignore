@@ -1,5 +1,4 @@
 default-*
-.devcontainer
 .vscode
 *.o
 cython_debug

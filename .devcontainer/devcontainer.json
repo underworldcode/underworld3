@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/miniconda
 {
-	"name": "Miniconda demo",
+	"name": "Underworld3",
 	"build": { 
 		"context": "..",
 		"dockerfile": "DOCKERFILE_GHCS"
@@ -10,11 +10,21 @@
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 
+	// The following are needed by gmsh even though we don't want to use X
+
+	"features": {
+		"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+			"packages": "libgl1,libcairo2-dev,libxcursor-dev, libxinerama-dev"
+		}
+	},
+
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": []
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "conda init",
+	"postCreateCommand": "conda init && cd /workspaces/underworld3 && export PETSC_DIR=/opt/conda && python3 setup.py build_ext && sudo -E /opt/conda/bin/pip install ."
+
+
 
   // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"

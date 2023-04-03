@@ -4,8 +4,19 @@ RUN conda install -n base -c conda-forge mamba
 
 # Here we can install all the dependencies using mamba (as we do in the test scripts)
 
-RUN  mamba env update -n base --file uw_environment.yml 
+COPY .devcontainer/uw_environment.yml  /tmp/conda-tmp/
+RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yml 
 
+RUN export PETSC_DIR=/opt/conda \
+    && pip install petsc4py 
+
+RUN pip install gmsh
+
+# Add other dependencies that can't be installed correctly.
+
+##
+## gmsh seems to be broken in this installation
+## 
 
 # [Optional] Uncomment to install a different version of Python than the default
 # RUN conda install -y python=3.6 \
@@ -14,4 +25,4 @@ RUN  mamba env update -n base --file uw_environment.yml
 
 # [Optional] Uncomment this section to install additional OS packages.
 # RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-#     && apt-get -y install --no-install-recommends <your-package-list-here>
+#     && apt-get install ffmpeg libsm6 libxext6 
