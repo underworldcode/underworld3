@@ -989,19 +989,66 @@ class Swarm(_api_tools.Stateful):
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,
         )
+    
+    @timing.routine_timer_decorator
+    def petsc_save_checkpoint(
+        self,
+        swarmName: str,
+        index: int,
+        outputPath: Optional[str] = '',
+    ):
+        
+        """
+
+        Use PETSc to save the swarm and attached data to a .pbin and xdmf file.
+
+        Parameters
+        ----------
+        swarmName :
+            Name of the swarm to save.
+        index :
+            An index which might correspond to the timestep or output number (for example).
+        outputPath :
+            Path to save the data. If left empty it will save the data in the current working directory.
+        """
+        
+        x_swarm_fname = f"{outputPath}{swarmName}_{index:04d}.xmf"
+        self.dm.viewXDMF(x_swarm_fname)
 
     @timing.routine_timer_decorator
     def save_checkpoint(
         self,
-        outputPath: str,
         swarmName: str,
         swarmVars: list,
         index: int,
+        outputPath: Optional[str] = '',
         time: Optional[int] = None,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
-        force_sequential=False,
+        force_sequential: Optional[bool] = False,
     ):
+        
+        """
+        
+        Save data to h5 and a corresponding xdmf for visualisation using h5py.
+
+        Parameters
+        ----------
+        swarmName :
+            Name of the swarm to save.
+        swarmVars :
+            List of swarm objects to save.
+        index :
+            An index which might correspond to the timestep or output number (for example).
+        outputPath :
+            Path to save the data. If left empty it will save the data in the current working directory.
+        time :
+            Attach the time to the generated xdmf.
+        compression :
+            Whether to compress the h5 files [bool].
+        compressionType : 
+            The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.
+        """
 
         if swarmVars != None and not isinstance(swarmVars, list):
             raise RuntimeError("`swarmVars` does not appear to be a list.")
@@ -1012,6 +1059,7 @@ class Swarm(_api_tools.Stateful):
                 filename=f"{outputPath}{swarmName}-{index:04d}.h5",
                 compression=compression,
                 compressionType=compressionType,
+                force_sequential=force_sequential
             )
 
         #### Generate a h5 file for each field
@@ -1021,6 +1069,7 @@ class Swarm(_api_tools.Stateful):
                     filename=f"{outputPath}{field.name}-{index:04d}.h5",
                     compression=compression,
                     compressionType=compressionType,
+                    force_sequential=force_sequential
                 )
 
         if uw.mpi.rank == 0:
