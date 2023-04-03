@@ -27,11 +27,11 @@ jobs:
           cache-env: true
 
       # the following may be needed if conda-forge is out of date
-      - name: Add compatible petsc4py
-        shell: bash -l {0}
-        run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
-          pip3 install petsc4py --upgrade
+      #- name: Add compatible petsc4py
+      #  shell: bash -l {0}
+      #  run: |
+      #    export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
+      #    pip3 install petsc4py --upgrade
 
       - name: Build UW3 
         shell: bash -l {0}
