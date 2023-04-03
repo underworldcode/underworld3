@@ -375,10 +375,8 @@ class Mesh(_api_tools.Stateful):
 
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
-        # invalidate the cell-search k-d tree and the mesh centroid data
+        # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
         self._index = None
-
-        ## Outdated self._centroids = self._get_coords_for_basis(0, True)
         self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
 
         return
@@ -846,7 +844,7 @@ class Mesh(_api_tools.Stateful):
         # We will need to use a standard layout instead
 
         tempSwarm.dm.finalizeFieldRegister()
-        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 3)
+        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 2)
 
         with tempSwarm.access():
             # Build index on particle coords

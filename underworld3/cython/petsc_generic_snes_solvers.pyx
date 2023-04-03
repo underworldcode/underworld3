@@ -984,17 +984,17 @@ class SNES_Stokes:
 
 
         # Works / mostly quick
-        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
-        # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
-        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-        # self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
-
-        ## may be more robust but usually slower
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
-        self.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "agg"
-        self.petsc_options["fieldsplit_pressure_pc_gamg_repartition"] = True
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
+
+        ## may be more robust but usually slower
+        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
+        # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
+        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
+        # self.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "agg"
+        # self.petsc_options["fieldsplit_pressure_pc_gamg_repartition"] = True
 
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
