@@ -31,7 +31,7 @@ jobs:
         shell: bash -l {0}
         run: |
          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
-         pip3 install petsc4py --upgrade
+         pip3 install petsc4py==3.18 --upgrade
 
       - name: Build UW3 
         shell: bash -l {0}
