@@ -731,6 +731,8 @@ class Swarm(_api_tools.Stateful):
         """
         )
 
+        self.fill_param = fill_param
+
         newp_coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
         newp_cells = self.mesh.get_closest_local_cells(newp_coords)
 
@@ -989,15 +991,15 @@ class Swarm(_api_tools.Stateful):
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,
         )
-    
+
     @timing.routine_timer_decorator
     def petsc_save_checkpoint(
         self,
         swarmName: str,
         index: int,
-        outputPath: Optional[str] = '',
+        outputPath: Optional[str] = "",
     ):
-        
+
         """
 
         Use PETSc to save the swarm and attached data to a .pbin and xdmf file.
@@ -1011,7 +1013,7 @@ class Swarm(_api_tools.Stateful):
         outputPath :
             Path to save the data. If left empty it will save the data in the current working directory.
         """
-        
+
         x_swarm_fname = f"{outputPath}{swarmName}_{index:04d}.xmf"
         self.dm.viewXDMF(x_swarm_fname)
 
@@ -1021,15 +1023,15 @@ class Swarm(_api_tools.Stateful):
         swarmName: str,
         swarmVars: list,
         index: int,
-        outputPath: Optional[str] = '',
+        outputPath: Optional[str] = "",
         time: Optional[int] = None,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
         force_sequential: Optional[bool] = False,
     ):
-        
+
         """
-        
+
         Save data to h5 and a corresponding xdmf for visualisation using h5py.
 
         Parameters
@@ -1046,7 +1048,7 @@ class Swarm(_api_tools.Stateful):
             Attach the time to the generated xdmf.
         compression :
             Whether to compress the h5 files [bool].
-        compressionType : 
+        compressionType :
             The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.
         """
 
@@ -1059,7 +1061,7 @@ class Swarm(_api_tools.Stateful):
                 filename=f"{outputPath}{swarmName}-{index:04d}.h5",
                 compression=compression,
                 compressionType=compressionType,
-                force_sequential=force_sequential
+                force_sequential=force_sequential,
             )
 
         #### Generate a h5 file for each field
@@ -1069,7 +1071,7 @@ class Swarm(_api_tools.Stateful):
                     filename=f"{outputPath}{field.name}-{index:04d}.h5",
                     compression=compression,
                     compressionType=compressionType,
-                    force_sequential=force_sequential
+                    force_sequential=force_sequential,
                 )
 
         if uw.mpi.rank == 0:
@@ -1424,9 +1426,9 @@ class Swarm(_api_tools.Stateful):
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
             rmsh = self.dm.getField("DMSwarm_remeshed")
 
-            print(f"cellid -> {cellid.shape}")
-            print(f"particle coords -> {coords.shape}")
-            print(f"remeshed points  -> {num_remeshed_points}")
+            # print(f"cellid -> {cellid.shape}")
+            # print(f"particle coords -> {coords.shape}")
+            # print(f"remeshed points  -> {num_remeshed_points}")
 
             perturbation = (
                 (0.75 / self.fill_param)
