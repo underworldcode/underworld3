@@ -844,7 +844,7 @@ class Mesh(_api_tools.Stateful):
         # We will need to use a standard layout instead
 
         tempSwarm.dm.finalizeFieldRegister()
-        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 2)
+        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 4)
 
         with tempSwarm.access():
             # Build index on particle coords
@@ -971,7 +971,7 @@ class Mesh(_api_tools.Stateful):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 2.5 * self._search_lengths[cells]
+            dist > 5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 

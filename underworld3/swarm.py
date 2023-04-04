@@ -777,7 +777,7 @@ class Swarm(_api_tools.Stateful):
 
             coords[...] = (
                 all_local_coords[...]
-                + (0.5 / (1 + fill_param))
+                + (0.25 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
                 * self.mesh._radii[all_local_cells]  # typical cell size
             )
@@ -792,10 +792,6 @@ class Swarm(_api_tools.Stateful):
                 for i in range(0, self.recycle_rate):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
-
-            # with self.access(self._Xorig):
-            #     self._Xorig.data[...] = self.data[...]
-            #     self._Xorig_uninitialised = False
 
         return
 
@@ -1431,7 +1427,7 @@ class Swarm(_api_tools.Stateful):
             # print(f"remeshed points  -> {num_remeshed_points}")
 
             perturbation = (
-                (0.75 / self.fill_param)
+                (0.25 / (1 + self.fill_param))
                 * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
                 * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)
             )
@@ -1465,6 +1461,8 @@ class Swarm(_api_tools.Stateful):
                         ).astype(swarmVar.dtype)
 
                         swarmVar.data[swarm_size::] = interpolated_values
+
+            self.dm.migrate()
 
             with self.access(self._remeshed):
                 self._remeshed.data[...] = np.mod(
