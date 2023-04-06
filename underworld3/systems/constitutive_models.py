@@ -432,22 +432,21 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @min_viscosity.setter
         def min_viscosity(inner_self, value: Union[float, sympy.Function]):
-            print(f"Setting min viscosity to {value}")
             inner_self._min_viscosity = value
             inner_self._reset()
 
-        # Why set this here ? the viscoplasticity can only ever reduce the viscosity
-        # below the bg value.
+        # # Why set this here ? the viscoplasticity can only ever reduce the viscosity
+        # # below the bg value.
 
-        @property
-        def max_viscosity(inner_self):
-            return inner_self._max_viscosity
+        # @property
+        # def max_viscosity(inner_self):
+        #     return inner_self._max_viscosity
 
-        @max_viscosity.setter
-        def max_viscosity(inner_self, value: Union[float, sympy.Function]):
-            print(f"Setting max viscosity to {value}")
-            inner_self._max_viscosity = value
-            inner_self._reset()
+        # @max_viscosity.setter
+        # def max_viscosity(inner_self, value: Union[float, sympy.Function]):
+        #     print(f"Setting max viscosity to {value}")
+        #     inner_self._max_viscosity = value
+        #     inner_self._reset()
 
         @property
         def yield_stress(inner_self):

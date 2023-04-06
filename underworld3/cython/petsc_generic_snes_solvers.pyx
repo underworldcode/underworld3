@@ -1453,7 +1453,8 @@ class SNES_Stokes:
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
-              _force_setup:    bool =False ):
+              picard: int = 0,
+              _force_setup:    bool =False, ):
         """
         Generates solution to constructed system.
 
@@ -1500,7 +1501,31 @@ class SNES_Stokes:
         # cmesh_lvec = self.mesh.lvec
         # ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-        # solve
+        # Picard solves if requested 
+
+        if picard > 0:
+            tolerance = self.tolerance
+            snes_type = self.snes.getType()
+
+            # low accuracy, picard-type iteration
+            self.tolerance = tolerance * 100.0
+            self.snes.setType("nrichardson")
+            self.petsc_options.setValue("snes_max_it", picard)
+            self.snes.setFromOptions()
+            self.snes.solve(None, gvec)
+
+            # low accuracy newtonls
+            self.snes.setType("newtontr")
+            self.snes.setFromOptions()
+            self.snes.solve(None, gvec)
+
+            self.tolerance = tolerance
+            self.snes.setType(snes_type)
+            self.petsc_options.setValue("snes_max_it", 50)
+            self.snes.setFromOptions()
+
+        # Standard Newton solve 
+            
         self.snes.solve(None, gvec)
 
         cdef Vec clvec
@@ -1614,7 +1639,6 @@ class SNES_SaddlePoint:
         self.petsc_options["pc_fieldsplit_diag_use_amat"] = None        # These two seem to be needed in petsc 3.17
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    # These two seem to be needed in petsc 3.17
         self.petsc_options["pc_use_amat"] = None                        # These two seem to be needed in petsc 3.17
-
 
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4

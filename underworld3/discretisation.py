@@ -844,7 +844,7 @@ class Mesh(_api_tools.Stateful):
         # We will need to use a standard layout instead
 
         tempSwarm.dm.finalizeFieldRegister()
-        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 4)
+        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 3)
 
         with tempSwarm.access():
             # Build index on particle coords
