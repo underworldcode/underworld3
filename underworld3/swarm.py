@@ -733,9 +733,13 @@ class Swarm(_api_tools.Stateful):
 
         self.fill_param = fill_param
 
-        newp_coords = self.mesh._get_coords_for_basis(fill_param, continuous=False)
-        newp_cells = self.mesh.get_closest_local_cells(newp_coords)
-
+        newp_coords0 = self.mesh._get_coords_for_basis(fill_param, continuous=False)
+        newp_cells0 = self.mesh.get_closest_local_cells(newp_coords0)
+        
+        valid = newp_cells0 != -1
+        newp_coords = newp_coords0[valid]
+        newp_cells = newp_cells0[valid]
+        
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(newp_coords.shape[0] + 1)
 
@@ -750,6 +754,11 @@ class Swarm(_api_tools.Stateful):
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
+        
+        # cellid = self.dm.getField("DMSwarm_cellid")
+        # lost = np.where(cellid == -1)
+        # print(f"{uw.mpi.rank} - lost particles: {lost[0].shape} out of {cellid.shape}", flush=True)
+        # self.dm.restoreField("DMSwarm_cellid")
 
         if self.recycle_rate > 1:
             with self.access():
@@ -777,9 +786,9 @@ class Swarm(_api_tools.Stateful):
 
             coords[...] = (
                 all_local_coords[...]
-                + (0.25 / (1 + fill_param))
+                + (0.33 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
-                * self.mesh._radii[all_local_cells]  # typical cell size
+                * self.mesh._search_lengths[all_local_cells]  # typical cell size
             )
             cellid[:] = all_local_cells[:, 0]
 
@@ -792,6 +801,18 @@ class Swarm(_api_tools.Stateful):
                 for i in range(0, self.recycle_rate):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
+                    
+                    
+                    
+        # Validate (eliminate if required)
+        
+        # cellid = self.dm.getField("DMSwarm_cellid")
+        #lost = np.where(cellid == -1)
+        #print(f"{uw.mpi.rank} - lost particles: {lost[0].shape} out of {cellid.shape}", flush=True)
+        # self.dm.restoreField("DMSwarm_cellid")
+
+        
+		
 
         return
 
@@ -1427,7 +1448,7 @@ class Swarm(_api_tools.Stateful):
             # print(f"remeshed points  -> {num_remeshed_points}")
 
             perturbation = (
-                (0.25 / (1 + self.fill_param))
+                (0.33 / (1 + self.fill_param))
                 * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
                 * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)
             )
@@ -1462,7 +1483,7 @@ class Swarm(_api_tools.Stateful):
 
                         swarmVar.data[swarm_size::] = interpolated_values
 
-            self.dm.migrate()
+            self.dm.migrate(remove_sent_points=True)
 
             with self.access(self._remeshed):
                 self._remeshed.data[...] = np.mod(

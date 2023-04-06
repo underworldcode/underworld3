@@ -867,7 +867,7 @@ class Mesh(_api_tools.Stateful):
         self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
 
         ## Now, we can use this information to rebuild the index more carefully
-
+        '''
         tempSwarm2 = Swarm(self)
         tempSwarm2.populate(fill_param=4)
 
@@ -890,7 +890,7 @@ class Mesh(_api_tools.Stateful):
 
         # update these
         self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
-
+        '''
         return
 
     @timing.routine_timer_decorator
@@ -971,7 +971,7 @@ class Mesh(_api_tools.Stateful):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 5 * self._search_lengths[cells]
+            dist > 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
