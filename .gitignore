@@ -1,5 +1,4 @@
 default-*
-
 .vscode
 *.o
 cython_debug
