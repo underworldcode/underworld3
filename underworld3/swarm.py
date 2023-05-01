@@ -1049,12 +1049,18 @@ class Swarm(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def add_variable(
-        self, name, num_components=1, dtype=float, proxy_degree=2, _nn_proxy=False
+        self,
+        name,
+        size=1,
+        dtype=float,
+        proxy_degree=2,
+        _nn_proxy=False,
     ):
+
         return SwarmVariable(
             name,
             self,
-            num_components,
+            size,
             dtype=dtype,
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,

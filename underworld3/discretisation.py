@@ -668,22 +668,22 @@ class Mesh(_api_tools.Stateful):
             )
 
         return
-    
+
     @timing.routine_timer_decorator
     def petsc_save_checkpoint(
         self,
         index: int,
         meshVars: Optional[list] = [],
-        outputPath: Optional[str] = '',
+        outputPath: Optional[str] = "",
     ):
-            
+
         """
 
         Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
 
         Parameters
         ----------
-        meshVars: 
+        meshVars:
             List of UW mesh variables to save. If left empty then just the mesh is saved.
         index :
             An index which might correspond to the timestep or output number (for example).
@@ -693,14 +693,16 @@ class Mesh(_api_tools.Stateful):
 
         if meshVars != None and not isinstance(meshVars, list):
             raise RuntimeError("`meshVars` does not appear to be a list.")
-    
+
         from underworld3.utilities import generateXdmf
 
         ### save mesh vars
         fname = f"./{outputPath}{'step_'}{index:04d}.h5"
         xfname = f"./{outputPath}{'step_'}{index:04d}.xdmf"
         #### create petsc viewer
-        viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD)
+        viewer = PETSc.ViewerHDF5().createHDF5(
+            fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
+        )
 
         viewer(self.dm)
 
@@ -713,7 +715,6 @@ class Mesh(_api_tools.Stateful):
 
         if uw.mpi.rank == 0:
             generateXdmf(fname, xfname)
-
 
     @timing.routine_timer_decorator
     def write_checkpoint(
@@ -1349,7 +1350,7 @@ class _MeshVariable(_api_tools.Stateful):
         self.continuous = continuous
 
         options = PETSc.Options()
-        name0 = ""  # self.clean_name  ## Filling up the options database unnecessarily
+        name0 = "VAR"  # self.clean_name ## Filling up the options database
         options.setValue(f"{name0}_petscspace_degree", degree)
         options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
         options.setValue(
