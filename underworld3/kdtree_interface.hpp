@@ -101,8 +101,5 @@ class KDTree_Interface
           else
            return index3d->knnSearch( query_point, num_closest, indices, out_dist_sqr ); 
         };
- 
+
 };
-
-
-// todo ... add interface to the knnSearch routines to find a neighbour cloud. 

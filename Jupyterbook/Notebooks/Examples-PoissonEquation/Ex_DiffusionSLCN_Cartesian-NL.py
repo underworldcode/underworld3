@@ -12,8 +12,6 @@
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Nonlinear diffusion of a hot pipe
 #
 # - Using the adv_diff solver.
@@ -21,7 +19,6 @@
 # - Comparison between 1D numerical solution and 2D UW model.
 #
 
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -55,15 +52,18 @@ l0 = 1e5  ### 100 km in m (length of box)
 time_scale = l0**2 / k0  ### s
 time_scale_Myr = time_scale / (60 * 60 * 24 * 365.25 * 1e6)
 
-# %%
-# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(xmin, ymin), 
+    maxCoords=(xmax, ymax), 
+    cellSize=1.0 / res, regular=True)
 
-mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
-)
+# +
+# mesh = uw.meshing.StructuredQuadBox(
+#     elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
+# )
+# -
 
 
-# %%
 # Create adv_diff object
 
 # Set some things
@@ -114,13 +114,11 @@ def updateFields():
     k_model.solve(_force_setup=True)
 
 
-# %%
 ### fix temp of top and bottom walls
 adv_diff.add_dirichlet_bc(0.5, "Bottom")
 adv_diff.add_dirichlet_bc(0.5, "Top")
 
 
-# %%
 maxY = mesh.data[:, 1].max()
 minY = mesh.data[:, 1].min()
 
@@ -135,7 +133,6 @@ with mesh.access(T):
     ] = tmax
 
 
-# %%
 def plot_fig():
     updateFields()
 
@@ -210,8 +207,7 @@ def plot_fig():
 
 plot_fig()
 
-# %%
-### Vertical profile across the centre of the box
+# ## Vertical profile across the centre of the box
 
 ### y coords to sample
 sample_y = np.arange(
@@ -229,7 +225,6 @@ sample_points[:, 1] = sample_y
 t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
 
-# %%
 def get_dt():
     updateFields()
     with mesh.access(k):
@@ -244,7 +239,6 @@ def get_dt():
     return dt
 
 
-# %%
 def diffusion_1D(sample_points, tempProfile, k, model_dt):
     x = sample_points
     T = tempProfile
@@ -273,27 +267,24 @@ def diffusion_1D(sample_points, tempProfile, k, model_dt):
     return T
 
 
-# %%
 ### get the initial temp profile
 tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
-# %%
 step = 0
 time = 0.0
 
-# %%
 nsteps = 21
 
-# %%
 adv_diff.petsc_options["ksp_rtol"] = 1.0e-8
 
 adv_diff.petsc_options["snes_rtol"] = 1.0e-8
 
-# %%
+# +
 # if uw.mpi.size == 1:
 #     ''' create figure to show the temp diffuses '''
 #     plt.figure(figsize=(9, 3))
 #     plt.plot(t0, sample_points[:,1], ls=':')
+# -
 
 
 while step < nsteps:
@@ -328,13 +319,6 @@ while step < nsteps:
     step += 1
     time += dt
 
-# plt.show()
+plt.show()
 
-# %%
 plot_fig()
-
-# %%
-
-# %%
-
-# %%

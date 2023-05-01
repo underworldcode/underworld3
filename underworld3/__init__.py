@@ -14,13 +14,17 @@ class VarType(_Enum):
     SCALAR = 1
     VECTOR = 2
     MATRIX = 3
-    NVECTOR = 4
+    NVECTOR = 4  ## Nvector can be a MATRIX
     COMPOSITE = 5
-    OTHER = 6  # add as required
+    TENSOR = 6  ## dim x dim tensor, otherwise use MATRIX
+    SYM_TENSOR = 7
+    OTHER = 9  # add as required
+
 
 # Needed everywhere
 from underworld3.utilities import _api_tools
 
+import underworld3.adaptivity
 import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing
@@ -34,6 +38,7 @@ import underworld3.utilities
 import underworld3.kdtree
 import underworld3.mpi
 import underworld3.cython
+import underworld3.scaling
 import numpy as _np
 
 # Info for JIT modules.
@@ -95,3 +100,18 @@ __pdoc__["function.analytic"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
+
+
+## Add an options dictionary for arbitrary underworld things
+
+options = PETSc.Options("uw_")
+
+
+def require_dirs(ListOfDirs):
+    """
+    List of directories required by this run
+    """
+    import os
+
+    for dir in ListOfDirs:
+        os.makedirs(dir, exist_ok=True)

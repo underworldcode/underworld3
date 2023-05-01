@@ -1,0 +1,31 @@
+FROM mcr.microsoft.com/devcontainers/miniconda:0-3
+
+RUN conda install -n base -c conda-forge mamba
+
+# Here we can install all the dependencies using mamba (as we do in the test scripts)
+
+COPY .devcontainer/uw_environment.yml  /tmp/conda-tmp/
+RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yml 
+
+RUN export PETSC_DIR=/opt/conda \
+    && pip install petsc4py==3.18
+
+RUN pip install gmsh pygmsh
+
+# For launching later
+RUN pip install jupyterlab jupytext panel matplotlib
+
+# Add other dependencies that can't be installed correctly.
+
+##
+## gmsh seems to be broken in this installation
+## 
+
+# [Optional] Uncomment to install a different version of Python than the default
+# RUN conda install -y python=3.6 \
+#     && pip install --no-cache-dir pipx \
+#     && pipx reinstall-all
+
+# [Optional] Uncomment this section to install additional OS packages.
+# RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+#     && apt-get install ffmpeg libsm6 libxext6 

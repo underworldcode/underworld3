@@ -22,10 +22,21 @@ size :: int
 """
 
 from mpi4py import MPI as _MPI
+import os as _os
+import secrets as _secrets
+
 
 comm = _MPI.COMM_WORLD
 size = comm.size
 rank = comm.rank
+
+# get the pid of the root process
+pid0 = _os.getpid()
+pid0 = comm.bcast(pid0, root=0)
+
+# get a common unique (random) id across all processes
+unique = _secrets.token_urlsafe(nbytes=6)
+unique = comm.bcast(unique, root=0)
 
 
 def barrier():

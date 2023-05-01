@@ -45,16 +45,26 @@ class SNES_Scalar:
             self.petsc_options_prefix = solver_name+"_"
         else:
             self.petsc_options_prefix = solver_name
-   
+
+        options = PETSc.Options()
+        # options["dm_adaptor"]= "pragmatic"
+    
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "dgmres"
+        self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["pc_gamg_type"] = "agg"
+        self.petsc_options["pc_gamg_repartition"]  = True  
+        self.petsc_options["pc_mg_type"]  = "additive"
+        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self.petsc_options["mg_levels_ksp_converged_maxits"] = None        
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-4
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
 
         self._u = u_Field
         self.mesh = mesh
@@ -122,8 +132,9 @@ class SNES_Scalar:
         display(Markdown(docstring))
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
-        ## Usually, there are constitutive parameters that can be included in the iputho display 
+        ## Usually, there are constitutive parameters that can be included in the ipython display 
 
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -244,6 +255,8 @@ class SNES_Scalar:
         dim = self.mesh.dim
         cdim = self.mesh.cdim
 
+        sympy.core.cache.clear_cache()
+
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
@@ -322,8 +335,13 @@ class SNES_Scalar:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
+
 
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -444,6 +462,9 @@ class SNES_Vector:
         else:
             self.petsc_options_prefix = solver_name
 
+        options = PETSc.Options()
+        # options["dm_adaptor"]= "pragmatic"
+
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
@@ -452,9 +473,16 @@ class SNES_Vector:
         self.petsc_options["ksp_monitor"] = None
         self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
+        self.petsc_options["pc_gamg_type"] = "agg"
+        self.petsc_options["pc_gamg_repartition"]  = True  
+        self.petsc_options["pc_mg_type"]  = "additive"
+        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
+        self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         ##if not u_Field:
@@ -541,7 +569,7 @@ class SNES_Vector:
         self._constitutive_model = model
         self._constitutive_model.solver = self 
 
- 
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
 
         degree = self._u.degree
@@ -649,6 +677,8 @@ class SNES_Vector:
         ## The residual terms describe the problem and 
         ## can be changed by the user in inherited classes
 
+        sympy.core.cache.clear_cache()
+
         self._build_dm_and_mesh_discretisation()
         self._setup_problem_description()
 
@@ -737,8 +767,12 @@ class SNES_Vector:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -912,8 +946,6 @@ class SNES_Stokes:
 
         SNES_Stokes.instances += 1
         self.name = solver_name
-
-
         self.mesh = mesh
         self.verbose = verbose
         
@@ -924,16 +956,20 @@ class SNES_Stokes:
         else:
             self.petsc_options_prefix = solver_name
 
+        # options = PETSc.Options()
+        # options["dm_adaptor"]= "pragmatic"
+
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
-        # self.petsc_options["ksp_rtol"] = 1.0e-4
-        # self.petsc_options["ksp_monitor"] = None
+        self._tolerance = 1.0e-4
 
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        self.petsc_options["snes_rtol"] = 1.0e-3
+        self.petsc_options["snes_rtol"] = self._tolerance
+        self.petsc_options["ksp_rtol"]  = self._tolerance * 0.001
+        self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -945,13 +981,29 @@ class SNES_Stokes:
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None    
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "dgmres"
-        # self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
-        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
 
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "dgmres"
-        # self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+        # Works / mostly quick
+        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
+        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
+
+        ## may be more robust but usually slower
+        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
+        # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
+        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
+        # self.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "agg"
+        # self.petsc_options["fieldsplit_pressure_pc_gamg_repartition"] = True
+
+        self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "agg"  
+        self.petsc_options["fieldsplit_velocity_pc_gamg_repartition"]  = True  
+        self.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
+        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
+        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
 
         self._u = velocityField
         self._p = pressureField
@@ -973,7 +1025,6 @@ class SNES_Stokes:
         self.UF0 = sympy.Matrix.zeros(1, self.mesh.dim) 
         self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.PF0 = sympy.Matrix.zeros(1, 1) 
-
 
         self.bcs = []
         self._constitutive_model = None
@@ -1004,7 +1055,7 @@ class SNES_Stokes:
 
         ## Usually, there are constitutive parameters that can be included in the iputho display 
 
-
+    @timing.routine_timer_decorator
     def _build_dm_and_mesh_discretisation(self):
         """
         Most of what is in the init phase that is not called by _setup_terms()
@@ -1041,6 +1092,20 @@ class SNES_Stokes:
 
 
         return
+
+
+    @property
+    def tolerance(self):
+        return self._tolerance
+    @tolerance.setter
+    def tolerance(self, value):
+        self.is_setup = False # Need to make sure the snes machinery is set up consistently
+        self._tolerance = value
+        self.petsc_options["snes_rtol"] = self._tolerance
+        self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-3
+        self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1   # rule of thumb 
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
 
     @property
     def UF0(self):
@@ -1165,9 +1230,13 @@ class SNES_Stokes:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
+        import sympy
+
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         N = self.mesh.N
+
+        sympy.core.cache.clear_cache()
 
         r = self.mesh.CoordinateSystem.N[0]
 
@@ -1343,8 +1412,12 @@ class SNES_Stokes:
 
                 iset = label.getNonEmptyStratumValuesIS()
                 if iset:
-                    value = iset.getIndices()[0]  # this is only one value in the label ... 
-                    ind = value
+                    label_values = iset.getIndices()
+                    if len(label_values > 0):
+                        value = label_values[0]  # this is only one value in the label ... 
+                        ind = value
+                    else:
+                        ind = -1
 
                 # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
                 # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  (is this implemented for non-zero values ?)
@@ -1379,7 +1452,8 @@ class SNES_Stokes:
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
-              _force_setup:    bool =False ):
+              picard: int = 0,
+              _force_setup:    bool =False, ):
         """
         Generates solution to constructed system.
 
@@ -1426,7 +1500,34 @@ class SNES_Stokes:
         # cmesh_lvec = self.mesh.lvec
         # ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-        # solve
+        # Picard solves if requested 
+
+        tolerance = self.tolerance
+        snes_type = self.snes.getType()
+
+        if picard != 0:
+            # low accuracy, picard-type iteration
+            if picard > 0:
+                self.tolerance = min(tolerance * 100.0, 0.01)
+                self.snes.setType("nrichardson")
+                self.petsc_options.setValue("snes_max_it", abs(picard))
+                self.snes.setFromOptions()
+                self.snes.solve(None, gvec)
+
+            
+            # low accuracy newtonls
+
+            self.snes.setType("newtonls")
+            self.tolerance = min(tolerance * 100.0, 0.01)
+            self.petsc_options.setValue("snes_max_it", 50)
+            self.snes.setFromOptions()
+            self.snes.solve(None, gvec) 
+
+        # Standard Newton solve 
+
+        self.tolerance = tolerance
+        self.snes.setType(snes_type)
+        self.snes.setFromOptions()    
         self.snes.solve(None, gvec)
 
         cdef Vec clvec
@@ -1458,7 +1559,7 @@ class SNES_Stokes:
 
         self.dm.restoreGlobalVec(gvec)
 
-
+        return self.snes.getConvergedReason()
 
 
 ### =================================
@@ -1528,13 +1629,10 @@ class SNES_SaddlePoint:
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         # self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_rtol"] = 1.0e-4
-        # self.petsc_options["ksp_monitor"] = None
-        # self.petsc_options["ksp_type"] = "fgmres"
-        # self.petsc_options["pre_type"] = "gamg"
+        self.petsc_options["ksp_rtol"] = 1.0e-6
         self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_monitor_short"] = None
-        # self.petsc_options["snes_view"] = None
+
         self.petsc_options["snes_rtol"] = 1.0e-3
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -1547,9 +1645,12 @@ class SNES_SaddlePoint:
         self.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
         self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
+        self.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
+
         self.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
         self.petsc_options["fieldsplit_pressure_ksp_rtol"] = 3.e-4
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg" 
+        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm" 
+        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here 
 
         self._u = velocityField
         self._p = pressureField
@@ -1764,12 +1865,18 @@ class SNES_SaddlePoint:
 
     @timing.routine_timer_decorator
     def _setup_terms(self, verbose=False):
+
+        import sympy 
+
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
         vdim = self.vdim
         pdim = self.pdim
 
         N = self.mesh.N
+
+        sympy.core.cache.clear_cache()
+
 
         self.dm.clearDS()
         self.dm.createDS()

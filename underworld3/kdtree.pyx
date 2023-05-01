@@ -1,9 +1,11 @@
 import underworld3
+import underworld3 as uw
 import underworld3.timing as timing
 import numpy
 import numpy as np
 
 from libcpp cimport bool
+
 
 cdef extern from "kdtree_interface.hpp" nogil:
     cdef cppclass KDTree_Interface:
@@ -107,7 +109,7 @@ cdef class KDTree:
         count = coords.shape[0]
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
-        found    = np.empty(count, dtype=np.bool8,   order='C')
+        found    = np.empty(count, dtype=np.bool_,   order='C')
         cdef long unsigned int[::1]  c_indices = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
         cdef              bool[::1]    c_found = found
@@ -119,7 +121,7 @@ cdef class KDTree:
         return indices, dist_sqr, found
 
     @timing.routine_timer_decorator
-    def knnSearch(self, 
+    def find_closest_n_points(self, 
                   const int nCount                    :   numpy.int,
                   const double[: ,::1] coords not None:   numpy.ndarray):
         """
@@ -127,12 +129,13 @@ cdef class KDTree:
 
         Parameters
         ----------
-        coords:
-            An array of coordinates for which the kd-tree index will be searched for nearest
-            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
         nCount:
             The number of nearest neighbour points to find for each `coords`.
-
+        
+        coords:
+            Coordinates of the points for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
+ 
         Returns
         -------
         indices:
@@ -141,29 +144,93 @@ cdef class KDTree:
         dist_sqr:
             A float array of squred distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
-        found:
-            A bool array of flags which signals whether a nearest neighbour has been found for a given
-            coordinate. It will be of size (n_coords).
-
-
 
         """
+
         if coords.shape[1] != self.points.shape[1]:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
         nInput = coords.shape[0]
 
-        # allocate numpy arrays
+        # allocate numpy arrays - 
+
+        n_indices  = np.empty((coords.shape[0], nCount), dtype=np.uint64,  order='C')
+        n_dist_sqr = np.empty((coords.shape[0], nCount), dtype=np.float64,  order='C')
+
         indices  = np.empty(nCount, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(nCount, dtype=np.float64, order='C')
+
         # allocate memoryviews in C contiguous layout
         cdef long unsigned int[::1] c_indices  = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
 
-        # invoke cpp function
-        self.index.knnSearch( <const double *> &coords[0][0], 
-                              nCount,
-                              <long unsigned int*> &c_indices[0], 
-                              <           double*> &c_dist_sqr[0]) 
+        # Build the array one point at a time
+
+        for p in range(coords.shape[0]):
+            self.index.knnSearch( <const double *> &coords[p][0], 
+                                nCount,
+                                <long unsigned int*> &c_indices[0], 
+                                <           double*> &c_dist_sqr[0]) 
+
+            n_indices[p,:] = indices[:]
+            n_dist_sqr[p,:] = dist_sqr[:]
 
         # return numpy data
-        return indices, dist_sqr
+        return n_indices, n_dist_sqr
+
+
+## A general point-to-point rbf interpolator here
+## NOTE this is not using cython optimisation for numpy
+
+    def rbf_interpolator_local(self, 
+            coords,
+            data,
+            nnn = 4,
+            verbose = False,
+        ):
+
+        '''
+        An inverse (squared) distance weighted mapping of a numpy array from one
+        set of coordinates to another. This assumes all points are local to the
+        same processor. If that is not the case, it is best to use a particle swarm
+        to migrate data.
+        '''
+
+        if coords.shape[1] != self.points.shape[1]:
+            raise RuntimeError(f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.points.shape[1]}).")
+        nInput = coords.shape[0]
+
+        if data.shape[0] != self.points.shape[0]:
+                raise RuntimeError(f"Data does not match kD-tree size array ({data.shape[0]}) v ({self.points.shape[0]}).")
+
+        coords_contiguous = np.ascontiguousarray(coords)
+
+        closest_n, distance_n = self.find_closest_n_points(nnn, coords_contiguous)
+
+        num_local_points = coords.shape[0]
+        data_size = data.shape[1]
+
+        Values = np.zeros((num_local_points, data_size))
+        Weights = np.zeros((num_local_points, 1))
+
+        if verbose and uw.mpi.rank == 0:
+            print("Mapping values  ... start", flush=True)
+
+        epsilon = 1.0e-24
+        for j in range(nnn):
+            j_distance = epsilon + np.sqrt(distance_n[:, j])
+            Weights[:, 0] += 1.0 / j_distance[:]
+
+
+        epsilon = 1.0e-24
+        for d in range(data_size):
+            for j in range(nnn):
+                j_distance = epsilon + np.sqrt(distance_n[:, j])
+                j_nearest = closest_n[:, j]
+                Values[:, d] += data[j_nearest, d] / j_distance
+
+        Values[...] /= Weights[:]
+
+        if verbose and uw.mpi.rank == 0:
+            print("Mapping values ... done", flush=True)
+
+        return Values

@@ -1,5 +1,5 @@
 default-*
-.devcontainer
+
 .vscode
 *.o
 cython_debug
@@ -40,6 +40,14 @@ Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
 package-lock.json
 
+# Mesh files etc
+
+uw_*.msh
+*.msh # unless we really want to add some examples
+*.h5
+*.xdmf
+*.vtk
+*.pbin
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -57,7 +65,6 @@ uw3_api_docs/*
 
 
 # Visualisation artefacts
-
 ignore*vtk
 ignore*msh
 tmp*vtk

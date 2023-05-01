@@ -12,8 +12,6 @@
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Underworld Groundwater Flow Benchmark 1
 #
 # See the Underworld2 example by Adam Beall.
@@ -40,10 +38,9 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 )
 
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
-v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
+v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1, continuous=False)
 
 
-# %%
 # Mesh deformation
 
 x, y = mesh.X
@@ -90,7 +87,6 @@ darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.di
 darcy.constitutive_model.Parameters.diffusivity = 1
 darcy.petsc_options.delValue("ksp_monitor")
 
-# %%
 # Set some things
 
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
@@ -103,7 +99,7 @@ darcy.add_dirichlet_bc(0.0, "Top")
 
 # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.smoothing = 1.0e-3
+darcy._v_projector.smoothing = 0.0e-3
 
 # %%
 # Solve time
@@ -183,8 +179,8 @@ if uw.mpi.size == 1 and uw.is_notebook:
 
     pl.show(cpos="xy")
 
-# %%
-## Metrics
+#
+# ## Metrics
 
 _, _, _, max_p, _, _, _ = p_soln.stats()
 _, _, _, max_vh, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.i)))
@@ -194,7 +190,3 @@ print("Max horizontal velocity: {:4f}".format(max_vh))
 print("Max vertical velocity:   {:4f}".format(max_vv))
 print("Max pressure         :   {:4f}".format(max_p))
 
-
-# %%
-
-# %%

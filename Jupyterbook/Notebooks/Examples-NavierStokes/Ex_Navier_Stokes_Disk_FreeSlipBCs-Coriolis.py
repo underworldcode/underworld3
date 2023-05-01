@@ -12,7 +12,6 @@
 #     name: python3
 # ---
 
-
 # # Cylindrical Stokes with Coriolis term (out of plane)
 
 # +
@@ -112,9 +111,6 @@ navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
 navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
 navier_stokes._u_star_projector.smoothing = 0.0  # navier_stokes.viscosity * 1.0e-6
 navier_stokes._u_star_projector.penalty = 0.0
-
-# navier_stokes.UF0 =  -navier_stokes.rho * (v_soln.fn - v_soln_1.fn) / navier_stokes.delta_t
-
 
 # Constant visc
 
@@ -384,11 +380,7 @@ meshball.stats(sympy.vector.cross(Omega, v_soln.fn).dot(v_rbm_z))
 
 sympy.vector.cross(Omega, v_soln.fn)
 
-# +
 _, z_ns, _, _, _, _, _ = meshball.stats(v_soln.fn.dot(v_rbm_z))
 print("Rigid body: {}".format(z_ns))
-
-
-# -
 
 x_ns_
