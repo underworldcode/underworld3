@@ -5,17 +5,16 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Stokes Benchmark SolCx
-# %%
+#
+#
 # options = PETSc.Options()
 # options["help"] = None
 
@@ -51,7 +50,9 @@ stokes.constitutive_model.Parameters.viscosity = 1
 import sympy
 from sympy import Piecewise
 
-x, y = mesh.CoordinateSystem.X
+mesh.dm.view()
+
+x,y = mesh.X
 
 res = 1 / n_els
 hw = 1000 / res
@@ -59,6 +60,8 @@ surface_fn = sympy.exp(-((y - 1.0) ** 2) * hw)
 base_fn = sympy.exp(-(y**2) * hw)
 right_fn = sympy.exp(-((x - 1.0) ** 2) * hw)
 left_fn = sympy.exp(-(x**2) * hw)
+
+
 
 eta_0 = 1.0
 x_c = 0.5
@@ -76,43 +79,43 @@ stokes.bodyforce = sympy.Matrix(
     ]
 )
 
-# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-# stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+# +
+# This is the other way to impose no vertical 
+
+stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+# -
 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
+# +
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
 stokes.add_dirichlet_bc(
     (0.0, 0.0), ["Top", "Bottom"], 1
 )  # top/bottom: components, function, markers
+
 stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Left", "Right"], 0
+    (0.0,), ["Left", "Right"], 0
 )  # left/right: components, function, markers
+# -
 
 
-# %%
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
 stokes.petsc_options["snes_rtol"] = 1.0e-6
 stokes.petsc_options["ksp_rtol"] = 1.0e-6
 stokes.petsc_options["snes_max_it"] = 10
 
-# stokes.petsc_options["snes_monitor"]= None
-# stokes.petsc_options["ksp_monitor"] = None
+stokes.petsc_options["snes_monitor"]= None
+stokes.petsc_options["ksp_monitor"] = None
 
 
 # %%
 # Solve time
 stokes.solve()
 
-# %% [markdown]
 # ### Visualise it !
-#
-#
-
-# %%
-# OR
 
 # +
 # check the mesh if in a notebook / serial
@@ -124,6 +127,8 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     import numpy as np
     import pyvista as pv
     import vtk
+    
+    pv.start_xvfb()
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
@@ -160,15 +165,20 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=3)
 
     pl.show(cpos="xy")
+# -
 
 
-# %% [markdown]
-# # SolCx from the same setup
+# ## SolCx from the same setup
 
+# +
 # %%
 stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)]
 )
+
+stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+
 viscosity_fn = sympy.Piecewise(
     (
         1.0e6,
@@ -180,13 +190,10 @@ stokes.constitutive_model.Parameters.viscosity = viscosity_fn
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.viscosity
 
-# %%
+stokes.constitutive_model.Parameters.viscosity
 stokes.solve()
 
-# %%
-# OR
 
 # +
 # check the mesh if in a notebook / serial
@@ -264,3 +271,6 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
+
+# +
+# 

@@ -88,8 +88,8 @@ darcy.constitutive_model.Parameters.diffusivity = 1
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
-k = uw.swarm.IndexSwarmVariable("k", swarm, indices=4)
+material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=False)
+# k = uw.swarm.IndexSwarmVariable("k", swarm, indices=2)
 
 swarm.populate(fill_param=2)
 
@@ -117,7 +117,6 @@ k2 = 1.0e-4
 
 with swarm.access(material):
     material.data[swarm.data[:, 1] >= interfaceY] = 0
-
     material.data[swarm.data[:, 1] < interfaceY] = 1
 
 # +
@@ -198,7 +197,7 @@ if uw.mpi.size == 1:
         integrator_type=45,
         integration_direction="both",
         max_steps=1000,
-        max_time=0.1,
+        max_time=0.25,
         initial_step_length=0.001,
         max_step_length=0.01,
     )

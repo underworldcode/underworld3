@@ -17,10 +17,6 @@
 #
 # ## Generic scalar solver class
 
-# %%
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 
@@ -35,7 +31,6 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 mesh.dm.view()
 
 
-# %%
 # mesh variables
 
 t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
@@ -48,7 +43,6 @@ gradT = uw.discretisation.MeshVariable(
 )
 
 
-# %%
 # Create Poisson object
 
 gradient = uw.systems.Projection(mesh, dTdY)
@@ -60,9 +54,9 @@ gradient.smoothing = 1.0e-3
 
 gradT_projector = uw.systems.Vector_Projection(mesh, gradT)
 gradT_projector.uw_function = mesh.vector.gradient(t_soln.sym)
-gradT_projector.add_dirichlet_bc(0, ["Left", "Right"], components=0)
+# gradT_projector.add_dirichlet_bc((0), ["Left", "Right"], components=(0))
 
-## the actual solver
+# # the actual solver
 
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
@@ -100,7 +94,6 @@ display(diffusivity.uw_function)
 # %%
 diffusivity.uw_function
 
-# %%
 # Set some things
 
 x, y = mesh.X
@@ -135,7 +128,6 @@ gradient.uw_function
 # %%
 diffusivity.solve()
 
-# %%
 # non-linear smoothing term (probably not needed especially at the boundary)
 
 # gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y)
@@ -144,8 +136,7 @@ diffusivity.solve()
 # %%
 gradT_projector.solve()
 
-# %%
-# Check. Construct simple linear which is solution for
+# **Check** Construct simple linear function which is solution for
 # above config.  Exclude boundaries from mesh data.
 
 import numpy as np
@@ -155,7 +146,7 @@ with mesh.access():
     # if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
     #     raise RuntimeError("Unexpected values encountered.")
 
-# %%
+#
 # Validate
 
 from mpi4py import MPI
@@ -176,9 +167,10 @@ if MPI.COMM_WORLD.size == 1:
     pvmesh = pv.read("tmp_mesh.vtk")
 
     with mesh.access():
-        # pvmesh.point_data["T"] = mesh_numerical_soln
+        pvmesh.point_data["T"] = mesh_numerical_soln
         pvmesh.point_data["dTdY"] = uw.function.evaluate(dTdY.sym[0], mesh.data)
         pvmesh.point_data["dTdY1"] = uw.function.evaluate(gradT.sym[1], mesh.data)
+        pvmesh.point_data["dTdX1"] = uw.function.evaluate(gradT.sym[0], mesh.data)
         pvmesh.point_data["kappa"] = uw.function.evaluate(kappa.sym[0], mesh.data)
         pvmesh.point_data["kappa1"] = uw.function.evaluate(
             5 + gradT.sym[0] ** 2 + gradT.sym[1] ** 2, mesh.data
@@ -190,69 +182,8 @@ if MPI.COMM_WORLD.size == 1:
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
-        show_edges=False,
-        scalars="kappa1",
-        use_transparency=False,
-        opacity=0.5,
-    )
-
-    pl.camera_position = "xy"
-
-    pl.show(cpos="xy")
-    # pl.screenshot(filename="test.png")
-
-# %%
-
-# %%
-0 / 0
-
-# %%
-with mesh.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(
-        sympy.sin(mesh.N.x * np.pi), poisson.u.coords
-    )
-
-gradient.solve()
-
-# %%
-uw.function.evaluate(gradient.u.sym[0], mesh.data)
-
-# %%
-uw.function.evaluate(sympy.sin(mesh.N.x * np.pi), poisson.u.coords)
-
-# %%
-# Validate
-
-from mpi4py import MPI
-
-if MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    with mesh.access():
-        pvmesh.point_data["dTdy"] = uw.function.evaluate(
-            gradient.u.fn - np.pi * sympy.cos(mesh.N.x * np.pi), mesh.data
-        )
-
-    pl = pv.Plotter()
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
         show_edges=True,
-        scalars="dTdy",
+        scalars="dTdX1",
         use_transparency=False,
         opacity=0.5,
     )
@@ -261,10 +192,3 @@ if MPI.COMM_WORLD.size == 1:
 
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")
-
-# %%
-pvmesh.point_data["dTdy"].min(), pvmesh.point_data["dTdy"].max()
-
-# %%
-
-# %%

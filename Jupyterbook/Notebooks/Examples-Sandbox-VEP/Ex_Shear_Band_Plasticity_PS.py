@@ -5,15 +5,13 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# -*- coding: utf-8 -*-
 # # Flow and Shear banding around a circular inclusion in pure shear
 #
 # Masuda, T., & Mizuno, N. (1995). Deflection of pure shear viscous flow around a rigid spherical body. Journal of Structural Geology, 17(11), 1615–1620. https://doi.org/10.1016/0191-8141(95)E0016-6
@@ -76,8 +74,11 @@ if uw.mpi.rank == 0:
 # -
 
 
-mesh1 = uw.discretisation.Mesh("tmp_ps_shear_inclusion.msh", simplex=True)
-# mesh1.dm.view()
+mesh1 = uw.discretisation.Mesh("tmp_ps_shear_inclusion.msh", 
+                               markVertices=True,
+                               useRegions=True,
+                               simplex=True)
+mesh1.dm.view()
 
 # +
 # check the mesh if in a notebook / serial
@@ -89,7 +90,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -276,7 +277,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "ssaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -348,3 +349,5 @@ if uw.mpi.size == 1:
 
     pl.show()
 # -
+
+

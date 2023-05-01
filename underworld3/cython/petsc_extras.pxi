@@ -19,7 +19,7 @@ from underworld3.cython.petsc_types cimport PetscDMBoundaryType
 from underworld3.cython.petsc_types cimport PetscDSResidualFn, PetscDSJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
 
-from underworld3.utilities.petsc_gen_xdmf import generateXdmf
+from underworld3.utilities import generateXdmf
 
 ctypedef enum PetscBool:
     PETSC_FALSE
@@ -54,3 +54,6 @@ cdef extern from "petsc.h" nogil:
     # Changed recently: Commit 6858538e  
     # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
     PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 
+    PetscErrorCode DMLocalizeCoordinates(PetscDM dm) 
+
+    

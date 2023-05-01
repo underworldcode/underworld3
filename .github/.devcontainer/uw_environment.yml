@@ -1,0 +1,20 @@
+name: uw3_runtime
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - sympy
+  - mpich-mpicc
+  - mpich-mpicxx
+  - cython
+  - petsc=3.18.0
+  - mpi4py
+  - h5py
+  - mesalib
+  - pytest
+  - ipython # needed for "display" functionality (should be optional !)
+  - pyvista # flagged in some tests (should not be needed for tests !)
+  - pip
+
+    

@@ -28,12 +28,14 @@ import sympy
 
 from underworld3.meshing import UnstructuredSimplexBox
 
-meshbox = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
+meshbox = UnstructuredSimplexBox(minCoords=(0.0, 0.0), 
+                                 maxCoords=(1.0, 1.0), 
+                                 cellSize=1.0 / 32.0,)
 
-import meshio
-
-mesh2 = meshio.read(filename="../Examples-StokesFlow/tmp_ball.vtk")
-meshio.write(filename="tmp_ball.msh", mesh=mesh2)
+# +
+# import meshio
+# mesh2 = meshio.read(filename="../Examples-StokesFlow/tmp_ball.vtk")
+# meshio.write(filename="tmp_ball.msh", mesh=mesh2)
 
 # +
 import sympy
@@ -43,14 +45,7 @@ import sympy
 x, y = meshbox.X
 # -
 
-meshbox.dm.createDS()
-
-
 s_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=2)
-
-s_soln._set_vec(s_soln._available)
-
-meshbox.dm.getNumFields()
 
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 
@@ -63,13 +58,10 @@ meshbox.vector.divergence(v_fn)
 swarm = uw.swarm.Swarm(mesh=meshbox)
 s_values = uw.swarm.SwarmVariable("Ss", swarm, 1, proxy_degree=3)
 v_values = uw.swarm.SwarmVariable("Vs", swarm, meshbox.dim, proxy_degree=3)
-iv_values = uw.swarm.SwarmVariable("Vi", swarm, meshbox.dim, proxy_degree=3)
+# iv_values = uw.swarm.SwarmVariable("Vi", swarm, meshbox.dim, proxy_degree=3)
 
 swarm.populate(fill_param=3)
 # -
-
-
-meshbox.dm.getNumFields()
 
 
 scalar_projection = uw.systems.Projection(meshbox, s_soln)
@@ -91,12 +83,10 @@ vector_projection.add_dirichlet_bc(v_fn, "Top", (0, 1))
 vector_projection.add_dirichlet_bc(v_fn, "Bottom", (0, 1))
 # -
 
-s_soln._lvec is None
-
-with swarm.access(s_values, v_values, iv_values):
-    s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data)
-    v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data)
-    v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data)
+with swarm.access(s_values, v_values):
+    s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, meshbox.N)
+    v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data, meshbox.N)
+    v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data, meshbox.N)
 
 
 scalar_projection.solve()
@@ -126,7 +116,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    pv.start_xvfb()
+    # pv.start_xvfb()
 
     meshbox.vtk("mesh_tmp.vtk")
     pvmesh = pv.read("mesh_tmp.vtk")
@@ -156,3 +146,6 @@ if uw.mpi.size == 1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+# -
+
+

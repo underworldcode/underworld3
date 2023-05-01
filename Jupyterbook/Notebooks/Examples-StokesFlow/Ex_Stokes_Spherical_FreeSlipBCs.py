@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -52,6 +52,7 @@
 #
 # where the stress (pressure) scaling using viscosity ($\eta$) determines how the mass scales. In the above, $d$ is the radius of the inner core, a typical length scale for the problem, $\Delta T$ is the order-of-magnitude range of the temperature variation from our observations, and $\kappa$ is thermal diffusivity. The scaled velocity is obtained as $v = \kappa / d v'$.
 
+# + [markdown] tags=[]
 # ## Formulation & model
 #
 #
@@ -60,66 +61,92 @@
 # \\[
 # T(r,\theta,\phi) =  T_\textrm{TM}(\theta, \phi) \cdot r  \sin(\pi r)
 # \\]
-
-#
+# -
 
 # ## Computational script in python
 
 # +
-visuals = 1
-output_dir = "output"
-expt_name = "Stokes_Sphere_i"
-
-# Some gmsh issues, so we'll use a pre-built one
-mesh_file = "Sample_Meshes_Gmsh/test_mesh_sphere_at_res_005_c.msh"
-res = 0.075
-r_o = 1.0
-r_i = 0.5
-
-Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
-# choose 1 to make re-scaling simple
-
-iic_radius = 0.1
-iic_delta_eta = 100.0
-import os
-
-os.makedirs(output_dir, exist_ok=True)
-
-# +
-# Imports here seem to be order dependent again (pygmsh / gmsh v. petsc
-
 import petsc4py
 from petsc4py import PETSc
 import mpi4py
+import os
+
+os.environ['UW_TIMING_ENABLE'] = "1"
 
 import underworld3 as uw
 import numpy as np
 import sympy
 
+if uw.mpi.size == 1:
+    os.makedirs("output", exist_ok=True)
+else:
+    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
+
+
 
 # +
+# Define the problem size 
+#      1 - ultra low res for automatic checking
+#      2 - low res problem to play with this notebook
+#      3 - medium resolution (be prepared to wait)
+#      4 - highest resolution (benchmark case from Spiegelman et al)
+
+
+
+problem_size = uw.options.getInt("problem_size", default=1)
+
+
+# +
+visuals = 1
+output_dir = "output"
+
+# Some gmsh issues, so we'll use a pre-built one
+r_o = 1.0
+r_i = 0.547
+
+Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
+
+# + tags=[]
+if problem_size <= 1: 
+    cell_size = 0.30
+elif problem_size == 2: 
+    cell_size = 0.15
+elif problem_size == 3: 
+    cell_size = 0.05
+elif problem_size == 4: 
+    cell_size = 0.02
+elif problem_size == 5:  # Pretty extreme to mesh this on proc0
+    cell_size = 0.015
+elif problem_size >= 6:  # should consider refinement (or prebuild)
+    cell_size = 0.01
+    
+res = cell_size
+
+expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
+
+from underworld3 import timing
+
+timing.reset()
+timing.start()
+
+# +
+options = PETSc.Options()
+options["dm_adaptor"] = "parmmg"
+
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
     radiusOuter=r_o,
-    cellSize=res,
+    cellSize=cell_size,
     qdegree=2,
 )
 
-
-# -- OR --
-
-
-# meshball = uw.meshing.CubedSphere( radiusInner=r_i,
-#                                    radiusOuter=r_o,
-#                                    numElements=9,
-#                                    simplex=True)
+meshball.dm.view()
 # -
 
-v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2)
+v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR)
 p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
-
 
 # +
 # Create a density structure / buoyancy force
@@ -134,8 +161,8 @@ gravity_fn = radius_fn
 
 # Some useful coordinate stuff
 
-x, y, z = meshball.CoordinateSystem.X
-ra, l1, l2 = meshball.CoordinateSystem.xR
+x, y, z = meshball.CoordinateSystem.N
+ra, l1, l2 = meshball.CoordinateSystem.R
 
 hw = 1000.0 / res
 surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
@@ -174,13 +201,17 @@ v_rbm_y_x = -meshr.fn * sympy.sin(orientation_wrt_y)
 v_rbm_y_z = meshr.fn * sympy.cos(orientation_wrt_y)
 v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
-# -
+
+# +
 
 I = uw.maths.Integral(meshball, surface_fn_a)
 s_norm = I.evaluate()
 I.fn = base_fn_a
+
 b_norm = I.evaluate()
 s_norm, b_norm
+
+
 
 # +
 # Create NS object
@@ -193,10 +224,10 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.petsc_options["snes_rtol"] = 1.0e-5
+stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
+stokes.petsc_options["snes_max_it"] = 1 # for timing cases only - force 1 snes iteration for all examples
+stokes.penalty = 0.1
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     meshball.dim
@@ -211,7 +242,7 @@ free_slip_penalty_upper = v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
 free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
 
 stokes.bodyforce = unit_rvec * buoyancy_force
-stokes.bodyforce -= 100000 * (free_slip_penalty_upper + free_slip_penalty_lower)
+stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
 stokes.saddle_preconditioner = 1.0
 
@@ -222,20 +253,23 @@ stokes.saddle_preconditioner = 1.0
 
 stokes._setup_terms()
 
-stokes._uu_G3
-
 # +
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), meshball.data
+        sympy.sqrt(x**2 + y**2 + z**2), meshball.data, meshball.N
     )  # cf radius_fn which is 0->1
 
 with meshball.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords).reshape(-1, 1)
-# -
+    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
 
 
-stokes.solve()
+# +
+timing.print_table()
+timing.reset()
+timing.start()
+
+stokes.solve(zero_init_guess=True)
+
 
 # +
 
@@ -260,11 +294,11 @@ for i in range(10):
 
     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
-    print(
-        "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-            i, x_ns, y_ns, z_ns, null_space_err
-        )
-    )
+    # print(
+    #     "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
+    #         i, x_ns, y_ns, z_ns, null_space_err
+    #     )
+    # )
 
     with meshball.access(v_soln):
         ## Note, we have to add in something in the missing component (and it has to be spatially variable ??)
@@ -285,17 +319,26 @@ for i in range(10):
     if null_space_err < 1.0e-6:
         if uw.mpi.rank == 0:
             print(
-                "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-                    i, x_ns, y_ns, z_ns, null_space_err
+                "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total) - |V| ({:.4})".format(
+                    i, x_ns, y_ns, z_ns, null_space_err, vnorm
                 )
             )
         break
+
 # -
-savefile = "output/{}_ts_{}.h5".format(expt_name, 0)
+timing.print_table()
+
+savefile = "output/stokesSphere_orig.h5"
 meshball.save(savefile)
-v_soln.save(savefile)
-p_soln.save(savefile)
+# v_soln.save(savefile)
+# p_soln.save(savefile)
 meshball.generate_xdmf(savefile)
+meshball.write_checkpoint("output/stokesSphere", 
+                          meshUpdates=True, 
+                          meshVars=[p_soln,v_soln], 
+                          index=0)
+
+
 # +
 # OR
 
@@ -312,14 +355,14 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.anti_aliasing = "fxaa"
+    pv.global_theme.jupyter_backend = "pythreejs"
     pv.global_theme.smooth_shading = True
 
     meshball.vtk("tmp_meshball.vtk")
     pvmesh = pv.read("tmp_meshball.vtk")
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data, meshball.N)
     pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
     pvmesh.point_data["S"] = uw.function.evaluate(
         v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
@@ -332,6 +375,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     arrow_length[...] = uw.function.evaluate(stokes.u.fn, stokes.u.coords)
 
     clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
+# -
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -341,7 +385,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="S",
+        scalars="T",
         use_transparency=False,
         opacity=1.0,
     )
@@ -350,9 +394,6 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     #               use_transparency=False, opacity=1.0)
 
     pl.add_arrows(arrow_loc, arrow_length, mag=33 / Rayleigh)
-    pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
-
-    # pl.show(cpos="xy")
-# -
-
-# ls
+    # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
+    # OR
+    pl.show(cpos="xy")

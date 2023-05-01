@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -18,12 +18,16 @@
 # If there are just two materials, then an efficient way to manage the interface tracking is through a "level-set" which tracks not just the material type, but the distance to the interface. The distance is a continuous quantity that is not degraded quickly by classical advection schemes. A particle-based level set also has advantages because the smooth signed-distance quantity can be projected to the mesh more accurately than a sharp condition function.
 
 # +
+import os
+os.environ['UW_TIMING_ENABLE'] = "1"
+
 import petsc4py
 from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
+from underworld3 import timing
 
 import numpy as np
 import sympy
@@ -41,8 +45,7 @@ r_layer = 0.7
 r_o = 1.0
 r_i = 0.5
 
-elements = 7
-res = 1.0 / elements
+res = 0.25
 
 Rayleigh = 1.0e6 / (r_o - r_i) ** 3
 
@@ -50,15 +53,10 @@ offset = 0.5 * res
 
 
 # +
-# mesh = uw.meshing.CubedSphere(
-#     radiusInner=r_i,
-#     radiusOuter=r_o,
-#     numElements=elements,
-#     simplex=True,
-#     qdegree=2,
-# )
+cell_size = uw.options.getReal("mesh_cell_size", default=0.1)
+particle_fill = uw.options.getInt("particle_fill", default=5)
+viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 
-# or
 
 mesh = uw.meshing.SphericalShell(
     radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2
@@ -113,8 +111,6 @@ display(viscosity)
 
 with swarm.access():
     print(material.data.max(), material.data.min())
-
-material._meshVar.stats()
 
 if False:
 
@@ -193,9 +189,9 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
-buoyancy = Rayleigh * density * (1 - surface_fn) * (1 - base_fn)
+buoyancy = Rayleigh * density # * (1 - surface_fn) * (1 - base_fn)
 
-unit_vec_r = mesh.CoordinateSystem.unit_e_0
+unit_vec_r = mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]
 
 # Free slip condition by penalizing radial velocity at the surface (non-linear term)
 free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn
@@ -208,19 +204,25 @@ stokes.saddle_preconditioner = 1 / viscosity
 
 # -
 
+mesh.CoordinateSystem.unit_e_0.shape
+(mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]).shape
+
 with mesh.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), mesh.data
+        sympy.sqrt(x**2 + y**2 + z**2), mesh.data, mesh.N
     )  # cf radius_fn which is 0->1
 
 
-stokes._setup_terms(verbose=False)
+# +
+timing.reset()
+timing.start()
 
 stokes.solve(zero_init_guess=True)
 
+timing.print_table()
+
 # +
 # check the solution
-
 
 if uw.mpi.size == 1 and render:
 
@@ -386,7 +388,9 @@ def plot_mesh(filename):
 
     pl.camera_position = "xz"
     pl.screenshot(
-        filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False
+        filename="{}.png".format(filename), 
+        window_size=(1000, 1000), 
+        return_img=False,
     )
 
     return
