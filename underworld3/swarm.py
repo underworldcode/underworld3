@@ -493,7 +493,7 @@ class IndexSwarmVariable(SwarmVariable):
         super().__init__(
             name,
             swarm,
-            num_components=1,
+            size=1,
             vtype=None,
             dtype=int,
             _proxy=False,
