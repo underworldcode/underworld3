@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 import contextlib
 
 import numpy as np
+import sympy
 import petsc4py.PETSc as PETSc
 from mpi4py import MPI
 
@@ -36,13 +37,17 @@ class SwarmPICLayout(Enum):
     SUBDIVISION = 2
 
 
+# Note - much of the setup is necessarily the same as the MeshVariable
+# and the duplication should be removed.
+
+
 class SwarmVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def __init__(
         self,
         name,
         swarm,
-        num_components,
+        size,  # only needed if MATRIX type
         vtype=None,
         dtype=float,
         proxy_degree=1,
@@ -60,6 +65,8 @@ class SwarmVariable(_api_tools.Stateful):
             )
 
         import re
+        import sympy
+        import math
 
         if varsymbol is None:
             varsymbol = name
@@ -69,7 +76,46 @@ class SwarmVariable(_api_tools.Stateful):
         self.symbol = varsymbol
 
         self.swarm = swarm
-        self.num_components = num_components
+        self.shape = size
+
+        mesh = swarm.mesh
+
+        if vtype == None:
+            if isinstance(size, int) and size == 1:
+                vtype = uw.VarType.SCALAR
+            elif isinstance(size, int) and size == mesh.dim:
+                vtype = uw.VarType.VECTOR
+            elif isinstance(size, tuple):
+                if size[0] == mesh.dim and size[1] == mesh.dim:
+                    vtype = uw.VarType.TENSOR
+                else:
+                    vtype = uw.VarType.MATRIX
+            else:
+                raise ValueError(
+                    "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
+                )
+
+        if not isinstance(vtype, uw.VarType):
+            raise ValueError(
+                "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
+            )
+
+        if vtype == uw.VarType.SCALAR:
+            self.num_components = 1
+            self.shape = 1
+            self.cpt_map = 0
+        elif vtype == uw.VarType.VECTOR:
+            self.num_components = mesh.dim
+            self.shape = mesh.dim
+            self.cpt_map = tuple(range(0, mesh.dim))
+        elif vtype == uw.VarType.TENSOR:
+            self.num_components = mesh.dim * mesh.dim
+            self.shape = (mesh.dim, mesh.dim)
+        elif vtype == uw.VarType.SYM_TENSOR:
+            self.num_components = math.comb(mesh.dim + 1, 2)
+            self.shape = (mesh.dim, mesh.dim)
+        elif vtype == uw.VarType.MATRIX:
+            self.num_components = self.shape[0] * self.shape[1]
 
         if (dtype == float) or (dtype == "float") or (dtype == np.float64):
             self.dtype = float
@@ -124,11 +170,11 @@ class SwarmVariable(_api_tools.Stateful):
             self._meshVar = uw.discretisation.MeshVariable(
                 "proxy_" + self.clean_name,
                 self.swarm._mesh,
-                self.num_components,
+                self.shape,
                 self._vtype,
                 degree=self._proxy_degree,
                 continuous=self._proxy_continuous,
-                varsymbol=r"\cal{P}\left(" + self.symbol + r"\right)",
+                varsymbol=r"\left<" + self.symbol + r"\right>",
             )
 
     def _update(self):
@@ -252,13 +298,13 @@ class SwarmVariable(_api_tools.Stateful):
             )
         return self._data
 
-    # @property
-    # def fn(self):
-    #     return self._meshVar.fn
-
     @property
     def sym(self):
         return self._meshVar.sym
+
+    @property
+    def sym_1d(self):
+        return self._meshVar.sym_1d
 
     @timing.routine_timer_decorator
     def save(
@@ -452,8 +498,18 @@ class IndexSwarmVariable(SwarmVariable):
             dtype=int,
             _proxy=False,
         )
-
-        # The indices variable defines how many level set maps we create as components in the proxy variable
+        """
+        vtype = (None,)
+        dtype = (float,)
+        proxy_degree = (1,)
+        proxy_continuous = (True,)
+        _register = (True,)
+        _proxy = (True,)
+        _nn_proxy = (False,)
+        varsymbol = (None,)
+        rebuild_on_cycle = (True,)
+        """
+        # The indices variable defines how many "level set" maps we create as components in the proxy variable
 
         import sympy
 
@@ -735,11 +791,11 @@ class Swarm(_api_tools.Stateful):
 
         newp_coords0 = self.mesh._get_coords_for_basis(fill_param, continuous=False)
         newp_cells0 = self.mesh.get_closest_local_cells(newp_coords0)
-        
+
         valid = newp_cells0 != -1
         newp_coords = newp_coords0[valid]
         newp_cells = newp_cells0[valid]
-        
+
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(newp_coords.shape[0] + 1)
 
@@ -754,7 +810,7 @@ class Swarm(_api_tools.Stateful):
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
-        
+
         # cellid = self.dm.getField("DMSwarm_cellid")
         # lost = np.where(cellid == -1)
         # print(f"{uw.mpi.rank} - lost particles: {lost[0].shape} out of {cellid.shape}", flush=True)
@@ -801,18 +857,13 @@ class Swarm(_api_tools.Stateful):
                 for i in range(0, self.recycle_rate):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
-                    
-                    
-                    
-        # Validate (eliminate if required)
-        
-        # cellid = self.dm.getField("DMSwarm_cellid")
-        #lost = np.where(cellid == -1)
-        #print(f"{uw.mpi.rank} - lost particles: {lost[0].shape} out of {cellid.shape}", flush=True)
-        # self.dm.restoreField("DMSwarm_cellid")
 
-        
-		
+        # Validate (eliminate if required)
+
+        # cellid = self.dm.getField("DMSwarm_cellid")
+        # lost = np.where(cellid == -1)
+        # print(f"{uw.mpi.rank} - lost particles: {lost[0].shape} out of {cellid.shape}", flush=True)
+        # self.dm.restoreField("DMSwarm_cellid")
 
         return
 

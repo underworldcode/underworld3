@@ -14,11 +14,11 @@ class VarType(_Enum):
     SCALAR = 1
     VECTOR = 2
     MATRIX = 3
-    NVECTOR = 4
+    NVECTOR = 4  ## Nvector can be a MATRIX
     COMPOSITE = 5
-    TENSOR = 6
+    TENSOR = 6  ## dim x dim tensor, otherwise use MATRIX
     SYM_TENSOR = 7
-    OTHER = 8  # add as required
+    OTHER = 9  # add as required
 
 
 # Needed everywhere

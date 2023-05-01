@@ -191,6 +191,8 @@ navier_stokes.constitutive_model.Parameters.viscosity = 1
 # -
 
 
+navier_stokes.stress_deviator_1d
+
 if model == 2:  # Steady state !
     # remove the d/dt term ... replace the time dependence with the
     # steady state advective transport term
@@ -245,7 +247,7 @@ nodal_vorticity_from_v.solve()
 
 with swarm.access(v_star):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-    
+
 
 
 # + tags=[]

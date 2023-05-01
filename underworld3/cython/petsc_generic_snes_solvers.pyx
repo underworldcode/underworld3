@@ -679,7 +679,6 @@ class SNES_Vector:
 
         sympy.core.cache.clear_cache()
 
-
         self._build_dm_and_mesh_discretisation()
         self._setup_problem_description()
 
@@ -1503,29 +1502,32 @@ class SNES_Stokes:
 
         # Picard solves if requested 
 
-        if picard > 0:
-            tolerance = self.tolerance
-            snes_type = self.snes.getType()
+        tolerance = self.tolerance
+        snes_type = self.snes.getType()
 
+        if picard != 0:
             # low accuracy, picard-type iteration
-            self.tolerance = tolerance * 100.0
-            self.snes.setType("nrichardson")
-            self.petsc_options.setValue("snes_max_it", picard)
-            self.snes.setFromOptions()
-            self.snes.solve(None, gvec)
+            if picard > 0:
+                self.tolerance = min(tolerance * 100.0, 0.01)
+                self.snes.setType("nrichardson")
+                self.petsc_options.setValue("snes_max_it", abs(picard))
+                self.snes.setFromOptions()
+                self.snes.solve(None, gvec)
 
+            
             # low accuracy newtonls
-            self.snes.setType("newtontr")
-            self.snes.setFromOptions()
-            self.snes.solve(None, gvec)
 
-            self.tolerance = tolerance
-            self.snes.setType(snes_type)
+            self.snes.setType("newtonls")
+            self.tolerance = min(tolerance * 100.0, 0.01)
             self.petsc_options.setValue("snes_max_it", 50)
             self.snes.setFromOptions()
+            self.snes.solve(None, gvec) 
 
         # Standard Newton solve 
-            
+
+        self.tolerance = tolerance
+        self.snes.setType(snes_type)
+        self.snes.setFromOptions()    
         self.snes.solve(None, gvec)
 
         cdef Vec clvec

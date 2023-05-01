@@ -170,9 +170,10 @@ def _createext(
                 var.vtype == VarType.VECTOR
                 or var.vtype == VarType.COMPOSITE
                 or var.vtype == VarType.TENSOR
+                or var.vtype == VarType.SYM_TENSOR
             ):
                 # Pull out individual sub components
-                for comp in var.sym:
+                for comp in var.sym_1d:
                     # monkey patch
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode = lambdafunc

@@ -62,6 +62,7 @@ def test_single_scalar_variable():
     )
     with mesh.access(var):
         var.data[:] = 1.1
+
     result = fn.evaluate(var.sym[0], coords)
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
 
@@ -91,9 +92,12 @@ def test_scalar_vector_mult():
     )
     with mesh.access(var_scalar, var_vector):
         var_scalar.data[:] = 3.0
-        var_vector.data[:] = (4.0, 5.0)
-    result = uw.function.evaluate(var_scalar.fn * var_vector.fn, coords)
-    assert np.allclose(np.array(((12.0, 15),)), result, rtol=1e-05, atol=1e-08)
+        var_vector.data[:, :] = (4.0, 5.0)
+
+    result = uw.function.evaluate(var_scalar.sym[0] * var_vector.sym[0], coords)
+    assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
+    result = uw.function.evaluate(var_scalar.sym[0] * var_vector.sym[1], coords)
+    assert np.allclose(np.array(((15.0),)), result, rtol=1e-05, atol=1e-08)
 
     del mesh
 

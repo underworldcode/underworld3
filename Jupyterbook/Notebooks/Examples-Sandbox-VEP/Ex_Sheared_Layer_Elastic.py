@@ -26,12 +26,10 @@ import petsc4py
 import underworld3 as uw
 import numpy as np
 import sympy
-
 import pyvista as pv
 import vtk
 
 from underworld3 import timing
-
 
 resolution = uw.options.getReal("model_resolution", default=0.033)
 mu = uw.options.getInt("mu", default=0.5)
@@ -52,97 +50,15 @@ if uw.mpi.size == 1:
 # +
 # Mesh a 2D pipe with a circular hole
 
-csize = resolution
-csize_circle = resolution * 0.5
-res = csize
-cellSize = csize
-
-width = 3.0
-height = 1.0
-radius = 0.0
-
-eta1 = 1000
-eta2 = 1
-
-if uw.mpi.rank == 0:
-
-    import gmsh
-
-    gmsh.initialize()
-    gmsh.model.add("Periodic x")
-
-    # %%
-    boundaries = {
-        "Bottom": 1,
-        "Top": 2,
-        "Right": 3,
-        "Left": 4,
-    }
-
-    xmin, ymin = -width / 2, -height / 2
-    xmax, ymax = +width / 2, +height / 2
-
-    p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, meshSize=cellSize)
-    p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0, meshSize=cellSize)
-    p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, meshSize=cellSize)
-    p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, meshSize=cellSize)
-
-    l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries["Bottom"])
-    l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries["Right"])
-    l3 = gmsh.model.geo.add_line(p4, p3, tag=boundaries["Top"])
-    l4 = gmsh.model.geo.add_line(p3, p1, tag=boundaries["Left"])
-
-    loops = []
-    if radius > 0.0:
-        p5 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=csize_circle)
-        p6 = gmsh.model.geo.add_point(+radius, 0.0, 0.0, meshSize=csize_circle)
-        p7 = gmsh.model.geo.add_point(-radius, 0.0, 0.0, meshSize=csize_circle)
-
-        c1 = gmsh.model.geo.add_circle_arc(p6, p5, p7)
-        c2 = gmsh.model.geo.add_circle_arc(p7, p5, p6)
-
-        cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=55)
-        loops = [cl1] + loops
-
-    cl = gmsh.model.geo.add_curve_loop((l1, l2, l3, l4))
-    loops = [cl] + loops
-
-    surface = gmsh.model.geo.add_plane_surface(loops, tag=99999)
-
-    gmsh.model.geo.synchronize()
-
-    # translation = [1, 0, 0, width, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-    # gmsh.model.mesh.setPeriodic(
-    #     1, [boundaries["Right"]], [boundaries["Left"]], translation
-    # )
-
-    # Add Physical groups
-
-    for name, tag in boundaries.items():
-        gmsh.model.add_physical_group(1, [tag], tag)
-        gmsh.model.set_physical_name(1, tag, name)
-
-    if radius > 0.0:
-        gmsh.model.addPhysicalGroup(1, [c1, c2], 55)
-        gmsh.model.setPhysicalName(1, 55, "Inclusion")
-
-    gmsh.model.addPhysicalGroup(2, [surface], surface)
-    gmsh.model.setPhysicalName(2, surface, "Elements")
-
-    # %%
-    gmsh.model.mesh.generate(2)
-    gmsh.write("tmp_shear_inclusion.msh")
-    gmsh.finalize()
-
+mesh1 = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(-1.5,-0.5),
+    maxCoords=(+1.5,+0.5),
+    cellSize=resolution,
+)
 
 
 # +
 
-
-mesh1 = uw.discretisation.Mesh("tmp_shear_inclusion.msh", 
-                               simplex=True, markVertices=True, 
-                               useRegions=True, 
-                              )
 mesh1.dm.view()
 
 ## build periodic mesh (mesh1)
@@ -152,90 +68,59 @@ mesh1.dm.view()
 # mesh1.dm.view()
 
 # +
+v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=True)
+work   = uw.discretisation.MeshVariable("W", mesh1, 1, vtype=uw.VarType.SCALAR, degree=2, continuous=False)
+Stress = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=2, 
+                                         continuous=False, varsymbol=r"{\sigma}")
 
+strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
+dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=2)
+
+# +
 swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=5)
 
 material = uw.swarm.SwarmVariable(
-    "M", swarm, size=1, 
-    proxy_continuous=True, proxy_degree=2, dtype=int,
+    "M", swarm, 
+    size=1, 
+    vtype=uw.VarType.SCALAR,
+    proxy_continuous=True, proxy_degree=1, dtype=int,
 )
 
-strain_p = uw.swarm.SwarmVariable(
-    "Strain_p", swarm, size=1, 
-    proxy_continuous=True, 
-    proxy_degree=2, varsymbol=r"{\varepsilon_{p}}", dtype=float,
+strain = uw.swarm.SwarmVariable(
+    "Strain", swarm, size=1, 
+    vtype=uw.VarType.SCALAR,
+    proxy_continuous=True,
+    proxy_degree=2, varsymbol=r"\varepsilon", dtype=float,
 )
 
-stress_dt = uw.swarm.SwarmVariable(r"Stress_p", swarm, (2,2), vtype=uw.VarType.SYM_TENSOR, varsymbol=r"{\sigma^{*}_{p}}")
+stress_star = uw.swarm.SwarmVariable(r"stress^{*}", swarm,
+                                     (2,2), vtype=uw.VarType.SYM_TENSOR, 
+                                     proxy_continuous=True,
+                                     proxy_degree=2,
+                                     varsymbol=r"{\sigma^{*}_{p}}",)
 
 swarm.populate(fill_param=2)
-
-# +
-# Define some functions on the mesh
-
-import sympy
-
-# Some useful coordinate stuff
-
-x, y = mesh1.X
-
-# relative to the centre of the inclusion
-r = sympy.sqrt(x**2 + y**2)
-th = sympy.atan2(y, x)
-
-# need a unit_r_vec equivalent
-
-inclusion_rvec = mesh1.X
-inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
-inclusion_unit_rvec = mesh1.vector.to_matrix(inclusion_unit_rvec)
-
-
-# +
-v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, degree=1, continuous=True)
-work   = uw.discretisation.MeshVariable(r"W", mesh1, 1, degree=1, continuous=False)
-Stress = uw.discretisation.MeshVariable(r"{\sigma}", mesh1, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=1, 
-                                         continuous=False, varsymbol=r"{\sigma}")
-
-vorticity = uw.discretisation.MeshVariable("omega", mesh1, 1, degree=1)
-strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=2)
-strain_rate_inv2_p = uw.discretisation.MeshVariable("eps_p", mesh1, 1, degree=2, varsymbol=r"\dot\varepsilon_p")
-dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=2)
-yield_stress = uw.discretisation.MeshVariable("tau_y", mesh1, 1, degree=1)
-
-node_viscosity = uw.discretisation.MeshVariable("eta", mesh1, 1, degree=1)
-r_inc = uw.discretisation.MeshVariable("R", mesh1, 1, degree=1)
 # -
 
+p_soln.sym[0].component
+uw.function.evaluate(p_soln.sym[0] * v_soln.sym[0], mesh1.data )
+
+0/0
+
+v_soln.sym[0].component
 
 
+# Some useful coordinate stuff
+x, y = mesh1.X
 
-# +
-# Set the initial strain from the mesh 
 
-with mesh1.access(): #strain_rate_inv2_p):
-    XX = v_soln.coords[:,0]
-    YY = v_soln.coords[:,1]
-    mask = (1.0 - (YY * 2)**8) * (1 -  (2*XX/3)**6)
-    # strain_rate_inv2_p.data[:,0] = 2.0 * np.floor(0.033+np.random.random(strain_rate_inv2_p.coords.shape[0])) * mask
- 
-# +
-   
-with swarm.access(material, strain), mesh1.access():
-    strain.data[:] = strain_rate_inv2_p.rbf_interpolate(swarm.particle_coordinates.data)
-    strain_array = strain_rate_inv2_p.rbf_interpolate(swarm.particle_coordinates.data)
-# +
-   
 with swarm.access(strain, material), mesh1.access():
     XX = swarm.particle_coordinates.data[:,0]
     YY = swarm.particle_coordinates.data[:,1]
     mask = (1.0 - (YY * 2)**8) * (1 -  (2*XX/3)**6)
     material.data[(XX**2 + YY**2 < 0.01), 0] = 1
-    strain.data[:,0] = 0.0 * np.random.random(swarm.particle_coordinates.data.shape[0]) * mask
-# -
-
-
-
+    strain.data[:,0] = 0.01 * np.random.random(swarm.particle_coordinates.data.shape[0]) * mask
 # + tags=[]
 # Create Solver object
 
@@ -247,12 +132,9 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-eta1 = 1000
-eta2 = 1
-
 viscosity_L = sympy.Piecewise(
-    (eta2, material.sym[0] > 0.5),
-    (eta1, True),
+    (1, material.sym[0] > 0.5),
+    (1000, True),
 )
 
 
@@ -260,15 +142,13 @@ viscosity_L = sympy.Piecewise(
 # + tags=[]
 stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
-stokes.constitutive_model.Parameters.sigma_star_fn = 
+stokes.constitutive_model.Parameters.shear_modulus = 100
+stokes.constitutive_model.Parameters.stress_star_fn = stress_star.sym
+stokes.constitutive_model.Parameters.deltaTe = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 # -
 
-stokes.constitutive_model.Parameters.sigma_star_fn
-
 stokes.constitutive_model
-
-stokes.stress_deviator_1d
 
 # + tags=[]
 sigma_projector = uw.systems.Tensor_Projection(mesh1, tensor_Field=Stress, scalar_Field=work  )
@@ -279,7 +159,7 @@ nodal_strain_rate_inv2 = uw.systems.Projection(
     mesh1, strain_rate_inv2, solver_name="edot_II"
 )
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
-nodal_strain_rate_inv2.smoothing = 1.0e-3
+nodal_strain_rate_inv2.smoothing = 0.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
@@ -288,16 +168,6 @@ nodal_tau_inv2.uw_function = (
 )
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
-
-yield_stress_calc = uw.systems.Projection(mesh1, yield_stress, solver_name="stress_y")
-yield_stress_calc.uw_function = 0.0
-yield_stress_calc.smoothing = 1.0e-3
-yield_stress_calc.petsc_options.delValue("ksp_monitor")
-
-nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity, solver_name="visc")
-nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
-nodal_visc_calc.smoothing = 1.0e-3
-nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 
 
@@ -309,14 +179,10 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 stokes.penalty = 1.0
 stokes.bodyforce = (
-    -0.00000001 * mesh1.CoordinateSystem.unit_e_1.T 
+    -0.00000001 * mesh1.CoordinateSystem.unit_e_1
 )  # vertical force term (non-zero pressure)
 
 stokes.tolerance = 1.0e-4
-
-# hw = 1000.0 / res
-# surface_defn_fn = sympy.exp(-(((r - radius) / radius) ** 2) * hw)
-# stokes.bodyforce -= 1.0e6 * surface_defn_fn * v_soln.sym.dot(inclusion_unit_rvec) * inclusion_unit_rvec
 
 # Velocity boundary conditions
 
@@ -329,50 +195,18 @@ stokes.add_dirichlet_bc((0.0), "Right", (1))
 # -
 
 
-# linear solve first
-stokes._setup_terms()
-
-stokes.constitutive_model.Parameters.viscosity
+stokes.constitutive_model.flux_1d(stokes.strainrate)
 
 stokes.solve()
 
+# +
+sigma_projector.uw_function = stokes.stress_deviator_1d
 sigma_projector.solve()
 
-Stress.sym_1d
+with swarm.access(stress_star), mesh1.access():
+    stress_star.data[...] = Stress.rbf_interpolate(swarm.particle_coordinates.data)
 
-with mesh1.access():
-    print(Stress[0,0].data.max())
-    print(Stress[1,1].data.max())
-    print(Stress[0,1].data.max())
-    
-
-# +
-# Now add yield without pressure dependence
-
-eps_ref = sympy.sympify(0.001)
-scale = sympy.sympify(25)
-C0 = 2500
-Cinf = 500
-
-# C = 2 * (y * 2)**16 + 5.0 * sympy.exp(-(strain.sym[0]/0.1)**2) + 0.1
-C = 2 * (y * 2)**16 + (C0-Cinf) * (1 - sympy.tanh((strain.sym[0]/eps_ref - 1)*scale) ) / 2 + Cinf
-
-stokes.constitutive_model.Parameters.yield_stress = C + mu * p_soln.sym[0]
-stokes.constitutive_model.Parameters.edot_II_fn = stokes._Einv2
-stokes.constitutive_model.Parameters.yield_stress_min = 0.1
-stokes.constitutive_model.Parameters.min_viscosity = 0.1
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
-
-# stokes.solve(zero_init_guess=False, picard=2)
-
-stokes.constitutive_model
-# -
-
-sympy.simplify(stokes._u_f1[0])
-
-with mesh1.access():
-    print(p_soln.data.min(), p_soln.data.max())
+nodal_strain_rate_inv2.solve()
 
 # +
 timing.reset()
@@ -390,29 +224,8 @@ S = stokes.stress_deviator
 nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace()) / 2))
 nodal_tau_inv2.solve()
 
-yield_stress_calc.uw_function = stokes.constitutive_model.Parameters.yield_stress
-yield_stress_calc.solve()
-
-nodal_visc_calc.uw_function = sympy.log(stokes.constitutive_model.Parameters.viscosity)
-nodal_visc_calc.solve()
-
-nodal_strain_rate_inv2.uw_function = (sympy.Max(0.0, stokes._Einv2 - 
-                        0.5 * stokes.constitutive_model.Parameters.yield_stress / stokes.constitutive_model.Parameters.bg_viscosity))
-nodal_strain_rate_inv2.solve()
-
-with mesh1.access(strain_rate_inv2_p):
-    strain_rate_inv2_p.data[...] = strain_rate_inv2.data.copy()
-
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
 nodal_strain_rate_inv2.solve()
-
-# -
-mesh0 = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(-1.5,-0.5),
-    maxCoords=(+1.5,+0.5),
-    cellSize=0.033,
-)
-
 
 # + tags=[]
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
@@ -427,14 +240,11 @@ if uw.mpi.size == 1:
     usol = v_soln.rbf_interpolate(pvpoints)
 
     pvmesh.point_data["P"] = p_soln.rbf_interpolate(pvpoints)
-    pvmesh.point_data["Edot"] = strain_rate_inv2.rbf_interpolate(pvpoints)**2
-    pvmesh.point_data["Edotp"] = strain_rate_inv2_p.rbf_interpolate(pvpoints)
+    pvmesh.point_data["Edot"] = strain_rate_inv2.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strs"] = dev_stress_inv2.rbf_interpolate(pvpoints)
-    pvmesh.point_data["StrY"] =  yield_stress.rbf_interpolate(pvpoints)
-    pvmesh.point_data["dStrY"] = pvmesh.point_data["Strs"] - pvmesh.point_data["StrY"]
-    pvmesh.point_data["Visc"] = np.exp(node_viscosity.rbf_interpolate(pvpoints))
     pvmesh.point_data["Mat"] = material.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strn"] = strain._meshVar.rbf_interpolate(pvpoints)
+    pvmesh.point_data["SStar"] = stress_star._meshVar.rbf_interpolate(pvpoints)
 
     # Velocity arrows
     
@@ -452,7 +262,7 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(500, 500))
 
-    # pl.add_arrows(pvmesh.points, v_vectors, mag=0.1, opacity=0.75)
+    pl.add_arrows(pvmesh.points, v_vectors, mag=0.1, opacity=0.75)
     # pl.camera_position = "xy"
 
     pl.add_mesh(
@@ -461,7 +271,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         # clim=[0.0,1.0],
-        scalars="P",
+        scalars="SStar",
         use_transparency=False,
         opacity=0.5,
     )
@@ -473,24 +283,49 @@ if uw.mpi.size == 1:
     pl.camera.SetClippingRange(1.0, 8.0)
         
     pl.show()
-# -
-0/0
-
-
 # +
-# Now add elasticity
+# Adams / Bashforth & Adams Moulton ... 
+
+s = sympy.Symbol(r"\sigma")
+s1 = sympy.Symbol(r"\sigma^*")
+s2 = sympy.Symbol(r"\sigma^**")
+dt = sympy.Symbol(r"\Delta t")
+mu = sympy.Symbol(r"\mu")
+eta = sympy.Symbol(r"\eta")
+edot = sympy.Symbol(r"\dot\varepsilon")
+tr = sympy.Symbol(r"t_r")
+
+sdot1 = (s - s1)/dt
+sdot2 = (3 * s - 4 * s1 + s2) / (2 * dt)
 # -
 
 
+display( sdot1 )
+display( sdot2 )
+Seq1 = sympy.Equality(sympy.simplify(sdot1 / (2 * mu) + s / (2 * eta)),edot)
+display(Seq1)
+sympy.simplify(sympy.solve(Seq1, s)[0])
 
+eta_eff_1 = sympy.simplify(eta * mu * dt / (mu * dt + eta))
+display(eta_eff_1)
+a = (sympy.simplify(2 * eta * sympy.solve(Seq1, s)[0]/ (2*eta_eff_1)))
+tau_1 = a.subs(eta/mu, tr)
+tau_1
 
+Seq2 = sympy.Equality(sympy.simplify(sdot2 / (2 * mu) + s / (2 * eta)), edot)
+display(Seq2)
+sympy.simplify(sympy.solve(Seq2, s)[0])
 
+eta_eff_2 = sympy.simplify(2 * eta * mu * dt / ( 2 * mu * dt + 3 * eta))
+display(eta_eff_2)
+sympy.simplify(2 * eta * sympy.solve(Seq2, s)[0]/ (2*eta_eff_2)) 
 
+a = sympy.simplify(2 * eta * sympy.solve(Seq2, s)[0] / (2*eta_eff_2))
+tau_2 = a.expand().subs(eta/mu, tr)
 
+tau_2
 
-
-
-
+0/0
 
 
 stokes.constitutive_model.Parameters.yield_stress.subs(((strain.sym[0],0.25), (y,0.0)))

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -34,7 +34,6 @@ free_slip_upper = True
 
 import os
 
-os.environ["SYMPY_USE_CACHE"] = "no"
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 # Define the problem size
@@ -190,6 +189,9 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 print("", flush=True)
+# -
+
+stokes._u_f0[0]
 
 # +
 # Pressure at mesh nodes

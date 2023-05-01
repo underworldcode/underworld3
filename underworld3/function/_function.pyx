@@ -56,7 +56,6 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
             else:
                 coord_latex = r"\mathbf{x}"
         except:
-            print("No mesh info found")
             coord_latex = r"\mathbf{x}"
 
         if exp==None:
@@ -108,7 +107,8 @@ class UnderworldFunction(sympy.Function):
         The variable type (scalar,vector,etc).
     component:
         For vector functions, this is the component of the vector.
-        For example, component `1` might correspond to `v_x`.
+        For example, component `1` might correspond to `v_y`.
+        For tensors, the component is a tuple
         For scalars, this value is ignored.
     """
     def __new__(cls, 
@@ -116,10 +116,13 @@ class UnderworldFunction(sympy.Function):
                 meshvar  : underworld3.discretisation.MeshVariable, 
                 vtype    : underworld3.VarType,
                 component: Union[int, tuple] = 0, 
+                data_loc: int = None,
                 *args, **options):
-        
+
         if vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {} }}".format(component)
+        elif vtype==uw.VarType.TENSOR or vtype==uw.VarType.SYM_TENSOR or vtype ==uw.VarType.MATRIX:
+            fname = name + "_{{ {}{} }}".format(component[0], component[1])
         else: # other types can manage their own component names
             fname = name
             
@@ -127,7 +130,7 @@ class UnderworldFunction(sympy.Function):
         # Grab weakref to meshvar.
         import weakref
         ourcls.meshvar   = weakref.ref(meshvar)
-        ourcls.component = component
+        ourcls.component = data_loc # <- this is used to index into the data array so it should not just be the tuple
 
         ourcls._diff = []
         # go ahead and create the derivative function *classes*
@@ -135,16 +138,17 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{,"
         elif vtype==uw.VarType.VECTOR:
             fname = name + "_{{ {},".format(component)
-        elif vtype==uw.VarType.TENSOR:
+        elif vtype==uw.VarType.TENSOR or vtype == uw.VarType.SYM_TENSOR or vtype ==uw.VarType.MATRIX:
             fname = name + "_{{ {}{},".format(component[0], component[1])
 
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
             # Grab weakref to var for derivative fn too.
             diffcls.meshvar   = weakref.ref(meshvar)
-            diffcls.component = component
+            diffcls.component = data_loc  
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
+
 
         for diff_fn in ourcls._diff:
             diff_fn.mesh = meshvar.mesh
@@ -197,7 +201,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     """
 
-    if not isinstance( expr, sympy.Basic ):
+    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -216,8 +220,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # 1. Extract UW variables.
     # Let's first collect all the meshvariables present in the expression.
     # Recurse the expression tree.
-
-
 
     varfns = set()
     def get_var_fns(exp):
@@ -261,6 +263,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
     # more general situation.
+
     from collections import defaultdict
     interpolant_varfns = defaultdict(lambda : [])
     for varfn in varfns:
@@ -355,6 +358,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
         # Create map between array slices and variable functions
+
         varfns_arrays = {}
         for varfn in varfns:
             var  = varfn.meshvar()
@@ -370,7 +374,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     for key, vals in interpolant_varfns.items():
         interpolated_results.update(interpolate_vars_on_mesh(vals, coords))
 
-    # 3. Replace mesh mesh variables in the expression with sympy symbols
+    # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
     import string
     import random
@@ -386,13 +390,12 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     from sympy.vector import CoordSys3D
     dim = coords.shape[1]
 
-
     ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
 
     if coord_sys is not None:
         N = coord_sys
     elif mesh is None:
-        N = CoordSys3D("N")
+        N = CoordSys3D(f"N")
     else:
         N = mesh.N
         
@@ -487,7 +490,6 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
 
     var_arrays = {}
     for var in mesh.vars.values():
-            print(f"Variable {var.clean_name}")
             var_start = var_start_index[var]
             comps = var.num_components
             arr = outarray[:,var_start:var_start+comps].copy()

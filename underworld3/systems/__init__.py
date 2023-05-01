@@ -13,6 +13,7 @@ from .solvers import SNES_Darcy as SteadyStateDarcy
 from .solvers import SNES_Stokes as Stokes
 from .solvers import SNES_Projection as Projection
 from .solvers import SNES_Vector_Projection as Vector_Projection
+from .solvers import SNES_Tensor_Projection as Tensor_Projection
 
 # from .solvers import SNES_Solenoidal_Vector_Projection as Solenoidal_Vector_Projection  ## WIP / maybe some issues
 from .solvers import (

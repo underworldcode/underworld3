@@ -17,6 +17,7 @@ from underworld3.cython import petsc_discretisation
 
 import underworld3.timing as timing
 import weakref
+from collections import namedtuple
 
 
 @timing.routine_timer_decorator
@@ -62,7 +63,7 @@ def _from_gmsh(
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
     if uw.mpi.rank == 0:
-        print(f"Processing gmsh file {filename}")
+        # print(f"Processing gmsh file {filename}")
 
         plex_0 = PETSc.DMPlex().createFromFile(filename, comm=PETSc.COMM_SELF)
 
@@ -73,7 +74,7 @@ def _from_gmsh(
         viewer(plex_0)
         viewer.destroy()
 
-        print(f"Mesh saved to {filename}.h5")
+        # print(f"Mesh saved to {filename}.h5")
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -212,7 +213,7 @@ class Mesh(_api_tools.Stateful):
         from sympy.vector import CoordSys3D
 
         # A unique set of vectors / names for each mesh instance
-        self._N = CoordSys3D(f"N{self.instance}")
+        self._N = CoordSys3D(f"N")
 
         self._N.x._latex_form = r"\mathrm{\xi_0}"
         self._N.y._latex_form = r"\mathrm{\xi_1}"
@@ -240,6 +241,7 @@ class Mesh(_api_tools.Stateful):
 
         # self._vars = weakref.WeakValueDictionary()
         self._vars = {}
+        self._block_vars = {}
 
         # a list of equation systems that will
         # need to be rebuilt if the mesh coordinates change
@@ -308,9 +310,9 @@ class Mesh(_api_tools.Stateful):
 
             print(f"Mesh {self.instance}")
 
-            if len(self.vars.valuerefs()) > 0:
-                print(f"| Variable Name       | component | degree | type      |")
-                print(f"| ---------------------------------------------------- |")
+            if len(self.vars) > 0:
+                print(f"| Variable Name       | component | degree | type        |")
+                print(f"| ------------------------------------------------------ |")
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
@@ -318,7 +320,7 @@ class Mesh(_api_tools.Stateful):
                     )
 
                 print(
-                    f"| ---------------------------------------------------- |",
+                    f"| ------------------------------------------------------ |",
                     flush=True,
                 )
 
@@ -500,6 +502,22 @@ class Mesh(_api_tools.Stateful):
                 # increment variable state
                 var._increment()
 
+            # make view for each var component
+
+            for i in range(0, var.shape[0]):
+                for j in range(0, var.shape[1]):
+                    # var._data_ij[i, j] = var.data[:, var._data_layout(i, j)]
+                    var._data_container[i, j] = var._data_container[i, j]._replace(
+                        data=var.data[:, var._data_layout(i, j)],
+                    )
+
+        # This is not needed if we can index into the block variables
+        # for block_var in self.block_vars.values():
+        #     size = block_var.shape
+        #     for i in range(0, size[0]):
+        #         for j in range(0, size[1]):
+        #             block_var._data[i, j] = block_var._vars[i, j].data
+
         class exit_manager:
             def __init__(self, mesh):
                 self.mesh = mesh
@@ -530,6 +548,20 @@ class Mesh(_api_tools.Stateful):
                     var._data = None
                     var._set_vec(available=False)
                     var._is_accessed = False
+
+                    # This is not needed if we can index into the block variables
+                    # for block_var in self.mesh.block_vars.values():
+                    #     size = block_var.shape
+                    #     for i in range(0, size[0]):
+                    #         for j in range(0, size[1]):
+                    #             block_var._data[i, j] = None
+
+                for i in range(0, var.shape[0]):
+                    for j in range(0, var.shape[1]):
+                        # var._data_ij[i, j] = None
+                        var._data_container[i, j] = var._data_container[i, j]._replace(
+                            data=f"MeshVariable[...].data is only available within mesh.access() context",
+                        )
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
@@ -766,6 +798,15 @@ class Mesh(_api_tools.Stateful):
         """
         return self._vars
 
+        # ToDo: rename this so it does not clash with the vars built in
+
+    @property
+    def block_vars(self):
+        """
+        A list of variables recorded on the mesh.
+        """
+        return self._block_vars
+
     def _get_coords_for_var(self, var):
         """
         This function returns the vertex array for the
@@ -867,7 +908,7 @@ class Mesh(_api_tools.Stateful):
         self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
 
         ## Now, we can use this information to rebuild the index more carefully
-        '''
+        """
         tempSwarm2 = Swarm(self)
         tempSwarm2.populate(fill_param=4)
 
@@ -890,7 +931,7 @@ class Mesh(_api_tools.Stateful):
 
         # update these
         self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
-        '''
+        """
         return
 
     @timing.routine_timer_decorator
@@ -1103,7 +1144,7 @@ class Mesh(_api_tools.Stateful):
 def MeshVariable(
     varname: Union[str, list],
     mesh: "underworld.mesh.Mesh",
-    num_components: int,
+    num_components: Union[int, tuple] = None,
     vtype: Optional["underworld.VarType"] = None,
     degree: int = 1,
     continuous: bool = True,
@@ -1171,7 +1212,7 @@ class _MeshVariable(_api_tools.Stateful):
         self,
         varname: Union[str, list],
         mesh: "underworld.mesh.Mesh",
-        num_components: int,
+        size: Union[int, tuple],
         vtype: Optional["underworld.VarType"] = None,
         degree: int = 1,
         continuous: bool = True,
@@ -1209,6 +1250,7 @@ class _MeshVariable(_api_tools.Stateful):
         """
 
         import re
+        import math
 
         if varsymbol is None:
             varsymbol = varname
@@ -1223,6 +1265,7 @@ class _MeshVariable(_api_tools.Stateful):
         self._lvec = None
         self._gvec = None
         self._data = None
+
         self._is_accessed = False
         self._available = False
 
@@ -1230,13 +1273,19 @@ class _MeshVariable(_api_tools.Stateful):
         self.symbol = symbol
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
+        # ToDo: Suggest we deprecate this and require it to be set explicitly
+        # The tensor types are hard to infer correctly
+
         if vtype == None:
-            if num_components == 1:
+            if isinstance(size, int) and size == 1:
                 vtype = uw.VarType.SCALAR
-            elif num_components == mesh.dim:
+            elif isinstance(size, int) and size == mesh.dim:
                 vtype = uw.VarType.VECTOR
-            elif num_components == mesh.dim * mesh.dim:
-                vtype = uw.VarType.TENSOR
+            elif isinstance(size, tuple):
+                if size[0] == mesh.dim and size[1] == mesh.dim:
+                    vtype = uw.VarType.TENSOR
+                else:
+                    vtype = uw.VarType.MATRIX
             else:
                 raise ValueError(
                     "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
@@ -1249,12 +1298,12 @@ class _MeshVariable(_api_tools.Stateful):
 
         self.vtype = vtype
         self.mesh = mesh
-        self.num_components = num_components
+        self.shape = size
         self.degree = degree
         self.continuous = continuous
 
         options = PETSc.Options()
-        name0 = ""  # self.clean_name
+        name0 = ""  # self.clean_name  ## Filling up the options database unnecessarily
         options.setValue(f"{name0}_petscspace_degree", degree)
         options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
         options.setValue(
@@ -1263,9 +1312,34 @@ class _MeshVariable(_api_tools.Stateful):
 
         dim = self.mesh.dm.getDimension()
 
+        # First create the petsc FE object of the
+        # correct size / dimension to represent the
+        # unknowns when used in computations (for tensors)
+        # we will need to pack them correctly as well
+        # (e.g. T.sym.reshape(1,len(T.sym))))
+        # Symmetric tensors ... a bit more work again
+
+        if vtype == uw.VarType.SCALAR:
+            self.shape = (1, 1)
+            self.num_components = 1
+        elif vtype == uw.VarType.VECTOR:
+            self.shape = (1, mesh.dim)
+            self.num_components = mesh.dim
+        elif vtype == uw.VarType.TENSOR:
+            self.num_components = mesh.dim * mesh.dim
+            self.shape = (mesh.dim, mesh.dim)
+        elif vtype == uw.VarType.SYM_TENSOR:
+            self.num_components = math.comb(mesh.dim + 1, 2)
+            self.shape = (mesh.dim, mesh.dim)
+        elif vtype == uw.VarType.MATRIX:
+            self.num_components = self.shape[0] * self.shape[1]
+
+        # self._data_ij = numpy.empty(self.shape, dtype=object)
+        self._data_container = numpy.empty(self.shape, dtype=object)
+
         self.petsc_fe = PETSc.FE().createDefault(
             dim,
-            num_components,
+            self.num_components,
             self.mesh.isSimplex,
             self.mesh.qdegree,
             name0 + "_",
@@ -1277,67 +1351,132 @@ class _MeshVariable(_api_tools.Stateful):
         field, _ = self.mesh.dm.getField(self.field_id)
         field.setName(self.clean_name)
 
-        # self.mesh.dm.clearDS()
-        # self.mesh.dm.createDS()
-
         # create associated sympy function
         from underworld3.function import UnderworldFunction
 
         if vtype == uw.VarType.SCALAR:
             self._sym = sympy.Matrix.zeros(1, 1)
-            self._sym[0] = UnderworldFunction(self.symbol, self, vtype)(*self.mesh.r)
+            self._sym[0] = UnderworldFunction(
+                self.symbol,
+                self,
+                vtype,
+                0,
+                0,
+            )(*self.mesh.r)
             self._sym[0].mesh = self.mesh
-
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
-            self._sym = sympy.Matrix.zeros(1, num_components)
-
-            # Matrix form (any number of components)
-            for comp in range(num_components):
-                self._sym[0, comp] = UnderworldFunction(self.symbol, self, vtype, comp)(
-                    *self.mesh.r
-                )
+            self._sym = sympy.Matrix.zeros(1, mesh.dim)
+            for comp in range(mesh.dim):
+                self._sym[0, comp] = UnderworldFunction(
+                    self.symbol,
+                    self,
+                    vtype,
+                    comp,
+                    comp,
+                )(*self.mesh.r)
                 self._sym[0, comp].mesh = self.mesh
 
-            # Spatial vector form (2 vectors and 3 vectors according to mesh dim)
-            if num_components == mesh.dim:
-                self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
-                # self.mesh.vector.to_vector(self._sym)
+            self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-            self._sym = sympy.Matrix.zeros(1, self.mesh.dim * self.mesh.dim)
+
+            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
 
             # Matrix form (any number of components)
-            for i in range(self.mesh.dim):
-                for j in range(self.mesh.dim):
-                    comp = i + j * self.mesh.dim
-                    self._sym[comp] = UnderworldFunction(
-                        self.symbol, self, vtype, (i, j)
-                    )(*self.mesh.r)
-                self._sym[0, comp].mesh = self.mesh
+            for i in range(mesh.dim):
+                for j in range(mesh.dim):
 
-        elif (
-            vtype == uw.VarType.COMPOSITE
-        ):  # This is just to allow full control over the names of the components
-            self._sym = sympy.Matrix.zeros(1, num_components)
-            if isinstance(varsymbol, list):
-                if len(varsymbol) == num_components:
-                    for comp in range(num_components):
-                        self._sym[0, comp] = UnderworldFunction(
-                            varsymbol[comp], self, vtype, comp
+                    self._sym[i, j] = UnderworldFunction(
+                        self.symbol,
+                        self,
+                        vtype,
+                        (i, j),
+                        self._data_layout(i, j),
+                    )(*self.mesh.r)
+                    self._sym[i, j].mesh = self.mesh
+
+        elif vtype == uw.VarType.SYM_TENSOR:
+            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+
+            # Matrix form (any number of components)
+            for i in range(mesh.dim):
+                for j in range(0, mesh.dim):
+                    if j >= i:
+                        self._sym[i, j] = UnderworldFunction(
+                            self.symbol,
+                            self,
+                            vtype,
+                            (i, j),
+                            self._data_layout(i, j),
                         )(*self.mesh.r)
-                        self._sym[0, comp].mesh = self.mesh
 
-                else:
-                    raise RuntimeError(
-                        "Please supply a list of names for all components of this vector"
-                    )
-            else:
-                for comp in range(num_components):
-                    self._sym[0, comp] = UnderworldFunction(
-                        self.symbol, self, vtype, comp
+                    else:
+                        self._sym[i, j] = self._sym[j, i]
+
+                    self._sym[i, j].mesh = self.mesh
+
+        elif vtype == uw.VarType.MATRIX:
+            self._sym = sympy.Matrix.zeros(self.shape[0], self.shape[1])
+
+            # Matrix form (any number of components)
+            for i in range(self.shape[0]):
+                for j in range(self.shape[1]):
+
+                    self._sym[i, j] = UnderworldFunction(
+                        self.symbol,
+                        self,
+                        vtype,
+                        (i, j),
+                        self._data_layout(i, j),
                     )(*self.mesh.r)
+                    self._sym[i, j].mesh = self.mesh
+                    n += 1
+
+        # Suggest this should be deprecated - seems complicated
+        # and liable to produce errors in development as well as use
+
+        # elif (
+        #     vtype == uw.VarType.COMPOSITE
+        # ):  # This is just to allow full control over the names of the components
+        #     self._sym = sympy.Matrix.zeros(1, num_components)
+        #     if isinstance(varsymbol, list):
+        #         if len(varsymbol) == num_components:
+        #             for comp in range(num_components):
+        #                 self._sym[0, comp] = UnderworldFunction(
+        #                     varsymbol[comp],
+        #                     self,
+        #                     vtype,
+        #                     comp,
+        #                     comp,
+        #                 )(*self.mesh.r)
+        #                 self._sym[0, comp].mesh = self.mesh
+
+        #         else:
+        #             raise RuntimeError(
+        #                 "Please supply a list of names for all components of this vector"
+        #             )
+        #     else:
+        #         for comp in range(num_components):
+        #             self._sym[0, comp] = UnderworldFunction(
+        #                 self.symbol, self, vtype, comp, comp
+        #             )(*self.mesh.r)
+
+        # This allows us to define a __getitem__ method
+        # to return a view for a given component when
+        # the access manager is active
+
+        from collections import namedtuple
+
+        MeshVariable_ij = namedtuple("MeshVariable_ij", ["data", "sym"])
+
+        for i in range(0, self.shape[0]):
+            for j in range(0, self.shape[1]):
+                self._data_container[i, j] = MeshVariable_ij(
+                    data=f"MeshVariable[...].data is only available within mesh.access() context",
+                    sym=self.sym[i, j],
+                )
 
         super().__init__()
 
@@ -1346,6 +1485,21 @@ class _MeshVariable(_api_tools.Stateful):
         self.mesh.dm.createDS()
 
         return
+
+    def __getitem__(self, indices):
+
+        if not isinstance(indices, tuple):
+            if isinstance(indices, int) and self.shape[0] == 1:
+                i = 0
+                j = indices
+            else:
+                raise IndexError(
+                    "MeshVariable[i,j] access requires one or two indices "
+                )
+        else:
+            i, j = indices
+
+        return self._data_container[i, j]
 
     # We should be careful - this is an INTERPOLATION
     # that is stable when used for EXTRAPOLATION but
@@ -1660,23 +1814,80 @@ class _MeshVariable(_api_tools.Stateful):
     @property
     def fn(self) -> sympy.Basic:
         """
-        The handle to the function view of this variable.
+        The handle to the (i,j,k) spatial view of this variable if it exists (deprecated)
         """
         return self._ijk
 
     @property
     def ijk(self) -> sympy.Basic:
         """
-        The handle to the scalar / vector view of this variable.
+        The handle to the (i,j,k) spatial view of this variable if it exists
         """
         return self._ijk
 
     @property
     def sym(self) -> sympy.Basic:
         """
-        The handle to the tensor view of this variable.
+        The handle to the sympy.Matrix view of this variable
         """
         return self._sym
+
+    @property
+    def sym_1d(self) -> sympy.Basic:
+        """
+        The handle to a flattened version of the sympy.Matrix view of this variable.
+        Assume components are stored in the same order that sympy iterates entries in
+        a matrix except for the symmetric tensor case where we store in a Voigt form
+        """
+
+        if self.vtype != uw.VarType.SYM_TENSOR:
+            return self._sym.reshape(1, len(self._sym))
+        else:
+            if self.mesh.dim == 2:
+                return sympy.Matrix(
+                    [
+                        self._sym[0, 0],
+                        self._sym[1, 1],
+                        self._sym[0, 1],
+                    ]
+                ).T
+            else:
+                return sympy.Matrix(
+                    [
+                        self._sym[0, 0],
+                        self._sym[1, 1],
+                        self._sym[2, 2],
+                        self._sym[0, 1],
+                        self._sym[0, 2],
+                        self._sym[1, 2],
+                    ]
+                ).T
+
+    def _data_layout(self, i, j=None):
+        # mapping
+
+        if self.vtype == uw.VarType.SCALAR:
+            return 0
+        if self.vtype == uw.VarType.VECTOR:
+            if j is None:
+                return i
+            elif i == 0:
+                return j
+            else:
+                raise IndexError(
+                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                )
+        if self.vtype == uw.VarType.TENSOR or self.vtype == uw.VarType.MATRIX:
+            if self.mesh.dim == 2:
+                return ((0, 1), (2, 3))[i][j]
+            else:
+                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            if self.mesh.dim == 2:
+                return ((0, 2), (2, 1))[i][j]
+            else:
+                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
 
     def _set_vec(self, available):
 

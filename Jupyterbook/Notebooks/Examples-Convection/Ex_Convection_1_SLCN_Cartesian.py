@@ -22,7 +22,7 @@ import sympy
 # -
 
 meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=True, qdegree=3
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=False, qdegree=3
 )
 
 
@@ -35,7 +35,7 @@ if uw.mpi.size == 1:
     import pyvista as pv
     import vtk
     
-    pv.start_xvfb()
+    # pv.start_xvfb()
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
@@ -142,7 +142,7 @@ stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 stokes.solve(zero_init_guess=True)
 
 # Check the diffusion part of the solve converges
-adv_diff.solve(timestep=0.1 * stokes.estimate_dt())
+adv_diff.solve(timestep=0.1 * stokes.estimate_dt(), zero_init_guess=True)
 
 # +
 # check the mesh if in a notebook / serial
@@ -154,7 +154,7 @@ if uw.mpi.size == 1:
     import vtk
 
     pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
+    pv.global_theme.window_size = [1250, 750]
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
@@ -222,9 +222,6 @@ if uw.mpi.size == 1:
 
 
 pvmesh.clear_point_data()
-
-
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
 
 
 def plot_T_mesh(filename):

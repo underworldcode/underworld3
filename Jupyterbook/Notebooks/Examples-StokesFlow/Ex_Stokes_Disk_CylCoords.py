@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -232,6 +232,8 @@ stokes_xy.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 # -
 
 
+
+
 pressure_solver = uw.systems.Projection(meshball, p_cont)
 pressure_solver.uw_function = p_soln.sym[0]
 pressure_solver.smoothing = 1.0e-3
@@ -251,10 +253,13 @@ stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_
 
 with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
-        r, coords=r_xy.coords, coord_sys=meshball_xyz.N
-    )
+        meshball_xyz.CoordinateSystem.xR[0], coords=r_xy.coords, coord_sys=meshball_xyz.N )
 
-# +
+
+
+stokes._setup_terms()
+
+# + tags=[]
 from underworld3 import timing
 
 timing.start()
@@ -263,6 +268,8 @@ timing.print_table()
 
 pressure_solver.solve()
 # -
+
+
 stokes_xy.tolerance = 1.0e-8
 
 
@@ -273,6 +280,8 @@ stokes_xy.solve(zero_init_guess=True)
 timing.print_table()
 
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
+
+
 
 # +
 ## Periodic in theta - the nodes which have been "moved" to a
@@ -367,3 +376,15 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # -
 
 stokes
+
+
+
+sympy.oo
+
+T = sympy.oo
+
+sympy.S.Infinity
+
+
+
+

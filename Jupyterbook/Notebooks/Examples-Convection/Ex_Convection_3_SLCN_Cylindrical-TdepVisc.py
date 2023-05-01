@@ -39,7 +39,7 @@ import pyvista as pv
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 250]
-pv.global_theme.antialiasing = True
+pv.global_theme.anti_aliasing = "msaa"
 pv.global_theme.jupyter_backend = "panel"
 pv.global_theme.smooth_shading = True
 
@@ -137,8 +137,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshdisc.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=k)
-
+adv_diff.constitutive_model.Parameters.diffusivity=k
 adv_diff.theta = 0.5
 
 
@@ -155,18 +154,22 @@ adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 # +
 with meshdisc.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(init_t, t_soln.coords).reshape(-1, 1)
+    t_soln.data[...] = uw.function.evaluate(init_t, t_soln.coords, meshdisc.N).reshape(-1, 1)
 
 with meshdisc.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshdisc.data)  # cf radius_fn which is 0->1
+    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshdisc.data, meshdisc.N)  # cf radius_fn which is 0->1
 # -
 
 # check the stokes solve is set up and that it converges
 stokes.solve(zero_init_guess=True)
 
 
+stokes.con
+
 # Check the diffusion part of the solve converges
 adv_diff.solve(timestep=0.1 * stokes.estimate_dt())
+
+adv_diff
 
 # +
 # check the mesh if in a notebook / serial
@@ -233,7 +236,7 @@ if uw.mpi.size == 1:
     pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=3, opacity=0.33)
 
     pl.add_mesh(pvstream, opacity=0.5)
-    pl.add_arrows(velocity_0s, velocity, mag=1.0e-2)
+    pl.add_arrows(velocity_0s, velocity, mag=1.0e-3)
 
     # pl.add_points(pdata)
 

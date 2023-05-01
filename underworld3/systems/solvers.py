@@ -325,10 +325,12 @@ class SNES_Stokes(SNES_Stokes):
         # terms that become part of the weighted integral
         self._u_f0 = self.UF0 - self.bodyforce
         # Integration by parts into the stiffness matrix (constitutive terms)
-        self._u_f1 = self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
+        self._u_f1 = sympy.simplify(
+            self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
+        )
 
         # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + sympy.Matrix((self.constraints))
+        self._p_f0 = sympy.simplify(self.PF0 + sympy.Matrix((self.constraints)))
 
         return
 
@@ -336,10 +338,18 @@ class SNES_Stokes(SNES_Stokes):
     def strainrate(self):
         return sympy.Matrix(self._E)
 
-    # Set this to something that supplies history if relevant
+    @property
+    def strainrate_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)
+
+    # Over-ride this one as required
     @property
     def strainrate_star(self):
         return None
+
+    @property
+    def strainrate_star_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
 
     # provide the strain-rate history in symbolic form
     @strainrate_star.setter
@@ -351,11 +361,22 @@ class SNES_Stokes(SNES_Stokes):
     # This should return standard viscous behaviour if strainrate_star is None
     @property
     def stress_deviator(self):
-        return self.constitutive_model.flux(self.strainrate, self.strainrate_star)
+        return self.constitutive_model.flux(
+            self.strainrate,
+            self.strainrate_star,
+        )
+
+    @property
+    def stress_deviator_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)
 
     @property
     def stress(self):
         return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+
+    @property
+    def stress_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.stress, self.mesh.dim)
 
     @property
     def div_u(self):
@@ -644,6 +665,110 @@ class SNES_Vector_Projection(SNES_Vector):
     def uw_weighting_function(self, user_uw_function):
         self.is_setup = False
         self._uw_weighting_function = user_uw_function
+
+
+class SNES_Tensor_Projection(SNES_Projection):
+    """
+    Map underworld (pointwise) function to continuous
+    nodal point values in least-squares sense.
+
+    For tensor problems, we start with a component-by-component
+    solution that requires a work vector to hold the result.
+
+    Consitutive model for this solver is the identity tensor
+    """
+
+    instances = 0
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        tensor_Field: uw.discretisation.MeshVariable = None,
+        scalar_Field: uw.discretisation.MeshVariable = None,
+        solver_name: str = "",
+        verbose=False,
+    ):
+
+        SNES_Tensor_Projection.instances += 1
+
+        if solver_name == "":
+            solver_name = "TProj{}_".format(self.instances)
+
+        self.t_field = tensor_Field
+
+        super().__init__(
+            mesh=mesh,
+            u_Field=scalar_Field,
+            solver_name=solver_name,
+            verbose=verbose,
+        )
+
+        return
+
+    ## Need to over-ride solve method to run over all components
+
+    def solve(self):
+
+        # Loop over the components of the tensor. If this is a symmetric
+        # tensor, we'll usually be given the 1d form to prevent duplication
+
+        if self.t_field.sym_1d.shape != self.uw_function.shape:
+            raise ValueError(
+                "Tensor shapes for uw_function and MeshVariable are not the same"
+            )
+
+        for c, component_function in enumerate(self.uw_function):
+
+            self.uw_scalar_function = sympy.Matrix([component_function])
+
+            # print(f"Cpt {c} -> {component_function} ")
+
+            with self.mesh.access(self.u):
+                self.u.data[:, 0] = self.t_field.data[:, c]
+
+            # solver for the scalar problem
+
+            super().solve()
+
+            with self.mesh.access(self.t_field):
+                self.t_field.data[:, c] = self.u.data[:, 0]
+
+        # That might be all ...
+
+    # This is re-defined so it uses uw_scalar_function
+
+    @timing.routine_timer_decorator
+    def projection_problem_description(self):
+
+        dim = self.mesh.dim
+        N = self.mesh.N
+
+        # residual terms - defines the problem:
+        # solve for a best fit to the continuous mesh
+        # variable given the values in self.function
+        # F0 is left in place for the user to inject
+        # non-linear constraints if required
+
+        self._f0 = (
+            self.F0
+            + (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function
+        )
+
+        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+
+        self._f1 = self.F1 + self.smoothing * self.mesh.vector.gradient(self.u.sym)
+
+        return
+
+    @property
+    def uw_scalar_function(self):
+        return self._uw_scalar_function
+
+    @uw_scalar_function.setter
+    def uw_scalar_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_scalar_function = user_uw_function
 
 
 ## --------------------------------
@@ -1070,7 +1195,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.theta = theta
         self.projection = projection
         self._u_star_raw_fn = u_Star_fn
-        
+
         self._V = V_Field
 
         self.restore_points_to_domain_func = restore_points_func
