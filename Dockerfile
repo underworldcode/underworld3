@@ -1,4 +1,4 @@
-FROM underworldcode/underworld2:2.14.0b as runtime
+FROM julesg/underworld2:2.15.0b as runtime
 LABEL maintainer="https://github.com/underworldcode/"
 
 # install all build tool as root
@@ -19,9 +19,8 @@ RUN apt-get update \
 RUN pip install sympy gmsh pyvista panel xxhash
 
 USER $NB_USER
+WORKDIR $NB_HOME
 RUN git clone --branch development --depth 1 https://github.com/underworldcode/underworld3.git uw3
 WORKDIR $NB_HOME/uw3
-RUN python3 setup.py build_ext
+RUN python3 setup.py develop
 ENV PYTHONPATH=$NB_HOME/uw3:$PYTHONPATH
-#
-#WORKDIR $NB_HOME
