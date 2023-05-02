@@ -741,11 +741,11 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
         @property
         def strainrate_inv_II_min(inner_self):
-            return inner_self._epsilon_edot_II
+            return inner_self._strainrate_inv_II_min
 
         @strainrate_inv_II_min.setter
         def strainrate_inv_II_min(inner_self, value: float):
-            inner_self._epsilon_edot_II = sympy.sympify(value)
+            inner_self._strainrate_inv_II_min = sympy.sympify(value)
             inner_self._reset()
 
         # This has no setter !!
