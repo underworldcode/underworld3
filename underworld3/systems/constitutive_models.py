@@ -253,25 +253,25 @@ class ViscousFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
-            shear_viscosity_0: Union[float, sympy.Function] = sympy.sympify(1),
+            viscosity: Union[float, sympy.Function] = sympy.sympify(1),
         ):
 
 
-            inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
+            inner_self._viscosity = sympy.sympify(viscosity)
 
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_0 = value
-            inner_self._reset()
-
-        ### Doesn't have a setter
         @property
         def viscosity(inner_self):
-            return inner_self._shear_viscosity_0
+            return inner_self._viscosity
+
+        @viscosity.setter
+        def viscosity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._viscosity = value
+            inner_self._reset()
+
+        # ### Doesn't have a setter
+        # @property
+        # def viscosity(inner_self):
+        #     return inner_self._shear_viscosity_0
 
         
 
