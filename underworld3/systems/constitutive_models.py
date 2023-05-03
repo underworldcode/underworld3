@@ -620,7 +620,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             strainrate_inv_II_min: float = 0,
         ):
 
-            if strainrate_inv_II_min is None:
+            if strainrate_inv_II is None:
                 strainrate_inv_II = sympy.symbols(
                     r"\left|\dot\epsilon\right|\rightarrow\textrm{not\ defined}"
                 )
@@ -793,12 +793,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             else:
                 return sympy.simplify(effective_viscosity)
 
-    def __init__(self, dim):
+    # def __init__(self, dim):
 
-        u_dim = dim
-        super().__init__(dim, u_dim)
+    #     u_dim = dim
+    #     super().__init__(dim, u_dim)
 
-        return
+    #     return
 
     # ## Is this really different from the original ?
 
