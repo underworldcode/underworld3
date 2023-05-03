@@ -17,7 +17,7 @@ import math
 import underworld3
 
 
-from underworld3.utilities import petsc_gen_xdmf
+from underworld3.utilities import uw_petsc_gen_xdmf
 
 
 # %%
@@ -42,18 +42,6 @@ render = True
 
 
 # %%
-#Basic direct solver parameters from Firedrake docs, for ref
-
-#mumps_solver_parameters = {
-#    "mat_type": "aij",
-#    "snes_type": "ksponly",
-#    "ksp_type": "preonly",
-#    "pc_type": "lu",
-#    "pc_factor_mat_solver_type": "mumps",
-#}
-
-
-# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -63,24 +51,9 @@ options = PETSc.Options()
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 
-
-
-# %%
-### can be changed, currently using UW3 default values
-
-# options["snes_max_it"] = 3
-
-# options["mat_type"]="aij"
-
-# options["ksp_type"]="preonly"
-# options["pc_type"] = "lu"
-# options["pc_factor_mat_solver_type"] = "mumps"
-
-# options["ksp_rtol"] =  1.0e-6
-# options["ksp_atol"] =  1.0e-6
-
-# options["snes_rtol"] =  1.0e-6
-# options["snes_atol"] =  1.0e-6
+if uw.mpi.size == 1:
+    options["pc_type"]  = "lu"
+    options["ksp_type"] = "preonly"
 
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
@@ -123,7 +96,7 @@ swarm  = uw.swarm.Swarm(mesh)
 
 # %%
 ## # Add variable for material
-materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.IntType)
+materialVariable      = swarm.add_variable(name="materialVariable", size=1, dtype=PETSc.IntType)
 material              = uw.swarm.IndexSwarmVariable("M", swarm, indices=5) 
 
 swarm.populate()
@@ -165,7 +138,7 @@ def updateFields():
     nodal_strain_rate_inv2.solve()
 
     ### update viscosity
-    nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+    nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
     nodal_visc_calc.solve(_force_setup=True)
     
     ### update material field from swarm
@@ -298,7 +271,7 @@ def saveData(step, outputPath):
     viewer(strain_rate_inv2._gvec) # add strain rate
     viewer(node_viscosity._gvec)   # add viscosity
     viewer.destroy() 
-    petsc_gen_xdmf.generateXdmf(fname, xfname)
+    uw_petsc_gen_xdmf.generateXdmf(fname, xfname)
     
     if uw.mpi.size == 1:
         import pyvista as pv
@@ -354,24 +327,20 @@ slabYieldvisc =  Max(0.1, Min(vonMises, slabViscosity))
 mantleDensity = 0.0
 slabDensity   = 1.0 
 
-# density = Piecewise( (mantleDensity, Abs(materialVariable.sym[0] - upperMantleIndex) < 0.5),
-#                      (mantleDensity, Abs(materialVariable.sym[0] -  lowerMantleIndex) < 0.5),
-#                      (slabDensity, Abs(materialVariable.sym[0] - upperSlabIndex) < 0.5),
-#                      (slabDensity , Abs(materialVariable.sym[0] - lowerSlabIndex) < 0.5),
-#                      (slabDensity, Abs(materialVariable.sym[0] - coreSlabIndex) < 0.5),
-#                      ( mantleDensity,                                True ))
-
-
-density = mantleDensity * material.sym[0] + \
-          mantleDensity * material.sym[1] + \
-          slabDensity   * material.sym[2] + \
-          slabDensity   * material.sym[3] + \
-          slabDensity   * material.sym[4]
-
-
+density = material.createMask( [ mantleDensity, 
+                                 mantleDensity, 
+                                 slabDensity, 
+                                 slabDensity, 
+                                 slabDensity ])
 
 stokes.bodyforce =  Matrix([0, -1 * density]) # -density*mesh.N.j
 
+
+# %%
+material.viewMask(density)
+
+# %%
+density
 
 # %% [markdown]
 # ### Boundary conditions
@@ -383,7 +352,6 @@ stokes.bodyforce =  Matrix([0, -1 * density]) # -density*mesh.N.j
 stokes.add_dirichlet_bc( (0.,0.), ['Top',  'Bottom'], 1)  # top/bottom: function, boundaries, components 
 stokes.add_dirichlet_bc( (0.,0.), ['Left', 'Right' ], 0)  # left/right: function, boundaries, components
 
-
 # ## Initial Solve
 
 # %% [markdown]
@@ -391,8 +359,8 @@ stokes.add_dirichlet_bc( (0.,0.), ['Left', 'Right' ], 0)  # left/right: function
 
 # %%
 ### initial linear solve
-stokes.constitutive_model.Parameters.viscosity  = 1.
-
+stokes.constitutive_model.Parameters.shear_viscosity_0  = 1.
+stokes.petsc_options["pc_type"] = "lu"
 stokes.solve(zero_init_guess=True)
 
 
@@ -400,19 +368,13 @@ stokes.solve(zero_init_guess=True)
 # #### add in NL viscosity for solve loop
 
 # %%
-# stokes.constitutive_model.Parameters.viscosity= Piecewise( (upperMantleViscosity, Abs(materialVariable.sym[0] - upperMantleIndex) < 0.5),
-#                               (lowerMantleViscosity, Abs(materialVariable.sym[0] -  lowerMantleIndex) < 0.5),
-#                               (slabYieldvisc, Abs(materialVariable.sym[0] - upperSlabIndex) < 0.5),
-#                               (slabYieldvisc , Abs(materialVariable.sym[0] - lowerSlabIndex) < 0.5),
-#                               (coreViscosity, Abs(materialVariable.sym[0] - coreSlabIndex) < 0.5), 
-#                               ( lowerMantleViscosity,                                True ))
+viscosity = material.createMask([ upperMantleViscosity,
+                                  lowerMantleViscosity,
+                                  slabYieldvisc,
+                                  slabYieldvisc,
+                                  coreViscosity ] )
 
-
-stokes.constitutive_model.Parameters.viscosity = upperMantleViscosity * material.sym[0] + \
-                                                 lowerMantleViscosity * material.sym[1] + \
-                                                 slabYieldvisc        * material.sym[2] + \
-                                                 slabYieldvisc        * material.sym[3] + \
-                                                 coreViscosity        * material.sym[4]
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
 
 # %% [markdown]
 # ### Main loop
