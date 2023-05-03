@@ -59,6 +59,7 @@ class Constitutive_Model:
         self.dim = dim
         self.u_dim = u_dim
         self._solver = None
+
         self.Parameters = self._Parameters()
         self.Parameters._solver = None
         self.Parameters._reset = self._reset
@@ -215,7 +216,7 @@ class Constitutive_Model:
             )
         )
 
-        # Usually, there are constitutive parameters that can be included in the iputho display
+        ## Usually, there are constitutive parameters that can be included in the iputho display
 
 
 class ViscousFlowModel(Constitutive_Model):
@@ -253,27 +254,22 @@ class ViscousFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
-            shear_viscosity_0: Union[float, sympy.Function] = sympy.sympify(1),
+            viscosity: Union[float, sympy.Function] = None,
         ):
 
+            if viscosity is None:
+                viscosity = sympy.sympify(1)
 
-            inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
+            inner_self._viscosity = sympy.sympify(viscosity)
 
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_0 = value
-            inner_self._reset()
-
-        ### Doesn't have a setter
         @property
         def viscosity(inner_self):
-            return inner_self._shear_viscosity_0
+            return inner_self._viscosity
 
-        
+        @viscosity.setter
+        def viscosity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._viscosity = value
+            inner_self._reset()
 
     def __init__(self, dim):
 
@@ -331,7 +327,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                                                                             min_viscosity=min_viscosity_fn,
                                                                             max_viscosity=max_viscosity_fn,
                                                                             yield_stress_min=float,
-                                                                            strainrate_inv_II=strain_rate_inv_fn
+                                                                            edot_II_fn=strain_rate_inv_fn
                                                                             )
     solver.constititutive_model = viscoplastic_model
     ```
@@ -378,47 +374,48 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         def __init__(
             inner_self,
-            shear_viscosity_0: Union[float, sympy.Function] = 1,
-            shear_viscosity_min: Union[float, sympy.Function] = sympy.oo,
-            yield_stress: Union[float, sympy.Function] = sympy.oo,
+            viscosity: Union[float, sympy.Function] = sympy.sympify(1),
+            yield_stress: Union[float, sympy.Function] = None,
+            min_viscosity: Union[float, sympy.Function] = sympy.oo,
             yield_stress_min: Union[float, sympy.Function] = sympy.oo,
-            strainrate_inv_II: sympy.Function = None,
-            averaging_method: str = None,
-            strainrate_inv_II_min: float = 0,
+            edot_II_fn: sympy.Function = None,
+            epsilon_edot_II: float = None,
         ):
 
-            if strainrate_inv_II is None:
-                strainrate_inv_II = sympy.symbols(
+            if edot_II_fn is None:
+                edot_II_fn = sympy.symbols(
                     r"\left|\dot\epsilon\right|\rightarrow\textrm{not~yet~defined}"
                 )
 
-            inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
-            inner_self._shear_viscosity_min = sympy.sympify(shear_viscosity_min)
+            if epsilon_edot_II is None:
+                epsilon_edot_II = 0  # sympy.sympify(10) ** -10
+
+            inner_self._bg_viscosity = sympy.sympify(viscosity)
             inner_self._yield_stress = sympy.sympify(yield_stress)
             inner_self._yield_stress_min = sympy.sympify(yield_stress_min)
-            inner_self._strainrate_inv_II = sympy.sympify(strainrate_inv_II)
-            inner_self._strainrate_inv_II_min = sympy.sympify(strainrate_inv_II_min)
-            inner_self._averaging_method = averaging_method
-
+            inner_self._min_viscosity = sympy.sympify(min_viscosity)
+            inner_self._max_viscosity = sympy.sympify(max_viscosity)
+            inner_self._edot_II_fn = sympy.sympify(edot_II_fn)
+            inner_self._epsilon_edot_II = sympy.sympify(epsilon_edot_II)
 
             return
 
         @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
+        def bg_viscosity(inner_self):
+            return inner_self._bg_viscosity
 
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_0 = sympy.sympify(value)
+        @bg_viscosity.setter
+        def bg_viscosity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._bg_viscosity = value
             inner_self._reset()
 
         @property
-        def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
+        def min_viscosity(inner_self):
+            return inner_self._min_viscosity
 
-        @shear_viscosity_min.setter
-        def shear_viscosity_min(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_min = sympy.sympify(value)
+        @min_viscosity.setter
+        def min_viscosity(inner_self, value: Union[float, sympy.Function]):
+            inner_self._min_viscosity = value
             inner_self._reset()
 
         @property
@@ -427,7 +424,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @yield_stress.setter
         def yield_stress(inner_self, value: Union[float, sympy.Function]):
-            inner_self._yield_stress = sympy.sympify(value)
+            inner_self._yield_stress = value
             inner_self._reset()
 
         @property
@@ -436,35 +433,25 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         @yield_stress_min.setter
         def yield_stress_min(inner_self, value: Union[float, sympy.Function]):
-            inner_self._yield_stress_min = sympy.sympify(value)
+            inner_self._yield_stress_min = value
             inner_self._reset()
 
         @property
-        def strainrate_inv_II(inner_self):
-            return inner_self._strainrate_inv_II
+        def edot_II_fn(inner_self):
+            return inner_self._edot_II_fn
 
-        @strainrate_inv_II.setter
-        def strainrate_inv_II(inner_self, value: sympy.Function):
-            inner_self._strainrate_inv_II = sympy.sympify(value)
+        @edot_II_fn.setter
+        def edot_II_fn(inner_self, value: sympy.Function):
+            inner_self._edot_II_fn = value
             inner_self._reset()
 
         @property
-        def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
+        def epsilon_edot_II(inner_self):
+            return inner_self._epsilon_edot_II
 
-        @strainrate_inv_II_min.setter
-        def strainrate_inv_II_min(inner_self, value: float):
-            inner_self._strainrate_inv_II_min = sympy.sympify(value)
-            inner_self._reset()
-
-        @property
-        def averaging_method(inner_self):
-            ''' Min/Max by default, pass 'Harmonic' as a string to use the harmonic average '''
-            return inner_self._averaging_method
-
-        @averaging_method.setter
-        def averaging_method(inner_self, value: float):
-            inner_self._averaging_method = value
+        @epsilon_edot_II.setter
+        def epsilon_edot_II(inner_self, value: float):
+            inner_self._epsilon_edot_II = sympy.sympify(value)
             inner_self._reset()
 
         # This has no setter !!
@@ -473,55 +460,46 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
             # detect if values we need are defined or are placeholder symbols
 
-            if inner_self.yield_stress is sympy.oo:
-                return inner_self.shear_viscosity_0
+            if isinstance(inner_self.yield_stress, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
 
-            if inner_self.strainrate_inv_II is None:
-                return inner_self.shear_viscosity_0
+            if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
+                return inner_self.bg_viscosity
 
             # Don't put conditional behaviour in the constitutive law
             # where it is not needed
 
-            if inner_self.yield_stress_min is not sympy.oo:
+            if inner_self.yield_stress_min is not None:
                 yield_stress = sympy.Max(
                     inner_self.yield_stress_min, inner_self.yield_stress
                 )
             else:
                 yield_stress = inner_self.yield_stress
 
-            # viscosity_yield = yield_stress / (
-            #     2.0 * inner_self.strainrate_inv_II + inner_self.strainrate_inv_II_min
-            # )
-            viscosity_yield = sympy.piecewise_fold(yield_stress / (2*(inner_self.strainrate_inv_II + inner_self.strainrate_inv_II_min)))
+            viscosity_yield = yield_stress / (
+                2.0 * inner_self.edot_II_fn + inner_self.epsilon_edot_II
+            )
 
             ## Question is, will sympy reliably differentiate something
             ## with so many Max / Min statements. The smooth version would
             ## be a reasonable alternative:
 
             # effective_viscosity = sympy.sympify(
-            #     1 / ((1 / inner_self.shear_viscosity_0) + (1 / viscosity_yield))
-            #     )
+            #     1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
+            # )
 
-            if inner_self.averaging_method == 'Harmonic':
-                effective_viscosity = sympy.piecewise_fold(
-                    1. / ((1 / inner_self.shear_viscosity_0) + (1 / viscosity_yield)) )
-                
-            else:
-                effective_viscosity = sympy.piecewise_fold(sympy.Min(inner_self.shear_viscosity_0, viscosity_yield) )
-
-
-            # effective_viscosity = sympy.Min(inner_self.shear_viscosity_0, viscosity_yield)
+            effective_viscosity = sympy.Min(inner_self.bg_viscosity, viscosity_yield)
 
             # If we want to apply limits to the viscosity but see caveat above
 
-            if inner_self._shear_viscosity_min is not sympy.oo:
+            if inner_self.min_viscosity is not None:
 
-                return sympy.piecewise_fold(
+                return sympy.simplify(
                     sympy.Max(
                         effective_viscosity,
-                        inner_self._shear_viscosity_min,
-                            )
-                        )
+                        inner_self.min_viscosity,
+                    )
+                )
 
             else:
                 return sympy.simplify(effective_viscosity)
@@ -537,7 +515,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\eta_\textrm{0} = $ "
-                + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()
+                + sympy.sympify(self.Parameters.bg_viscosity)._repr_latex_()
             ),
             Latex(
                 r"$\quad\tau_\textrm{y} = $ "
@@ -545,12 +523,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             ),
             Latex(
                 r"$\quad|\dot\epsilon| = $ "
-                + sympy.sympify(self.Parameters.strainrate_inv_II)._repr_latex_(),
+                + sympy.sympify(self.Parameters.edot_II_fn)._repr_latex_(),
             ),
             ## Todo: add all the other properties in here
         )
 
-class ViscoElasticPlasticFlowModel(ViscousFlowModel):
+class ViscoElasticPlasticFlowModel(Constitutive_Model):
     r"""
     ```python
     class ViscousFlowModel(Constitutive_Model)
@@ -648,7 +626,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @shear_viscosity_0.setter
         def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_0 = sympy.sympify(value)
+            inner_self._shear_viscosity_0 = value
             inner_self._reset()
 
         @property
@@ -657,7 +635,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @shear_modulus.setter
         def shear_modulus(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_modulus = sympy.sympify(value)
+            inner_self._shear_modulus = value
             inner_self._reset()
 
         @property
@@ -666,7 +644,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @dt_elastic.setter
         def dt_elastic(inner_self, value: Union[float, sympy.Function]):
-            inner_self._dt_elastic = sympy.sympify(value)
+            inner_self._dt_elastic = value
             inner_self._reset()
 
         @property
@@ -690,11 +668,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @property
         def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
+            return inner_self.shear_viscosity_min
 
         @shear_viscosity_min.setter
         def shear_viscosity_min(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_min = sympy.sympify(value)
+            inner_self.shear_viscosity_min = value
             inner_self._reset()
 
         @property
@@ -703,7 +681,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @yield_stress.setter
         def yield_stress(inner_self, value: Union[float, sympy.Function]):
-            inner_self._yield_stress = sympy.sympify(value)
+            inner_self._yield_stress = value
             inner_self._reset()
 
         @property
@@ -712,7 +690,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @yield_stress_min.setter
         def yield_stress_min(inner_self, value: Union[float, sympy.Function]):
-            inner_self._yield_stress_min = sympy.sympify(value)
+            inner_self._yield_stress_min = value
             inner_self._reset()
 
         @property
@@ -721,7 +699,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @strainrate_inv_II.setter
         def strainrate_inv_II(inner_self, value: sympy.Function):
-            inner_self._strainrate_inv_II = sympy.sympify(value)
+            inner_self._strainrate_inv_II = value
             inner_self._reset()
 
         @property
@@ -730,16 +708,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @stress_star.setter
         def stress_star(inner_self, value: sympy.Function):
-            inner_self._stress_star = sympy.sympify(value)
+            inner_self._stress_star = value
             inner_self._reset()
 
         @property
         def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
+            return inner_self._epsilon_edot_II
 
         @strainrate_inv_II_min.setter
         def strainrate_inv_II_min(inner_self, value: float):
-            inner_self._strainrate_inv_II_min = sympy.sympify(value)
+            inner_self._epsilon_edot_II = sympy.sympify(value)
             inner_self._reset()
 
         # This has no setter !!
@@ -751,7 +729,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             if inner_self.yield_stress == sympy.oo:
                 return inner_self.ve_effective_viscosity
 
-            if isinstance(inner_self._strainrate_inv_II, sympy.core.symbol.Symbol):
+            if isinstance(inner_self.edot_II_fn, sympy.core.symbol.Symbol):
                 return inner_self.ve_effective_viscosity
 
             el_eff_visc = inner_self.ve_effective_viscosity
@@ -764,7 +742,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 yield_stress = inner_self.yield_stress
 
             viscosity_yield = yield_stress / (
-                2.0 * inner_self.strainrate_inv_II + inner_self.strainrate_inv_II_min
+                2.0 * inner_self.edot_II_fn + inner_self.strainrate_inv_II_min
             )
 
             ## Question is, will sympy reliably differentiate something
@@ -782,7 +760,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
             # If we want to apply limits to the viscosity but see caveat above
 
-            if inner_self._shear_viscosity_min is not None:
+            if inner_self.shear_viscosity_min is not None:
                 return sympy.simplify(
                     sympy.Max(
                         effective_viscosity,
@@ -800,30 +778,30 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         return
 
-    # ## Is this really different from the original ?
+    ## Is this really different from the original ?
 
-    # def _build_c_tensor(self):
-    #     """For this constitutive law, we expect just a viscosity function"""
+    def _build_c_tensor(self):
+        """For this constitutive law, we expect just a viscosity function"""
 
-    #     d = self.dim
-    #     viscosity = self.Parameters.viscosity
-    #     shear_modulus = self.Parameters.shear_modulus
-    #     dt_elastic = self.Parameters.dt_elastic
+        d = self.dim
+        viscosity = self.Parameters.viscosity
+        shear_modulus = self.Parameters.shear_modulus
+        dt_elastic = self.Parameters.dt_elastic
 
-    #     try:
-    #         self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
-    #     except:
-    #         d = self.dim
-    #         dv = uw.maths.tensor.idxmap[d][0]
-    #         if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-    #             self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-    #         elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-    #             self._c = 2 * viscosity
-    #         else:
-    #             raise RuntimeError(
-    #                 "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-    #             )
-    #     return
+        try:
+            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
+        except:
+            d = self.dim
+            dv = uw.maths.tensor.idxmap[d][0]
+            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
+                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
+            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
+                self._c = 2 * viscosity
+            else:
+                raise RuntimeError(
+                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
+                )
+        return
 
     # Modify flux to use the stress history term
     # This may be preferable to using strain rate which can be discontinuous
@@ -874,7 +852,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\eta_\textrm{0} = $ "
-                + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()
+                + sympy.sympify(self.Parameters.bg_viscosity)._repr_latex_()
             ),
         )
 
@@ -904,7 +882,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             ),
             Latex(
                 r"$\quad|\dot\epsilon| = $ "
-                + sympy.sympify(self.Parameters.strainrate_inv_II)._repr_latex_(),
+                + sympy.sympify(self.Parameters.edot_II_fn)._repr_latex_(),
             ),
             ## Todo: add all the other properties in here
         )
@@ -931,7 +909,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if self.Parameters.yield_stress == sympy.oo:
             return False
 
-        if isinstance(self.Parameters.strainrate_inv_II, sympy.core.symbol.Symbol):
+        if isinstance(self.Parameters.edot_II_fn, sympy.core.symbol.Symbol):
             return False
 
         return True
