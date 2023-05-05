@@ -96,7 +96,7 @@ def do_uw3():
     # Create swarm
     swarm = uw.swarm.Swarm(mesh)
     # Add variable for material
-    matSwarmVar = swarm.add_variable(name="matSwarmVar", num_components=1, dtype=PETSc.IntType)
+    matSwarmVar = swarm.add_variable(name="matSwarmVar", size=1, dtype=PETSc.IntType)
     # Note that `fill_param` specifies particles per cell per dim.
     swarm.populate(fill_param=fill_param)
 
