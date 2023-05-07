@@ -137,14 +137,18 @@ viscosity_L = sympy.Piecewise(
     (1000, True),
 )
 
+# -
 
+
+stokes
 
 # + tags=[]
 stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
 stokes.constitutive_model.Parameters.shear_modulus = 100
-stokes.constitutive_model.Parameters.stress_star_fn = stress_star.sym
+stokes.constitutive_model.Parameters.stress_star = stress_star.sym
 stokes.constitutive_model.Parameters.deltaTe = 1
+stokes.constitutive_model.Parameters.strainrate_inv_II_min = 0
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 # -
 
@@ -178,9 +182,9 @@ nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 # Constant visc
 
 stokes.penalty = 1.0
-stokes.bodyforce = (
-    -0.00000001 * mesh1.CoordinateSystem.unit_e_1
-)  # vertical force term (non-zero pressure)
+# stokes.bodyforce = (
+#     -0.00000001 * mesh1.CoordinateSystem.unit_e_1
+# )  # vertical force term (non-zero pressure)
 
 stokes.tolerance = 1.0e-4
 
@@ -196,6 +200,12 @@ stokes.add_dirichlet_bc((0.0), "Right", (1))
 
 
 stokes.constitutive_model.flux_1d(stokes.strainrate)
+
+stokes.constitutive_model.flux(stokes.strainrate)
+
+stokes._setup_terms()
+
+stokes._uu_G3
 
 stokes.solve()
 

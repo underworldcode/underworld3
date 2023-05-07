@@ -42,8 +42,8 @@ import sympy
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc 
 
-resolution = uw.options.getReal("model_resolution", default=0.033)
-model = uw.options.getInt("model_number", default=4)
+resolution = uw.options.getReal("model_resolution", default=0.066)
+model = uw.options.getInt("model_number", default=3)
 maxsteps = uw.options.getInt("max_steps", default=500)
 
 # +
@@ -66,9 +66,12 @@ elif model == 4:
 elif model == 5:
     U0 = 15
     expt_name = f"NS_test_Re_1000_{resolution}"
-# -
+
+# +
+outdir = "order_2_dt_test_proj"
 
 os.makedirs(".meshes", exist_ok=True)
+os.makedirs(f"{outdir}", exist_ok=True)
 
 # +
 import pygmsh
@@ -144,21 +147,37 @@ inclusion_unit_rvec = inclusion_rvec / inclusion_rvec.dot(inclusion_rvec)
 
 Vb = (4.0 * U0 * y * (0.41 - y)) / 0.41**2
 
-# -
 
+# +
 v_soln = uw.discretisation.MeshVariable("U", pipemesh, pipemesh.dim, degree=2)
 vs_soln = uw.discretisation.MeshVariable("Us", pipemesh, pipemesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", pipemesh, 1, degree=1)
 vorticity = uw.discretisation.MeshVariable("omega", pipemesh, 1, degree=1)
 r_inc = uw.discretisation.MeshVariable("R", pipemesh, 1, degree=1)
 
+# Nodal values of deviatoric stress (symmetric tensor)
+work   = uw.discretisation.MeshVariable("W", pipemesh, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=False)
+St = uw.discretisation.MeshVariable(r"Stress", pipemesh, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=1, 
+                                         continuous=False, varsymbol=r"{\tau}")
+
 
 # +
 swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=20)
 v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, 
-                            proxy_degree=2, proxy_continuous=True)
+                            proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{*}}")
 
-swarm.populate(fill_param=2)
+v_star_star = uw.swarm.SwarmVariable("Vs2", swarm, pipemesh.dim, 
+                            proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{**}}")
+
+
+stress_star_p = uw.swarm.SwarmVariable(r"stress^{*}", swarm,
+                                     (2,2), vtype=uw.VarType.SYM_TENSOR, 
+                                     proxy_continuous=True,
+                                     proxy_degree=2,
+                                     varsymbol=r"{\sigma^{*}_{p}}",)
+
+
+swarm.populate(fill_param=3)
 
 # + tags=[]
 passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -178,9 +197,11 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     pipemesh,
     velocityField=v_soln,
     pressureField=p_soln,
-    velocityStar_fn=v_star.sym,
+    velocityStar=v_star.sym,
+    velocityStarStar=v_star_star.sym,
+    # stressStar=stress_star_p.sym,
+    # stressStarStar=stress_star_star_p.sym,
     rho=1.0,
-    theta=0.5,
     verbose=False,
     projection=True,
     solver_name="navier_stokes",
@@ -188,10 +209,23 @@ navier_stokes = uw.systems.NavierStokesSwarm(
 
 navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(pipemesh.dim)
 navier_stokes.constitutive_model.Parameters.viscosity = 1
+
+
+# +
+# stress computation and projection to particles
+
+stress_projection = uw.systems.Tensor_Projection(pipemesh, tensor_Field=St, scalar_Field=work  )
+stress_projection.uw_function = navier_stokes.stress_deviator_1d
+stress_projection.solve()
+
+with swarm.access(stress_star_p), pipemesh.access():
+    stress_star_p.data[...] = St.rbf_interpolate(swarm.particle_coordinates.data)
+
 # -
 
+navier_stokes._setup_terms()
 
-navier_stokes.stress_deviator_1d
+navier_stokes._u_f1
 
 if model == 2:  # Steady state !
     # remove the d/dt term ... replace the time dependence with the
@@ -215,7 +249,6 @@ nodal_vorticity_from_v.petsc_options.delValue("ksp_monitor")
 # Constant visc
 
 navier_stokes.rho = 1000.0
-navier_stokes.theta = 0.5
 navier_stokes.penalty = 0.1
 navier_stokes.bodyforce = sympy.Matrix([0,0])
 
@@ -232,21 +265,22 @@ surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "top", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom", (0, 1))
-navier_stokes.add_dirichlet_bc((Vb, 0.0), "left", (0, 1))
+navier_stokes.add_dirichlet_bc((Vb, 0.0),  "left", (0, 1))
 
 # -
 
 
 navier_stokes._setup_terms()
-navier_stokes.tolerance = 1.0e-3
+navier_stokes.tolerance = 1.0e-4
 
 # + tags=[]
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
 nodal_vorticity_from_v.solve()
 # -
 
-with swarm.access(v_star):
-    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
+with swarm.access(v_star, v_star_star):
+    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)    
+    v_star_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
 
 
 
@@ -456,22 +490,38 @@ def plot_V_mesh(filename):
 ts = 0
 dt_ns = 1.0e-2
 
+
+navier_stokes._setup_terms()
+navier_stokes._u_f0
+
 for step in range(0, maxsteps):
     delta_t_swarm = 2.0 * navier_stokes.estimate_dt()
     delta_t = min(delta_t_swarm, dt_ns)
     phi = min(1.0, delta_t / dt_ns)
 
-    navier_stokes.solve(timestep=dt_ns, 
+    navier_stokes.solve(timestep=delta_t, 
                         zero_init_guess=False)
-
     
-    with swarm.access(v_star):
-        v_star.data[...] = (
-            phi * v_soln.rbf_interpolate(swarm.data) 
-            # phi * uw.function.evaluate(v_soln.fn, swarm.data)
-            + (1.0 - phi) * v_star.data
-        )
+    # stress_projection.solve()
+    # with swarm.access(stress_star_p), pipemesh.access():
+    #     stress_star_p.data[:,0] = (
+    #         uw.function.evaluate(St.sym_1d[0], swarm.data) )
+    #     stress_star_p.data[:,1] = (
+    #         uw.function.evaluate(St.sym_1d[1], swarm.data) )
+    #     stress_star_p.data[:,2] = (
+    #         uw.function.evaluate(St.sym_1d[2], swarm.data) )
         
+    with swarm.access(v_star, v_star_star):
+        v_star_star.data[...] = v_star.data[...]
+        v_star.data[:,0] = (
+            phi * uw.function.evaluate(v_soln[0].sym, swarm.data) +
+            (1-phi) * v_star.data[:,0]
+        )
+        v_star.data[:,1] = (
+            phi * uw.function.evaluate(v_soln[1].sym, swarm.data) +
+            (1-phi) * v_star.data[:,1]
+        )
+      
     # update passive swarm
     passive_swarm.advection(v_soln.fn, delta_t, corrector=False)
 
@@ -491,15 +541,15 @@ for step in range(0, maxsteps):
 
     if ts % 2 == 0:
         nodal_vorticity_from_v.solve()
-        plot_V_mesh(filename="output/{}_step_{}".format(expt_name, ts))
+        plot_V_mesh(filename="{}/{}_step_{}".format(outdir,expt_name, ts))
         
         
-        savefile = f"output/{expt_name}"
+        savefile = f"{outdir}/{expt_name}"
         
         pipemesh.write_timestep_xdmf(savefile, 
                                      meshUpdates=True,
                                      meshVars=[p_soln,v_soln,vorticity], 
-                                      index=ts)
+                                     index=ts)
         
         passive_swarm.save(filename=f"{savefile}.passive_swarm.{ts}.h5")
         
@@ -510,4 +560,15 @@ for step in range(0, maxsteps):
 
         
     ts += 1
+
+
+navier_stokes.u_star_fn
+
+with swarm.access():
+    print(v_star_star._meshVar.rbf_interpolate(swarm.particle_coordinates.data))
+    print(v_star._meshVar.rbf_interpolate(swarm.particle_coordinates.data))
+
+with swarm.access():
+    print(uw.function.evaluate(v_star._meshVar.sym[0], swarm.particle_coordinates.data))
+
 

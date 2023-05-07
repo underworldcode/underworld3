@@ -1094,7 +1094,7 @@ class Mesh(_api_tools.Stateful):
 
             _, distsq, _ = self._index.find_closest_point(cell_coords)
 
-            cell_length[cell] = distsq.max()
+            cell_length[cell] = np.sqrt(distsq.max())
 
         return sizes, centroids, cell_length
 

@@ -844,7 +844,7 @@ class Swarm(_api_tools.Stateful):
                 all_local_coords[...]
                 + (0.33 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
-                * self.mesh._search_lengths[all_local_cells]  # typical cell size
+                * 2.0 * self.mesh._search_lengths[all_local_cells]  # typical cell size
             )
             cellid[:] = all_local_cells[:, 0]
 

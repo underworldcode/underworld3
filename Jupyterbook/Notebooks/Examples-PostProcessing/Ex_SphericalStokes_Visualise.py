@@ -21,7 +21,7 @@ pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 
 # +
 basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr/free_slip_sphere.h5"
-basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic0_QTemp_mr/free_slip_sphere.h5"
+# basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic0_QTemp_mr/free_slip_sphere.h5"
 
 step = 210
 

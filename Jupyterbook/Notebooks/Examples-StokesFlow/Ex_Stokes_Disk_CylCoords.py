@@ -259,6 +259,8 @@ with meshball_xyz.access(r_xy):
 
 stokes._setup_terms()
 
+stokes._p_f0
+
 # + tags=[]
 from underworld3 import timing
 

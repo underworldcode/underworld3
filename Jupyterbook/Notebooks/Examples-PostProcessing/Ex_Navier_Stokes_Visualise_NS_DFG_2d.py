@@ -42,7 +42,7 @@ import sympy
 # +
 ## Reading the checkpoints back in ... 
 
-step = 200
+step = 100
 basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001_noproj/NS_test_Re_250_0.01_ts005_noproj"
 # basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001/NS_test_Re_250_0.01_ts005"
 # basename = f"output/NS_test_Re_250_0.05"
