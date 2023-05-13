@@ -115,7 +115,6 @@ def _from_plexh5(
 
 
 class Mesh(_api_tools.Stateful):
-
     mesh_instances = 0
 
     @timing.routine_timer_decorator
@@ -137,7 +136,6 @@ class Mesh(_api_tools.Stateful):
         *args,
         **kwargs,
     ):
-
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
@@ -307,7 +305,6 @@ class Mesh(_api_tools.Stateful):
 
     def view(self):
         if uw.mpi.rank == 0:
-
             print(f"Mesh {self.instance}")
 
             if len(self.vars) > 0:
@@ -325,7 +322,6 @@ class Mesh(_api_tools.Stateful):
                 )
 
     def nuke_coords_and_rebuild(self):
-
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
 
         self._coord_array = {}
@@ -353,7 +349,6 @@ class Mesh(_api_tools.Stateful):
 
         ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
         if self.degree != 1:
-
             # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
             # issues with petsc that we see in parallel - in which case there is a fallback, pass no
             # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
@@ -362,7 +357,6 @@ class Mesh(_api_tools.Stateful):
             self.dm.projectCoordinates(self.petsc_fe)
 
         else:
-
             uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
@@ -627,7 +621,8 @@ class Mesh(_api_tools.Stateful):
         """
         Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
         An xdmf file is generated and the overall package can then be read by paraview or pyvista.
-        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order"""
+        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order
+        """
 
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
@@ -676,7 +671,6 @@ class Mesh(_api_tools.Stateful):
         meshVars: Optional[list] = [],
         outputPath: Optional[str] = "",
     ):
-
         """
 
         Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
@@ -911,7 +905,6 @@ class Mesh(_api_tools.Stateful):
         return arrcopy
 
     def _build_kd_tree_index(self):
-
         if hasattr(self, "_index") and self._index is not None:
             return
 
@@ -1087,7 +1080,6 @@ class Mesh(_api_tools.Stateful):
         cell_length = np.empty_like(sizes)
 
         for cell in range(cEnd - cStart):
-
             cell_num_points = self.dm.getConeSize(cell)
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
@@ -1197,7 +1189,6 @@ def MeshVariable(
     continuous: bool = True,
     varsymbol: Union[str, list] = None,
 ):
-
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
     underlying sympy representation that makes it possible to construct expressions that
@@ -1428,13 +1419,11 @@ class _MeshVariable(_api_tools.Stateful):
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-
             self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
 
             # Matrix form (any number of components)
             for i in range(mesh.dim):
                 for j in range(mesh.dim):
-
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -1470,7 +1459,6 @@ class _MeshVariable(_api_tools.Stateful):
             # Matrix form (any number of components)
             for i in range(self.shape[0]):
                 for j in range(self.shape[1]):
-
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -1534,7 +1522,6 @@ class _MeshVariable(_api_tools.Stateful):
         return
 
     def __getitem__(self, indices):
-
         if not isinstance(indices, tuple):
             if isinstance(indices, int) and self.shape[0] == 1:
                 i = 0
@@ -1553,7 +1540,6 @@ class _MeshVariable(_api_tools.Stateful):
     # not accurate.
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
-
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
@@ -1567,7 +1553,10 @@ class _MeshVariable(_api_tools.Stateful):
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
         mesh_kdt.build_index()
-        return mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        del mesh_kdt
+
+        return values
 
         # if verbose and uw.mpi.rank == 0:
         #     print("Building K-D tree ... done", flush=True)
@@ -1786,7 +1775,6 @@ class _MeshVariable(_api_tools.Stateful):
         #     return X, D
 
         def map_to_vertex_values(X, D, nnn=4, verbose=False):
-
             # Map from "swarm" of points to nodal points
             # This is a permutation if we building on the checkpointed
             # mesh file
@@ -1797,7 +1785,6 @@ class _MeshVariable(_api_tools.Stateful):
             return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
-
             mesh = mesh_variable.mesh
 
             # This should be trivial but there may be problems if
@@ -1813,7 +1800,7 @@ class _MeshVariable(_api_tools.Stateful):
         X, D = field_from_checkpoint(
             data_file,
             data_name,
-             )
+        )
         # else:
         #     X, D = field_from_vertex_checkpoint(
         #         data_file,
@@ -1835,12 +1822,10 @@ class _MeshVariable(_api_tools.Stateful):
         filename: str,
         data_name: Optional[str] = None,
     ):
-
         if data_name is None:
             data_name = self.clean_name
 
         with self.mesh.access(self):
-
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
             old_name = self._gvec.getName()
@@ -1935,7 +1920,6 @@ class _MeshVariable(_api_tools.Stateful):
                 return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
 
     def _set_vec(self, available):
-
         if self._lvec == None:
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
             # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
@@ -2150,7 +2134,6 @@ def checkpoint_xdmf(
     swarmVars: Optional[list] = [],
     index: Optional[int] = 0,
 ):
-
     import h5py
     import os
 

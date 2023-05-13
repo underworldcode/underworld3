@@ -12,7 +12,6 @@
 #     name: python3
 # ---
 
-
 # # Rayleigh Taylor - swarm materials
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
@@ -35,7 +34,6 @@ from underworld3 import function
 
 import numpy as np
 import sympy
-
 render = True
 
 cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
@@ -106,6 +104,9 @@ material.sym
 # -
 
 
+print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+
 X = meshbox.CoordinateSystem.X
 
 mat_density = np.array([0, 1])  # lightIndex, denseIndex
@@ -114,57 +115,6 @@ density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
 mat_viscosity = np.array([viscosityRatio, 1])
 viscosity = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
 
-if render and uw.mpi.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    meshbox.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        points[:, 2] = 0.0
-
-    point_cloud = pv.PolyData(points)
-
-    with meshbox.access():
-        pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.data)
-        pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
-        pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(
-            sympy.log(viscosity), meshbox.data
-        )
-
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-
-    pl = pv.Plotter(notebook=True)
-
-    # pl.add_points(point_cloud, color="Black",
-    #                   render_points_as_spheres=False,
-    #                   point_size=2.5, opacity=0.75)
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="rho",
-        use_transparency=False,
-        opacity=0.95,
-    )
-
-    pl.show(cpos="xy")
 # +
 # Create Stokes object
 
@@ -190,23 +140,10 @@ stokes.add_dirichlet_bc(
 stokes.add_dirichlet_bc(
     (0.0, 0.0), ["Left", "Right"], 0
 )  # left/right: components, function, markers
-
-
-# +
-stokes.rtol = 1.0e-3
-
-# stokes.petsc_options["snes_rtol"] = 1.0e-3
-# stokes.petsc_options[
-#     "snes_atol"
-# ] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
-
-# # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
-
-
 # -
+
+
+stokes.rtol = 1.0e-3 # rough solution is all that's needed
 
 m_solver = uw.systems.Projection(meshbox, m_cont)
 m_solver.uw_function = material.sym[1]

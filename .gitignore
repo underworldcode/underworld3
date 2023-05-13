@@ -28,6 +28,7 @@ underworld3.egg-info/*
 keep/*
 *.swp
 nohup.out
+*.png # Add these explicitly if you want to keep them 
 
 # Jupyter Book build relics
 
@@ -73,3 +74,4 @@ tmp*msh
 *DS_Store
 Jupyterbook/.DS_Store
 Jupyterbook/Notebooks/.DS_Store
+Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png

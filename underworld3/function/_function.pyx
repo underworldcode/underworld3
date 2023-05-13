@@ -221,6 +221,13 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # Let's first collect all the meshvariables present in the expression.
     # Recurse the expression tree.
 
+    import os,psutil
+    pid = os.getpid()
+    python_process = psutil.Process(pid)
+    print(f"fn.evaluate [1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+
+
     varfns = set()
     def get_var_fns(exp):
 
@@ -241,6 +248,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         return
 
     get_var_fns(expr)
+    print(f"fn.evaluate [2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
 
     mesh = None
     for varfn in varfns:
@@ -343,19 +352,29 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         # INTERPOLATE ALL VARIABLES ON THE DM
 
+        # import os,psutil
+        # pid = os.getpid()
+        # python_process = psutil.Process(pid)
+        print(f"fn.evaluate [2.1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
         # grab closest cells to use as hint for DMInterpolationSetUp
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
+        
         ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
         if ierr != 0:
             raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
                                "Interpolation location is possibly outside the domain.")
+        
         mesh.update_lvec()
         cdef Vec pyfieldvec = mesh.lvec
+        print(f"fn.evaluate [2.3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         # Use our custom routine as the PETSc one is broken. 
-        ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
+        ierr = s(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
+        print(f"fn.evaluate [2.4] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
+        print(f"fn.evaluate [2.5] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
 
         # Create map between array slices and variable functions
 
@@ -367,12 +386,23 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             arr = outarray[:,var_start+comp]
             varfns_arrays[varfn] = arr
 
+
+        print(f"Outarray size: {outarray.size*8/1000000}",flush=True)
+
+        del coords
+        del outvec
+        del outarray
+
+
         return varfns_arrays
 
     # Get map of all variable functions across all meshes. 
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
         interpolated_results.update(interpolate_vars_on_mesh(vals, coords))
+
+    print(f"fn.evaluate [3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
@@ -418,6 +448,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         if len(results.shape)==3 and results.shape[1]==1:
             results = results[:,0,:]
 
+    print(f"fn.evaluate [4] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+
     # 6. Return results
     return results
 
@@ -462,7 +495,7 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
     # First grab copy, as we're unsure about the underlying array's 
     # memory layout
 
-    coords = np.ascontiguousarray(coords)
+    coords = np.ascontiguousarray(coords.copy())
     cdef double* coords_buff = <double*> coords.data
     ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
 
@@ -494,6 +527,13 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
             comps = var.num_components
             arr = outarray[:,var_start:var_start+comps].copy()
             var_arrays[var.clean_name] = arr
+
+    print(f"Outarray size: {outarray.size}",flush=True)
+
+    del coords
+    del outvec
+    del outarray
+    
 
     return var_arrays
 

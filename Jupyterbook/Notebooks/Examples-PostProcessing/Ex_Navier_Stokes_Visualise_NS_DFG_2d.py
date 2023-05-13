@@ -37,20 +37,25 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-# ls -trl /Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001_noproj/ | tail
+# + language="sh"
+#
+# ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/Re100_dt0.01_hr_proj0_tau2_pr2 | tail
+#
+
 
 # +
 ## Reading the checkpoints back in ... 
 
-step = 100
-basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001_noproj/NS_test_Re_250_0.01_ts005_noproj"
+step = 260
+basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re100_proj1_phi1/NS_benchmark_DFG2d_2iii_0.033"
+basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re100_dt0.01_hr_proj0_tau_pr2/NS_benchmark_DFG2d_2iii_0.025"
+# basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re100_no_proj_0.033/NS_benchmark_DFG2d_2iii_0.033"
 # basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001/NS_test_Re_250_0.01_ts005"
 # basename = f"output/NS_test_Re_250_0.05"
+# basename = "/Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_025/NS_benchmark_DFG2d_2iii_0.025"
+
 mesh_filename = f"{basename}.mesh.0.h5"
 mesh_filename
-# -
-
-# ls /Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001_noproj/*mesh* | head -5
 
 # +
 mesh = uw.discretisation.Mesh(mesh_filename)
@@ -69,7 +74,7 @@ vorticity_ckpt.read_from_vertex_checkpoint(f"{basename}.omega.{step}.h5", "omega
 
 passive_swarm_ckpt.load(f"{basename}.passive_swarm.{step}.h5")
 
-# +
+# + tags=[]
 # check the mesh if in a notebook / serial
 
 import pyvista as pv
@@ -124,7 +129,7 @@ if uw.mpi.size == 1:
 
     # point sources at cell centres
 
-    skip = 50
+    skip = 10
     points = np.zeros((mesh._centroids[::skip].shape[0], 3))
     points[:, 0] = mesh._centroids[::skip, 0]
     points[:, 1] = mesh._centroids[::skip, 1]
@@ -138,7 +143,7 @@ if uw.mpi.size == 1:
     )
 
     pl = pv.Plotter()
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.002, opacity=0.5)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=0.02, opacity=0.5)
 
     pl.add_mesh(
         pvmesh,
@@ -195,13 +200,4 @@ steps.sort()
 
 # +
 # for step in steps():
-
-
-# -
-
-steps
-
-
-# ls -trl output/*png
-
 

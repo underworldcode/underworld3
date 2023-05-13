@@ -28,7 +28,6 @@ class SNES_Poisson(SNES_Scalar):
         solver_name: str = "",
         verbose=False,
     ):
-
         ## Keep track
 
         SNES_Poisson.instances += 1
@@ -50,7 +49,6 @@ class SNES_Poisson(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -91,7 +89,6 @@ class SNES_Darcy(SNES_Scalar):
         solver_name: str = "",
         verbose=False,
     ):
-
         ## Keep track
 
         SNES_Darcy.instances += 1
@@ -127,7 +124,6 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -282,7 +278,6 @@ class SNES_Stokes(SNES_Stokes):
         solver_name: Optional[str] = "",
         verbose: Optional[str] = False,
     ):
-
         SNES_Stokes.instances += 1
 
         if solver_name == "":
@@ -314,7 +309,6 @@ class SNES_Stokes(SNES_Stokes):
 
     @timing.routine_timer_decorator
     def stokes_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -481,7 +475,6 @@ class SNES_Projection(SNES_Scalar):
         solver_name: str = "",
         verbose=False,
     ):
-
         SNES_Projection.instances += 1
 
         if solver_name == "":
@@ -501,7 +494,6 @@ class SNES_Projection(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -581,7 +573,6 @@ class SNES_Vector_Projection(SNES_Vector):
         solver_name: str = "",
         verbose=False,
     ):
-
         SNES_Vector_Projection.instances += 1
 
         if solver_name == "":
@@ -602,7 +593,6 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -689,7 +679,6 @@ class SNES_Tensor_Projection(SNES_Projection):
         solver_name: str = "",
         verbose=False,
     ):
-
         SNES_Tensor_Projection.instances += 1
 
         if solver_name == "":
@@ -709,7 +698,6 @@ class SNES_Tensor_Projection(SNES_Projection):
     ## Need to over-ride solve method to run over all components
 
     def solve(self):
-
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -719,7 +707,6 @@ class SNES_Tensor_Projection(SNES_Projection):
             )
 
         for c, component_function in enumerate(self.uw_function):
-
             self.uw_scalar_function = sympy.Matrix([component_function])
 
             # print(f"Cpt {c} -> {component_function} ")
@@ -740,7 +727,6 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-
         dim = self.mesh.dim
         N = self.mesh.N
 
@@ -925,7 +911,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         restore_points_func: Callable = None,
         verbose=False,
     ):
-
         SNES_AdvectionDiffusion_SLCN.instances += 1
 
         if solver_name == "":
@@ -995,7 +980,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         return
 
     def adv_diff_slcn_problem_description(self):
-
         N = self.mesh.N
 
         # f0 residual term
@@ -1181,7 +1165,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         projection: bool = True,
         verbose: bool = False,
     ):
-
         self.instance = SNES_AdvectionDiffusion_Swarm.instances
         SNES_AdvectionDiffusion_Swarm.instances += 1
 
@@ -1232,7 +1215,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         return
 
     def adv_diff_swarm_problem_description(self):
-
         N = self.mesh.N
 
         # f0 residual term
@@ -1367,7 +1349,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
-
         if self.projection:
             self._u_star_projector.bcs = self.bcs
             self._u_star_projector._setup_terms()
@@ -1402,17 +1383,16 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         mesh: uw.discretisation.Mesh,
         velocityField: uw.discretisation.MeshVariable = None,
         pressureField: uw.discretisation.MeshVariable = None,
-        velocityStar: Union[float, sympy.Function] = None,  
-        velocityStarStar: Union[float, sympy.Function] = None,  
-        stressStar: Union[float, sympy.Function] = None,  
-        stressStarStar: Union[float, sympy.Function] = None,  
+        velocityStar: Union[float, sympy.Function] = None,
+        velocityStarStar: Union[float, sympy.Function] = None,
+        stressStar: Union[float, sympy.Function] = None,
+        stressStarStar: Union[float, sympy.Function] = None,
         rho: Optional[float] = 0.0,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
         projection: Optional[bool] = False,
         restore_points_func: Callable = None,
     ):
-
         SNES_NavierStokes_Swarm.instances += 1
 
         if solver_name == "":
@@ -1436,15 +1416,14 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             verbose,
         )
 
-    
         if projection:
             # set up a projection solver
             self._u_star_projected = uw.discretisation.MeshVariable(
                 rf"u_star{self.instances}",
                 self.mesh,
                 self.mesh.dim,
-                degree=self._u.degree-1,
-                varsymbol=r"{U^{*}}"
+                degree=self._u.degree - 1,
+                varsymbol=r"{U^{*}}",
             )
             self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(
                 self.mesh, self._u_star_projected
@@ -1468,50 +1447,47 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                     (self._u.sym[2],), "All_Boundaries", (2,)
                 )
 
-            # set up a projection solver for ustarstar
-            self._u_star_star_projected = uw.discretisation.MeshVariable(
-                rf"u_star2{self.instances}",
-                self.mesh,
-                self.mesh.dim,
-                degree=self._u.degree-1,
-                varsymbol=r"{U^{**}}"
-
-            )
-            self._u_star_star_projector = uw.systems.solvers.SNES_Vector_Projection(
-                self.mesh, self._u_star_star_projected
-            )
-
-            options = self._u_star_star_projector.petsc_options
-            options.delValue("ksp_monitor")
-
-            # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
-            self._u_star_star_projector.smoothing = 0.0
-            self._u_star_star_projector.uw_function = self._u_star_star_raw_fn
-
-            self._u_star_star_projector.add_dirichlet_bc(
-                (self._u.sym[0],), "All_Boundaries", (0,)
-            )
-            self._u_star_star_projector.add_dirichlet_bc(
-                (self._u.sym[1],), "All_Boundaries", (1,)
-            )
-            if self.mesh.dim == 3:
-                self._u_star_star_projector.add_dirichlet_bc(
-                    (self._u.sym[2],), "All_Boundaries", (2,)
+            if self._u_star_star_raw_fn is not None:
+                # set up a projection solver for ustarstar
+                self._u_star_star_projected = uw.discretisation.MeshVariable(
+                    rf"u_star2{self.instances}",
+                    self.mesh,
+                    self.mesh.dim,
+                    degree=self._u.degree - 1,
+                    varsymbol=r"{U^{**}}",
                 )
-           
-    
+                self._u_star_star_projector = uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self._u_star_star_projected
+                )
+
+                options = self._u_star_star_projector.petsc_options
+                options.delValue("ksp_monitor")
+
+                # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
+                self._u_star_star_projector.smoothing = 0.0
+                self._u_star_star_projector.uw_function = self._u_star_star_raw_fn
+
+                self._u_star_star_projector.add_dirichlet_bc(
+                    (self._u.sym[0],), "All_Boundaries", (0,)
+                )
+                self._u_star_star_projector.add_dirichlet_bc(
+                    (self._u.sym[1],), "All_Boundaries", (1,)
+                )
+                if self.mesh.dim == 3:
+                    self._u_star_star_projector.add_dirichlet_bc(
+                        (self._u.sym[2],), "All_Boundaries", (2,)
+                    )
+
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_swarm_problem_description
         self.is_setup = False
         self.first_solve = True
 
         self._Estar = self.mesh.vector.strain_tensor(self.u_star_fn)
-    
+
         return
 
-
     def navier_stokes_swarm_problem_description(self):
-
         N = self.mesh.N
         dim = self.mesh.dim
 
@@ -1526,8 +1502,10 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             self._u_f0 = (
                 self.UF0
                 - 1.0 * self.bodyforce
-                + self.rho * (3 * self.u.sym - 4 * self.u_star_fn + self.u_star_star_fn) / (2 * self.delta_t)
-        )
+                + self.rho
+                * (3 * self.u.sym - 4 * self.u_star_fn + self.u_star_star_fn)
+                / (2 * self.delta_t)
+            )
 
         # Three possibilities here:
         # 1. no stress history, use gradient of u*
@@ -1536,39 +1514,32 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
         if self.u_star_star_fn is not None:
             self._u_f1 = (
-                self.UF1
-                + self.stress
-                + 0 * self.stress_star 
-                + self.penalty * self.div_u * sympy.eye(dim)
-            )  
+                self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
+            )
 
         else:
-
             if self.stress_star_fn is None and self.stress_star_star_fn is None:
-
                 self._u_f1 = (
                     self.UF1
                     + self.stress / 2
-                    + self.stress_star / 2 
+                    + self.stress_star / 2
                     + self.penalty * self.div_u * sympy.eye(dim)
                 )
 
             elif self.stress_star_star_fn is None:
-
                 self._u_f1 = (
                     self.UF1
                     + self.stress / 2
-                    + self.stress_star_fn / 2 
+                    + self.stress_star_fn / 2
                     + self.penalty * self.div_u * sympy.eye(dim)
                 )
 
             else:
-
                 self._u_f1 = (
                     self.UF1
                     + 5 * self.stress / 12
-                    + 8 * self.stress_star_fn / 12 
-                    - self.stress_star_star_fn / 12 
+                    + 8 * self.stress_star_fn / 12
+                    - self.stress_star_star_fn / 12
                     + self.penalty * self.div_u * sympy.eye(dim)
                 )
 
@@ -1597,16 +1568,18 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
         self._u_star_raw_fn = uw_function
 
-
     @property
     def u_star_star_fn(self):
+        if self._u_star_star_raw_fn is None:
+            return None
+
         if self.projection:
             return self._u_star_star_projected.sym
         else:
             return self._u_star_star_raw_fn
 
-    @u_star_fn.setter
-    def u_star_fn(self, uw_function):
+    @u_star_star_fn.setter
+    def u_star_star_fn(self, uw_function):
         self.is_setup = False
         if self.projection:
             self._u_star_star_projector.is_setup = False
@@ -1625,21 +1598,23 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
     @property
     def stress_star(self):
         return self.stress_star_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-    
+
     @property
     def stress_star_fn(self):
         if self._stress_star_fn is None:
             return None
         else:
             return self._stress_star_fn - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-    
+
     @property
     def stress_star_star_fn(self):
         if self._stress_star_star_fn is None:
             return None
         else:
-            return self._stress_star_star_fn - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-    
+            return self._stress_star_star_fn - sympy.eye(self.mesh.dim) * (
+                self.p.sym[0]
+            )
+
     @property
     def delta_t(self):
         return self._delta_t
@@ -1701,10 +1676,43 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
     @timing.routine_timer_decorator
     def _setup_terms(self):
-
         if self.projection:
             # self._u_star_projector.bcs = self.bcs
             # self._u_star_projector.
             self._u_star_projector._setup_terms()
 
         super()._setup_terms()
+
+
+## Lagrangian particle time-integrator
+##
+##
+
+
+class Swarm_Lagrangian_Integrator:
+
+    """Swarm-based Lagrangian Integrator:
+
+    This manages the update of Lagrangian variables
+    on the swarm. It manages the history terms that
+    are required for different order backward-differentiation
+    strategies and will return the appropriate term to
+    include in the implicit solvers.
+
+    """
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        integrand: sympy.Function,
+        delta_t: float,
+        integration_order: int = 1,
+        phi: float = 0.3333,
+        solver_name: Optional[str] = "",
+        verbose: Optional[bool] = False,
+    ):
+        pass
+        return

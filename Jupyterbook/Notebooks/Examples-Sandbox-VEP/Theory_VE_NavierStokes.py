@@ -1,6 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
+#     cell_metadata_json: true
 #     text_representation:
 #       extension: .py
 #       format_name: light
@@ -12,6 +13,7 @@
 #     name: python3
 # ---
 
+# + [markdown] {"tags": []}
 # # Viscoelastic Navier-Stokes equation
 #
 # Here we outline how we combine the numerical NS scheme and the numerical Visco-elastic scheme
@@ -43,8 +45,9 @@
 # $$
 #     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[ 
 #                                                                 \frac{1}{2} \mathbf{\tau} +
-#                                                                 \frac{1}{2} \mathbf{\tau^*} \right]
-#                                                                 + \nabla p \right)
+#                                                                 \frac{1}{2} \mathbf{\tau^*} 
+#                                                                    \right]
+#                                                                 - \nabla p \right)
 # $$
 #
 # and 
@@ -52,10 +55,11 @@
 # $$
 #     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[
 #                                                           \frac{5}{12} \mathbf{\tau} 
-#                                                         + \frac{2}{3}  \mathbf{\tau^*} 
+# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
 #                                                         - \frac{1}{12} \mathbf{\tau^{**}} \right]
-#                                                         + \nabla p \right)
+#                                                         - \nabla p \right)
 # $$
+#
 #
 # $\tau^*$ and $\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
 #
@@ -122,14 +126,17 @@
 # $$
 #         \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g 
 #                                                     - \nabla \cdot \left[ \frac{5 \dot\varepsilon \eta_\textrm{eff}}{6}  
-#                                                                            + \frac{5 \eta \tau^{*}}{3 \cdot \left(2 \Delta t \mu + 3 \eta\right)}  
-#                                                                            + \frac{2 \tau^{*}}{3} 
-#                                                                            - \frac{5 \eta \tau^{**}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} 
+#                                                                                                                              - \frac{5 \eta \tau^{**}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} 
 #                                                                            - \frac{\tau^{**}}{12}
 #                                                                     \right] + \nabla p \right)
 # $$
 #
-#
+# + \frac {"incorrectly_encoded_metadata": "{5 \\eta \\tau^{*}}{3 \\cdot \\left(2 \\Delta t \\mu + 3 \\eta\\right)}"}
+
+
+# + \frac {"incorrectly_encoded_metadata": "{2 \\tau^{*}}{3}"}
+
+
 
 # +
 
@@ -272,21 +279,23 @@ stokes._setup_problem_description()
 
 stokes._u_f1
 
-stokes._u_f1[0,0]
+# Jacobian, d sigma_ij / edot_kl
+
 
 0/0
 
 stokes.constitutive_model.flux(stokes.strainrate)
 
-stokes.constitutive_model.flux(stokes.strainrate) / 2 + stress_star.sym / 2
+# Crank-Nicholson timestep - Jacobians
+(stokes.constitutive_model.flux(stokes.strainrate) / 2 + stress_star.sym / 2).diff(stokes._u.sym[0])
 
 (stokes.stress_deviator_1d / 2 + stress_star.sym_1d / 2)[0]
 
 # RHS
 stokes._u_f0
 
-# LHS
-stokes._u_f1[0,0]
+# Jacobian terms
+stokes._u_f1[1,1].diff(stokes._L[1,1])
 
 # +
 ## Jacobians (e.g. stress rate derivatives with respect to strain rate tensor)
@@ -441,7 +450,7 @@ def return_points_to_domain(coords):
 
 ts = 0
 
-# + tags=[]
+# + {"tags": []}
 delta_t = stokes.estimate_dt()
 
 expt_name = f"output/shear_band_sw_nonp_{mu}"

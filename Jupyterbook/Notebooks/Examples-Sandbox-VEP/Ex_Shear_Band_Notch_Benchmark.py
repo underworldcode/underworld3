@@ -46,7 +46,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 1
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -265,9 +265,9 @@ if uw.mpi.size == 1:
 
 swarm = uw.swarm.Swarm(mesh=mesh1)
 material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0
+    "M", swarm, size=1, proxy_continuous=False, proxy_degree=0
 )
-swarm.populate(fill_param=1)
+swarm.populate(fill_param=0)
 
 v_soln = uw.discretisation.MeshVariable(r"U", mesh1, mesh1.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable(r"P", mesh1, 1, degree=1, continuous=True)
@@ -374,6 +374,7 @@ stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-6
 stokes.petsc_options["snes_atol"] = 1e-2
+stokes.bodyforce = sympy.Matrix([0, -0.001]).T
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
@@ -390,6 +391,8 @@ stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
 stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 # -
+stokes.constitutive_model
+
 
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -421,6 +424,8 @@ base_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
 edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.025)
 # stokes.bodyforce -= 10000.0 * surface_defn_fn * v_soln.sym[1] * mesh1.CoordinateSystem.unit_j
 # -
+
+stokes.constitutive_model
 
 # This is a strategy to obtain integrals over the surface (etc)
 
@@ -454,6 +459,10 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
+stokes._setup_terms()
+
+stokes._uu_G3
+
 # +
 # First, we solve the linear problem
 
@@ -472,8 +481,6 @@ stokes.solve(zero_init_guess=True)
 
 if uw.mpi.rank == 0:
     print("Linear solve complete", flush=True)
-
-
 # +
 
 C0 = 150
@@ -508,6 +515,10 @@ for i in range(10):
         print(f"Completed: Mu - {mu}, C = {C}", flush=True)
 # -
 
+stokes.constitutive_model
+
+stokes._uu_G3
+
 # %%
 viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 stress_calc.uw_function = (
@@ -525,8 +536,6 @@ stress_calc.solve()
 savefile = f"output/notched_beam_mesh_{problem_size}"
 mesh1.write_checkpoint(savefile, meshUpdates=False, meshVars=[p_soln,v_soln,edot])
 # -
-
-# ls -trl output
 
 # check the mesh if in a notebook / serial
 

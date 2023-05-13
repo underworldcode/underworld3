@@ -58,7 +58,6 @@ class SwarmVariable(_api_tools.Stateful):
         varsymbol=None,
         rebuild_on_cycle=True,
     ):
-
         if name in swarm.vars.keys():
             raise ValueError(
                 "Variable with name {} already exists on swarm.".format(name)
@@ -162,7 +161,6 @@ class SwarmVariable(_api_tools.Stateful):
         return
 
     def _create_proxy_variable(self):
-
         # release if defined
         self._meshVar = None
 
@@ -220,7 +218,6 @@ class SwarmVariable(_api_tools.Stateful):
         return
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
-
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
@@ -244,51 +241,55 @@ class SwarmVariable(_api_tools.Stateful):
 
             kdt.build_index()
 
-        return kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+            values = kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+
+            del kdt
+
+        return values
 
     # ToDo: I don't think this is used / up to date
-    @timing.routine_timer_decorator
-    def project_from(self, meshvar):
-        # use method found in
-        # /tmp/petsc-build/petsc/src/dm/impls/swarm/tests/ex2.c
-        # to project from fields to particles
+    # @timing.routine_timer_decorator
+    # def project_from(self, meshvar):
+    #     # use method found in
+    #     # /tmp/petsc-build/petsc/src/dm/impls/swarm/tests/ex2.c
+    #     # to project from fields to particles
 
-        self.swarm.mesh.dm.clearDS()
-        self.swarm.mesh.dm.createDS()
+    #     self.swarm.mesh.dm.clearDS()
+    #     self.swarm.mesh.dm.createDS()
 
-        meshdm = meshvar.mesh.dm
-        fields = meshvar.field_id
-        _, meshvardm = meshdm.createSubDM(fields)
+    #     meshdm = meshvar.mesh.dm
+    #     fields = meshvar.field_id
+    #     _, meshvardm = meshdm.createSubDM(fields)
 
-        ksp = PETSc.KSP().create()
-        ksp.setOptionsPrefix("swarm_project_from_")
-        options = PETSc.Options()
-        options.setValue("swarm_project_from_ksp_type", "lsqr")
-        options.setValue("swarm_project_from_ksp_rtol", 1e-17)
-        options.setValue("swarm_project_from_pc_type", "none")
-        ksp.setFromOptions()
+    #     ksp = PETSc.KSP().create()
+    #     ksp.setOptionsPrefix("swarm_project_from_")
+    #     options = PETSc.Options()
+    #     options.setValue("swarm_project_from_ksp_type", "lsqr")
+    #     options.setValue("swarm_project_from_ksp_rtol", 1e-17)
+    #     options.setValue("swarm_project_from_pc_type", "none")
+    #     ksp.setFromOptions()
 
-        rhs = meshvardm.getGlobalVec()
+    #     rhs = meshvardm.getGlobalVec()
 
-        M_p = self.swarm.dm.createMassMatrix(meshvardm)
+    #     M_p = self.swarm.dm.createMassMatrix(meshvardm)
 
-        # make particle weight vector
-        f = self.swarm.createGlobalVectorFromField(self.clean_name)
+    #     # make particle weight vector
+    #     f = self.swarm.createGlobalVectorFromField(self.clean_name)
 
-        # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
-        M = meshvardm.createMassMatrix(meshvardm)
-        with meshvar.mesh.access():
-            M.multTranspose(meshvar.vec_global, rhs)
+    #     # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
+    #     M = meshvardm.createMassMatrix(meshvardm)
+    #     with meshvar.mesh.access():
+    #         M.multTranspose(meshvar.vec_global, rhs)
 
-        ksp.setOperators(M_p, M_p)
-        ksp.solveTranspose(rhs, f)
+    #     ksp.setOperators(M_p, M_p)
+    #     ksp.solveTranspose(rhs, f)
 
-        self.swarm.dm.destroyGlobalVectorFromField(self.clean_name)
-        meshvardm.restoreGlobalVec(rhs)
-        meshvardm.destroy()
-        ksp.destroy()
-        M.destroy()
-        M_p.destroy()
+    #     self.swarm.dm.destroyGlobalVectorFromField(self.clean_name)
+    #     meshvardm.restoreGlobalVec(rhs)
+    #     meshvardm.destroy()
+    #     ksp.destroy()
+    #     M.destroy()
+    #     M_p.destroy()
 
     @property
     def data(self):
@@ -387,7 +388,6 @@ class SwarmVariable(_api_tools.Stateful):
 
     @timing.routine_timer_decorator
     def simple_save(self, filename: str):
-
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             if uw.mpi.rank == 0:
@@ -486,7 +486,6 @@ class IndexSwarmVariable(SwarmVariable):
         proxy_degree=1,
         proxy_continuous=True,
     ):
-
         self.indices = indices
 
         # These are the things we require of the generic swarm variable type
@@ -590,12 +589,10 @@ class IndexSwarmVariable(SwarmVariable):
 
 # @typechecked
 class Swarm(_api_tools.Stateful):
-
     instances = 0
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0):
-
         Swarm.instances += 1
 
         self._mesh = mesh
@@ -844,7 +841,8 @@ class Swarm(_api_tools.Stateful):
                 all_local_coords[...]
                 + (0.33 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
-                * 2.0 * self.mesh._search_lengths[all_local_cells]  # typical cell size
+                * 2.0
+                * self.mesh._search_lengths[all_local_cells]  # typical cell size
             )
             cellid[:] = all_local_cells[:, 0]
 
@@ -970,7 +968,6 @@ class Swarm(_api_tools.Stateful):
             warnings.warn("Compression may slow down write times", stacklevel=2)
 
         if h5py.h5.get_config().mpi == True and not force_sequential:
-
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
             # when there are many active cores. This is probably why the parallel
@@ -991,7 +988,6 @@ class Swarm(_api_tools.Stateful):
                 else:
                     h5f.create_dataset("coordinates", data=data_copy[:])
         else:
-
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
             # when there are many active cores
@@ -1031,6 +1027,8 @@ class Swarm(_api_tools.Stateful):
                 comm.barrier()
             comm.barrier()
 
+        del data_copy
+
         return
 
     @timing.routine_timer_decorator
@@ -1056,7 +1054,6 @@ class Swarm(_api_tools.Stateful):
         proxy_degree=2,
         _nn_proxy=False,
     ):
-
         return SwarmVariable(
             name,
             self,
@@ -1073,7 +1070,6 @@ class Swarm(_api_tools.Stateful):
         index: int,
         outputPath: Optional[str] = "",
     ):
-
         """
 
         Use PETSc to save the swarm and attached data to a .pbin and xdmf file.
@@ -1103,7 +1099,6 @@ class Swarm(_api_tools.Stateful):
         compressionType: Optional[str] = "gzip",
         force_sequential: Optional[bool] = False,
     ):
-
         """
 
         Save data to h5 and a corresponding xdmf for visualisation using h5py.
@@ -1366,7 +1361,6 @@ class Swarm(_api_tools.Stateful):
         corrector=False,
         restore_points_to_domain_func=None,
     ):
-
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping.
@@ -1413,7 +1407,6 @@ class Swarm(_api_tools.Stateful):
         # Mid point algorithm (2nd order)
         if order == 2:
             with self.access(self.particle_coordinates):
-
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
@@ -1433,7 +1426,6 @@ class Swarm(_api_tools.Stateful):
                 ## Let the swarm be updated, and then move the rest of the way
 
             with self.access(self.particle_coordinates):
-
                 v_at_Vpts = np.zeros_like(self.data)
 
                 for d in range(self.dim):
@@ -1527,7 +1519,6 @@ class Swarm(_api_tools.Stateful):
             for swarmVar in self.vars.values():
                 if swarmVar._rebuild_on_cycle:
                     with self.access(swarmVar):
-
                         if swarmVar.dtype is int:
                             nnn = 1
                         else:
