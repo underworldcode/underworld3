@@ -221,11 +221,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # Let's first collect all the meshvariables present in the expression.
     # Recurse the expression tree.
 
-    import os,psutil
-    pid = os.getpid()
-    python_process = psutil.Process(pid)
-    print(f"fn.evaluate [1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
     varfns = set()
     def get_var_fns(exp):
 
@@ -246,7 +241,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         return
 
     get_var_fns(expr)
-    print(f"fn.evaluate [2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
     mesh = None
     for varfn in varfns:
@@ -330,10 +324,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         cdef Vec pyfieldvec = mesh.lvec
         # Use our custom routine as the PETSc one is broken. 
     
-        print(f"fn.evaluate [2.1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
-        print(f"fn.evaluate [2.2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
         # Create map between array slices and variable functions
 
@@ -355,9 +347,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
         interpolated_results.update(interpolate_vars_on_mesh(vals, coords))
-
-    print(f"fn.evaluate [3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
@@ -402,8 +391,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         results = results.T
         if len(results.shape)==3 and results.shape[1]==1:
             results = results[:,0,:]
-
-    print(f"fn.evaluate [4] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
     # 6. Return results
     return results
