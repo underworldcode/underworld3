@@ -55,8 +55,8 @@
 # $$
 #     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[
 #                                                           \frac{5}{12} \mathbf{\tau} 
-# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
-#                                                         - \frac{1}{12} \mathbf{\tau^{**}} \right]
+#                                                           - \frac{8}{12} \mathbf{\tau^{*}}
+#                                                           + \frac{1}{12} \mathbf{\tau^{**}} \right]
 #                                                         - \nabla p \right)
 # $$
 #
@@ -131,6 +131,8 @@
 #                                                                     \right] + \nabla p \right)
 # $$
 #
+# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
+
 # + \frac {"incorrectly_encoded_metadata": "{5 \\eta \\tau^{*}}{3 \\cdot \\left(2 \\Delta t \\mu + 3 \\eta\\right)}"}
 
 

@@ -1516,7 +1516,6 @@ class _MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-        self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
         return
@@ -1539,11 +1538,17 @@ class _MeshVariable(_api_tools.Stateful):
     # that is stable when used for EXTRAPOLATION but
     # not accurate.
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
         import numpy as np
+
+        if nnn == None:
+            if self.mesh.dim == 3:
+                nnn = 4
+            else:
+                nnn = 3
 
         with self.mesh.access(self):
             D = self.data.copy()

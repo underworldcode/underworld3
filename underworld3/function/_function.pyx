@@ -226,8 +226,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     python_process = psutil.Process(pid)
     print(f"fn.evaluate [1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
-
-
     varfns = set()
     def get_var_fns(exp):
 
@@ -250,7 +248,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     get_var_fns(expr)
     print(f"fn.evaluate [2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
-
     mesh = None
     for varfn in varfns:
 
@@ -259,11 +256,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         else:
             if mesh != varfn.mesh:
                 raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
-
-    # print("Expression depends upon")
-    # for varfn in varfns:
-    #     print(f"   - {varfn.name}")
-    # print("-------")
 
     if (len(varfns)==0) and (coords is None):
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -324,7 +316,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         # Now create a PETSc vector to wrap the numpy memory.
         cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
 
-
         # INTERPOLATE ALL VARIABLES ON THE DM
 
 
@@ -341,9 +332,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     
         print(f"fn.evaluate [2.1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-        print(f"fn.evaluate [2.2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
-        print(f"fn.evaluate [2.3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+        print(f"fn.evaluate [2.2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
         # Create map between array slices and variable functions
 
@@ -355,10 +345,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             arr = outarray[:,var_start+comp]
             varfns_arrays[varfn] = arr
 
-
-        del coords
-        del outvec
         del outarray
+        del coords 
+        del cells
 
         return varfns_arrays
 
@@ -415,7 +404,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             results = results[:,0,:]
 
     print(f"fn.evaluate [4] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
 
     # 6. Return results
     return results
@@ -494,12 +482,6 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
             arr = outarray[:,var_start:var_start+comps].copy()
             var_arrays[var.clean_name] = arr
 
-    print(f"Outarray size: {outarray.size}",flush=True)
-
-    del coords
-    del outvec
-    del outarray
-    
 
     return var_arrays
 
