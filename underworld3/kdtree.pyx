@@ -106,10 +106,12 @@ cdef class KDTree:
         """
         if coords.shape[1] != self.points.shape[1]:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
+        
         count = coords.shape[0]
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
         found    = np.empty(count, dtype=np.bool_,   order='C')
+
         cdef long unsigned int[::1]  c_indices = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
         cdef              bool[::1]    c_found = found
@@ -232,5 +234,10 @@ cdef class KDTree:
 
         if verbose and uw.mpi.rank == 0:
             print("Mapping values ... done", flush=True)
+
+        del coords_contiguous
+        del closest_n 
+        del distance_n
+        del Weights
 
         return Values

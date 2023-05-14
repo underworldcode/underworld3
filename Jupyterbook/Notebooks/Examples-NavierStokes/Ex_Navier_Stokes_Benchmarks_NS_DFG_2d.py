@@ -229,9 +229,12 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     solver_name="navier_stokes",
 )
 
-navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(pipemesh.dim)
-navier_stokes.constitutive_model.Parameters.viscosity = 1
+navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(pipemesh.dim)
+navier_stokes.constitutive_model.Parameters
 # -
+
+
+navier_stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 
 navier_stokes.constitutive_model
@@ -247,10 +250,6 @@ with swarm.access(stress_star_p), pipemesh.access():
     stress_star_p.data[...] = St.rbf_interpolate(swarm.particle_coordinates.data)
 
 # -
-
-navier_stokes._setup_terms()
-
-navier_stokes._u_f1
 
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
@@ -559,6 +558,12 @@ for step in range(0, maxsteps):
             uw.function.evaluate(St.sym_1d[1], swarm.data) )
         stress_star_p.data[:,2] = (
             uw.function.evaluate(St.sym_1d[2], swarm.data) )
+        
+        print(f"Memory usage [2.1.3] = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+        stress_star_p.data[...] = St.rbf_interpolate(swarm.data)
+        
+        print(f"Memory usage [2.1.4] = {python_process.memory_info().rss//1000000} Mb", flush=True)
         
     print(f"Memory usage [2.5] = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
