@@ -325,56 +325,25 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
 
 
-        # SKIP THE SUBDM METHOD AND INSTEAD JUST INTERPOLATE ALL VARIABLES, FOR NOW.
-        # # We'll create a SubDM which records the required fields. 
-        # cdef PetscDM subdm
-        # cdef PetscInt *fieldarray = <PetscInt *> malloc(len(vars)*sizeof(PetscInt))
-        # cdef int i=0
-        # for var in vars:
-        #     fieldarray[i] = var.field_id
-        #     i+=1
-        # DMCreateSubDM(dm.dm, i, fieldarray, NULL, &subdm)
-        # ierr = DMInterpolationSetUp_UW(ipInfo, subdm, 0, 0); CHKERRQ(ierr)
-
-        # # Create a nestvec containing the variable data to be interpolated.
-        # # First generate the required sub vecs.
-        # vecs = []
-        # for var in vars:
-        #     vecs.append(mesh.lvec.getSubVector(IS().createStride(size=var.size, first=var.start, step=1)))
-        # # Now generate the nest vec
-        # nestvec = Vec().createNest(vecs)
-        # cdef Vec pyfieldvec = nestvec
-        # # Execute interpolation.
-        # ierr = DMInterpolationEvaluate_UW(ipInfo, subdm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-        # # Clean up.
-        # ierr = DMDestroy(&subdm);CHKERRQ(ierr)
-        # free(fieldarray)
-
         # INTERPOLATE ALL VARIABLES ON THE DM
 
-        # import os,psutil
-        # pid = os.getpid()
-        # python_process = psutil.Process(pid)
-        print(f"fn.evaluate [2.1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
         # grab closest cells to use as hint for DMInterpolationSetUp
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
-        
         ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
         if ierr != 0:
             raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
                                "Interpolation location is possibly outside the domain.")
-        
         mesh.update_lvec()
         cdef Vec pyfieldvec = mesh.lvec
-        print(f"fn.evaluate [2.3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         # Use our custom routine as the PETSc one is broken. 
-        ierr = s(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-        print(f"fn.evaluate [2.4] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+    
+        print(f"fn.evaluate [2.1] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+        ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
+        print(f"fn.evaluate [2.2] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
-        print(f"fn.evaluate [2.5] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
+        print(f"fn.evaluate [2.3] Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
         # Create map between array slices and variable functions
 
@@ -387,12 +356,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             varfns_arrays[varfn] = arr
 
 
-        print(f"Outarray size: {outarray.size*8/1000000}",flush=True)
-
         del coords
         del outvec
         del outarray
-
 
         return varfns_arrays
 
