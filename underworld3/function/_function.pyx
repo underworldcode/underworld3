@@ -261,6 +261,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     from collections import defaultdict
     interpolant_varfns = defaultdict(lambda : [])
+
     for varfn in varfns:
         interpolant_varfns[varfn.meshvar().mesh].append(varfn)
 
@@ -334,7 +335,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             var  = varfn.meshvar()
             comp = varfn.component
             var_start = var_start_index[var]
-            arr = outarray[:,var_start+comp].copy()
+            arr = np.ascontiguousarray(outarray[:,var_start+comp])
             varfns_arrays[varfn] = arr
 
         del outarray
@@ -348,7 +349,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # Get map of all variable functions across all meshes. 
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
-        interpolated_results.update(interpolate_vars_on_mesh(vals, coords))
+        interpolated_var_values = interpolate_vars_on_mesh(vals, coords)
+        interpolated_results.update(interpolated_var_values)
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
@@ -377,6 +379,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         
 
     r = N.base_scalars()[0:dim]
+
+    # This likely never applies any more
     if isinstance(subbedexpr, sympy.vector.Vector):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
@@ -393,6 +397,12 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         results = results.T
         if len(results.shape)==3 and results.shape[1]==1:
             results = results[:,0,:]
+
+    # Making this explicit while hunting for leaks
+    for array_item in interpolated_results.values():
+        del array_item 
+
+    del interpolated_results
 
     # 6. Return results
     return results
@@ -468,15 +478,14 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
     for var in mesh.vars.values():
             var_start = var_start_index[var]
             comps = var.num_components
-            arr = outarray[:,var_start:var_start+comps].copy()
-            var_arrays[var.clean_name] = arr
+            arr = outarray[:,var_start:var_start+comps]
+            var_arrays[var.clean_name] = arr.copy()
 
     del outarray
     del coords 
     del cells
     
     outvec.destroy()
-
 
     return var_arrays
 

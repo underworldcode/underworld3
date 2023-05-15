@@ -1304,11 +1304,14 @@ class Swarm(_api_tools.Stateful):
                     # `SwarmVariable.data` interface is controlled by the context manager
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
+
                     cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
                     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
                         (-1, self.em_swarm.dim)
                     )
+
                     cellid[:] = self.em_swarm.mesh.get_closest_cells(coords).reshape(-1)
+
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
                     # now migrate.
@@ -1316,6 +1319,7 @@ class Swarm(_api_tools.Stateful):
                     # void these things too
                     self.em_swarm._index = None
                     self.em_swarm._nnmapdict = {}
+
                 # do var updates
                 for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all.
