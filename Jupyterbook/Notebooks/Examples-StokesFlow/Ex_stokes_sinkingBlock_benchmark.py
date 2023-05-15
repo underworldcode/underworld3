@@ -151,9 +151,6 @@ stokes.add_dirichlet_bc( sol_vel, ["Left", "Right"],  [0] )  # left/right: compo
 stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [1] )  # top/bottom: components, function, markers 
 
 
-
-
-
 # %%
 swarm     = uw.swarm.Swarm(mesh=mesh)
 material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
@@ -195,14 +192,12 @@ def plot_mat():
 
     import numpy as np
     import pyvista as pv
-    import vtk
 
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
-
 
     mesh.vtk("tempMsh.vtk")
     pvmesh = pv.read("tempMsh.vtk") 
@@ -215,11 +210,8 @@ def plot_mat():
 
     point_cloud = pv.PolyData(points)
 
-
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
-
-
 
     pl = pv.Plotter(notebook=True)
 
@@ -229,16 +221,12 @@ def plot_mat():
     #                   render_points_as_spheres=False,
     #                   point_size=2.5, opacity=0.75)       
 
-
-
     pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="M",
                         use_transparency=False, opacity=0.95)
 
-
-
     pl.show(cpos="xy")
     
-if render == True and uw.mpi.size == 1:
+if render and uw.mpi.size == 1:
     plot_mat()
 
 # %%
@@ -310,8 +298,8 @@ while step < nsteps:
     ### advect tracer
     # vel_on_tracer = uw.function.evaluate(stokes.u.fn,tracer)
     # tracer += dt*vel_on_tracer    
-    step+=1
-    time+=dt
+    step += 1
+    time += dt
     
     record_tracer(step,time)
 
@@ -324,15 +312,12 @@ if passiveSwarm.dm.getLocalSize() > 0:
     ySinker = dim(ySinker[~np.isnan(ySinker)], u.kilometer)
     tSinker = dim(tSinker[~np.isnan(tSinker)], u.megayear)
     
-    
     print('Initial position: t = {0:.3f}, y = {1:.3f}'.format(tSinker[0], ySinker[0]))
     print('Final position:   t = {0:.3f}, y = {1:.3f}'.format(tSinker[-1], ySinker[-1]))
-    
     
     UWvelocity = ((ySinker[0] - ySinker[-1]) / (tSinker[-1] - tSinker[0])).to(u.meter/u.second).m
     print(f'Velocity:         v = {UWvelocity} m/s')
 
-    
     if uw.mpi.size == 0:
         fig = plt.figure()
         fig.set_size_inches(12, 6)
@@ -350,7 +335,6 @@ if passiveSwarm.dm.getLocalSize() > 0:
 
 # %%
 from scipy.interpolate import interp1d
-
 
 
 #### col 0 is log10( visc_block / visc_BG ), col 1 is block velocity, m/s
@@ -392,5 +376,5 @@ def test_sinkBlock():
 
 
 # %%
-if render == True and uw.mpi.size == 1:
+if render and uw.mpi.size == 1:
     plot_mat()
