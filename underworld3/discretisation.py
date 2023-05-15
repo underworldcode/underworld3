@@ -1479,7 +1479,7 @@ class _MeshVariable(_api_tools.Stateful):
                         self._data_layout(i, j),
                     )(*self.mesh.r)
                     self._sym[i, j].mesh = self.mesh
-                    n += 1
+                    # n += 1
 
         # Suggest this should be deprecated - seems complicated
         # and liable to produce errors in development as well as use
@@ -1655,6 +1655,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         lvec = self.mesh.dm.getCoordinates()
 
+    # ToDo: rename to vertex_checkpoint (or similar)
     @timing.routine_timer_decorator
     def simple_save(
         self,
@@ -1721,7 +1722,7 @@ class _MeshVariable(_api_tools.Stateful):
         data_file,
         data_name,
         vertex_mesh_file=None,
-        vertex_field=False,
+        # vertex_field=False,
         vertex_field_degree=1,
         verbose=False,
     ):
@@ -1731,9 +1732,6 @@ class _MeshVariable(_api_tools.Stateful):
         different and will be matched using a kd-tree / inverse-distance weighting
         to the new mesh.
 
-        Note: data_name, data_degree refer to the checkpointed data - this can be inferred from
-        the file if the checkpoints are one file per unknown, but that's not necessarily what
-        we will be using.
         """
 
         import h5py
@@ -1758,34 +1756,34 @@ class _MeshVariable(_api_tools.Stateful):
 
             return X, D
 
-        def field_from_vertex_checkpoint(
-            data_file=None,
-            data_name=None,
-            mesh_file=None,
-            data_degree=1,
-        ):
-            """Read the mesh data as a swarm-like value"""
+        # def field_from_vertex_checkpoint(
+        #     data_file=None,
+        #     data_name=None,
+        #     mesh_file=None,
+        #     data_degree=1,
+        # ):
+        #     """Read the mesh data as a swarm-like value"""
 
-            # data_field_name = data_name + f"_P{data_degree}"
+        #     # data_field_name = data_name + f"_P{data_degree}"
 
-            h5f = h5py.File(data_file)
-            data_fields = h5f["vertex_fields"].keys()
-            data_field_name = next(
-                (field for field in data_fields if data_name in field), None
-            )
+        #     h5f = h5py.File(data_file)
+        #     data_fields = h5f["vertex_fields"].keys()
+        #     data_field_name = next(
+        #         (field for field in data_fields if data_name in field), None
+        #     )
 
-            h5f = h5py.File(data_file)
-            D = h5f["vertex_fields"][data_field_name][()]
-            h5f.close()
+        #     h5f = h5py.File(data_file)
+        #     D = h5f["vertex_fields"][data_field_name][()]
+        #     h5f.close()
 
-            h5f = h5py.File(mesh_file)
-            X = h5f["geometry"]["vertices"][()]
-            h5f.close()
+        #     h5f = h5py.File(mesh_file)
+        #     X = h5f["geometry"]["vertices"][()]
+        #     h5f.close()
 
-            if len(D.shape) == 1:
-                D = D.reshape(-1, 1)
+        #     if len(D.shape) == 1:
+        #         D = D.reshape(-1, 1)
 
-            return X, D
+        #     return X, D
 
         def map_to_vertex_values(X, D, nnn=4, verbose=False):
 
@@ -1811,18 +1809,18 @@ class _MeshVariable(_api_tools.Stateful):
 
             return
 
-        if not vertex_field:
-            X, D = field_from_checkpoint(
-                data_file,
-                data_name,
-            )
-        else:
-            X, D = field_from_vertex_checkpoint(
-                data_file,
-                data_name,
-                vertex_mesh_file,
-                vertex_field_degree,
-            )
+        # if not vertex_field:
+        X, D = field_from_checkpoint(
+            data_file,
+            data_name,
+             )
+        # else:
+        #     X, D = field_from_vertex_checkpoint(
+        #         data_file,
+        #         data_name,
+        #         vertex_mesh_file,
+        #         vertex_field_degree,
+        #     )
 
         remapped_D = map_to_vertex_values(X, D)
 
@@ -1924,7 +1922,7 @@ class _MeshVariable(_api_tools.Stateful):
                 raise IndexError(
                     f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
                 )
-        if self.vtype == uw.VarType.TENSOR or self.vtype == uw.VarType.MATRIX:
+        if self.vtype == uw.VarType.TENSOR :
             if self.mesh.dim == 2:
                 return ((0, 1), (2, 3))[i][j]
             else:
@@ -1935,6 +1933,10 @@ class _MeshVariable(_api_tools.Stateful):
                 return ((0, 2), (2, 1))[i][j]
             else:
                 return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+            
+        if self.vtype == uw.VarType.MATRIX :
+            return i + j * self.shape[0]
+
 
     def _set_vec(self, available):
 

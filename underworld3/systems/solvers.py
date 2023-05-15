@@ -987,10 +987,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         self._Lstar = self.mesh.vector.jacobian(self._u_star.sym)
 
-        # ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
-        # self.k = uw.discretisation.MeshVariable(
-        #     f"k{self.instances}", self.mesh, num_components=1, degree=1
-        # )
+        ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
+        self.k = uw.discretisation.MeshVariable(
+            f"k{self.instances}", self.mesh, num_components=1, degree=1
+        )
 
         return
 
@@ -1038,28 +1038,20 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         Calculates an appropriate advective timestep for the given
         mesh and diffusivity configuration.
         """
-        # ## update the diffusivity values
-        # self.k_proj = uw.systems.Projection(self.mesh, self.k)
-        # self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
-        # self.k_proj.smoothing = 0.0
-        # self.k_proj.solve(_force_setup=True)
-
-        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            k = uw.function.evaluate( sympy.sympify( self.constitutive_model.Parameters.diffusivity ), self.mesh.data, self.mesh.N )
-            max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.Parameters.diffusivity
-            max_diffusivity = k
+        ## update the diffusivity values
+        self.k_proj = uw.systems.Projection(self.mesh, self.k)
+        self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
+        self.k_proj.smoothing = 0.0
+        self.k_proj.solve(_force_setup=True)
 
         ### required modules
         import math
         from mpi4py import MPI
 
-        # with self.mesh.access(self.k):
+        with self.mesh.access(self.k):
             ## get local max diff value
-            # max_diffusivity = self.k.data[:, 0].max()
+            max_diffusivity = self.k.data[:, 0].max()
             ### get the velocity values
-        with self.mesh.access(self._V):
             vel = self._V.data
 
         ## get global max dif value
