@@ -14,10 +14,8 @@
 # %%
 from petsc4py import PETSc
 import underworld3 as uw
-from underworld3.systems import Stokes
 import numpy as np
 import sympy
-from mpi4py import MPI
 options = PETSc.Options()
 
 
@@ -29,6 +27,7 @@ sys.pushErrorHandler("traceback")
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 
+
 # %%
 # import unit registry to make it easy to convert between units
 u = uw.scaling.units
@@ -39,11 +38,12 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 # Set the resolution, a structured quad box of 51x51 is used in the paper
-res = 51
+#res = 51
+res = 21 # use lower res for testing
 
-# define some names for our index 
-materialLightIndex = 0
-materialHeavyIndex = 1
+nsteps = 1    # number of time steps
+swarmGPC = 2  # swarm fill parameter
+render = True # plot images
 
 # %%
 refLength    = 500e3
@@ -70,32 +70,27 @@ scaling_coefficients
 # %%
 ### fundamental values
 ref_length    = uw.scaling.dimensionalise(1., u.meter).magnitude
-
 ref_length_km = uw.scaling.dimensionalise(1., u.kilometer).magnitude
-
-ref_density   =  uw.scaling.dimensionalise(1., u.kilogram/u.meter**3).magnitude
-
+ref_density   = uw.scaling.dimensionalise(1., u.kilogram/u.meter**3).magnitude
 ref_gravity   = uw.scaling.dimensionalise(1., u.meter/u.second**2).magnitude
-
 ref_temp      = uw.scaling.dimensionalise(1., u.kelvin).magnitude
-
 ref_velocity  = uw.scaling.dimensionalise(1., u.meter/u.second).magnitude
 
 ### derived values
 ref_time      = ref_length / ref_velocity
-
-ref_time_Myr = dim(1, u.megayear).m
-
+ref_time_Myr  = dim(1, u.megayear).m
 ref_pressure  = ref_density * ref_gravity * ref_length
-
 ref_stress    = ref_pressure
-
 ref_viscosity = ref_pressure * ref_time
 
 ### Key ND values
-ND_gravity     = 9.81    / ref_gravity
+ND_gravity     = 9.81 / ref_gravity
 
 # %%
+# define some names for our index 
+materialLightIndex = 0
+materialHeavyIndex = 1
+
 ## Set constants for the viscosity and density of the sinker.
 viscBG        = 1e21/ref_viscosity
 viscBlock     = 1e21/ref_viscosity
@@ -103,15 +98,6 @@ viscBlock     = 1e21/ref_viscosity
 ## set density of blocks
 densityBG     = 3.2e3/ref_density
 densityBlock  = 3.3e3/ref_density
-
-
-nsteps = 2
-
-
-swarmGPC = 2
-
-### plot figs
-render = True
 
 # %%
 xmin, xmax = 0., ndim(500*u.kilometer)
@@ -187,11 +173,8 @@ tracer[:,0], tracer[:,1] = x_pos, y_pos
 
 # %%
 passiveSwarm = uw.swarm.Swarm(mesh)
-
 passiveSwarm.dm.finalizeFieldRegister()
-
 passiveSwarm.dm.addNPoints(npoints=len(tracer))
-
 passiveSwarm.dm.setPointCoordinates(tracer)
 
 # %%
@@ -293,13 +276,12 @@ stokes.constitutive_model.Parameters.viscosity
 # %%
 step   = 0
 time   = 0.
+tSinker = np.zeros(nsteps+1)*np.nan
+ySinker = np.zeros(nsteps+1)*np.nan
+
 
 # %%
-tSinker = np.zeros(nsteps)*np.nan
-ySinker = np.zeros(nsteps)*np.nan
-
-# %%
-while step < nsteps:
+def record_tracer(step, time):
     ### Get the position of the sinking ball
     with passiveSwarm.access(passiveSwarm):
         if passiveSwarm.dm.getLocalSize() > 0:
@@ -310,6 +292,11 @@ while step < nsteps:
     ### print some stuff    
     if passiveSwarm.dm.getLocalSize() > 0:
         print(f"Step: {str(step).rjust(3)}, time: {dim(time, u.megayear).m:6.2f} [Myr], tracer:  {dim(ymin, u.kilometer):6.2f} [km]")
+
+
+record_tracer(step, time)
+
+while step < nsteps:
     
     ### solve stokes 
     stokes.solve()
@@ -322,13 +309,11 @@ while step < nsteps:
     
     ### advect tracer
     # vel_on_tracer = uw.function.evaluate(stokes.u.fn,tracer)
-    # tracer += dt*vel_on_tracer
-    
-        
+    # tracer += dt*vel_on_tracer    
     step+=1
     time+=dt
-
-# %%
+    
+    record_tracer(step,time)
 
 # %%
 if passiveSwarm.dm.getLocalSize() > 0:
@@ -388,20 +373,24 @@ paperData = np.array([(-6.01810758939326, 1.3776991077026654e-9),
 visc_ratio    = np.round(paperData[:,0])
 paperVelocity = np.round(paperData[:,1], 11)
 
-
 f = interp1d(visc_ratio, paperVelocity, kind='cubic')
-
 x = np.arange(-6,6, 0.01)
 
-if uw.mpi.size == 0:
+if uw.mpi.size == 1 and render:
     import matplotlib.pyplot as plt
     plt.title('check benchmark')
     plt.plot(x, f(x), label='benchmark velocity curve', c='k')
     plt.scatter(np.log10(viscBlock/viscBG), UWvelocity, label='model velocity', c='red', marker='x')
     plt.legend()
 
+
+# %%
+### for uw testing system
+def test_sinkBlock():
+    if uw.mpi.size == 1:
+        assert np.isclose(f(0.0), UWvelocity)
+
+
 # %%
 if render == True and uw.mpi.size == 1:
     plot_mat()
-
-# %%
