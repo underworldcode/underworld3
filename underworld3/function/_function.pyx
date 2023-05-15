@@ -334,12 +334,14 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             var  = varfn.meshvar()
             comp = varfn.component
             var_start = var_start_index[var]
-            arr = outarray[:,var_start+comp]
+            arr = outarray[:,var_start+comp].copy()
             varfns_arrays[varfn] = arr
 
         del outarray
         del coords 
         del cells
+        
+        outvec.destroy()
 
         return varfns_arrays
 
@@ -468,6 +470,12 @@ def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
             comps = var.num_components
             arr = outarray[:,var_start:var_start+comps].copy()
             var_arrays[var.clean_name] = arr
+
+    del outarray
+    del coords 
+    del cells
+    
+    outvec.destroy()
 
 
     return var_arrays
