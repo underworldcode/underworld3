@@ -247,50 +247,6 @@ class SwarmVariable(_api_tools.Stateful):
 
         return values
 
-    # ToDo: I don't think this is used / up to date
-    # @timing.routine_timer_decorator
-    # def project_from(self, meshvar):
-    #     # use method found in
-    #     # /tmp/petsc-build/petsc/src/dm/impls/swarm/tests/ex2.c
-    #     # to project from fields to particles
-
-    #     self.swarm.mesh.dm.clearDS()
-    #     self.swarm.mesh.dm.createDS()
-
-    #     meshdm = meshvar.mesh.dm
-    #     fields = meshvar.field_id
-    #     _, meshvardm = meshdm.createSubDM(fields)
-
-    #     ksp = PETSc.KSP().create()
-    #     ksp.setOptionsPrefix("swarm_project_from_")
-    #     options = PETSc.Options()
-    #     options.setValue("swarm_project_from_ksp_type", "lsqr")
-    #     options.setValue("swarm_project_from_ksp_rtol", 1e-17)
-    #     options.setValue("swarm_project_from_pc_type", "none")
-    #     ksp.setFromOptions()
-
-    #     rhs = meshvardm.getGlobalVec()
-
-    #     M_p = self.swarm.dm.createMassMatrix(meshvardm)
-
-    #     # make particle weight vector
-    #     f = self.swarm.createGlobalVectorFromField(self.clean_name)
-
-    #     # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
-    #     M = meshvardm.createMassMatrix(meshvardm)
-    #     with meshvar.mesh.access():
-    #         M.multTranspose(meshvar.vec_global, rhs)
-
-    #     ksp.setOperators(M_p, M_p)
-    #     ksp.solveTranspose(rhs, f)
-
-    #     self.swarm.dm.destroyGlobalVectorFromField(self.clean_name)
-    #     meshvardm.restoreGlobalVec(rhs)
-    #     meshvardm.destroy()
-    #     ksp.destroy()
-    #     M.destroy()
-    #     M_p.destroy()
-
     @property
     def data(self):
         if self._data is None:
@@ -1425,7 +1381,9 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                self.data[...] = mid_pt_coords[...]
+                self.data[...] = mid_pt_coords[...].copy()
+
+                del mid_pt_coords
 
                 ## Let the swarm be updated, and then move the rest of the way
 
@@ -1446,7 +1404,9 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
-                self.data[...] = new_coords[...]
+                self.data[...] = new_coords[...].copy()
+
+                del new_coords
 
         # Previous position algorithm (cf above) - we use the previous step as the
         # launch point using the current velocity field. This gives a correction to the previous
@@ -1469,7 +1429,7 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
-                self.data[...] = new_coords
+                self.data[...] = new_coords[...].copy()
 
         ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
         ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
@@ -1529,8 +1489,8 @@ class Swarm(_api_tools.Stateful):
                             nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
 
                         interpolated_values = (
-                            swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            # uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
+                            # swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
+                            uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
                         ).astype(swarmVar.dtype)
 
                         swarmVar.data[swarm_size::] = interpolated_values

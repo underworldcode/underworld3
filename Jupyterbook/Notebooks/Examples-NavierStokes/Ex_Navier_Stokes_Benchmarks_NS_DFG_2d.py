@@ -230,7 +230,7 @@ navier_stokes = uw.systems.NavierStokesSwarm(
 )
 
 navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(pipemesh.dim)
-navier_stokes.constitutive_model.Parameters
+navier_stokes.constitutive_model.Parameters.viscosity
 # -
 
 
@@ -303,15 +303,22 @@ print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=Tr
 
 # + tags=[]
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
-nodal_vorticity_from_v.solve()
+# nodal_vorticity_from_v.solve()
 # -
+
+print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
 with swarm.access(v_star, v_star_star, v_star_2):
     v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)    
     v_star_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
     v_star_2.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
+   
 
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+
+
+
 
 # + tags=[]
 # check the mesh if in a notebook / serial
@@ -527,50 +534,29 @@ print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=Tr
 
 for step in range(0, maxsteps):
     delta_t_swarm = 2.0 * navier_stokes.estimate_dt()
-    dt_ns = 1.0 * delta_t_swarm
-    delta_t = min(delta_t_swarm, dt_ns)
+    delta_t = dt_ns / 3  #  min(delta_t_swarm, dt_ns)
     phi = min(1.0, delta_t / dt_ns)
 
-    
     print(f"Memory usage [1] = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
     navier_stokes.solve(timestep=delta_t, 
                         zero_init_guess=False)
     
-    print(f"Memory usage [2] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-    
     stress_projection.solve()
     
-    print(f"Memory usage [2.1] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
     
     with swarm.access(stress_star_p), pipemesh.access():
         
-        print(f"Memory usage [2.1.1] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-        stress_star_p.data[:,0] = (
-            uw.function.evaluate(St.sym_1d[0], swarm.data) )
-        
-        print(f"Memory usage [2.1.2] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-        
-        stress_star_p.data[:,1] = (
-            uw.function.evaluate(St.sym_1d[1], swarm.data) )
-        stress_star_p.data[:,2] = (
-            uw.function.evaluate(St.sym_1d[2], swarm.data) )
-        
-        print(f"Memory usage [2.1.3] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-        stress_star_p.data[...] = St.rbf_interpolate(swarm.data)
-        
-        print(f"Memory usage [2.1.4] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-        
-    print(f"Memory usage [2.5] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-        
+        # stress_star_star_p.data[...] = stress_star_p.data[...]
+        stress_star_p.data[...] = ( phi * St.rbf_interpolate(swarm.data, nnn=3)
+                                   + (1-phi) * stress_star_p.data[...])
         
     with swarm.access(v_star, v_star_star, v_star_2):
         v_star_star.data[...] = v_star.data[...]
+        
+        # v_star.data[...] = ( phi * v_soln.rbf_interpolate(swarm.data, nnn=3)
+        #                            + (1-phi) * v_star.data[...])
+     
         v_star.data[:,0] = (
             phi * uw.function.evaluate(v_soln[0].sym, swarm.data) +
             (1-phi) * v_star.data[:,0]
@@ -579,17 +565,11 @@ for step in range(0, maxsteps):
             phi * uw.function.evaluate(v_soln[1].sym, swarm.data) +
             (1-phi) * v_star.data[:,1]
         )
-        # v_star_2.data[:,:] = 4 * v_star.data[:,:] - v_star_star.data[:,:]
-      
-    
-    print(f"Memory usage [3] = {python_process.memory_info().rss//1000000} Mb", flush=True)
+  
 
     # update passive swarm
     passive_swarm.advection(v_soln.fn, delta_t, corrector=False)
     
-    print(f"Memory usage [4] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-
     npoints = 20
     passive_swarm.dm.addNPoints(npoints)
     with passive_swarm.access(passive_swarm.particle_coordinates):
@@ -598,13 +578,9 @@ for step in range(0, maxsteps):
                 -1 : -(npoints + 1) : -1, :
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
             
-    print(f"Memory usage [5] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
     # update integration swarm
-    swarm.advection(v_soln.fn, delta_t, corrector=False)
+    swarm.advection(v_soln.sym, delta_t, corrector=False)
     
-    print(f"Memory usage [6] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
 
     ps_num = passive_swarm.dm.getSize()
     
@@ -624,9 +600,7 @@ for step in range(0, maxsteps):
                                      index=ts)
         
         passive_swarm.save(filename=f"{savefile}.passive_swarm.{ts}.h5")
-        
-    print(f"Memory usage [7] = {python_process.memory_info().rss//1000000} Mb", flush=True)
-   
+           
         
     if uw.mpi.rank == 0:
         print(f"------", flush=True)
@@ -635,22 +609,9 @@ for step in range(0, maxsteps):
     ts += 1
 
 
-navier_stokes.u_star_fn
-
-with swarm.access():
-    print(v_star_star._meshVar.rbf_interpolate(swarm.particle_coordinates.data))
-    print(v_star._meshVar.rbf_interpolate(swarm.particle_coordinates.data))
-
-with swarm.access():
-    print(uw.function.evaluate(v_star._meshVar.sym[0], swarm.particle_coordinates.data))
 
 
 
 
-
-python_process.memory_info()
-
-
-memoryUse
 
 

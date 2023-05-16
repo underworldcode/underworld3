@@ -902,6 +902,9 @@ class Mesh(_api_tools.Stateful):
         arr = coordsNewL.array
         arrcopy = arr.reshape(-1, self.cdim).copy()
 
+        dmnew.destroy()
+        dmfe.destroy()
+
         return arrcopy
 
     def _build_kd_tree_index(self):
@@ -1563,47 +1566,6 @@ class _MeshVariable(_api_tools.Stateful):
 
         return values
 
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Building K-D tree ... done", flush=True)
-
-        # # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
-        # # old mesh points if we have a near-uniform mesh spacing.
-
-        # num_neighbours = nnn
-
-        # closest_n, distance_n = mesh_kdt.find_closest_n_points(
-        #     num_neighbours, new_coords
-        # )
-
-        # num_local_vertices = new_coords.shape[0]
-        # data_size = D.shape[1]
-
-        # Values = np.zeros((num_local_vertices, data_size))
-        # Weights = np.zeros((num_local_vertices, 1))
-
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Mapping values to vertices ... start", flush=True)
-
-        # epsilon = 1.0e-24
-        # for j in range(num_neighbours):
-        #     j_distance = epsilon + distance_n[:, j]
-        #     j_nearest = closest_n[:, j]
-        #     Weights[:, 0] += 1.0 / j_distance[:]
-
-        # epsilon = 1.0e-24
-        # for d in range(data_size):
-        #     for j in range(num_neighbours):
-        #         j_distance = epsilon + distance_n[:, j]
-        #         j_nearest = closest_n[:, j]
-        #         Values[:, d] += D[j_nearest[:], d] / j_distance[:]
-
-        # Values[...] /= Weights[:]
-
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Mapping values to vertices ... done", flush=True)
-
-        return Values
-
     @timing.routine_timer_decorator
     def save(
         self,
@@ -1707,6 +1669,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         uw.mpi.barrier()
         viewer.destroy()
+        dmfe.destroy()
 
         return
 
