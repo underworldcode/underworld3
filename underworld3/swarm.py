@@ -987,6 +987,9 @@ class Swarm(_api_tools.Stateful):
                             h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
                 comm.barrier()
             comm.barrier()
+
+            del data_copy
+
         return
 
     @timing.routine_timer_decorator
