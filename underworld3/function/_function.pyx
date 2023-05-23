@@ -218,14 +218,15 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
     
     # 1. Extract UW variables.
-    # Let's first collect all the meshvariables present in the expression.
+    # Let's first collect all the meshvariables present in the expression and check 
+    # them for validity. This is applied recursively across the expression
     # Recurse the expression tree.
 
     varfns = set()
     def get_var_fns(exp):
 
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError("Derivative functions are not handled yet unfortunately.")
+            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
             
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         if isUW: 
@@ -265,7 +266,10 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     for varfn in varfns:
         interpolant_varfns[varfn.meshvar().mesh].append(varfn)
 
-    # 2. Evaluate mesh variables.
+    # 2. Evaluate all mesh variables - there is no real
+    # computational benefit in interpolating a subset.
+
+
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
         This function performs the interpolation for the given variables
@@ -313,7 +317,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         # INTERPOLATE ALL VARIABLES ON THE DM
 
-
         # grab closest cells to use as hint for DMInterpolationSetUp
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
@@ -346,6 +349,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         return varfns_arrays
 
+
     # Get map of all variable functions across all meshes. 
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
@@ -377,7 +381,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     else:
         N = mesh.N
         
-
     r = N.base_scalars()[0:dim]
 
     # This likely never applies any more
@@ -413,79 +416,239 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
 
 
+### ------------------------------
+
+def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
+    """
+    Evaluate a given expression at a list of coordinates. 
+
+    Note it is not efficient to call this function to evaluate an expression at 
+    a single coordinate. Instead the user should provide a numpy array of all 
+    coordinates requiring evaluation. 
+
+    Parameters
+    ----------
+    expr: sympy.Basic
+        Sympy expression requiring evaluation.
+    coords: numpy.ndarray
+        Numpy array of coordinates to evaluate expression at. 
+    coord_sys: mesh.N vector coordinate system
+
+    other_arguments: dict
+        Dictionary of other arguments necessary to evaluate function.
+        Not yet implemented. 
+
+    Notes
+    -----
+    This function leverages Sympy's `lambdify` function to provide efficient 
+    expression evaluation. It operates as follows:
+        1. Extract all Underworld variables functions from the expression. Note that 
+           all variables functions must be leaf nodes of the corresponding expression
+           tree, as the variable function arguments must simply be the coordinate 
+           vector `mesh.r`. This is a necessary requirement to avoid complication in the
+           domain decomposed parallel runtime situation, where a modified variable function
+           argument (such as `mesh.r - (10,0)`) might translate the variable function onto
+           a neighbouring subdomain. Handling this would result in great complication and
+           inefficiency, and we therefore disallow it. 
+        2. Each variable function is evaluated at the user provided coordinates to generate
+           an array of evaluated results.
+        3. Replace all variable function instances within the expression with sympy
+           symbol placeholders.
+        4. Generate a Sympy lambdified expression. This expression takes as arguments the
+           user provided coordinates, and the Underworld variable function placeholders. 
+        5. Evaluate the generated lambdified expresson using the coordinate array and 
+           evaluated variable function result arrays.
+        6. Return results array for full expression evaluation. 
+
+
+    """
+
+    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix )):
+        raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+
+    if other_arguments:
+        raise RuntimeError("`other_arguments` functionality not yet implemented.")
+    
+    # 1. Extract UW variables.
+
+    # Let's first collect all the meshvariables present in the expression and check 
+    # them for validity. This is applied recursively across the expression
+    # Recurse the expression tree.
+
+    varfns = set()
+    def unpack_var_fns(exp):
+
+        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
+            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
+            
+        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+        isMatrix = isinstance(exp, sympy.Matrix)
+
+        if isUW: 
+            varfns.add(exp)
+            if exp.args != exp.meshvar().mesh.r:
+                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
+                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
+        elif isMatrix:
+            for sub_exp in exp:
+                varfns.add(sub_exp)
+        else:
+            # Recurse.
+            for arg in exp.args: 
+                unpack_var_fns(arg)
+
+        return
+
+    unpack_var_fns(expr)
+
+    mesh = None
+    for varfn in varfns:
+
+        if mesh is None:
+            mesh = varfn.mesh
+        else:
+            if mesh != varfn.mesh:
+                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
+
+    # 2. Evaluate all mesh variables - there is no real
+    # computational benefit in interpolating a subset.
+
+    # Get map of all variable functions from the cache
+    interpolated_results = {}
+
+    for varfn in varfns:
+        parent, component = uw.discretisation.meshVariable_lookup_by_symbol(mesh, varfn)
+        values = parent.rbf_interpolate(coords, nnn=mesh.dim+1)[:,component]
+        interpolated_results[varfn] = values
+
+        if verbose:
+            print(f"{varfn} = {parent.name}[{component}]")
+
+
+    # 3. Replace mesh variables in the expression with sympy symbols
+    # First generate random string symbols to act as proxies.
+    import string
+    import random
+    varfns_symbols = {}
+    for varfn in interpolated_results.keys():
+        randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
+        varfns_symbols[varfn] = sympy.Symbol(randstr)
+    # subs variable fns in expression for symbols
+    subbedexpr = expr.subs(varfns_symbols)
+
+    # 4. Generate sympy lambdified expression
+    from sympy import lambdify
+    from sympy.vector import CoordSys3D
+    dim = coords.shape[1]
+
+
+    ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
+
+    if coord_sys is not None:
+        N = coord_sys
+    elif mesh is None:
+        N = CoordSys3D(f"N")
+    else:
+        N = mesh.N
+        
+    r = N.base_scalars()[0:dim]
+
+    # # This likely never applies any more
+    # if isinstance(subbedexpr, sympy.vector.Vector):
+    #     subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]
+    # elif isinstance(subbedexpr, sympy.vector.Dyadic):
+    #     subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
+
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, 'numpy' )
+
+    # 5. Eval generated lambda expression
+    coords_list = [ coords[:,i] for i in range(dim) ]  
+    results = lambfn( coords_list, interpolated_results.values() )
+
+    # 6. Return results
+    return results.reshape(-1)
+
+# Go ahead and substitute for the timed version.
+# Note that we don't use the @decorator sugar here so that
+# we can pass in the `class_name` parameter. 
+evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
+
 # This is the interpolation routine used in function-evaluation above
 
-def _interpolate_vars_on_mesh( mesh, np.ndarray coords ):
-    """
-    This function performs the interpolation for the mesh variables
-    on a single mesh.
-    """
-    # Grab the mesh
+# def _interpolate_all_vars_on_mesh( mesh, np.ndarray coords ):
+#     """
+#     This function performs the interpolation for the mesh variables
+#     on a single mesh.
+#     """
+#     # Grab the mesh
 
-    mvars = mesh.vars.values()
-    cdef DM dm = mesh.dm
+#     mvars = mesh.vars.values()
+#     cdef DM dm = mesh.dm
 
-    # Now construct and perform the PETSc evaluate of these variables
-    # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
-    # TODO: Investigate whether it makes sense to default to global operations here.
+#     # Now construct and perform the PETSc evaluate of these variables
+#     # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
+#     # TODO: Investigate whether it makes sense to default to global operations here.
 
-    cdef DMInterpolationInfo ipInfo
-    cdef PetscErrorCode ierr
-    ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
-    ierr = DMInterpolationSetDim(ipInfo, mesh.dim); CHKERRQ(ierr)
+#     cdef DMInterpolationInfo ipInfo
+#     cdef PetscErrorCode ierr
+#     ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
+#     ierr = DMInterpolationSetDim(ipInfo, mesh.dim); CHKERRQ(ierr)
 
-    # Get and set total count of dofs
-    dofcount = 0
-    var_start_index = {}
-    for var in mvars:
-        var_start_index[var] = dofcount
-        dofcount += var.num_components
+#     # Get and set total count of dofs
+#     dofcount = 0
+#     var_start_index = {}
+#     for var in mvars:
+#         var_start_index[var] = dofcount
+#         dofcount += var.num_components
 
-    ierr = DMInterpolationSetDof(ipInfo, dofcount); CHKERRQ(ierr)
+#     ierr = DMInterpolationSetDof(ipInfo, dofcount); CHKERRQ(ierr)
 
-    # Add interpolation points
-    # Get c-pointer to data buffer
-    # First grab copy, as we're unsure about the underlying array's 
-    # memory layout
+#     # Add interpolation points
+#     # Get c-pointer to data buffer
+#     # First grab copy, as we're unsure about the underlying array's 
+#     # memory layout
 
-    coords = np.ascontiguousarray(coords.copy())
-    cdef double* coords_buff = <double*> coords.data
-    ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
+#     coords = np.ascontiguousarray(coords.copy())
+#     cdef double* coords_buff = <double*> coords.data
+#     ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
 
-    # Generate a vector to hold the interpolation results.
-    # First create a numpy array of the required size.
-    cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
-    # Now create a PETSc vector to wrap the numpy memory.
-    cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
+#     # Generate a vector to hold the interpolation results.
+#     # First create a numpy array of the required size.
+#     cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
+#     # Now create a PETSc vector to wrap the numpy memory.
+#     cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
 
-    # INTERPOLATE ALL VARIABLES ON THE DM
+#     # INTERPOLATE ALL VARIABLES ON THE DM
 
-    # grab closest cells to use as hint for DMInterpolationSetUp
-    cdef np.ndarray cells = mesh.get_closest_cells(coords)
-    cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
-    ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
-    if ierr != 0:
-        raise RuntimeError(f"Error {ierr} encountered when trying to interpolate mesh variable.\n"
-                            "Interpolation location is possibly outside the domain.")
-    mesh.update_lvec()
-    cdef Vec pyfieldvec = mesh.lvec
+#     # grab closest cells to use as hint for DMInterpolationSetUp
+#     cdef np.ndarray cells = mesh.get_closest_cells(coords)
+#     cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
+#     ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
+#     if ierr != 0:
+#         raise RuntimeError(f"Error {ierr} encountered when trying to interpolate mesh variable.\n"
+#                             "Interpolation location is possibly outside the domain.")
+#     mesh.update_lvec()
+#     cdef Vec pyfieldvec = mesh.lvec
 
-    # Use our custom routine as the PETSc one is broken. 
-    ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-    ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
+#     # Use our custom routine as the PETSc one is broken. 
+#     ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
+#     ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
-    var_arrays = {}
-    for var in mesh.vars.values():
-            var_start = var_start_index[var]
-            comps = var.num_components
-            arr = outarray[:,var_start:var_start+comps]
-            var_arrays[var.clean_name] = arr.copy()
+#     var_arrays = {}
+#     for var in mesh.vars.values():
+#             for comp, varfn in enumerate(var.sym):
+#                 var_start = var_start_index[var] + comp
+#                 arr = outarray[:,var_start:var_start+1]
+#                 var_arrays[varfn] = arr.copy()
 
-    del outarray
-    del coords 
-    del cells
+#     del outarray
+#     del coords 
+#     del cells
+#     del arr
     
-    outvec.destroy()
+#     outvec.destroy()
 
-    return var_arrays
+#     return var_arrays
+
+
 

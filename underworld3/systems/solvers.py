@@ -1684,35 +1684,6 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         super()._setup_terms()
 
 
-## Lagrangian particle time-integrator
-##
-##
-
-
-class Swarm_Lagrangian_Integrator:
-
-    """Swarm-based Lagrangian Integrator:
-
-    This manages the update of Lagrangian variables
-    on the swarm. It manages the history terms that
-    are required for different order backward-differentiation
-    strategies and will return the appropriate term to
-    include in the implicit solvers.
-
-    """
-
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        integrand: sympy.Function,
-        delta_t: float,
-        integration_order: int = 1,
-        phi: float = 0.3333,
-        solver_name: Optional[str] = "",
-        verbose: Optional[bool] = False,
-    ):
-        pass
-        return
+## Should we put in some TS style functionality here ... e.g. an Adam's moulton sympy wrapper or a BDF wrapper
+## Perhaps ... but this can be explicitly written out in sympy for now while we have a look at the patterns
+## and try to see what is fragile

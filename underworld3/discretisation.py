@@ -642,6 +642,8 @@ class Mesh(_api_tools.Stateful):
             if uw.mpi.rank == 0:
                 print("Saving mesh file")
             self.save(filename + f".mesh.{index}.h5")
+            if uw.mpi.rank == 0:
+                print("Saving mesh file ... done")
 
         if meshVars is not None:
             for var in meshVars:
@@ -653,7 +655,7 @@ class Mesh(_api_tools.Stateful):
                 save_location = filename + f".proxy.{svar.clean_name}.{index}.h5"
                 svar.simple_save(save_location)
 
-        if uw.mpi.rank == 0:
+        if uw.mpi.rank == 0:  ## ???
             checkpoint_xdmf(
                 filename,
                 meshUpdates,
@@ -739,8 +741,12 @@ class Mesh(_api_tools.Stateful):
 
         else:
             if uw.mpi.rank == 0:
-                print("Saving mesh file")
+                print("Saving mesh file", flush=True)
+
             self.save(filename + f".mesh.{index}.h5")
+
+            if uw.mpi.rank == 0:
+                print("Saving mesh file ... done, flush=True")
 
         # Checkpoint file
 
@@ -779,9 +785,6 @@ class Mesh(_api_tools.Stateful):
         """
         Save mesh data to the specified hdf5 file.
 
-        Users will generally create this file, and then
-        append mesh variable data to it via the variable
-        `save` method.
 
         Parameters
         ----------
@@ -2291,3 +2294,17 @@ def checkpoint_xdmf(
         fp.write(xdmf_end)
 
     return
+
+
+def meshVariable_lookup_by_symbol(mesh, sympy_object):
+    """Given a sympy object, scan the mesh variables in `mesh` to find the
+    location (meshvariable, component in the data array) corresponding to the symbol
+    or return None if not found
+    """
+
+    for meshvar in mesh.vars.values():
+        for comp, subvar in enumerate(meshvar.sym_1d):
+            if subvar == sympy_object:
+                return meshvar, comp
+
+    return None
