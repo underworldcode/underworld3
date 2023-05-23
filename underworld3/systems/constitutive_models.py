@@ -405,8 +405,9 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             materialIndex: Union[uw.swarm.SwarmVariable, uw.discretisation.MeshVariable] = None,
             shear_viscosity_0: Union[list, sympy.Function] = [1],
             shear_viscosity_min: Union[list, sympy.Function] = [-sympy.oo],
+            shear_viscosity_max: Union[list, sympy.Function] = [sympy.oo],
             yield_stress: Union[list, sympy.Function] = [sympy.oo],
-            yield_stress_min: Union[list, sympy.Function] = [sympy.oo],
+            yield_stress_min: Union[list, sympy.Function] = [-sympy.oo],
             strainrate_inv_II: sympy.Function = sympy.oo,
             strainrate_inv_II_min: float = 0.,
             averaging_method: str = 'HA'
@@ -419,6 +420,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
             inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
             inner_self._shear_viscosity_min = sympy.sympify(shear_viscosity_min)
+            inner_self._shear_viscosity_max = sympy.sympify(shear_viscosity_max)
 
             inner_self._yield_stress = sympy.sympify(yield_stress)
             inner_self._yield_stress_min = sympy.sympify(yield_stress_min)
@@ -448,6 +450,15 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         @shear_viscosity_min.setter
         def shear_viscosity_min(inner_self, value: Union[list, sympy.Function]):
             inner_self._shear_viscosity_min = value
+            inner_self._reset()
+
+        @property
+        def shear_viscosity_max(inner_self):
+            return inner_self._shear_viscosity_max
+
+        @shear_viscosity_max.setter
+        def shear_viscosity_max(inner_self, value: Union[list, sympy.Function]):
+            inner_self._shear_viscosity_max = value
             inner_self._reset()
 
         @property
@@ -513,20 +524,27 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         def viscosity(inner_self):
 
             import warnings
+
+            if type(inner_self.shear_viscosity_min) == float:
+                inner_self.shear_viscosity_min = list([inner_self.shear_viscosity_min])
+            if type(inner_self.shear_viscosity_max) == float:
+                inner_self.shear_viscosity_max = list([inner_self.shear_viscosity_max])
     
             if inner_self.materialIndex == None:
                 warnings.warn("materialIndex not specified, using the first value for each parameter", stacklevel=2)
-                
+
                 yield_stress = inner_self.yield_stress[0]
                 yield_stress_min = inner_self.yield_stress_min[0]
 
                 shear_viscosity_min = inner_self.shear_viscosity_min[0]
+                shear_viscosity_max = inner_self.shear_viscosity_max[0]
+
                 shear_viscosity_0 = inner_self.shear_viscosity_0[0]
 
                 if yield_stress_min == sympy.oo:
                     yield_stress_fn = yield_stress
                 else:
-                    yield_stress_fn = sympy.Min(yield_stress, yield_stress_min)
+                    yield_stress_fn = sympy.Max(yield_stress, yield_stress_min)
                 
                 if yield_stress_fn == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     effective_viscosity = shear_viscosity_0
@@ -536,40 +554,53 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
                     if inner_self.averaging_method.casefold() == 'min':
                         if yield_visc != 0:
-                            effective_viscosity = sympy.Max(shear_viscosity_min, sympy.Min(yield_visc, shear_viscosity_0) )
+                            effective_viscosity = sympy.Min(shear_viscosity_max, sympy.Max(shear_viscosity_min, sympy.Min(yield_visc, shear_viscosity_0) ) )
                         else:
-                            effective_viscosity = shear_viscosity_0       
+                            effective_viscosity = sympy.Min(shear_viscosity_max, sympy.Max( shear_viscosity_min, shear_viscosity_0 ) )
                     else:
                         if yield_visc != 0:
-                            effective_viscosity = sympy.Max(shear_viscosity_min, 1./((1./shear_viscosity_0) + (1./yield_visc)) )
+                            effective_viscosity = sympy.Min(shear_viscosity_max, sympy.Max(shear_viscosity_min, 1./((1./shear_viscosity_0) + (1./yield_visc)) ) )
                         else:
-                            effective_viscosity = shear_viscosity_0
+                            effective_viscosity = sympy.Min(shear_viscosity_max, sympy.Max( shear_viscosity_min, shear_viscosity_0 ) )
                           
             else:
+                ### creates list of values that has the same length as the material index
                 if len(inner_self.yield_stress) != inner_self.materialIndex.indices:
-                    # warnings.warn(f"Number of values in yield_stress ({len(inner_self.yield_stress)}) does not match the number of material indices ({inner_self.materialIndex.indices}).", stacklevel=2)
-                    inner_self.yield_stress = sympy.Matrix(np.repeat(sympy.oo, inner_self.materialIndex.indices))
+                    if len(inner_self.yield_stress) > 1:
+                        warnings.warn(f"Number of values in yield_stress ({len(inner_self.yield_stress)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.", stacklevel=2)
+                    inner_self.yield_stress = sympy.Matrix(np.repeat(inner_self.yield_stress[0], inner_self.materialIndex.indices))
 
                 if len(inner_self.yield_stress_min) != inner_self.materialIndex.indices:
-                    # warnings.warn(f"Number of values in yield_stress ({len(inner_self.yield_stress_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}).", stacklevel=2)
-                    inner_self.yield_stress_min = sympy.Matrix(np.repeat(sympy.oo, inner_self.materialIndex.indices))
+                    if len(inner_self.yield_stress_min) > 1:
+                        warnings.warn(f"Number of values in yield_stress ({len(inner_self.yield_stress_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.", stacklevel=2)
+                    inner_self.yield_stress_min = sympy.Matrix(np.repeat(inner_self.yield_stress_min[0], inner_self.materialIndex.indices))
                     
 
                 if len(inner_self.shear_viscosity_0) != inner_self.materialIndex.indices:
-                    # warnings.warn(f"Number of values in shear_viscosity_0 ({len(inner_self.shear_viscosity_0)}) does not match the number of material indices ({inner_self.materialIndex.indices}).", stacklevel=2)
-                    inner_self.shear_viscosity_0 = sympy.Matrix(np.repeat(1, inner_self.materialIndex.indices))
+                    if len(inner_self.shear_viscosity_0) > 1:
+                        warnings.warn(f"Number of values in shear_viscosity_0 ({len(inner_self.shear_viscosity_0)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.", stacklevel=2)
+                    inner_self.shear_viscosity_0 = sympy.Matrix(np.repeat(inner_self.shear_viscosity_0[0], inner_self.materialIndex.indices))
 
                 if len(inner_self.shear_viscosity_min) != inner_self.materialIndex.indices:
-                    # warnings.warn(f"Number of values in shear_viscosity_0 ({len(inner_self.shear_viscosity_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}).", stacklevel=2)
-                    inner_self.shear_viscosity_min = sympy.Matrix(np.repeat(-sympy.oo, inner_self.materialIndex.indices))
+                    if len(inner_self.shear_viscosity_min) > 1:
+                        warnings.warn(f"Number of values in shear_viscosity_min ({len(inner_self.shear_viscosity_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.", stacklevel=2)
+                    inner_self.shear_viscosity_min = sympy.Matrix(np.repeat(inner_self.shear_viscosity_min[0], inner_self.materialIndex.indices))
+
+                if len(inner_self.shear_viscosity_max) != inner_self.materialIndex.indices:
+                    if len(inner_self.shear_viscosity_max) > 1:
+                        warnings.warn(f"Number of values in shear_viscosity_max ({len(inner_self.shear_viscosity_max)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.", stacklevel=2)
+                    inner_self.shear_viscosity_max = sympy.Matrix(np.repeat(inner_self.shear_viscosity_max[0], inner_self.materialIndex.indices))
 
                 yield_stress = sympy.Matrix(inner_self.yield_stress)
                 yield_stress_min = sympy.Matrix(inner_self.yield_stress_min)
 
                 shear_viscosity_min = sympy.Matrix(inner_self.shear_viscosity_min)
+                shear_viscosity_max = sympy.Matrix(inner_self.shear_viscosity_max)
 
-                if yield_stress_min[0] == sympy.oo:
-                    yield_stress_fn = yield_stress
+                shear_viscosity_0 = sympy.Matrix(inner_self.shear_viscosity_0)
+
+                if yield_stress_min[0] == -sympy.oo:
+                    yield_stress_fn = sympy.Matrix(yield_stress)
                 else:
                     yield_stress_list = []
 
@@ -578,7 +609,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
                     yield_stress_fn = sympy.Matrix(yield_stress_list)  
 
-                shear_viscosity_0 = sympy.Matrix(inner_self.shear_viscosity_0)
                 
                 if yield_stress_fn[0] == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     viscosity_fn = shear_viscosity_0  
@@ -595,14 +625,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                     for i in range(len(yield_visc)):
                         if inner_self.averaging_method.casefold() == 'min':
                             if yield_visc[i] != 0:
-                                viscosity_list.append( sympy.Max(shear_viscosity_min[i], sympy.Min(yield_visc[i], shear_viscosity_0[i]) ) )
+                                viscosity_list.append( sympy.Min(shear_viscosity_max[i], sympy.Max(shear_viscosity_min[i], sympy.Min(yield_visc[i], shear_viscosity_0[i]) ) ) )
                             else:
-                                viscosity_list.append( shear_viscosity_0[i] ) 
+                                viscosity_list.append( sympy.Min(shear_viscosity_max[i], sympy.Max(shear_viscosity_min[i], shear_viscosity_0[i] )  ) )
                         else:
                             if yield_visc[i] != 0:
-                                viscosity_list.append( sympy.Max(shear_viscosity_min[i], 1/((1/shear_viscosity_0[i]) + (1/yield_visc[i])) ) )
+                                viscosity_list.append( sympy.Min(shear_viscosity_max[i], sympy.Max(shear_viscosity_min[i], 1/((1/shear_viscosity_0[i]) + (1/yield_visc[i])) ) ) )
                             else:
-                                viscosity_list.append( shear_viscosity_0[i]) 
+                                viscosity_list.append( sympy.Min(shear_viscosity_max[i], sympy.Max(shear_viscosity_min[i], shear_viscosity_0[i] )  ) )
                                 
                         viscosity_fn = sympy.Matrix(viscosity_list)
                             
