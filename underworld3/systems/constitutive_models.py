@@ -525,10 +525,18 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
             import warnings
 
+            if type(inner_self.shear_viscosity_0) == float:
+                inner_self.shear_viscosity_0 = list([inner_self.shear_viscosity_0])
+
             if type(inner_self.shear_viscosity_min) == float:
                 inner_self.shear_viscosity_min = list([inner_self.shear_viscosity_min])
             if type(inner_self.shear_viscosity_max) == float:
                 inner_self.shear_viscosity_max = list([inner_self.shear_viscosity_max])
+
+            if type(inner_self.yield_stress) == float:
+                inner_self.yield_stress = list([inner_self.yield_stress])
+            if type(inner_self.yield_stress_min) == float:
+                inner_self.yield_stress_min = list([inner_self.yield_stress_min])
     
             if inner_self.materialIndex == None:
                 warnings.warn("materialIndex not specified, using the first value for each parameter", stacklevel=2)
