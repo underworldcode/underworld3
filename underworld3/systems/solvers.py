@@ -1422,7 +1422,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                 rf"u_star{self.instances}",
                 self.mesh,
                 self.mesh.dim,
-                degree=self._u.degree - 1,
+                degree=self._u.degree,
                 varsymbol=r"{U^{*}}",
             )
             self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(
@@ -1453,7 +1453,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
                     rf"u_star2{self.instances}",
                     self.mesh,
                     self.mesh.dim,
-                    degree=self._u.degree - 1,
+                    degree=self._u.degree,
                     varsymbol=r"{U^{**}}",
                 )
                 self._u_star_star_projector = uw.systems.solvers.SNES_Vector_Projection(

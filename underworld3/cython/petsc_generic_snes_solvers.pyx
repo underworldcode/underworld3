@@ -1076,7 +1076,7 @@ class SNES_Stokes:
         options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u.setName("velocity")
-        self.petsc_fe_u_id = self.dm.getNumFields()  ## can we avoid re-numbering ?
+        self.petsc_fe_u_id = self.dm.getNumFields() 
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
         options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
@@ -1491,15 +1491,6 @@ class SNES_Stokes:
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec)
 
-        # We can remove this bit of cython now 
-        # 
-        # cdef DM dm = self.dm
-        # cdef Vec cmesh_lvec
-        # PETSc == 3.16 introduced an explicit interface 
-        # for setting the aux-vector which we'll use when available.
-        # cmesh_lvec = self.mesh.lvec
-        # ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
-
         # Picard solves if requested 
 
         tolerance = self.tolerance
@@ -1514,7 +1505,6 @@ class SNES_Stokes:
                 self.snes.setFromOptions()
                 self.snes.solve(None, gvec)
 
-            
             # low accuracy newtonls
 
             self.snes.setType("newtonls")
@@ -1542,8 +1532,8 @@ class SNES_Stokes:
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
                 sdm.localToGlobal(lvec, sgvec)
+                gvec.restoreSubVector(self._subdict[name][0], sgvec) 
 
-                
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
                 # derived from the sub-dm (as opposed to the var.vec local vector), else 
@@ -1719,8 +1709,7 @@ class SNES_SaddlePoint:
         p_continous = self.p.continuous
 
         self.dm   = mesh.dm.clone()
-
-            
+  
         options = PETSc.Options()
         options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
@@ -2095,6 +2084,8 @@ class SNES_SaddlePoint:
                     sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                     sdm   = self._subdict[name][1]                     # Get subdm corresponding to field
                     sdm.localToGlobal(var.vec,sgvec)                   # Copy variable data into gvec
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec) 
+
         else:
             gvec.array[:] = 0.
 
@@ -2133,6 +2124,7 @@ class SNES_SaddlePoint:
                 lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
                 sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
                 sdm.localToGlobal(lvec, sgvec)
+                gvec.restoreSubVector(self._subdict[name][0], sgvec) 
 
                 # Put in boundaries values.
                 # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
@@ -2144,5 +2136,6 @@ class SNES_SaddlePoint:
                 # Now copy into the user vec.
                 var.vec.array[:] = lvec.array[:]
                 sdm.restoreLocalVec(lvec)
+
 
         self.dm.restoreGlobalVec(gvec)
