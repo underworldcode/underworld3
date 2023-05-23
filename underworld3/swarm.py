@@ -973,26 +973,20 @@ class Swarm(_api_tools.Stateful):
                             chunks=True,
                             maxshape=(None, data_copy.shape[1]),
                         )
-            else:
-                # is this not the same as setting i == comm.rank ??
-                # comm.barrier()
 
-                # for i in range(1, comm.size):
-                #    if comm.rank == i:
-                i == comm.rank
-                with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
-                    h5f["coordinates"].resize(
-                        (h5f["coordinates"].shape[0] + data_copy.shape[0]),
-                        axis=0,
-                    )
-                    # passive swarm, zero local particles is not unusual
-                    if data_copy.shape[0] > 0:
-                        h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
-
-            # Make sure everything everyone is done before cleaning up
             comm.barrier()
-            del data_copy
-
+            for i in range(1, comm.size):
+                if comm.rank == i:
+                    with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                        h5f["coordinates"].resize(
+                            (h5f["coordinates"].shape[0] + data_copy.shape[0]),
+                            axis=0,
+                        )
+                        # passive swarm, zero local particles is not unusual
+                        if data_copy.shape[0] > 0:
+                            h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
+                comm.barrier()
+            comm.barrier()
         return
 
     @timing.routine_timer_decorator
