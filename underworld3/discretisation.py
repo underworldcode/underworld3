@@ -133,6 +133,7 @@ class Mesh(_api_tools.Stateful):
         refinement_callback=None,
         boundaries=None,
         distribute=True,
+        name=None,
         *args,
         **kwargs,
     ):
@@ -176,6 +177,7 @@ class Mesh(_api_tools.Stateful):
         self.filename = filename
         self.boundaries = boundaries
         self.refinement_callback = refinement_callback
+        self.name = name
 
         self.dm0 = self.dm.clone()
         self.sf1 = None
@@ -205,7 +207,12 @@ class Mesh(_api_tools.Stateful):
         else:
             self.sf = self.sf0  # could be None !
 
-        self.dm.setName("uw_mesh")
+        if self.name is None:
+            self.name = "mesh"
+            self.dm.setName("uw_mesh")
+
+        else:
+            self.dm.setName(f"uw_{self.name}")
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
@@ -610,13 +617,14 @@ class Mesh(_api_tools.Stateful):
         return arr.reshape(-1, self.cdim)
 
     @timing.routine_timer_decorator
-    def write_timestep_xdmf(
+    def write_timestep(
         self,
         filename: str,
-        meshUpdates: bool = True,
+        index: int,
+        outputPath: Optional[str] = "",
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
-        index: Optional[int] = 0,
+        meshUpdates: bool = True,
     ):
         """
         Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
@@ -628,36 +636,40 @@ class Mesh(_api_tools.Stateful):
         options.setValue("viewer_hdf5_sp_output", True)
         # options.setValue("viewer_hdf5_collective", True)
 
+        import os
+
+        output_base_name = os.path.join(outputPath, filename)
+
         # Checkpoint the mesh file itself if required
 
         if not meshUpdates:
             from pathlib import Path
 
-            mesh_file = filename + ".mesh.0.h5"
+            mesh_file = output_base_name + ".mesh.00000.h5"
             path = Path(mesh_file)
             if not path.is_file():
                 self.save(mesh_file)
 
         else:
-            if uw.mpi.rank == 0:
-                print("Saving mesh file")
-            self.save(filename + f".mesh.{index}.h5")
-            if uw.mpi.rank == 0:
-                print("Saving mesh file ... done")
+            self.save(output_base_name + f".mesh.{index:05}.h5")
 
         if meshVars is not None:
             for var in meshVars:
-                save_location = filename + f".{var.clean_name}.{index}.h5"
+                save_location = (
+                    output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
+                )
                 var.simple_save(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
-                save_location = filename + f".proxy.{svar.clean_name}.{index}.h5"
+                save_location = (
+                    output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
+                )
                 svar.simple_save(save_location)
 
-        if uw.mpi.rank == 0:  ## ???
+        if uw.mpi.rank == 0:
             checkpoint_xdmf(
-                filename,
+                output_base_name,
                 meshUpdates,
                 meshVars,
                 swarmVars,
@@ -740,20 +752,14 @@ class Mesh(_api_tools.Stateful):
                 self.save(mesh_file)
 
         else:
-            if uw.mpi.rank == 0:
-                print("Saving mesh file", flush=True)
-
-            self.save(filename + f".mesh.{index}.h5")
-
-            if uw.mpi.rank == 0:
-                print("Saving mesh file ... done, flush=True")
+            self.save(filename + f".mesh.{index:05}.h5")
 
         # Checkpoint file
 
         if unique_id:
-            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index}.h5"
+            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index:05}.h5"
         else:
-            checkpoint_file = filename + f".checkpoint.{index}.h5"
+            checkpoint_file = filename + f".checkpoint.{index:05}.h5"
 
         self.dm.setName("uw_mesh")
         viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
@@ -1661,7 +1667,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         lvec.array[...] = self.coords.reshape(-1)[...]
         dmnew.localToGlobal(lvec, gvec, addv=False)
-        gvec.setName("X")
+        gvec.setName("coordinates")
 
         # Check that this is also synchronised
         # self.mesh.dm.localToGlobal(self._lvec, self._gvec, addv=False)
@@ -1670,6 +1676,9 @@ class _MeshVariable(_api_tools.Stateful):
         viewer(self._gvec)
         viewer(gvec)
 
+        dmnew.restoreGlobalVec(gvec)
+        dmnew.restoreLocalVec(lvec)
+
         uw.mpi.barrier()
         viewer.destroy()
         dmfe.destroy()
@@ -1677,7 +1686,7 @@ class _MeshVariable(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def read_from_vertex_checkpoint(
+    def read_timestep(
         self,
         data_file,
         data_name,
@@ -1708,42 +1717,13 @@ class _MeshVariable(_api_tools.Stateful):
 
             h5f = h5py.File(data_file)
             D = h5f["fields"][data_name][()]
-            X = h5f["fields"]["X"][()]
+            X = h5f["fields"]["coordinates"][()]
             h5f.close()
 
             if len(D.shape) == 1:
                 D = D.reshape(-1, 1)
 
             return X, D
-
-        # def field_from_vertex_checkpoint(
-        #     data_file=None,
-        #     data_name=None,
-        #     mesh_file=None,
-        #     data_degree=1,
-        # ):
-        #     """Read the mesh data as a swarm-like value"""
-
-        #     # data_field_name = data_name + f"_P{data_degree}"
-
-        #     h5f = h5py.File(data_file)
-        #     data_fields = h5f["vertex_fields"].keys()
-        #     data_field_name = next(
-        #         (field for field in data_fields if data_name in field), None
-        #     )
-
-        #     h5f = h5py.File(data_file)
-        #     D = h5f["vertex_fields"][data_field_name][()]
-        #     h5f.close()
-
-        #     h5f = h5py.File(mesh_file)
-        #     X = h5f["geometry"]["vertices"][()]
-        #     h5f.close()
-
-        #     if len(D.shape) == 1:
-        #         D = D.reshape(-1, 1)
-
-        #     return X, D
 
         def map_to_vertex_values(X, D, nnn=4, verbose=False):
             # Map from "swarm" of points to nodal points
@@ -1772,13 +1752,6 @@ class _MeshVariable(_api_tools.Stateful):
             data_file,
             data_name,
         )
-        # else:
-        #     X, D = field_from_vertex_checkpoint(
-        #         data_file,
-        #         data_name,
-        #         vertex_mesh_file,
-        #         vertex_field_degree,
-        #     )
 
         remapped_D = map_to_vertex_values(X, D)
 
@@ -2114,9 +2087,9 @@ def checkpoint_xdmf(
     ## zeroth one if this option is turned off
 
     if not meshUpdates:
-        mesh_filename = filename + ".mesh.0.h5"
+        mesh_filename = filename + ".mesh.00000.h5"
     else:
-        mesh_filename = filename + f".mesh.{index}.h5"
+        mesh_filename = filename + f".mesh.{index:05}.h5"
 
     ## Obtain the mesh information
 
@@ -2166,12 +2139,12 @@ def checkpoint_xdmf(
 <!ENTITY MeshData "{os.path.basename(mesh_filename)}">
 """
     for var in meshVars:
-        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
         header += f"""
 <!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
 
     for var in swarmVars:
-        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        var_filename = filename + f".proxy.{var.clean_name}.{index:05}.h5"
         header += f"""
 <!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
 
@@ -2213,7 +2186,7 @@ def checkpoint_xdmf(
 
     attributes = ""
     for var in meshVars:
-        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        var_filename = filename + f"mesh.{var.clean_name}.{index:05}.h5"
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
@@ -2247,7 +2220,7 @@ def checkpoint_xdmf(
         attributes += var_attribute
 
     for var in swarmVars:
-        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        var_filename = filename + f".proxy.{var.clean_name}.{index:05}.h5"
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
@@ -2286,7 +2259,7 @@ def checkpoint_xdmf(
 </Xdmf>
     """
 
-    xdmf_filename = filename + f".{index}.xdmf"
+    xdmf_filename = filename + f".mesh.{index:05}.xdmf"
     with open(xdmf_filename, "w") as fp:
         fp.write(header)
         fp.write(xdmf_start)

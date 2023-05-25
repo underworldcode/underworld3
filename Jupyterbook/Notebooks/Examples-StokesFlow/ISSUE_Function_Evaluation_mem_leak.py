@@ -32,7 +32,7 @@ import sympy
 print(f"Memory usage: {uw.utilities.mem_footprint()} Mb");
 
 cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
-particle_fill = uw.options.getInt("particle_fill", default=12)
+particle_fill = uw.options.getInt("particle_fill", default=6)
 viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 
 

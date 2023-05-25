@@ -357,7 +357,7 @@ class SwarmVariable(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def load(
+    def read_timestep(
         self,
         filename: str,
         swarmFilename: str,
@@ -993,7 +993,7 @@ class Swarm(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def load(
+    def read_timestep(
         self,
         filename: str,
     ):
@@ -1049,11 +1049,12 @@ class Swarm(_api_tools.Stateful):
         self.dm.viewXDMF(x_swarm_fname)
 
     @timing.routine_timer_decorator
-    def save_checkpoint(
+    def write_timestep(
         self,
-        swarmName: str,
-        swarmVars: list,
+        filename: str,
+        swarmname: str,
         index: int,
+        swarmVars: Optional[list] = None,
         outputPath: Optional[str] = "",
         time: Optional[int] = None,
         compression: Optional[bool] = False,
@@ -1082,14 +1083,23 @@ class Swarm(_api_tools.Stateful):
             The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.
         """
 
+        # This will eliminate the issue of whether or not to put path separators in the
+        # outputPath. Also does the right thing if outputPath is ""
+
+        import os
+
+        output_base_name = os.path.join(outputPath, filename) + "." + swarmname
+
         # could also try to coerce this to be a list and raise if it fails (tuple, singleton ... )
-        if swarmVars != None and not isinstance(swarmVars, list):
+        # also ... why the typechecking if this can still happen
+
+        if swarmVars is not None and not isinstance(swarmVars, list):
             raise RuntimeError("`swarmVars` does not appear to be a list.")
 
         else:
             ### save the swarm particle location
             self.save(
-                filename=f"{outputPath}{swarmName}-{index:05d}.h5",
+                filename=f"{output_base_name}.{index:05d}.h5",
                 compression=compression,
                 compressionType=compressionType,
                 force_sequential=force_sequential,
@@ -1099,7 +1109,7 @@ class Swarm(_api_tools.Stateful):
         if swarmVars != None:
             for field in swarmVars:
                 field.save(
-                    filename=f"{outputPath}{field.name}-{index:05d}.h5",
+                    filename=f"{output_base_name}.{field.name}.{index:05d}.h5",
                     compression=compression,
                     compressionType=compressionType,
                     force_sequential=force_sequential,
@@ -1107,7 +1117,7 @@ class Swarm(_api_tools.Stateful):
 
         if uw.mpi.rank == 0:
             ### only need to combine the h5 files to a single xdmf on one proc
-            with open(f"{outputPath}{swarmName}-{index:05d}.xmf", "w") as xdmf:
+            with open(f"{output_base_name}.{index:05d}.xdmf", "w") as xdmf:
                 # Write the XDMF header
                 xdmf.write('<?xml version="1.0" ?>\n')
                 xdmf.write(
@@ -1115,14 +1125,14 @@ class Swarm(_api_tools.Stateful):
                 )
                 xdmf.write("<Domain>\n")
                 xdmf.write(
-                    f'<Grid Name="{swarmName}-{index:05d}" GridType="Uniform">\n'
+                    f'<Grid Name="{output_base_name}.{index:05d}" GridType="Uniform">\n'
                 )
 
                 if time != None:
                     xdmf.write(f'	<Time Value="{time}" />\n')
 
                 # Write the grid element for the HDF5 dataset
-                with h5py.File(f"{outputPath}{swarmName}-{index:05}.h5", "r") as h5f:
+                with h5py.File(f"{output_base_name}.{index:05}.h5", "r") as h5f:
                     xdmf.write(
                         f'	<Topology Type="POLYVERTEX" NodesPerElement="{h5f["coordinates"].shape[0]}"> </Topology>\n'
                     )
@@ -1139,7 +1149,7 @@ class Swarm(_api_tools.Stateful):
                 if swarmVars != None:
                     for field in swarmVars:
                         with h5py.File(
-                            f"{outputPath}{field.name}-{index:05d}.h5", "r"
+                            f"{output_base_name}.{field.name}.{index:05d}.h5", "r"
                         ) as h5f:
                             if h5f["data"].dtype == np.int32:
                                 xdmf.write(
@@ -1349,13 +1359,13 @@ class Swarm(_api_tools.Stateful):
                         V_fn_matrix[d], self.data
                     ).reshape(-1)
 
-                corrected_position = X0.data + delta_t * v_at_Vpts
+                corrected_position = X0.data.copy() + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
                     corrected_position = restore_points_to_domain_func(
                         corrected_position
                     )
 
-                updated_current_coords = 0.5 * (corrected_position + self.data)
+                updated_current_coords = 0.5 * (corrected_position + self.data.copy())
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
@@ -1365,6 +1375,9 @@ class Swarm(_api_tools.Stateful):
                     )
 
                 self.data[...] = updated_current_coords[...]
+
+                del updated_current_coords
+                del v_at_Vpts
 
         with self.access(X0):
             X0.data[...] = self.data[...]
@@ -1380,14 +1393,14 @@ class Swarm(_api_tools.Stateful):
                         V_fn_matrix[d], self.data
                     ).reshape(-1)
 
-                mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
+                mid_pt_coords = self.data[...].copy() + 0.5 * delta_t * v_at_Vpts
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
                 if restore_points_to_domain_func is not None:
                     mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                self.data[...] = mid_pt_coords[...].copy()
+                self.data[...] = mid_pt_coords[...]
 
                 del mid_pt_coords
 
@@ -1404,15 +1417,16 @@ class Swarm(_api_tools.Stateful):
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
 
-                new_coords = X0.data[...] + delta_t * v_at_Vpts
+                new_coords = X0.data[...].copy() + delta_t * v_at_Vpts
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
-                self.data[...] = new_coords[...].copy()
+                self.data[...] = new_coords[...]
 
                 del new_coords
+                del v_at_Vpts
 
         # Previous position algorithm (cf above) - we use the previous step as the
         # launch point using the current velocity field. This gives a correction to the previous
@@ -1494,7 +1508,6 @@ class Swarm(_api_tools.Stateful):
 
                         interpolated_values = (
                             swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            # uw.function.evaluate(
                             #     swarmVar._meshVar.fn, self.mesh.particle_X_orig
                             # )
                         ).astype(swarmVar.dtype)
@@ -1513,60 +1526,55 @@ class Swarm(_api_tools.Stateful):
         return
 
 
-# class Swarm_Lagrangian_Updater:
+class Swarm_Lagrangian_Updater:
 
-#     """Swarm-based Lagrangian History Manager:
+    """Swarm-based Lagrangian History Manager:
 
-#     This manages the update of a Lagrangian variable, $\psi$
-#     on the swarm across timesteps.
+    This manages the update of a Lagrangian variable, $\psi$
+    on the swarm across timesteps.
 
-#     """
+    """
 
-#     instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
 
-#     @timing.routine_timer_decorator
-#     def __init__(
-#         self,
-#         mesh: uw.discretisation.Mesh,
-#         psi: sympy.Function,
-#         psi_star: Union[SwarmVariable, list],
-#         dt_physical: float,
-#         verbose: Optional[bool] = False,
-#     ):
-#         self.mesh = mesh
-#         self.psi = psi
-#         self.dt_physical = dt_physical
-#         self.dt_numerical = dt_numerical
-#         self.verbose = verbose
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi: sympy.Function,
+        psi_star: Union[SwarmVariable, list],
+        dt_physical: float,
+        verbose: Optional[bool] = False,
+    ):
+        self.mesh = mesh
+        self.psi = psi
+        self.psi_star = psi_star
+        self.dt_physical = dt_physical
+        self.verbose = verbose
 
-#         if isinstance(psi_star, SwarmVariable):
-#             self.order = 1
-#             self.psi_star = sympy.Matrix([psi_star])
-#         else:
-#             self.order = len(psi_star)
-#             self.psi_star = sympy.Matrix(psi_star)
+        if isinstance(psi_star, SwarmVariable):
+            self.order = 1
+            self.psi_star = list(psi_star)
+        else:
+            self.order = len(psi_star)
 
-#         return
+        return
 
-#     def update(
-#         dt: float,
-#     ):
-#         phi = min(1.0, dt / self.dt_physical)
+    def update(
+        dt: float,
+    ):
+        phi = min(1.0, dt / self.dt_physical)
 
-#         for h in range(self.order):
-#             i = self.order - (h+1)
+        for h in range(self.order):
+            i = self.order - (h + 1)
 
-#             with swarm.access(psi[i]):
-#                 psi[i].data[...] = psi[i-1].data[...]
+            # copy the information down the chain
+            with swarm.access(psi[i]):
+                psi[i].data[...] = psi[i - 1].data[...]
 
-
-#         for h in range(self.order):
-#             for c in range()
-#             psi.data[:, 0] = (
-#                 phi * uw.function.evalf(v_soln[0].sym, swarm.data)
-#                 + (1 - phi) * v_star.data[:, 0]
-#             )
-#             v_star.data[:, 1] = (
-#                 phi * uw.function.evalf(v_soln[1].sym, swarm.data)
-#                 + (1 - phi) * v_star.data[:, 1]
-#             )
+        with swarm.access(psi[i]):
+            for c in range(psi.num_components):
+                psi.data[:, c] = (
+                    phi * uw.function.evalf(psi.sym_1d[c], swarm.data)
+                    + (1 - phi) * psi.data[:, c]
+                )

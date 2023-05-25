@@ -35,9 +35,9 @@ v_values = uw.swarm.SwarmVariable("Vs", swarm, mesh.dim, proxy_degree=3)
 
 swarm.populate(fill_param=3)
 
+
 # +
 def test_scalar_projection():
-
     # The following test projects scalar values defined on a
     # swarm using a Sympy function to a mesh variable.
 
@@ -45,7 +45,7 @@ def test_scalar_projection():
 
     # Set the values on the swarm variable
     with swarm.access(s_values):
-        s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, coord_sys=mesh.N)
+        s_values.data[:, 0] = uw.function.evalf(s_fn, swarm.data, coord_sys=mesh.N)
 
     # Prepare projection of swarm values onto the mesh nodes.
     scalar_projection = uw.systems.Projection(mesh, s_soln)
@@ -57,14 +57,13 @@ def test_scalar_projection():
 
 
 def test_vector_projection():
-
     s_fn_x = sympy.cos(5.0 * sympy.pi * x) * sympy.cos(5.0 * sympy.pi * y)
     s_fn_y = sympy.sin(5.0 * sympy.pi * x) * sympy.sin(5.0 * sympy.pi * y)
 
     # Set the values on the swarm variable
     with swarm.access(v_values):
-        v_values.data[:, 0] = uw.function.evaluate(s_fn_x, swarm.data, coord_sys=mesh.N)
-        v_values.data[:, 1] = uw.function.evaluate(s_fn_y, swarm.data, coord_sys=mesh.N)
+        v_values.data[:, 0] = uw.function.evalf(s_fn_x, swarm.data, coord_sys=mesh.N)
+        v_values.data[:, 1] = uw.function.evalf(s_fn_y, swarm.data, coord_sys=mesh.N)
 
     vector_projection = uw.systems.Vector_Projection(mesh, v_soln)
     vector_projection.uw_function = v_values.sym
@@ -80,11 +79,10 @@ def test_vector_projection():
 
 
 def test_gradient_recovery():
-
     fn = sympy.cos(4.0 * sympy.pi * x)
 
     with mesh.access(s_soln):
-        s_soln.data[:, 0] = uw.function.evaluate(fn, s_soln.coords[:], coord_sys=mesh.N)
+        s_soln.data[:, 0] = uw.function.evalf(fn, s_soln.coords[:], coord_sys=mesh.N)
 
     scalar_projection = uw.systems.Projection(mesh, gradient)
     scalar_projection.uw_function = s_soln.sym.diff(x)[0]

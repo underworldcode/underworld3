@@ -13,7 +13,7 @@
 #     name: python3
 # ---
 
-# + [markdown] {"tags": []}
+# + \frac [markdown] {"incorrectly_encoded_metadata": "{1}{12} \\mathbf{\\tau^{**}} \\right]"}
 # # Viscoelastic Navier-Stokes equation
 #
 # Here we outline how we combine the numerical NS scheme and the numerical Visco-elastic scheme
@@ -21,49 +21,46 @@
 # ## Navier-Stokes equation
 #
 # $$
-#     \frac{D{\mathbf{v}}}{D t} + \nabla \cdot \mathbf{T} - \nabla P = \mathbf{\rho g \hat{\mathbf{z}}}
+#     \rho\frac{D{\mathbf{u}}}{D t} + \nabla \cdot \boldsymbol{\tau} - \nabla \mathbf{p} = \mathbf{\rho g \hat{\mathbf{z}}}
 # $$
 #
 # The viscous constitutive law connects the stress to gradients of $\mathbf{v}$ as follows: 
 #
 # $$
-# \mathbf{T} = \eta ( \nabla \mathbf{v} + (\nabla \mathbf{v})^T )
+# \boldsymbol{\tau} = \eta ( \nabla \mathbf{u} + (\nabla \mathbf{u})^T )
 # $$
 #
 # We next write a discrete problem in terms of corresponding variables defined on a mesh. 
 #
 # $$
-#     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \mathbf{\tau} + \nabla p \right)
+#     \rho\frac{\mathbf{u}_{[1]} - \mathbf{u}^*}{\Delta t}  = \rho g - \nabla \cdot \mathbf{\tau} + \nabla p 
 # $$
 #
 # where $\mathbf{u}^*$ is the value of $\mathbf{u}$ evaluated at upstream point at a time $t - \delta t$. 
-# Numerically, this is the value on a particle at the previous timestep.
-#
-# This approximation is the forward Euler integration in time for velocity because $\tau$ is defined in terms 
-# of the unknowns. Higher order updates are possible:
+# Numerically, this is the value on a particle at the previous timestep. This approximation is the forward Euler integration in time for velocity because $\tau$ is defined in terms of the unknowns. $\mathbf{u}_{[1]}$ denotes that solution uses the 1st order Adams-Moulton scheme and higher order updates are well known:
 #
 # $$
-#     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[ 
-#                                                                 \frac{1}{2} \mathbf{\tau} +
-#                                                                 \frac{1}{2} \mathbf{\tau^*} 
+#     \rho\frac{\mathbf{u}_{[2]} - \mathbf{u}^*}{\Delta t}  =\rho g - \nabla \cdot \left[ 
+#                                                                 \frac{1}{2} \boldsymbol{\tau} +
+#                                                                 \frac{1}{2} \boldsymbol{\tau^*} 
 #                                                                    \right]
-#                                                                 - \nabla p \right)
+#                                                                 - \nabla p 
 # $$
 #
 # and 
 #
 # $$
-#     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[
-#                                                           \frac{5}{12} \mathbf{\tau} 
-#                                                           - \frac{8}{12} \mathbf{\tau^{*}}
-#                                                           + \frac{1}{12} \mathbf{\tau^{**}} \right]
-#                                                         - \nabla p \right)
+#      \rho\frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t}  = \rho g - \nabla \cdot \left[
+#                                                           \frac{5}{12} \boldsymbol{\tau} 
+#                                                           - \frac{8}{12} \boldsymbol{\tau^{*}}
+#                                                           + \frac{1}{12} \boldsymbol{\tau^{* *}} \right]
+#                                                         - \nabla p 
 # $$
 #
 #
-# $\tau^*$ and $\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
+# $\boldsymbol\tau^*$ and $\boldsymbol\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
 #
-# In the Navier-stokes problem, it is common to write $\tau=\eta \left(\nabla \mathbf u + (\nabla \mathbf u)^T \right)$ and $\tau^*=\eta \left(\nabla \mathbf u^* + (\nabla \mathbf u^*)^T \right)$ which ignores  rotation and shearing of the stress during the interval $\Delta T$. This simplifies the implementation because only the velocity history is required, not the history of the stress tensor.
+# In the Navier-stokes problem, it is common to write $\boldsymbol\tau=\eta \left(\nabla \mathbf u + (\nabla \mathbf u)^T \right)$ and $\boldsymbol\tau^*=\eta \left(\nabla \mathbf u^* + (\nabla \mathbf u^*)^T \right)$ which ignores  rotation and shearing of the stress during the interval $\Delta T$. This simplifies the implementation because only the velocity history is required, not the history of the stress tensor.
 #  
 #
 # ## Viscoelasticity
@@ -71,19 +68,19 @@
 # In viscoelasticity, the elastic part of the deformation is related to the stress rate. If we approach this problem as a perturbation to the viscous Navier-Stokes equation, we first consider the constitutive behaviour 
 #
 # $$
-#  \frac{1}{2\mu}\frac{D{\tau}}{Dt} + \frac{\tau}{2\eta} = \dot\varepsilon
+#  \frac{1}{2\mu}\frac{D{\boldsymbol\tau}}{Dt} + \frac{\boldsymbol\tau}{2\eta} = \dot{\boldsymbol\varepsilon}
 # $$
 #
 # A first order difference form for ${D \tau}/{D t}$ then gives
 #
 # $$
-#     \frac{\tau - \tau^{*}}{2 \Delta t \mu} + \frac{\tau}{2 \eta} = \dot\varepsilon
+#     \frac{\boldsymbol\tau - \boldsymbol\tau^{*}}{2 \Delta t \mu} + \frac{\boldsymbol\tau}{2 \eta} = \dot{\boldsymbol\varepsilon}
 # $$
 #
 # where $\tau^*$ is the stress history along the characteristics associated with the current computational points. Rearranging to find an expression for the current stress in terms of the strain rate:
 #
 # $$
-#     \tau = 2 \dot\varepsilon \eta_{\textrm{eff}_{(1)}} + \frac{\eta \tau^{*}}{\Delta t \mu + \eta}
+#     \boldsymbol\tau = 2 \dot\varepsilon \eta_{\textrm{eff}_{(1)}} + \frac{\eta \boldsymbol\tau^{*}}{\Delta t \mu + \eta}
 # $$
 #
 # where an 'effective viscosity' is introduced, defined as follows:
@@ -95,18 +92,16 @@
 # Substituting this definition of the stress into the forward-Euler form of the Navier-Stokes discretisation then gives
 #
 # $$
-#     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \nabla \cdot \left[ 2 \dot\varepsilon \eta_{\textrm{eff}_{(1)}} + 
-#                                                  \frac{\eta \tau^{*}}{\Delta t \mu + \eta}  \right] + \nabla p \right)
+#     \rho\frac{\mathbf{u}_{[1]} - \mathbf{u}^*}{\Delta t}  = \rho g - \nabla \cdot \left[ 2 \dot{\boldsymbol\varepsilon}\eta_{\textrm{eff}_{(1)}} +  \frac{\eta \boldsymbol\tau^{*}}{\Delta t \mu + \eta}  \right] + \nabla p 
 # $$
 #
 # and the 2nd order (Crank-Nicholson) form becomes
 #
 # $$
-#     \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g - \frac{1}{2} \nabla \cdot \left[ 2 \dot\varepsilon \eta_{\textrm{eff}_{(1)}} + 
-#                                                  \left[\frac{\eta}{\Delta t \mu + \eta} + 1\right]\tau^*  \right] + \nabla p \right)
+#     \rho\frac{\mathbf{u}_{[2]} - \mathbf{u}^*}{\Delta t}  = \rho g - \frac{1}{2} \nabla \cdot \left[ 2 \dot\varepsilon \eta_{\textrm{eff}_{(1)}} + \left[\frac{\eta}{\Delta t \mu + \eta} + 1\right]\tau^*  \right] + \nabla p 
 # $$
 #
-# If we use $\tau^{**}$ to improve the estimate for the stress rate, we have
+# If we use $\tau^{**}$ in the estimate for the stress rate, we have
 #
 # $$
 #     \frac{3 \tau - 4 \tau^{*} + \tau^{**}}{4 \Delta t \mu} + \frac{\tau}{2 \eta}  = \dot\varepsilon
@@ -115,7 +110,7 @@
 # Giving
 #
 # $$
-#     \tau = 2 \dot\varepsilon \eta_{\textrm{eff}_{(2)}} + \frac{4 \eta \tau^{*}}{2 \Delta t \mu + 3 \eta} - \frac{\eta \tau^{**}}{2 \Delta t \mu + 3 \eta}
+#     \boldsymbol\tau = 2 \dot{\boldsymbol\varepsilon} \eta_{\textrm{eff}_{(2)}} + \frac{4 \eta \boldsymbol\tau^{*}}{2 \Delta t \mu + 3 \eta} - \frac{\eta \boldsymbol\tau^{**}}{2 \Delta t \mu + 3 \eta}
 # $$
 #
 # $$
@@ -124,20 +119,24 @@
 #
 #
 # $$
-#         \mathbf{u} = \mathbf{u}^* + \Delta t  \left( \rho g 
-#                                                     - \nabla \cdot \left[ \frac{5 \dot\varepsilon \eta_\textrm{eff}}{6}  
-#                                                                                                                              - \frac{5 \eta \tau^{**}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} 
-#                                                                            - \frac{\tau^{**}}{12}
-#                                                                     \right] + \nabla p \right)
+#     \frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t} =   \rho g 
+#                 - \nabla \cdot \left[ \frac{5 \dot{\boldsymbol\varepsilon} \eta_{\textrm{eff_(2)}}}{6} - \frac{5 \eta \boldsymbol\tau^{*}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} - \frac{\boldsymbol\tau^{**}}{12}
+#                                                                     \right] + \nabla p
 # $$
 #
+#
+#
+# ---
+#
+# $$
+#     \nabla\cdot\left[ \color{blue}{ \boldsymbol{\tau} - p \boldsymbol{I}   }   \right] = \color{green}{\frac{D \boldsymbol{u}}{Dt}} - \rho g
+# $$
 # + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
-
-# + \frac {"incorrectly_encoded_metadata": "{5 \\eta \\tau^{*}}{3 \\cdot \\left(2 \\Delta t \\mu + 3 \\eta\\right)}"}
+import os
 
 
 # + \frac {"incorrectly_encoded_metadata": "{2 \\tau^{*}}{3}"}
-
+os.path.join("", "test")
 
 
 # +
@@ -181,9 +180,6 @@ St = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarType.SY
 # May need these
 Edot_inv_II = uw.discretisation.MeshVariable("eps_II", mesh1, 1, vtype=uw.VarType.SCALAR,  degree=2, varsymbol=r"{|\dot\varepsilon|}")
 St_inv_II = uw.discretisation.MeshVariable("tau_II", mesh1, 1, vtype=uw.VarType.SCALAR, degree=2, varsymbol=r"{|\tau|}")
-# -
-
-St.sym
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=5)
@@ -219,7 +215,16 @@ swarm.populate(fill_param=2)
 
 stress_star.sym
 
-stress_star_star.sym
+with swarm.access():
+    evaluated = uw.function.evaluate(1.0 + U.sym_1d[0] + U.sym_1d[1], swarm.particle_coordinates.data[0:100])
+
+
+
+
+
+evaluated
+
+0/0
 
 # +
 stokes = uw.systems.Stokes(
@@ -584,7 +589,15 @@ if uw.mpi.size == 1:
 
 strain_dat.max()
 
+# +
+alph = sympy.symbols(r"\alpha_:10")
+alph[9]
 
+
+fn = alph[0] * U[0].sym + alph[1] * U[1].sym
+# -
+
+fn.diff(alph[0])
 
 with swarm.access():
     print(strain.data.max())
