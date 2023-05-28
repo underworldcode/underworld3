@@ -32,7 +32,7 @@ def test_meshvariable_save_and_read():
 
     mesh.write_timestep("test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
 
-    X2.read_timestep("test.mesh.X.00000.h5", "X")
+    X2.read_timestep("test", "X", 0)
 
     with mesh.access():
         assert np.allclose(X.data, X2.data)
@@ -51,7 +51,7 @@ def test_swarm_save_and_load():
     swarm.write_timestep("test", "swarm", swarmVars=[], outputPath="", index=0)
 
     new_swarm = uw.swarm.Swarm(mesh)
-    new_swarm.read_timestep(f"test.swarm.00000.h5")
+    new_swarm.read_timestep("test", "swarm", 0)
 
 
 def test_swarmvariable_save_and_load():
@@ -73,7 +73,7 @@ def test_swarmvariable_save_and_load():
     swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
 
     with swarm.access(var2):
-        var2.read_timestep("test.swarm.X.00000.h5", "test.swarm.00000.h5")
+        var2.read_timestep("test", "swarm", "X", 0)
 
     with swarm.access():
         assert np.allclose(var.data, var2.data)

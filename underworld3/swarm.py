@@ -345,23 +345,33 @@ class SwarmVariable(_api_tools.Stateful):
         return
 
     @timing.routine_timer_decorator
-    def simple_save(self, filename: str):
+    def write_proxy(self, filename: str):
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             if uw.mpi.rank == 0:
                 print("No proxy mesh variable that can be saved", flush=True)
             return
 
-        self._meshVar.simple_save(filename)
+        self._meshVar.write(filename)
 
         return
 
     @timing.routine_timer_decorator
     def read_timestep(
         self,
-        filename: str,
-        swarmFilename: str,
+        data_filename: str,
+        swarmID: str,
+        data_name: str,
+        index: int,
+        outputPath="",
     ):
+        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
+        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
+
+        output_base_name = os.path.join(outputPath, data_filename)
+        swarmFilename = output_base_name + f".{swarmID}.{index:05}.h5"
+        filename = output_base_name + f".{swarmID}.{data_name}.{index:05}.h5"
+
         ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
         with h5py.File(f"{filename}", "r") as h5f_data, h5py.File(
             f"{swarmFilename}", "r"
@@ -396,34 +406,6 @@ class SwarmVariable(_api_tools.Stateful):
                 self.data[:] = kdt.rbf_interpolator_local(
                     self.swarm.data, local_data, nnn=1
                 )
-
-                #### this produces a shape mismatch, would be quicker not to do it in a loop
-                # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
-                # # self.data[:] = data[ind]
-
-                # print(f"Looping over coords for swarm load")
-                # i = 0
-
-                ### loops through the coords of the swarm to load the data
-                # for coord in self.swarm.data:
-                #     ind_data = np.isin(h5f_swarm["coordinates"][:], coord).all(axis=1)
-                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
-                #     self.data[ind_swarm] = h5f_data["data"][:][ind_data]
-                #     i += 1
-                #     if i % 1000 == 0:
-                #         print(
-                #             f"Looping over coords for swarm load ... {i}/{self.swarm.data.shape[0]}"
-                #         )
-
-                # print(f"Looping over coords for swarm load ... done")
-
-                ### loops through the coords in the file
-                # for i in range(0, file_length):
-                #     coord = h5f_swarm["coordinates"][i]
-                #     data = h5f_data["data"][i]
-                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
-
-                #     self.data[ind_swarm] = data
 
         return
 
@@ -995,10 +977,16 @@ class Swarm(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def read_timestep(
         self,
-        filename: str,
+        base_filename: str,
+        swarm_id: str,
+        index: int,
+        outputPath: Optional[str] = "",
     ):
+        output_base_name = os.path.join(outputPath, base_filename)
+        swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
+
         ### open up file with coords on all procs
-        with h5py.File(f"{filename}", "r") as h5f:
+        with h5py.File(f"{swarm_file}", "r") as h5f:
             coordinates = h5f["coordinates"][:]
 
         #### utilises the UW function for adding a swarm by an array
@@ -1336,6 +1324,7 @@ class Swarm(_api_tools.Stateful):
         order=2,
         corrector=False,
         restore_points_to_domain_func=None,
+        evalf=True,
     ):
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -1354,10 +1343,16 @@ class Swarm(_api_tools.Stateful):
             with self.access(self.particle_coordinates):
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evalf(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 corrected_position = X0.data.copy() + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
@@ -1388,10 +1383,16 @@ class Swarm(_api_tools.Stateful):
             with self.access(self.particle_coordinates):
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evalf(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 mid_pt_coords = self.data[...].copy() + 0.5 * delta_t * v_at_Vpts
 
@@ -1409,10 +1410,16 @@ class Swarm(_api_tools.Stateful):
             with self.access(self.particle_coordinates):
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evalf(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
@@ -1437,8 +1444,16 @@ class Swarm(_api_tools.Stateful):
         # forward Euler (1st order)
         else:
             with self.access(self.particle_coordinates):
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evalf(V_fn[d], self.data).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 new_coords = self.data + delta_t * v_at_Vpts
 
@@ -1526,7 +1541,7 @@ class Swarm(_api_tools.Stateful):
         return
 
 
-class Swarm_Lagrangian_Updater:
+class Lagrangian_Updater:
 
     """Swarm-based Lagrangian History Manager:
 
@@ -1540,13 +1555,14 @@ class Swarm_Lagrangian_Updater:
     @timing.routine_timer_decorator
     def __init__(
         self,
-        mesh: uw.discretisation.Mesh,
+        swarm: Swarm,
         psi: sympy.Function,
         psi_star: Union[SwarmVariable, list],
         dt_physical: float,
         verbose: Optional[bool] = False,
     ):
-        self.mesh = mesh
+        self.mesh = swarm.mesh
+        self.swarm = swarm
         self.psi = psi
         self.psi_star = psi_star
         self.dt_physical = dt_physical
@@ -1561,7 +1577,9 @@ class Swarm_Lagrangian_Updater:
         return
 
     def update(
+        self,
         dt: float,
+        evalf: Optional[bool] = True,
     ):
         phi = min(1.0, dt / self.dt_physical)
 
@@ -1569,12 +1587,21 @@ class Swarm_Lagrangian_Updater:
             i = self.order - (h + 1)
 
             # copy the information down the chain
-            with swarm.access(psi[i]):
-                psi[i].data[...] = psi[i - 1].data[...]
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        with swarm.access(psi[i]):
-            for c in range(psi.num_components):
-                psi.data[:, c] = (
-                    phi * uw.function.evalf(psi.sym_1d[c], swarm.data)
-                    + (1 - phi) * psi.data[:, c]
-                )
+        if evalf:
+            with self.swarm.access(self.psi_star[0]):
+                for c in range(self.psi_star[0].num_components):
+                    self.psi_star[0].data[:, c] = (
+                        phi * uw.function.evalf(self.psi[c], self.swarm.data)
+                        + (1 - phi) * self.psi_star[0].data[:, c]
+                    )
+
+        else:
+            with self.swarm.access(self.psi_star[0]):
+                for c in range(self.psi_star[0].num_components):
+                    self.psi_star[0].data[:, c] = (
+                        phi * uw.function.evaluate(self.psi[c], self.swarm.data)
+                        + (1 - phi) * self.psi_star[0].data[:, c]
+                    )

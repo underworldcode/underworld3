@@ -648,24 +648,24 @@ class Mesh(_api_tools.Stateful):
             mesh_file = output_base_name + ".mesh.00000.h5"
             path = Path(mesh_file)
             if not path.is_file():
-                self.save(mesh_file)
+                self.write(mesh_file)
 
         else:
-            self.save(output_base_name + f".mesh.{index:05}.h5")
+            self.write(output_base_name + f".mesh.{index:05}.h5")
 
         if meshVars is not None:
             for var in meshVars:
                 save_location = (
                     output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 )
-                var.simple_save(save_location)
+                var.write(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = (
                     output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 )
-                svar.simple_save(save_location)
+                svar.write(save_location)
 
         if uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -787,7 +787,7 @@ class Mesh(_api_tools.Stateful):
         viewer.destroy()
 
     @timing.routine_timer_decorator
-    def save(self, filename: str, index: Optional[int] = None):
+    def write(self, filename: str, index: Optional[int] = None):
         """
         Save mesh data to the specified hdf5 file.
 
@@ -1481,35 +1481,6 @@ class _MeshVariable(_api_tools.Stateful):
                     self._sym[i, j].mesh = self.mesh
                     n += 1
 
-        # Suggest this should be deprecated - seems complicated
-        # and liable to produce errors in development as well as use
-
-        # elif (
-        #     vtype == uw.VarType.COMPOSITE
-        # ):  # This is just to allow full control over the names of the components
-        #     self._sym = sympy.Matrix.zeros(1, num_components)
-        #     if isinstance(varsymbol, list):
-        #         if len(varsymbol) == num_components:
-        #             for comp in range(num_components):
-        #                 self._sym[0, comp] = UnderworldFunction(
-        #                     varsymbol[comp],
-        #                     self,
-        #                     vtype,
-        #                     comp,
-        #                     comp,
-        #                 )(*self.mesh.r)
-        #                 self._sym[0, comp].mesh = self.mesh
-
-        #         else:
-        #             raise RuntimeError(
-        #                 "Please supply a list of names for all components of this vector"
-        #             )
-        #     else:
-        #         for comp in range(num_components):
-        #             self._sym[0, comp] = UnderworldFunction(
-        #                 self.symbol, self, vtype, comp, comp
-        #             )(*self.mesh.r)
-
         # This allows us to define a __getitem__ method
         # to return a view for a given component when
         # the access manager is active
@@ -1622,7 +1593,7 @@ class _MeshVariable(_api_tools.Stateful):
 
     # ToDo: rename to vertex_checkpoint (or similar)
     @timing.routine_timer_decorator
-    def simple_save(
+    def write(
         self,
         filename: str,
     ):
@@ -1688,11 +1659,10 @@ class _MeshVariable(_api_tools.Stateful):
     @timing.routine_timer_decorator
     def read_timestep(
         self,
-        data_file,
+        data_filename,
         data_name,
-        vertex_mesh_file=None,
-        # vertex_field=False,
-        vertex_field_degree=1,
+        index,
+        outputPath="",
         verbose=False,
     ):
         """
@@ -1702,6 +1672,14 @@ class _MeshVariable(_api_tools.Stateful):
         to the new mesh.
 
         """
+
+        # Fix this to match the write_timestep function
+
+        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
+        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
+
+        output_base_name = os.path.join(outputPath, data_filename)
+        data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
 
         import h5py
         import numpy as np
