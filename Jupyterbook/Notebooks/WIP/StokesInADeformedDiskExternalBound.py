@@ -111,7 +111,7 @@ r_mesh0 = uw.discretisation.MeshVariable("R0", meshball, 1, degree=1)
 # Introduce a swarm so that we can introduce strain markers
 
 swarm = uw.swarm.Swarm(meshball)
-sv = swarm.add_variable("compo", num_components=1, proxy_degree=3, _nn_proxy=False)
+sv = swarm.add_variable("compo", size=1, proxy_degree=3, _nn_proxy=False)
 
 # +
 # Create a density structure / buoyancy force

@@ -33,7 +33,7 @@ def test_stokes_sphere(mesh):
     stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
         mesh.dim
     )
-    stokes.constitutive_model.Parameters.viscosity = 1
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.saddle_preconditioner = 1.0
 
     stokes.tolerance = 1.0e-2

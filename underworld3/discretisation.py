@@ -1479,7 +1479,7 @@ class _MeshVariable(_api_tools.Stateful):
                         self._data_layout(i, j),
                     )(*self.mesh.r)
                     self._sym[i, j].mesh = self.mesh
-                    n += 1
+                    # n += 1
 
         # This allows us to define a __getitem__ method
         # to return a view for a given component when
@@ -1698,10 +1698,10 @@ class _MeshVariable(_api_tools.Stateful):
             X = h5f["fields"]["coordinates"][()]
             h5f.close()
 
-            if len(D.shape) == 1:
-                D = D.reshape(-1, 1)
+        #     if len(D.shape) == 1:
+        #         D = D.reshape(-1, 1)
 
-            return X, D
+        #     return X, D
 
         def map_to_vertex_values(X, D, nnn=4, verbose=False):
             # Map from "swarm" of points to nodal points
@@ -1730,6 +1730,7 @@ class _MeshVariable(_api_tools.Stateful):
             data_file,
             data_name,
         )
+
 
         remapped_D = map_to_vertex_values(X, D)
 
@@ -1829,7 +1830,7 @@ class _MeshVariable(_api_tools.Stateful):
                 raise IndexError(
                     f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
                 )
-        if self.vtype == uw.VarType.TENSOR or self.vtype == uw.VarType.MATRIX:
+        if self.vtype == uw.VarType.TENSOR :
             if self.mesh.dim == 2:
                 return ((0, 1), (2, 3))[i][j]
             else:
@@ -1840,6 +1841,10 @@ class _MeshVariable(_api_tools.Stateful):
                 return ((0, 2), (2, 1))[i][j]
             else:
                 return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+            
+        if self.vtype == uw.VarType.MATRIX :
+            return i + j * self.shape[0]
+
 
     def _set_vec(self, available):
         if self._lvec == None:

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.14.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -31,7 +31,7 @@ import vtk
 
 from underworld3 import timing
 
-resolution = uw.options.getReal("model_resolution", default=0.033)
+resolution = uw.options.getReal("model_resolution", default=0.075)
 mu = uw.options.getInt("mu", default=0.5)
 maxsteps = uw.options.getInt("max_steps", default=500)
 # -
@@ -75,7 +75,11 @@ Stress = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarTyp
                                          continuous=False, varsymbol=r"{\sigma}")
 
 strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
+strain_rate_inv2_p = uw.discretisation.MeshVariable("eps_p", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
 dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=2)
+# -
+
+mesh1.view()
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=5)
@@ -106,7 +110,9 @@ swarm.populate(fill_param=2)
 p_soln.sym[0].component
 uw.function.evaluate(p_soln.sym[0] * v_soln.sym[0], mesh1.data )
 
-0/0
+# +
+# 0/0
+# -
 
 v_soln.sym[0].component
 
@@ -121,7 +127,7 @@ with swarm.access(strain, material), mesh1.access():
     mask = (1.0 - (YY * 2)**8) * (1 -  (2*XX/3)**6)
     material.data[(XX**2 + YY**2 < 0.01), 0] = 1
     strain.data[:,0] = 0.01 * np.random.random(swarm.particle_coordinates.data.shape[0]) * mask
-# + tags=[]
+# +
 # Create Solver object
 
 stokes = uw.systems.Stokes(
@@ -139,22 +145,17 @@ viscosity_L = sympy.Piecewise(
 
 # -
 
-
-stokes
-
-# + tags=[]
 stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
-stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
+
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_L
 stokes.constitutive_model.Parameters.shear_modulus = 100
 stokes.constitutive_model.Parameters.stress_star = stress_star.sym
-stokes.constitutive_model.Parameters.deltaTe = 1
-stokes.constitutive_model.Parameters.strainrate_inv_II_min = 0
+stokes.constitutive_model.Parameters.dt_elastic = 1
+
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-# -
 
-stokes.constitutive_model
+stokes.constitutive_model.Parameters.viscosity
 
-# + tags=[]
 sigma_projector = uw.systems.Tensor_Projection(mesh1, tensor_Field=Stress, scalar_Field=work  )
 sigma_projector.uw_function = stokes.stress_1d
 
@@ -200,7 +201,6 @@ stokes.add_dirichlet_bc((0.0), "Right", (1))
 
 
 stokes.constitutive_model.flux_1d(stokes.strainrate)
-
 stokes.constitutive_model.flux(stokes.strainrate)
 
 stokes._setup_terms()
@@ -223,6 +223,13 @@ timing.reset()
 timing.start()
 
 stokes.snes.setType("newtontr")
+# -
+
+if uw.mpi.size ==1:
+    stokes.petsc_options['pc_type'] = 'lu'
+
+# +
+
 stokes.solve(zero_init_guess=False, picard = -1)
 
 timing.print_table(display_fraction=1)
@@ -237,7 +244,7 @@ nodal_tau_inv2.solve()
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
 nodal_strain_rate_inv2.solve()
 
-# + tags=[]
+# +
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
 # unexpected. This is a limitation we are stuck with for the moment.
 
@@ -335,7 +342,9 @@ tau_2 = a.expand().subs(eta/mu, tr)
 
 tau_2
 
-0/0
+# +
+# 0/0
+# -
 
 
 stokes.constitutive_model.Parameters.yield_stress.subs(((strain.sym[0],0.25), (y,0.0)))
@@ -351,17 +360,17 @@ def return_points_to_domain(coords):
 
 ts = 0
 
-# + tags=[]
-delta_t = stokes.estimate_dt()
-
+# +
 expt_name = f"output/shear_band_sw_nonp_{mu}"
 
 for step in range(0, 10):
     
     stokes.solve(zero_init_guess=False)
     
+    delta_t = stokes.estimate_dt()
+    
     nodal_strain_rate_inv2.uw_function = (sympy.Max(0.0, stokes._Einv2 - 
-                       0.5 * stokes.constitutive_model.Parameters.yield_stress / stokes.constitutive_model.Parameters.bg_viscosity))
+                       0.5 * stokes.constitutive_model.Parameters.yield_stress / stokes.constitutive_model.Parameters.shear_viscosity_0))
     nodal_strain_rate_inv2.solve()
 
     with mesh1.access(strain_rate_inv2_p):
@@ -402,11 +411,11 @@ for step in range(0, 10):
 
 
 # +
-nodal_visc_calc.uw_function = sympy.log(stokes.constitutive_model.Parameters.viscosity)
-nodal_visc_calc.solve()
+# nodal_visc_calc.uw_function = sympy.log(stokes.constitutive_model.Parameters.viscosity)
+# nodal_visc_calc.solve()
 
-yield_stress_calc.uw_function = stokes.constitutive_model.Parameters.yield_stress
-yield_stress_calc.solve()
+# yield_stress_calc.uw_function = stokes.constitutive_model.Parameters.yield_stress
+# yield_stress_calc.solve()
 
 nodal_tau_inv2.uw_function = 2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
 nodal_tau_inv2.solve()
@@ -425,11 +434,11 @@ if uw.mpi.size == 1:
 
     pvmesh.point_data["P"] = p_soln.rbf_interpolate(pvpoints)
     pvmesh.point_data["Edot"] = strain_rate_inv2.rbf_interpolate(pvpoints)
-    pvmesh.point_data["Visc"] = np.exp(node_viscosity.rbf_interpolate(pvpoints))
+    # pvmesh.point_data["Visc"] = np.exp(node_viscosity.rbf_interpolate(pvpoints))
     pvmesh.point_data["Edotp"] = strain_rate_inv2_p.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strs"] = dev_stress_inv2.rbf_interpolate(pvpoints)
-    pvmesh.point_data["StrY"] =  yield_stress.rbf_interpolate(pvpoints)
-    pvmesh.point_data["dStrY"] = pvmesh.point_data["StrY"] - 2 *  pvmesh.point_data["Visc"] * pvmesh.point_data["Edot"] 
+    # pvmesh.point_data["StrY"] =  yield_stress.rbf_interpolate(pvpoints)
+    # pvmesh.point_data["dStrY"] = pvmesh.point_data["StrY"] - 2 *  pvmesh.point_data["Visc"] * pvmesh.point_data["Edot"] 
     pvmesh.point_data["Mat"] = material.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strn"] = strain._meshVar.rbf_interpolate(pvpoints)
 
@@ -481,7 +490,10 @@ if uw.mpi.size == 1:
     pl.show()
 # -
 
-strain_dat.max()
+pvmesh.point_data["Strn"].shape
+
+import matplotlib.pyplot as plt
+plt.scatter(mesh1.data[:,0], mesh1.data[:,1], c=pvmesh.point_data["Strn"])
 
 
 

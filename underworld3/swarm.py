@@ -472,6 +472,52 @@ class IndexSwarmVariable(SwarmVariable):
     def sym(self):
         return self._MaskArray
 
+    #
+    def createMask(self, funcsList):
+        """
+        This creates a masked sympy function of swarm variables required for Underworld's solvers 
+        """
+        
+        if not isinstance(funcsList, (tuple,list)):
+            raise RuntimeError("Error input for createMask() - wrong type of input")
+
+        if len(funcsList) != self.indices:
+            raise RuntimeError("Error input for createMask() - wrong length of input")
+
+        symo = sympy.simplify(0)
+        for i in range( self.indices ):
+            symo += funcsList[i] * self._MaskArray[i]
+
+        return symo
+
+    def viewMask(self, sympy):
+        """
+        Takes a previously masked sympy function and returns individual sympy objects corresponding to each material
+        """
+        
+        """ TODO
+        output = []
+        for i in range( self.indices ):
+            tmp = {}
+            for j in range( self.indices ):
+                if i == j : pass
+                tmp
+
+        return output
+        """
+        pass
+
+    def view(self):
+        """
+        Show information on IndexSwarmVariable
+        """
+        if uw.mpi.rank == 0:
+           print(f"IndexSwarmVariable {self}")
+           print(f"Numer of indices {self.indices}")
+
+
+
+
     def _update(self):
         """
         This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations

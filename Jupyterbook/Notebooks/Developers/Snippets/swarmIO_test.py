@@ -56,15 +56,15 @@ swarm     = uw.swarm.Swarm(mesh=mesh)
 # material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=False, proxy_degree=0)
 material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
 
-materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.IntType)
+materialVariable      = swarm.add_variable(name="materialVariable", size=1, dtype=PETSc.IntType)
 
-test0      = swarm.add_variable(name="test0", num_components=1, dtype=PETSc.RealType)
-test1      = swarm.add_variable(name="test1", num_components=2, dtype=PETSc.RealType)
+test0      = swarm.add_variable(name="test0", size=1, dtype=PETSc.RealType)
+test1      = swarm.add_variable(name="test1", size=2, dtype=PETSc.RealType)
 
-rank      = swarm.add_variable(name="rank", num_components=2, dtype=PETSc.RealType)
+rank      = swarm.add_variable(name="rank", size=2, dtype=PETSc.RealType)
 
-# test2      = swarm.add_variable(name="test2", num_components=1, dtype=)
-# test3      = swarm.add_variable(name="test3", num_components=2, dtype=np.float64)
+# test2      = swarm.add_variable(name="test2", size=1, dtype=)
+# test3      = swarm.add_variable(name="test3", size=2, dtype=np.float64)
 
 swarm.populate(2)
 
