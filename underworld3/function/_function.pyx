@@ -222,26 +222,52 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # them for validity. This is applied recursively across the expression
     # Recurse the expression tree.
 
+    # varfns = set()
+    # def get_var_fns(exp):
+
+    #     if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
+    #         raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
+            
+    #     isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+    #     if isUW: 
+    #         varfns.add(exp)
+    #         if exp.args != exp.meshvar().mesh.r:
+    #             raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
+    #                                f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
+    #     else:
+    #         # Recurse.
+    #         for arg in exp.args: 
+    #             get_var_fns(arg)
+
+    #     return
+
+    # get_var_fns(expr)
+
     varfns = set()
-    def get_var_fns(exp):
+    def unpack_var_fns(exp):
 
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
             raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
             
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+        isMatrix = isinstance(exp, sympy.Matrix)
+
         if isUW: 
             varfns.add(exp)
             if exp.args != exp.meshvar().mesh.r:
                 raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
                                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
+        elif isMatrix:
+            for sub_exp in exp:
+                varfns.add(sub_exp)
         else:
             # Recurse.
             for arg in exp.args: 
-                get_var_fns(arg)
+                unpack_var_fns(arg)
 
         return
 
-    get_var_fns(expr)
+    unpack_var_fns(expr)
 
     mesh = None
     for varfn in varfns:
@@ -256,6 +282,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
                            "Mesh variables can only be interpolated at coordinates.")
 
+    varfns = set()
+    for var in mesh.vars.values():
+        for subvar in var.sym_1d:
+            varfns.add(subvar)
+        
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
     # more general situation.
@@ -270,13 +301,30 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # computational benefit in interpolating a subset.
 
 
+
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
         This function performs the interpolation for the given variables
         on a single mesh.
         """
+
+        import xxhash 
+        
         # Grab the mesh
         mesh = varfns[0].meshvar().mesh
+
+        if mesh._evaluation_hash is not None:
+            xxh = xxhash.xxh64()
+            xxh.update(coords)
+            coord_hash = xxh.intdigest()
+
+            if coord_hash == mesh._evaluation_hash:
+                if uw.mpi.rank == 0:
+                    print("Using evaluation cache", flush=True)
+                return mesh._evaluation_interpolated_results
+            else:
+                print("Breaking evaluation cache", flush=True)
+
         # For now, eval over all vars
         vars = mesh.vars.values()
 
@@ -341,11 +389,17 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             arr = np.ascontiguousarray(outarray[:,var_start+comp])
             varfns_arrays[varfn] = arr
 
+        # Cache these results 
+        xxh = xxhash.xxh64()
+        xxh.update(coords)
+        coord_hash = xxh.intdigest()
+        mesh._evaluation_hash = coord_hash
+        mesh._evaluation_interpolated_results = varfns_arrays
+
         del outarray
         del coords 
         del cells
-        
-        outvec.destroy()
+        outvec.destroy() 
 
         return varfns_arrays
 

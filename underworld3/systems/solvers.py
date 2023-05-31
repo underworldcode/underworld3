@@ -24,7 +24,7 @@ class SNES_Poisson(SNES_Scalar):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         solver_name: str = "",
         verbose=False,
     ):
@@ -36,7 +36,7 @@ class SNES_Poisson(SNES_Scalar):
             solver_name = "Poisson_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, h_Field, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         # Register the problem setup function
         self._setup_problem_description = self.poisson_problem_description
@@ -78,26 +78,22 @@ class SNES_Darcy(SNES_Scalar):
     This class provides functionality for a discrete representation
     of the Groundwater flow equations
 
-    $$ 
-     \nabla \cdot \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)  = S_s \frac{\partial h}{\partial t} - W
-    $$
+    $$\nabla \cdot \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)  = S_s \frac{\partial h}{\partial t} - W$$
 
-    The Darcy flux is 
+    The Darcy flux is
 
-    $$ 
-    \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)  
-    $$
+    $$\boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)$$
 
     ## Properties
 
-      - The unknown is \( h \), the hydraulic head 
+      - The unknown is \( h \), the hydraulic head
 
       - The permeability tensor, \( \kappa \) is provided by setting the `constitutive_model` property to
     one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
-      - Volumetric sources for the pressure gradient are supplied through 
+      - Volumetric sources for the pressure gradient are supplied through
         the \( s \) property [e.g. \( s = \rho g \) ]
 
       - \( W \) is a pressure source term
@@ -108,7 +104,7 @@ class SNES_Darcy(SNES_Scalar):
     ## Notes
 
         - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity )
-    
+
     """
 
     instances = 0
@@ -504,7 +500,7 @@ class SNES_Projection(SNES_Scalar):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         solver_name: str = "",
         verbose=False,
     ):
@@ -513,7 +509,7 @@ class SNES_Projection(SNES_Scalar):
         if solver_name == "":
             solver_name = "SProj_{}_".format(self.instances)
 
-        super().__init__(mesh, h_Field, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
@@ -602,7 +598,7 @@ class SNES_Vector_Projection(SNES_Vector):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         solver_name: str = "",
         verbose=False,
     ):
@@ -611,7 +607,7 @@ class SNES_Vector_Projection(SNES_Vector):
         if solver_name == "":
             solver_name = "VProj{}_".format(self.instances)
 
-        super().__init__(mesh, h_Field, h_Field.degree, solver_name, verbose)
+        super().__init__(mesh, u_Field, u_Field.degree, solver_name, verbose)
 
         self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
@@ -721,7 +717,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
         super().__init__(
             mesh=mesh,
-            h_Field=scalar_Field,
+            u_Field=scalar_Field,
             solver_name=solver_name,
             verbose=verbose,
         )
@@ -819,7 +815,7 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         solver_name: str = "",
         verbose=False,
     ):
@@ -837,13 +833,13 @@ class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
             mesh=mesh,
             num_components=1,
             vtype=uw.VarType.SCALAR,
-            degree=h_Field.degree - 1,
+            degree=u_Field.degree - 1,
             continuous=False,
         )
 
         super().__init__(
             mesh,
-            h_Field,
+            u_Field,
             self._constraint_field,
             solver_name,
             verbose,
@@ -937,7 +933,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         V_Field: uw.discretisation.MeshVariable = None,
         theta: float = 0.5,
         solver_name: str = "",
@@ -950,7 +946,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             solver_name = "AdvDiff_slcn_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, h_Field, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         # These are unique to the advection solver
         self._V = V_Field
@@ -1062,7 +1058,11 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # self.k_proj.solve(_force_setup=True)
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            k = uw.function.evaluate( sympy.sympify( self.constitutive_model.Parameters.diffusivity ), self.mesh._centroids, self.mesh.N )
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
             max_diffusivity = k.max()
         else:
             k = self.constitutive_model.Parameters.diffusivity
@@ -1075,7 +1075,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # with self.mesh.access(self.k):
         #     ## get local max diff value
         #     max_diffusivity = self.k.data[:, 0].max()
-            ### get the velocity values
+        ### get the velocity values
         with self.mesh.access(self._V):
             vel = self._V.data
 
@@ -1197,7 +1197,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        h_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable = None,
         V_Field: uw.discretisation.MeshVariable = None,
         u_Star_fn=None,
         theta: float = 0.5,
@@ -1213,7 +1213,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             solver_name = "AdvDiff_swarm_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, h_Field, solver_name, verbose)
+        super().__init__(mesh, u_Field, solver_name, verbose)
 
         self.delta_t = 1.0
         self.theta = theta
@@ -1237,7 +1237,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             # set up a projection solver
 
             self._u_star_projected = uw.discretisation.MeshVariable(
-                r"u^{{*}}{}".format(self.instances), self.mesh, 1, degree=h_Field.degree
+                r"u^{{*}}{}".format(self.instances), self.mesh, 1, degree=u_Field.degree
             )
             self._u_star_projector = uw.systems.solvers.SNES_Projection(
                 self.mesh, self._u_star_projected
@@ -1321,7 +1321,11 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         # self.k_proj.solve(_force_setup=True)
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            k = uw.function.evaluate( sympy.sympify( self.constitutive_model.Parameters.diffusivity ), self.mesh._centroids, self.mesh.N )
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
             max_diffusivity = k.max()
         else:
             k = self.constitutive_model.Parameters.diffusivity
@@ -1334,7 +1338,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         # with self.mesh.access(self.k):
         #     ## get local max diff value
         #     max_diffusivity = self.k.data[:, 0].max()
-            ### get the velocity values
+        ### get the velocity values
         with self.mesh.access(self._V):
             vel = self._V.data
 

@@ -217,6 +217,59 @@ class SwarmVariable(_api_tools.Stateful):
 
         return
 
+    def _rbf_reduce_to_meshVar(self, meshVar, verbose=False):
+        """
+        This method updates a mesh variable for the current
+        swarm & particle variable state by reducing the swarm to
+        the nearest point for each particle
+
+        Here is how it works:
+
+            1) for each particle, create a distance-weighted average on the node data
+            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
+
+        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+        Todo: some form of global fall-back for when there are no particles on a processor
+
+        """
+
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            return
+
+        # 1 - Average particles to nodes with distance weighted average
+
+        kd = uw.kdtree.KDTree(meshVar.coords)
+        kd.build_index()
+
+        with self.swarm.access():
+            n, d, b = kd.find_closest_point(self.swarm.data)
+
+            node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
+            w = np.zeros(meshVar.coords.shape[0])
+
+            if not self._nn_proxy:
+                for i in range(self.data.shape[0]):
+                    if b[i]:
+                        node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
+                        w[n[i]] += 1.0 / (1.0e-24 + d[i])
+
+                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(
+                    -1, 1
+                )
+
+        # 2 - set NN vals on mesh var where w == 0.0
+
+        p_nnmap = self.swarm._get_map(self)
+
+        with self.swarm.mesh.access(meshVar), self.swarm.access():
+            meshVar.data[...] = node_values[...]
+            meshVar.data[np.where(w == 0.0), :] = self.data[
+                p_nnmap[np.where(w == 0.0)], :
+            ]
+
+        return
+
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)

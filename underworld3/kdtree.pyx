@@ -95,7 +95,7 @@ cdef class KDTree:
             An integer array of indices into the `points` array (passed into the constructor) corresponding to
             the nearest neighbour for the search coordinates. It will be of size (n_coords).
         dist_sqr:
-            A float array of squred distances between the provided coords and the nearest neighbouring
+            A float array of squared distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
         found:
             A bool array of flags which signals whether a nearest neighbour has been found for a given
@@ -241,3 +241,5 @@ cdef class KDTree:
         del Weights
 
         return Values
+
+
