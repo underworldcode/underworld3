@@ -528,17 +528,17 @@ class IndexSwarmVariable(SwarmVariable):
     #
     def createMask(self, funcsList):
         """
-        This creates a masked sympy function of swarm variables required for Underworld's solvers 
+        This creates a masked sympy function of swarm variables required for Underworld's solvers
         """
-        
-        if not isinstance(funcsList, (tuple,list)):
+
+        if not isinstance(funcsList, (tuple, list)):
             raise RuntimeError("Error input for createMask() - wrong type of input")
 
         if len(funcsList) != self.indices:
             raise RuntimeError("Error input for createMask() - wrong length of input")
 
         symo = sympy.simplify(0)
-        for i in range( self.indices ):
+        for i in range(self.indices):
             symo += funcsList[i] * self._MaskArray[i]
 
         return symo
@@ -547,7 +547,7 @@ class IndexSwarmVariable(SwarmVariable):
         """
         Takes a previously masked sympy function and returns individual sympy objects corresponding to each material
         """
-        
+
         """ TODO
         output = []
         for i in range( self.indices ):
@@ -565,11 +565,8 @@ class IndexSwarmVariable(SwarmVariable):
         Show information on IndexSwarmVariable
         """
         if uw.mpi.rank == 0:
-           print(f"IndexSwarmVariable {self}")
-           print(f"Numer of indices {self.indices}")
-
-
-
+            print(f"IndexSwarmVariable {self}")
+            print(f"Numer of indices {self.indices}")
 
     def _update(self):
         """
@@ -1423,7 +1420,7 @@ class Swarm(_api_tools.Stateful):
         order=2,
         corrector=False,
         restore_points_to_domain_func=None,
-        evalf=True,
+        evalf=False,
     ):
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -1678,7 +1675,7 @@ class Lagrangian_Updater:
     def update(
         self,
         dt: float,
-        evalf: Optional[bool] = True,
+        evalf: Optional[bool] = False,
     ):
         phi = min(1.0, dt / self.dt_physical)
 
