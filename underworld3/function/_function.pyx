@@ -282,10 +282,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
                            "Mesh variables can only be interpolated at coordinates.")
 
-    varfns = set()
-    for var in mesh.vars.values():
-        for subvar in var.sym_1d:
-            varfns.add(subvar)
+    if mesh is not None:
+        varfns = set()
+        for var in mesh.vars.values():
+            for subvar in var.sym_1d:
+                varfns.add(subvar)
         
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
@@ -315,7 +316,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         if mesh._evaluation_hash is not None:
             xxh = xxhash.xxh64()
-            xxh.update(coords)
+            xxh.update(np.ascontiguousarray(coords))
             coord_hash = xxh.intdigest()
 
             if coord_hash == mesh._evaluation_hash:
@@ -391,7 +392,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         # Cache these results 
         xxh = xxhash.xxh64()
-        xxh.update(coords)
+        xxh.update(np.ascontiguousarray(coords))
         coord_hash = xxh.intdigest()
         mesh._evaluation_hash = coord_hash
         mesh._evaluation_interpolated_results = varfns_arrays
