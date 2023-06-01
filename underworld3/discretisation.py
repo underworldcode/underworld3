@@ -1695,8 +1695,6 @@ class _MeshVariable(_api_tools.Stateful):
         ):
             """Read the mesh data as a swarm-like value"""
 
-            print(f"Trying to read checkpoint {data_file} for {data_name}", flush=True)
-
             h5f = h5py.File(data_file)
             D = h5f["fields"][data_name][()]
             X = h5f["fields"]["coordinates"][()]

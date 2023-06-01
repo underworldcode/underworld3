@@ -324,7 +324,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
                     print("Using evaluation cache", flush=True)
                 return mesh._evaluation_interpolated_results
             else:
-                print("Breaking evaluation cache", flush=True)
+                if uw.mpi.rank == 0:
+                    print("No evaluation cache", flush=True)
+                mesh._evaluation_hash = None
+                mesh._evaluation_interpolated_results = None
+
 
         # For now, eval over all vars
         vars = mesh.vars.values()
