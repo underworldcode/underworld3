@@ -320,12 +320,12 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             coord_hash = xxh.intdigest()
 
             if coord_hash == mesh._evaluation_hash:
-                if uw.mpi.rank == 0:
-                    print("Using evaluation cache", flush=True)
+                # if uw.mpi.rank == 0:
+                #     print("Using evaluation cache", flush=True)
                 return mesh._evaluation_interpolated_results
             else:
-                if uw.mpi.rank == 0:
-                    print("No evaluation cache", flush=True)
+                # if uw.mpi.rank == 0:
+                #     print("No evaluation cache", flush=True)
                 mesh._evaluation_hash = None
                 mesh._evaluation_interpolated_results = None
 

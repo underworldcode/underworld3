@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -21,19 +21,22 @@
 #
 # - Section 10.2 of the book
 #
+# #### Darcy pressure solution (quasi-static)
+#
+# $$\nabla \cdot \left( \boldsymbol\kappa \nabla p - \boldsymbol{s} \right) + W = 0$$
+#
 # #### Darcy velocity:
-# $$ u = - \frac{k}{\mu_c}\nabla p$$
+# $$u = - \frac{k}{\mu_c}\nabla p$$
 #
 # ### viscosity:
-# $$ \mu_c = \left( \frac{c}{mu_o^{\frac{1}{4}}} +  \frac{1-c}{mu_s^{\frac{1}{4}}} \right)^{-4} $$
+# $$\mu_c = \left( \frac{c}{\mu_o^{\frac{1}{4}}} +  \frac{1-c}{\mu_s^{\frac{1}{4}}} \right)^{-4}$$
 #
 # #### Advection-diffusion of material:
-# $$ \varphi \frac{\delta c}{\delta t}\nabla(uc) = \nabla(\kappa\nabla c)  $$
+# $$\varphi \frac{\delta c}{\delta t}\nabla(uc) = \nabla(\kappa\nabla c)$$
 #
 #
 #
 # ##### Model physical parameters:
-#
 #
 # | paramter | symbol  | value  | units  |   |
 # |---|---|---|---|---|
@@ -65,9 +68,8 @@ options = PETSc.Options()
 outputDir = './output/viscousFingering_example/'
 
 if uw.mpi.rank==0:
-    ### create folder if not run before
-    if not os.path.exists(outputDir):
-        os.makedirs(outputDir)
+    ### create folder if required
+    os.makedirs(outputDir, exist_ok=True)
 
 # +
 # import unit registry to make it easy to convert between units
@@ -90,11 +92,7 @@ rho0          = 1e3
 
 
 refTime        = perm / kappa
-
 refViscosity   = eta * u.pascal * u.second
-
-
-
 
 KL = refLength    * u.meter
 KT = dT           * u.kelvin
@@ -102,10 +100,9 @@ Kt = refTime      * u.second
 KM = refViscosity * KL * Kt
 
 
-
 ### create unit registry
-scaling_coefficients                    = uw.scaling.get_coefficients()
-scaling_coefficients["[length]"] = KL
+scaling_coefficients = uw.scaling.get_coefficients()
+scaling_coefficients["[length]"] = 10.0 * u.millimetre
 scaling_coefficients["[time]"] = Kt
 scaling_coefficients["[mass]"]= KM
 scaling_coefficients["[temperature]"]= KT
@@ -115,22 +112,21 @@ scaling_coefficients
 minX, maxX = 0, nd(10*u.meter)
 minY, maxY = 0, nd(10*u.meter)
 
-# mesh = uw.meshing.UnstructuredSimplexBox(
-#     minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.02, qdegree=3)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=maxY/50, qdegree=5)
 
-mesh = uw.meshing.StructuredQuadBox(elementRes=(100,100),
-                                      minCoords=(minX,minY),
-                                      maxCoords=(maxX,maxY), qdegree=5 )
+# mesh = uw.meshing.StructuredQuadBox(elementRes=(100,100),
+#                                       minCoords=(minX,minY),
+#                                       maxCoords=(maxX,maxY), qdegree=5 )
 
 
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=3)
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-mat    = uw.discretisation.MeshVariable("mat", mesh, 1, degree=5)
+mat    = uw.discretisation.MeshVariable("mat", mesh, 1, degree=3)
 
 # x and y coordinates
 x = mesh.N.x
 y = mesh.N.y
-
 # +
 
 if uw.mpi.size == 1:
@@ -142,7 +138,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -163,13 +159,15 @@ if uw.mpi.size == 1:
 # -
 
 # Create Darcy Solver
-darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
+darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
 
+
+darcy
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh)
@@ -178,7 +176,7 @@ swarm = uw.swarm.Swarm(mesh=mesh)
 
 material = swarm.add_variable(name='M', size=1, proxy_degree=mat.degree)
 
-swarm.populate(fill_param=mat.degree)
+swarm.populate(fill_param=8)
 
 # +
 ### create adv diff solver
@@ -202,17 +200,15 @@ np.random.seed(100)
 ### on the mesh
 
 with mesh.access(mat):
-    x0 = 0.25
-    dx = mesh.get_min_radius()
+    x0 = nd(2.5 * u.meter)
+    dx = max(mesh.get_min_radius(), nd(0.1 * u.meter))
     
-    mat.data[mat.coords[:,0]  < x0] = 1
-    mat.data[mat.coords[:,0] >= x0] = 0
+    fluctuation = nd(0.05 * u.meter) * np.cos(mat.coords[:,1] / nd(0.5 * u.meter) * np.pi)
+    fluctuation += nd(0.05 * u.meter) * np.cos(mat.coords[:,1] / nd(2.0 * u.meter) * np.pi)
+    fluctuation += nd(0.05 * u.meter) * np.random.random(size =  mat.coords.shape[0])
     
-    randomInterface = np.random.random(mat.coords[:,0][(mat.coords[:,0] > (x0-dx)) & (mat.coords[:,0] < (x0+dx))].shape[0])
-    
-    # print(randomInterface.shape)
-    # print(mat.data[:,0][(mat.coords[:,0] > (0.25-mesh.get_min_radius())) & (mat.coords[:,0] < (0.25+mesh.get_min_radius()))].shape)
-    mat.data[:,0][(mat.coords[:,0] > (x0-dx)) & (mat.coords[:,0] < (x0+dx))] = randomInterface[:,]
+    mat.data[...] = 0
+    mat.data[mat.coords[:,0] + fluctuation  < x0] = 1
     
 ### on the swarm
 
@@ -220,17 +216,7 @@ with swarm.access(material):
     material.data[:,0] = mat.rbf_interpolate(new_coords=material.swarm.data, nnn=1)[:,0]
     # material.data[:,0] = uw.function.evaluate(mat.sym, swarm.particle_coordinates.data)
     
-#     x0 = 0.25
-#     dx = mesh.get_min_radius()
-    
-#     material.data[material.swarm.data[:,0]  < x0] = 1
-#     material.data[material.swarm.data[:,0] >= x0] = 0
-    
-#     randomInterface = np.random.random(swarm.data[(swarm.data[:,0] > (x0-dx)) & (swarm.data[:,0] < (x0+dx))].shape[0])
-    
-#     material.data[:,0][(swarm.data[:,0] > (x0-dx)) & (swarm.data[:,0] < (x0+dx))] = randomInterface[:,]
-
-    
+  
 
 # -
 
@@ -244,7 +230,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = 'ssaa'
+    pv.global_theme.anti_aliasing = 'ssaa'
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -268,20 +254,24 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
     
     pl.add_points(
         point_cloud,
         cmap="coolwarm",
-        render_points_as_spheres=False,
+        render_points_as_spheres=True,
         point_size=10,
-        opacity=0.66,
+        opacity=0.33,
     )
 
     pl.show(cpos="xy")
 
 eta_s = nd(1.33e-4 * u.pascal*u.second)
 eta_o = 20*eta_s
+
+eta_s
+
+nd(1. * u.pascal)
 
 # +
 ### use the mesh var to map composition to viscosity
@@ -298,7 +288,7 @@ diffusivity_fn = nd_perm / eta_fn
 darcy.constitutive_model.Parameters.diffusivity = diffusivity_fn
 # -
 
-diffusivity_fn
+darcy.constitutive_model.Parameters.diffusivity.subs(material.sym[0],1)
 
 # #### Darcy velocity:
 # $$ u = - \frac{k}{\mu_c}\nabla p$$
@@ -336,9 +326,12 @@ adv_diff.add_dirichlet_bc(0., 'Right')
 # -
 time = 0
 step = 0
-finish_time = 0.01*u.year
+
+
+darcy.solve()
 
 # +
+finish_time = 0.01*u.year
 
 while time < nd(finish_time):
     
@@ -355,7 +348,7 @@ while time < nd(finish_time):
     
     
 
-    ### get the Darcy velociy from the darcy solve
+    ### get the Darcy velocity from the darcy solve
     darcy.solve()
     
     ## Divide by the porosity to get the actual velocity
@@ -383,6 +376,53 @@ while time < nd(finish_time):
     step += 1
     
     time += dt
+
+
+# -
+
+if uw.mpi.size == 1:
+
+    # plot the mesh
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.anti_aliasing = 'ssaa'
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
     
+    
+    pvmesh['mat'] = mat.rbf_interpolate(mesh.data) #uw.function.evaluate(mat.sym[0], mesh.data)
+    
+    with swarm.access(material):
+        points = np.zeros((material.swarm.data.shape[0], 3))
+        points[:, 0] = material.swarm.data[:, 0]
+        points[:, 1] = material.swarm.data[:, 1]
+    
+        
+        
+        point_cloud = pv.PolyData(points)
+        
+        point_cloud.point_data["M"] = material.data.copy()
+        
+
+    pl = pv.Plotter()
+
+    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=7,
+        opacity=0.66,
+    )
+
+    pl.show(cpos="xy")
 
 
