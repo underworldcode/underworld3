@@ -1066,7 +1066,7 @@ class Mesh(_api_tools.Stateful):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 2.5 * self._search_lengths[cells]
+            dist > 0.25 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
