@@ -8,7 +8,7 @@ from typing import Optional, Callable, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes
 import underworld3.timing as timing
 
 
@@ -78,32 +78,38 @@ class SNES_Darcy(SNES_Scalar):
     This class provides functionality for a discrete representation
     of the Groundwater flow equations
 
-    $$\nabla \cdot \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)  = S_s \frac{\partial h}{\partial t} - W$$
+    $$
+    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\mathbf{f}_{0}} } -
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{f}_{1}}} =
+            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}_{s}}}
+    $$
 
-    The Darcy flux is
+    The flux term, \(\mathbf{f}_1\) relates the effective velocity to pressure gradients
 
-    $$\boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)$$
+    $$
+    \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
+    $$
 
     ## Properties
 
-      - The unknown is \( h \), the hydraulic head
+      - The unknown is \(h\), the hydraulic head
 
-      - The permeability tensor, \( \kappa \) is provided by setting the `constitutive_model` property to
+      - The permeability tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
     one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
       - Volumetric sources for the pressure gradient are supplied through
-        the \( s \) property [e.g. \( s = \rho g \) ]
+        the \(s\) property [e.g. \(s = \rho g\) ]
 
-      - \( W \) is a pressure source term
+      - \(W\) is a pressure source term
 
-      - \( S_s \) is the specific storage coefficient
-
+      - \(S_s\) is the specific storage coefficient
 
     ## Notes
 
-        - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity )
+      - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity)
 
     """
 
@@ -801,13 +807,14 @@ class SNES_Tensor_Projection(SNES_Projection):
 
 '''
 class SNES_Solenoidal_Vector_Projection(SNES_Stokes):
-    """
+    r"""
     Map underworld (pointwise) function to continuous
     nodal point values in least-squares sense.
 
     Solver can be given boundary conditions that
     the continuous function needs to satisfy and
-    non-linear constraints will be handled by SNES"""
+    non-linear constraints will be handled by SNES
+    """
 
     instances = 0
 
@@ -1184,8 +1191,12 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
 
 class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
+    r"""
+    Swarm-based advection diffusion solver.
 
-    """Characteristics-based advection diffusion solver:
+    $$
+    \frac{\partial \phi}{\partial t} + (\mathbf{u} \cdot \nabla) \phi = \nabla ( \kappa \nabla \phi ) + H
+    $$
 
     Uses a theta timestepping approach with semi-Lagrange sample backwards in time using
     a mid-point advection scheme (based on our particle swarm implementation)

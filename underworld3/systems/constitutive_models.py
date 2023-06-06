@@ -12,7 +12,7 @@ from typing import NamedTuple, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes
 import underworld3.timing as timing
 
 
@@ -113,7 +113,7 @@ class Constitutive_Model:
             d = self.dim
             self._build_c_tensor()
 
-            if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)):
+            if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
                 self._solver.is_setup = False
 
             return
@@ -127,9 +127,7 @@ class Constitutive_Model:
 
     @solver.setter
     def solver(self, solver_object):
-        if isinstance(
-            solver_object, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)
-        ):
+        if isinstance(solver_object, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
             self._solver = solver_object
             self.Parameters._solver = solver_object
             self._solver.is_setup = False
@@ -213,9 +211,7 @@ class Constitutive_Model:
         d = self.dim
         self._build_c_tensor()
 
-        if isinstance(
-            self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint)
-        ):
+        if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
             self._solver.is_setup = False
 
         return
@@ -1541,9 +1537,11 @@ class DiffusionModel(Constitutive_Model):
     diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
     scalar_solver.constititutive_model = diffusion_model
     ```
-    $$ q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}  $$
+    $$
+    q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}
+    $$
 
-    where \( \kappa \) is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where \(\kappa\) is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. Access the constitutive model using:
 
     ```python

@@ -259,7 +259,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
                                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
         elif isMatrix:
             for sub_exp in exp:
-                varfns.add(sub_exp)
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                    varfns.add(sub_exp)
         else:
             # Recurse.
             for arg in exp.args: 
@@ -550,7 +551,8 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
                                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
         elif isMatrix:
             for sub_exp in exp:
-                varfns.add(sub_exp)
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                    varfns.add(sub_exp)
         else:
             # Recurse.
             for arg in exp.args: 

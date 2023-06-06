@@ -4,7 +4,6 @@
 from underworld3.cython.generic_solvers import (
     SNES_Scalar,
     SNES_Vector,
-    SNES_SaddlePoint,
     SNES_Stokes,
 )
 
