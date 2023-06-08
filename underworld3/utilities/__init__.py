@@ -14,6 +14,11 @@ if not petsc_dir + "/lib/petsc/bin" in sys.path:
 from .uw_petsc_gen_xdmf import *
 from .uw_swarmIO import *
 
+from ._utils import gather_data
+
+# =====
+# Maybe the following should be moved to _utils.py ?? 
+# =====
 
 # A couple of useful h5 tricks
 def h5_scan(filename):
