@@ -4,7 +4,7 @@
 from underworld3.cython.generic_solvers import (
     SNES_Scalar,
     SNES_Vector,
-    SNES_Stokes,
+    SNES_Stokes_SaddlePt,
 )
 
 from .solvers import SNES_Poisson as Poisson

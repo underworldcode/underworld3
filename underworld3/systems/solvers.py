@@ -8,14 +8,48 @@ from typing import Optional, Callable, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 import underworld3.timing as timing
+
+
+# class UW_Scalar_Temple(SNES_Scalar):
+
+
+# class UW_Lagrangian_Helper:
+#     """Mixin style ... add some functions to manage swarm updates etc"""
+
+#     @property
+#     def phi_star(self):
+#         return "phi_star"
+
+#     @property
+#     def phi_star_star(self):
+#         return "phi_star_star"
 
 
 class SNES_Poisson(SNES_Scalar):
     r"""
-    SNES-based poisson equation solver
+    This class provides functionality for a discrete representation
+    of the Poisson equation
 
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+    $$
+
+    The term \(\mathbf{F}\) relates the flux to gradients in the unknown \(u\)
+
+    ## Properties
+
+      - The unknown is \(u\)
+
+      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - \(f\) is a volumetric source term
     """
 
     instances = 0
@@ -79,17 +113,19 @@ class SNES_Darcy(SNES_Scalar):
     of the Groundwater flow equations
 
     $$
-    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\mathbf{f}_{0}} } -
+    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{f}}}} -
     \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{f}_{1}}} =
-            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}_{s}}}
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}}}
     $$
 
-    The flux term, \(\mathbf{f}_1\) relates the effective velocity to pressure gradients
+    The flux term, \(\mathbf{F}\) relates the effective velocity to pressure gradients
 
     $$
     \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
     $$
+
+    The time-dependent term \(\dot{\mathbf{f}}\) is not implemented in this version.
 
     ## Properties
 
@@ -183,6 +219,15 @@ class SNES_Darcy(SNES_Scalar):
         self._f = sympy.Matrix((value,))
 
     @property
+    def W(self):
+        return self._f
+
+    @f.setter
+    def W(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
     def s(self):
         return self._s
 
@@ -258,36 +303,52 @@ class SNES_Darcy(SNES_Scalar):
 ## --------------------------------
 
 
-class SNES_Stokes(SNES_Stokes):
+class SNES_Stokes(SNES_Stokes_SaddlePt):
     r"""
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint.
 
-    $$\frac{\partial}{\partial x_j} \left( \frac{\eta}{2} \left[ \frac{\partial u_i}{\partial x_j}  +
-            \frac{\partial u_j}{\partial x_i} \right]\right) - \frac{\partial p}{\partial x_i} = f_i$$
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - \left( p
+                    + \lambda \nabla \cdot \mathbf{u} \right) \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+    $$
 
-    $$\frac{\partial u_i}{\partial x_i} = 0$$
+    $$
+    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{f}_p} = 0
+    $$
+
+    The term \(\mathbf{F}\) relates the flux to velocity ( \(\mathbf{u}\) ) gradients through a
+    viscosity tensor.
+
+    The constraint equation, $\mathbf{f}_p = 0$ is incompressible flow by default but can be set
+    to any function of the unknown  \(\mathbf{u}\) and  \(\nabla\cdot\mathbf{u}\)
 
     ## Properties
 
-      - The viscosity, \( \eta \) is provided by setting the `constitutive_model` property to
-    one of the `uw.systems.constitutive_models` classes and populating the parameters.
+      - The unknowns are velocities \(\mathbf{u}\) and a pressure-like constraint paramter \(\mathbf{p}\)
+
+      - The viscosity tensor, \(\boldsymbol{\eta}\) is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
-      - The bodyforce term, \( f_i \) is provided through the `bodyforce` property.
+      - \(\mathbf f\) is a volumetric source term (i.e. body forces)
+      and is set by providing the `bodyforce` property.
 
-      - The Augmented Lagrangian approach to application of the incompressibility
+
+      - An Augmented Lagrangian approach to application of the incompressibility
     constraint is to penalise incompressibility in the Stokes equation by adding
     \( \lambda \nabla \cdot \mathbf{u} \) when the weak form of the equations is constructed.
     (this is in addition to the constraint equation, unlike in the classical penalty method).
-    This is activated by setting the `penalty` property to a non-zero floating point value.
+    This is activated by setting the `penalty` property to a non-zero floating point value which adds
+    the term in the `sympy` expression.
 
       - A preconditioner is usually required for the saddle point system and this is provided
-    though the `saddle_preconditioner` property. A common choice is \( 1/ \eta \) or
-    \( 1 / \eta + 1/ \lambda \) if a penalty is used
-
+    though the `saddle_preconditioner` property. A common choice is \(1/\eta\) for a scalar viscosity function.
 
     ## Notes
 
@@ -295,11 +356,6 @@ class SNES_Stokes(SNES_Stokes):
     the mixed finite element method and is usually lower than the order of the `velocityField` variable.
 
       - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
-    (currently this is not implemented).
-
-      - The `solver_name` parameter sets the namespace for PETSc options and should be unique and
-    compatible with the PETSc naming conventions.
-
 
     """
 
@@ -352,10 +408,10 @@ class SNES_Stokes(SNES_Stokes):
         # additional terms. These are pre-defined to be zero
 
         # terms that become part of the weighted integral
-        self._u_f0 = self.UF0 - self.bodyforce
+        self._u_f0 = self.F0 - self.bodyforce
         # Integration by parts into the stiffness matrix (constitutive terms)
         self._u_f1 = sympy.simplify(
-            self.UF1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
+            self.F1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
         )
 
         # forces in the constraint (pressure) equations
@@ -376,16 +432,16 @@ class SNES_Stokes(SNES_Stokes):
     def strainrate_star(self):
         return None
 
-    @property
-    def strainrate_star_1d(self):
-        return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
-
     # provide the strain-rate history in symbolic form
     @strainrate_star.setter
     def strainrate_star(self, strain_rate_fn):
         self._is_setup = False
         symval = sympify(strain_rate_fn)
         self._Estar = symval
+
+    @property
+    def strainrate_star_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
 
     # This should return standard viscous behaviour if strainrate_star is None
     @property
@@ -488,16 +544,23 @@ class SNES_Stokes(SNES_Stokes):
 
 
 class SNES_Projection(SNES_Scalar):
-    """
-    Map underworld (pointwise) function to continuous
-    nodal point values in least-squares sense.
+    r"""
+    Solves \(u = \tilde{f}\) where \(\tilde{f}\) is a function that can be evaluated within an element and
+    \(u\) is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
+    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+    evaluated within that context.
 
-    Solver can be given boundary conditions that
-    the continuous function needs to satisfy and
-    non-linear constraints will be handled by SNES.
+    The projection implemented by creating a solver for this problem
 
-    Consitutive model for this solver is the identity tensor (purely for validation)
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{f}}} = 0
+    $$
 
+    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
     """
 
     instances = 0
@@ -587,15 +650,23 @@ class SNES_Projection(SNES_Scalar):
 
 
 class SNES_Vector_Projection(SNES_Vector):
-    """
-    Map underworld (pointwise) function to continuous
-    nodal point values in least-squares sense.
+    r"""
+    Solves \(\mathbf{u} = \tilde{\mathbf{f}}\) where \(\tilde{\mathbf{f}}\) is a vector function that can be evaluated within an element and
+    \(\mathbf{u}\) is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
+    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+    evaluated within that context.
 
-    Solver can be given boundary conditions that
-    the continuous function needs to satisfy and
-    non-linear constraints will be handled by SNES
+    The projection is implemented by creating a solver for this problem
 
-    Consitutive model for this solver is the identity tensor (purely for validation)
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
+    $$
+
+    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
     """
 
     instances = 0
@@ -693,14 +764,25 @@ class SNES_Vector_Projection(SNES_Vector):
 
 
 class SNES_Tensor_Projection(SNES_Projection):
-    """
-    Map underworld (pointwise) function to continuous
-    nodal point values in least-squares sense.
+    r"""
+    Solves \(\mathbf{u} = \tilde{\mathbf{f}}\) where \(\tilde{\mathbf{f}}\) is a tensor-valued function that can be evaluated within an element and
+    \(\mathbf{u}\) is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (typically components of fluxes) can be mapped to continuous
+    variables with a projection.
 
-    For tensor problems, we start with a component-by-component
-    solution that requires a work vector to hold the result.
+    The projection implemented by creating a solver for this problem
 
-    Consitutive model for this solver is the identity tensor
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
+    $$
+
+    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
+
+    Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.
+
     """
 
     instances = 0

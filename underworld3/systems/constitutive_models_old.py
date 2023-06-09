@@ -12,7 +12,7 @@ from typing import NamedTuple, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes, SNES_SaddlePoint
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 import underworld3.timing as timing
 
 
@@ -47,7 +47,6 @@ class Constitutive_Model:
         dim: int,
         u_dim: int,
     ):
-
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
         # defined as a template here, but should be instantiated via class
@@ -85,12 +84,12 @@ class Constitutive_Model:
         """
 
         def __init__(inner_self):
-            inner_self._solver = None #### should this be here?
-    
+            inner_self._solver = None  #### should this be here?
+
     @property
     def K(self):
-        ''' The constitutive property for this flow law '''
-        return self._K 
+        """The constitutive property for this flow law"""
+        return self._K
 
     @property
     def solver(self):
@@ -130,7 +129,8 @@ class Constitutive_Model:
     def c(self):
         """The tensor form of the constitutive model that relates fluxes to gradients. In scalar
         problems, `c` and `C` are equivalent (matrices), but in vector problems, `c` is a
-        rank 4 tensor. NOTE: `c` is the canonical form of the constitutive relationship."""
+        rank 4 tensor. NOTE: `c` is the canonical form of the constitutive relationship.
+        """
 
         return self._c.as_immutable()
 
@@ -141,7 +141,6 @@ class Constitutive_Model:
         u: sympy.Matrix = None,  # may be needed in the case of cylindrical / spherical
         u_dt: sympy.Matrix = None,
     ):
-
         """Computes the effect of the constitutive tensor on the gradients of the unknowns.
         (always uses the `c` form of the tensor). In general cases, the history of the gradients
         may be required to evaluate the flux.
@@ -168,7 +167,6 @@ class Constitutive_Model:
         u: sympy.Matrix = None,  # may be needed in the case of cylindrical / spherical
         u_dt: sympy.Matrix = None,
     ):
-
         """Computes the effect of the constitutive tensor on the gradients of the unknowns.
         (always uses the `c` form of the tensor). In general cases, the history of the gradients
         may be required to evaluate the flux. Returns the Voigt form that is flattened so as to
@@ -216,7 +214,24 @@ class Constitutive_Model:
             )
         )
 
-        ## Usually, there are constitutive parameters that can be included in the iputho display
+    @classmethod
+    def _ipython_display_(cls):
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        ## Docstring (static)
+        docstring = dedent(cls.__doc__)
+        docstring = docstring.replace(r"\(", "$").replace(r"\)", "$")
+        display(Markdown(docstring))
+
+    def view(self):
+        self._ipython_display_()
+        return
+
+    @classmethod
+    def view(cls):
+        cls._ipython_display_()
+        return
 
 
 class ViscousFlowModel(Constitutive_Model):
@@ -256,7 +271,6 @@ class ViscousFlowModel(Constitutive_Model):
             inner_self,
             viscosity: Union[float, sympy.Function] = None,
         ):
-
             if viscosity is None:
                 viscosity = sympy.sympify(1)
 
@@ -272,7 +286,6 @@ class ViscousFlowModel(Constitutive_Model):
             inner_self._reset()
 
     def __init__(self, dim):
-
         u_dim = dim
         super().__init__(dim, u_dim)
 
@@ -321,14 +334,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     ```
     ```python
     viscoplastic_model = ViscoPlasticFlowModel(dim)
-    viscoplastic_model.material_properties = viscoplastic_model.Parameters(
-                                                                            viscosity=viscosity_fn
-                                                                            yield_stress=yieldstress_fn,
-                                                                            min_viscosity=min_viscosity_fn,
-                                                                            max_viscosity=max_viscosity_fn,
-                                                                            yield_stress_min=float,
-                                                                            edot_II_fn=strain_rate_inv_fn
-                                                                            )
+    viscoplastic_model.Parameters(
+            viscosity: Union[float, sympy.Function] = sympy.sympify(1),
+            yield_stress: Union[float, sympy.Function] = None,
+            min_viscosity: Union[float, sympy.Function] = sympy.oo,
+            yield_stress_min: Union[float, sympy.Function] = sympy.oo,
+            edot_II_fn: sympy.Function = None,
+            epsilon_edot_II: float = None,
+        )
     solver.constititutive_model = viscoplastic_model
     ```
     $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
@@ -337,7 +350,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
     relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
     constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
-
 
     In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the *yield stress*.
     In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
@@ -381,7 +393,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             edot_II_fn: sympy.Function = None,
             epsilon_edot_II: float = None,
         ):
-
             if edot_II_fn is None:
                 edot_II_fn = sympy.symbols(
                     r"\left|\dot\epsilon\right|\rightarrow\textrm{not~yet~defined}"
@@ -457,7 +468,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # This has no setter !!
         @property
         def viscosity(inner_self):
-
             # detect if values we need are defined or are placeholder symbols
 
             if isinstance(inner_self.yield_stress, sympy.core.symbol.Symbol):
@@ -493,7 +503,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             # If we want to apply limits to the viscosity but see caveat above
 
             if inner_self.min_viscosity is not None:
-
                 return sympy.simplify(
                     sympy.Max(
                         effective_viscosity,
@@ -528,6 +537,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             ## Todo: add all the other properties in here
         )
 
+
 class ViscoElasticPlasticFlowModel(Constitutive_Model):
     r"""
     ```python
@@ -560,7 +570,17 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
     ```
     ```python
     viscoelastic_model = ViscoElasticFlowModel(dim)
-    viscoelastic_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
+    viscoelastic_model.Parameters(
+            shear_viscosity_0: Union[float, sympy.Function] = 1,
+            shear_viscosity_min: Union[float, sympy.Function] = sympy.oo,
+            shear_modulus: Union[float, sympy.Function] = sympy.oo,
+            dt_elastic: Union[float, sympy.Function] = sympy.oo,
+            yield_stress: Union[float, sympy.Function] = sympy.oo,
+            yield_stress_min: Union[float, sympy.Function] = sympy.oo,
+            strainrate_inv_II: sympy.Function = None,
+            stress_star: sympy.Function = None,
+            strainrate_inv_II_min: float = 0
+        )
     solver.constititutive_model = viscoelastic_model
     ```
     $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
@@ -597,16 +617,13 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
             stress_star: sympy.Function = None,
             strainrate_inv_II_min: float = 0,
         ):
-
             if strainrate_inv_II_min is None:
                 strainrate_inv_II = sympy.symbols(
                     r"\left|\dot\epsilon\right|\rightarrow\textrm{not\ defined}"
                 )
 
             if stress_star is None:
-                stress_star = sympy.symbols(
-                    r"\sigma^*\rightarrow\textrm{not\ defined}"
-                )
+                stress_star = sympy.symbols(r"\sigma^*\rightarrow\textrm{not\ defined}")
 
             inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
             inner_self._shear_modulus = sympy.sympify(shear_modulus)
@@ -649,7 +666,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
         @property
         def ve_effective_viscosity(inner_self):
-
             # the dt_elastic defaults to infinity, t_relax to zero,
             # so this should be well behaved in the viscous limit
 
@@ -723,7 +739,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
         # This has no setter !!
         @property
         def viscosity(inner_self):
-
             # detect if values we need are defined or are placeholder symbols
 
             if inner_self.yield_stress == sympy.oo:
@@ -772,7 +787,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                 return sympy.simplify(effective_viscosity)
 
     def __init__(self, dim):
-
         u_dim = dim
         super().__init__(dim, u_dim)
 
@@ -814,7 +828,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
         u: sympy.Matrix = None,  # may be needed in the case of cylindrical / spherical
         u_dt: sympy.Matrix = None,
     ):
-
         """Computes the effect of the constitutive tensor on the gradients of the unknowns.
         (always uses the `c` form of the tensor). In general cases, the history of the gradients
         may be required to evaluate the flux. For viscoelasticity, the
@@ -889,7 +902,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
     @property
     def is_elastic(self):
-
         # If any of these is not defined, elasticity is switched off
 
         if self.Parameters.dt_elastic is sympy.oo:
@@ -905,7 +917,6 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
     @property
     def is_viscoplastic(self):
-
         if self.Parameters.yield_stress == sympy.oo:
             return False
 
@@ -916,6 +927,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
 
 ###
+
 
 class DiffusionModel(Constitutive_Model):
     r"""
@@ -961,7 +973,6 @@ class DiffusionModel(Constitutive_Model):
             inner_self._reset()
 
     def __init__(self, dim):
-
         self.u_dim = 1
         super().__init__(dim, self.u_dim)
 
@@ -1080,7 +1091,6 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self._reset()
 
     def __init__(self, dim):
-
         u_dim = dim
         super().__init__(dim, u_dim)
 

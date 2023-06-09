@@ -818,75 +818,32 @@ class SNES_Vector(Solver):
 
 ### =================================
 
-class SNES_Stokes(Solver):
+class SNES_Stokes_SaddlePt(Solver):
     r"""
-    This class provides functionality for a discrete representation
-    of the Stokes flow equations.
+    The `SNES_Stokes` solver class provides functionality for solving the *constrained* vector 
+    conservation problem in the unknown $\mathbf{u}$ with the constraint parameter \(\mathrm{p}\):
 
-    Specifically, the class uses a mixed finite element implementation to
-    construct a system of linear equations which may then be solved.
+    $$
+    \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} - 
+    \color{Green}{\mathbf{f} (\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
+    $$
 
-    The strong form of the given boundary value problem, for :math:`f`,
-    :math:`g` and :math:`h` given, is
+    $$
+    \mathrm{f}_p {(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
+    $$
 
-    .. math::
-        \\begin{align}
-        \\sigma_{ij,j} + f_i =& \\: 0  & \\text{ in }  \\Omega \\\\
-        u_{k,k} =& \\: 0  & \\text{ in }  \\Omega \\\\
-        u_i =& \\: g_i & \\text{ on }  \\Gamma_{g_i} \\\\
-        \\sigma_{ij}n_j =& \\: h_i & \\text{ on }  \\Gamma_{h_i} \\\\
-        \\end{align}
+    where $\mathbf{f}$ is a source term for $u$, $\mathbf{F}$ is a flux term that relates
+    the rate of change of $\mathbf{u}$ to the gradients $\nabla \mathbf{u}$, and $\dot{\mathbf{u}}$
+    is the Lagrangian time-derivative of $\mathbf{u}$. $\mathrm{f}_p$ is the expression of the constraints 
+    on $\mathbf{u}$ enforced by the parameter $\mathrm{p}$.
 
-    where,
+    $\mathbf{u}$ is a vector `underworld` `meshVariable` and $\mathbf{f}$, $\mathbf{F}$ and $\mathrm{F}_p$ 
+    are arbitrary sympy expressions of the coodinate variables of the mesh and may include other
+    `meshVariable` and `swarmVariable` objects. $\mathrm{p}$ is a scalar `underworld` `meshVariable`.
 
-    * :math:`\\sigma_{i,j}` is the stress tensor
-    * :math:`u_i` is the velocity,
-    * :math:`p`   is the pressure,
-    * :math:`f_i` is a body force,
-    * :math:`g_i` are the velocity boundary conditions (DirichletCondition)
-    * :math:`h_i` are the traction boundary conditions (NeumannCondition).
-
-    The problem boundary, :math:`\\Gamma`,
-    admits the decompositions :math:`\\Gamma=\\Gamma_{g_i}\\cup\\Gamma_{h_i}` where
-    :math:`\\emptyset=\\Gamma_{g_i}\\cap\\Gamma_{h_i}`. The equivalent weak form is:
-
-    .. math::
-        \\int_{\Omega} w_{(i,j)} \\sigma_{ij} \\, d \\Omega = \\int_{\\Omega} w_i \\, f_i \\, d\\Omega + \sum_{j=1}^{n_{sd}} \\int_{\\Gamma_{h_j}} w_i \\, h_i \\,  d \\Gamma
-
-    where we must find :math:`u` which satisfies the above for all :math:`w`
-    in some variational space.
-
-    Parameters
-    ----------
-    mesh : 
-        The mesh object which forms the basis for problem discretisation,
-        domain specification, and parallel decomposition.
-    velocityField :
-        Optional. Variable used to record system velocity. If not provided,
-        it will be generated and will be available via the `u` stokes object property.
-    pressureField :
-        Optional. Variable used to record system pressure. If not provided,
-        it will be generated and will be available via the `p` stokes object property.
-        If provided, it is up to the user to ensure that it is of appropriate order
-        relative to the provided velocity variable (usually one order lower degree).
-    u_degree :
-        Optional. The polynomial degree for the velocity field elements.
-    p_degree :
-        Optional. The polynomial degree for the pressure field elements. 
-        If provided, it is up to the user to ensure that it is of appropriate order
-        relative to the provided velocitxy variable (usually one order lower degree).
-        If not provided, it will be set to one order lower degree than the velocity field.
-    solver_name :
-        Optional. The petsc options prefix for the SNES solve. This is important to provide
-        a name space when multiples solvers are constructed that may have different SNES options.
-        For example, if you name the solver "stokes", the SNES options such as `snes_rtol` become `stokes_snes_rtol`.
-        The default is blank, and an underscore will be added to the end of the solver name if not already present.
-
-    Notes
-    -----
-    Constructor must be called by collectively all processes.
-
-    """   
+    This class is used as a base layer for building solvers which translate from the common
+    physical conservation laws into this general mathematical form. 
+    """
 
     instances = 0   # count how many of these there are in order to create unique private mesh variable ids
 
@@ -900,7 +857,7 @@ class SNES_Stokes(Solver):
                 ):
      
 
-        SNES_Stokes.instances += 1
+        SNES_Stokes_SaddlePt.instances += 1
         self.name = solver_name
         self.mesh = mesh
         self.verbose = verbose
@@ -978,8 +935,8 @@ class SNES_Stokes(Solver):
         self._build_dm_and_mesh_discretisation()
         self._rebuild_after_mesh_update = self._build_dm_and_mesh_discretisation
 
-        self.UF0 = sympy.Matrix.zeros(1, self.mesh.dim) 
-        self.UF1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
+        self.F0 = sympy.Matrix.zeros(1, self.mesh.dim) 
+        self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.PF0 = sympy.Matrix.zeros(1, 1) 
 
         self.bcs = []
@@ -1034,7 +991,6 @@ class SNES_Stokes(Solver):
 
         self.is_setup = False
 
-
         return
 
 
@@ -1050,7 +1006,6 @@ class SNES_Stokes(Solver):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1   # rule of thumb 
         self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
-
 
     @property
     def PF0(self):
@@ -1134,7 +1089,7 @@ class SNES_Stokes(Solver):
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        F0  = sympy.Array(self.mesh.vector.to_matrix(self._u_f0))  #.reshape(dim)
+        F0  = sympy.Array(self._u_f0)  #.reshape(dim)
         F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
         FP0 = sympy.Array(self._p_f0)# .reshape(1)
 

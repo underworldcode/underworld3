@@ -12,7 +12,7 @@ from typing import NamedTuple, Union
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes
+from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 import underworld3.timing as timing
 
 
@@ -113,7 +113,7 @@ class Constitutive_Model:
             d = self.dim
             self._build_c_tensor()
 
-            if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
+            if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt)):
                 self._solver.is_setup = False
 
             return
@@ -127,7 +127,7 @@ class Constitutive_Model:
 
     @solver.setter
     def solver(self, solver_object):
-        if isinstance(solver_object, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
+        if isinstance(solver_object, (SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt)):
             self._solver = solver_object
             self.Parameters._solver = solver_object
             self._solver.is_setup = False
@@ -211,7 +211,7 @@ class Constitutive_Model:
         d = self.dim
         self._build_c_tensor()
 
-        if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes)):
+        if isinstance(self._solver, (SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt)):
             self._solver.is_setup = False
 
         return
