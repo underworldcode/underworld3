@@ -1878,24 +1878,44 @@ class Lagrangian_Derivative(Lagrangian_Updater):
 
         # By hand for now ... and this should have some error checks / default behaviour
 
-        match order:
-            case 1:
-                return sympy.UnevaluatedExpr(
-                    self.psi - self.psi_star[0].sym
-                ) / sympy.UnevaluatedExpr(delta_t)
-            case 2:
-                return sympy.UnevaluatedExpr(
-                    3 * self.psi / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                ) / sympy.UnevaluatedExpr(delta_t)
-            case 3:
-                return sympy.UnevaluatedExpr(
-                    11 * self.psi / 6
-                    - 3 * self.psi_star[0].sym
-                    + 3 * self.psi_star[1].sym / 2
-                    - self.psi_star[2].sym / 3
-                ) / sympy.UnevaluatedExpr(delta_t)
+        # This is the python 3.10+ version ...
+        # match order:
+        #     case 1:
+        #         return sympy.UnevaluatedExpr(
+        #             self.psi - self.psi_star[0].sym
+        #         ) / sympy.UnevaluatedExpr(delta_t)
+        #     case 2:
+        #         return sympy.UnevaluatedExpr(
+        #             3 * self.psi / 2
+        #             - 2 * self.psi_star[0].sym
+        #             + self.psi_star[1].sym / 2
+        #         ) / sympy.UnevaluatedExpr(delta_t)
+        #     case 3:
+        #         return sympy.UnevaluatedExpr(
+        #             11 * self.psi / 6
+        #             - 3 * self.psi_star[0].sym
+        #             + 3 * self.psi_star[1].sym / 2
+        #             - self.psi_star[2].sym / 3
+        #         ) / sympy.UnevaluatedExpr(delta_t)
+
+        # This will have to do for now
+        if order == 1:
+            return sympy.UnevaluatedExpr(
+                self.psi - self.psi_star[0].sym
+            ) / sympy.UnevaluatedExpr(delta_t)
+
+        if order == 2:
+            return sympy.UnevaluatedExpr(
+                3 * self.psi / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
+            ) / sympy.UnevaluatedExpr(delta_t)
+
+        if order == 3:
+            return sympy.UnevaluatedExpr(
+                11 * self.psi / 6
+                - 3 * self.psi_star[0].sym
+                + 3 * self.psi_star[1].sym / 2
+                - self.psi_star[2].sym / 3
+            ) / sympy.UnevaluatedExpr(delta_t)
 
 
 class Lagrangian_Flux(Lagrangian_Updater):
