@@ -25,7 +25,6 @@ import sympy
 
 import os
 
-os.environ["SYMPY_USE_CACHE"] = "no"
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 
@@ -84,6 +83,7 @@ del meshball_xyz_tmp
 meshball = uw.meshing.Mesh(
     dmplex,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+    qdegree=3
 )
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
     meshball.dm, [0.0, 1.0], [0.0, 0.0], [0.0, 2 * np.pi]
@@ -114,7 +114,7 @@ r, t = meshball.CoordinateSystem.R
 # -
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=False)
+p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
 
 
@@ -147,20 +147,12 @@ stokes = uw.systems.Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-options = stokes.petsc_options
-options.setValue("snes_rtol", 1.0e-4)
-options.setValue("pc_gamg_type", "agg")
-options.setValue("pc_gamg_agg_nsmooths", 3)
-options.setValue("pc_gamg_threshold", 0.5)
+stokes.tolerance = 1.0e-5
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
+    v_soln
 )
-stokes.constitutive_model.Parameters.viscosity = 1
-stokes.penalty = 0.0
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-stokes.petsc_options["snes_rtol"] = 1.0e-4
-
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
 
@@ -170,20 +162,6 @@ else:
     stokes.add_dirichlet_bc((0.0), "Upper", (0,))
 
 stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
-
-stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
-
-
-stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
 
 # -
 
@@ -197,8 +175,6 @@ stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
 # $$ 2\dot\epsilon_{r\theta} = \frac{1}{r} \frac{\partial u_r}{\partial \theta} + \frac{\partial u_\theta}{\partial r} - \frac{u_\theta}{r} $$
 
 stokes.strainrate
-
-stokes.stress
 
 # +
 # Create Stokes object (x,y)
@@ -217,10 +193,9 @@ stokes_xy = uw.systems.Stokes(
     solver_name="stokes_xy",
 )
 stokes_xy.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball_xyz.dim
+    v_soln_xy
 )
-stokes_xy.constitutive_model.Parameters.viscosity = 1
-stokes_xy.saddle_preconditioner = 1 / stokes_xy.constitutive_model.Parameters.viscosity
+stokes_xy.constitutive_model.Parameters.shar_viscosity_0 = 1
 stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
 
 # Velocity boundary conditions
@@ -230,10 +205,6 @@ if not free_slip_upper:
 
 stokes_xy.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 # -
-
-
-
-
 pressure_solver = uw.systems.Projection(meshball, p_cont)
 pressure_solver.uw_function = p_soln.sym[0]
 pressure_solver.smoothing = 1.0e-3
@@ -255,8 +226,6 @@ with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
         meshball_xyz.CoordinateSystem.xR[0], coords=r_xy.coords, coord_sys=meshball_xyz.N )
 
-
-
 stokes._setup_terms()
 
 stokes._p_f0
@@ -272,7 +241,7 @@ pressure_solver.solve()
 # -
 
 
-stokes_xy.tolerance = 1.0e-8
+stokes_xy.tolerance = 1.0e-5
 
 
 from underworld3 import timing
@@ -299,7 +268,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1000, 1000]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -336,7 +305,7 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
 
-    arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_length_xy = np.zeros((stokes_xy.u.coords.shape[0], 3))
     arrow_length_xy[:, 0:2] = usol_xy[...]
 
     pl = pv.Plotter(window_size=(750, 750))

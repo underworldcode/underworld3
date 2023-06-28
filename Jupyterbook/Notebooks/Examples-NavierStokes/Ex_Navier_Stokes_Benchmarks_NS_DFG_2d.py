@@ -48,9 +48,9 @@ print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=Tr
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc 
 
-resolution = uw.options.getReal("model_resolution", default=0.066)
+resolution = uw.options.getReal("model_resolution", default=0.05)
 model = uw.options.getInt("model_number", default=3)
-maxsteps = uw.options.getInt("max_steps", default=500)
+maxsteps = uw.options.getInt("max_steps", default=1000)
 restart_step = uw.options.getInt("restart_step", default=-1)
 
 # +
@@ -73,10 +73,9 @@ elif model == 4:
 elif model == 5:
     U0 = 15
     expt_name = f"NS_test_Re_1000_{resolution}"
+# -
 
-# +
-outdir = "output_res_025"
-
+outdir = "output_res_033"
 os.makedirs(".meshes", exist_ok=True)
 os.makedirs(f"{outdir}", exist_ok=True)
 
@@ -164,29 +163,23 @@ vs_soln = uw.discretisation.MeshVariable("Us", pipemesh, pipemesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", pipemesh, 1, degree=1)
 vorticity = uw.discretisation.MeshVariable("omega", pipemesh, 1, degree=1)
 r_inc = uw.discretisation.MeshVariable("R", pipemesh, 1, degree=1)
+rho   = uw.discretisation.MeshVariable("rho", pipemesh, 1, degree=1, varsymbol=r"{\rho}")
 
 # Nodal values of deviatoric stress (symmetric tensor)
 work   = uw.discretisation.MeshVariable("W", pipemesh, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=False)
 St = uw.discretisation.MeshVariable(r"Stress", pipemesh, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=1, 
                                          continuous=False, varsymbol=r"{\tau}")
-# -
 
-
-uw.maths.tensor.rank2_to_voigt(St.sym, dim=2)
 
 # +
 swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=20)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, pipemesh.dim, 
+v_star = uw.swarm.SwarmVariable("Vdt_p", swarm, pipemesh.dim, 
                             proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{*}}")
 
-v_star_star = uw.swarm.SwarmVariable("Vss", swarm, pipemesh.dim, 
+v_star_star = uw.swarm.SwarmVariable("V2dt_p", swarm, pipemesh.dim, 
                             proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{**}}")
 
-v_star_2 = uw.swarm.SwarmVariable("Vs2", swarm, pipemesh.dim, 
-                            proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{*2}}")
-
-
-stress_star_p = uw.swarm.SwarmVariable(r"stress^{*}", swarm,
+stress_star_p = uw.swarm.SwarmVariable(r"stress_p", swarm,
                                      (2,2), vtype=uw.VarType.SYM_TENSOR, 
                                      proxy_continuous=True,
                                      proxy_degree=2,
@@ -194,9 +187,27 @@ stress_star_p = uw.swarm.SwarmVariable(r"stress^{*}", swarm,
 
 
 swarm.populate(fill_param=3)
+
+
+# v_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
+#                                                   v_soln.sym, 
+#                                                   [v_star, v_star_star], 
+#                                                   dt_physical=0.01)
+
+stress_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
+                                                  St.sym, 
+                                                  [stress_star_p], 
+                                                  dt_physical=0.01)
+
+
+
 # -
 
-stress_star_p.sym
+
+DvDt = uw.swarm.Lagrangian_Derivative(swarm, v_soln.sym, 
+                                      [v_star, v_star_star], 
+                                      dt_physical=0.01, 
+                                      verbose=True)
 
 # + tags=[]
 passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -205,63 +216,10 @@ passive_swarm.populate(
 )
 
 with passive_swarm.access(passive_swarm.particle_coordinates):
-    passive_swarm.particle_coordinates.data[:, 0] /= 2.0 * width
-    passive_swarm.particle_coordinates.data[:, 1] = 0.2
+    passive_swarm.data[:, 0] /= 2.0 * width
+    passive_swarm.data[:, 1] = 0.2 + 0.02 * passive_swarm.data[:, 1]
 # -
-
-
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-# +
-# Create NS object
-
-navier_stokes = uw.systems.NavierStokesSwarm(
-    pipemesh,
-    velocityField=v_soln,
-    pressureField=p_soln,
-    velocityStar=v_star.sym,
-    velocityStarStar=v_star_star.sym,
-    # stressStar=stress_star_p.sym,
-    # stressStarStar=stress_star_star_p.sym,
-    rho=1.0,
-    verbose=False,
-    projection=True,
-    solver_name="navier_stokes",
-)
-
-navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(pipemesh.dim)
-navier_stokes.constitutive_model.Parameters.viscosity
-# -
-
-
-navier_stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
-
-
-navier_stokes.constitutive_model
-
-# +
-# stress computation and projection to particles
-
-stress_projection = uw.systems.Tensor_Projection(pipemesh, tensor_Field=St, scalar_Field=work  )
-stress_projection.uw_function = navier_stokes.stress_deviator_1d
-stress_projection.solve()
-
-with swarm.access(stress_star_p), pipemesh.access():
-    stress_star_p.data[...] = St.rbf_interpolate(swarm.particle_coordinates.data)
-
-# -
-
-print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-if model == 2:  # Steady state !
-    # remove the d/dt term ... replace the time dependence with the
-    # steady state advective transport term
-    # to lean towards steady state solutions
-
-    navier_stokes.UF0 = -(
-        navier_stokes.rho * (v_soln.sym - v_soln_1.sym) / navier_stokes.delta_t
-    )
-
 
 nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
 nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(pipemesh.N.k)
@@ -272,17 +230,29 @@ nodal_vorticity_from_v.petsc_options.delValue("ksp_monitor")
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
 
+
+navier_stokes = uw.systems.NavierStokes(
+    pipemesh,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    DvDt=DvDt,
+    rho=1.0,
+    verbose=False,
+    solver_name="navier_stokes",
+    )
+
+navier_stokes.constitutive_model = \
+    uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(v_soln)
+
 # Constant visc
 
 navier_stokes.rho = 1000.0
 navier_stokes.penalty = 0.1
 navier_stokes.bodyforce = sympy.Matrix([0,0])
 
-navier_stokes.saddle_preconditioner = 1.0 / navier_stokes.constitutive_model.Parameters.viscosity
-
 hw = 1000.0 / res
 with pipemesh.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evaluate(r, pipemesh.data, pipemesh.N)
+    r_inc.data[:, 0] = uw.function.evalf(r, pipemesh.data, pipemesh.N)
 
 surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 
@@ -293,32 +263,40 @@ navier_stokes.add_dirichlet_bc((0.0, 0.0), "top", (0, 1))
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom", (0, 1))
 navier_stokes.add_dirichlet_bc((Vb, 0.0),  "left", (0, 1))
 
-# -
-
-
 navier_stokes._setup_terms()
 navier_stokes.tolerance = 1.0e-4
 
+if model == 2:  # Steady state !
+    # remove the d/dt term ... replace the time dependence with the
+    # steady state advective transport term
+    # to lean towards steady state solutions
+
+    navier_stokes.UF0 = -(
+        navier_stokes.rho * (v_soln.sym - v_soln_1.sym) / navier_stokes.delta_t
+    )
+
+# -
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
 # + tags=[]
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
-# nodal_vorticity_from_v.solve()
+nodal_vorticity_from_v.solve()
+
+# +
+stress_projection = uw.systems.Tensor_Projection(
+    pipemesh, tensor_Field=St, scalar_Field=work
+)
+stress_projection.uw_function = navier_stokes.stress_deviator
+stress_projection.solve()
+
+with swarm.access(stress_star_p), pipemesh.access():
+    stress_star_p.data[:,0] = uw.function.evaluate(St.sym_1d[0], swarm.particle_coordinates.data)
+    stress_star_p.data[:,1] = uw.function.evaluate(St.sym_1d[1], swarm.particle_coordinates.data)
+    stress_star_p.data[:,2] = uw.function.evaluate(St.sym_1d[2], swarm.particle_coordinates.data)
+
 # -
 
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-with swarm.access(v_star, v_star_star, v_star_2):
-    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)    
-    v_star_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-    v_star_2.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-   
-
-print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-
-
-
 
 # + tags=[]
 # check the mesh if in a notebook / serial
@@ -345,14 +323,15 @@ if uw.mpi.size == 1:
         usol = v_soln.data.copy()
 
     with pipemesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(
-            sympy.sqrt(v_soln.fn.dot(v_soln.fn)), pipemesh.data
+        pvmesh.point_data["Vmag"] = uw.function.evalf(
+            sympy.sqrt(v_soln.sym.dot(v_soln.sym)), pipemesh.data
         )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, pipemesh.data)
+        pvmesh.point_data["P"] = uw.function.evalf(p_soln.fn, pipemesh.data)
 
 
     v_vectors = np.zeros((pipemesh.data.shape[0], 3))
-    v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, pipemesh.data)
+    v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, pipemesh.data)
+    v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, pipemesh.data)
     pvmesh.point_data["V"] = v_vectors
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -452,14 +431,15 @@ def plot_V_mesh(filename):
             spoint_cloud = pv.PolyData(spoints)
 
         with pipemesh.access():
-            pvmesh.point_data["P"] = p_soln.rbf_interpolate(pipemesh.data)
-            pvmesh.point_data["Omega"] = vorticity.rbf_interpolate(pipemesh.data)
+            pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], pipemesh.data)
+            pvmesh.point_data["Omega"] = uw.function.evalf(vorticity.sym[0], pipemesh.data)
 
         with pipemesh.access():
             usol = v_soln.data.copy()
 
         v_vectors = np.zeros((pipemesh.data.shape[0], 3))
-        v_vectors[:, 0:2] = v_soln.rbf_interpolate(pipemesh.data)
+        v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, pipemesh.data)
+        v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, pipemesh.data)
         pvmesh.point_data["V"] = v_vectors
 
         arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -521,56 +501,53 @@ def plot_V_mesh(filename):
             window_size=(2560, 1280),
             return_img=False,
         )
-# -
 
+# +
 ts = 0
+elapsed_time = 0.0
 dt_ns = 1.0e-2
 
+DvDt.dt_physical = dt_ns
+stress_star_update_dt.dt_physical = dt_ns
+# -
+
+
+DvDt.update(dt=dt_ns/3)
+stress_star_update_dt.update(dt=dt_ns/3)
 
 navier_stokes._setup_terms()
 navier_stokes._u_f0
 
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
+navier_stokes
+
+# + tags=[]
 for step in range(0, maxsteps):
-    delta_t_swarm = 2.0 * navier_stokes.estimate_dt()
-    delta_t = dt_ns / 3  #  min(delta_t_swarm, dt_ns)
-    phi = min(1.0, delta_t / dt_ns)
+    delta_t_swarm = navier_stokes.estimate_dt()
+    delta_t = 0.33 * dt_ns # min(delta_t_swarm, dt_ns)
 
     print(f"Memory usage [1] = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
-    navier_stokes.solve(timestep=delta_t, 
+    navier_stokes.solve(timestep=dt_ns, 
                         zero_init_guess=False)
     
     stress_projection.solve()
     
+    # Update swarm variables before advection
+    # v_star_update_dt.update(dt=dt_ns, evalf=False)
     
-    with swarm.access(stress_star_p), pipemesh.access():
-        
-        # stress_star_star_p.data[...] = stress_star_p.data[...]
-        stress_star_p.data[...] = ( phi * St.rbf_interpolate(swarm.data, nnn=3)
-                                   + (1-phi) * stress_star_p.data[...])
-        
-    with swarm.access(v_star, v_star_star, v_star_2):
-        v_star_star.data[...] = v_star.data[...]
-        
-        # v_star.data[...] = ( phi * v_soln.rbf_interpolate(swarm.data, nnn=3)
-        #                            + (1-phi) * v_star.data[...])
-     
-        v_star.data[:,0] = (
-            phi * uw.function.evaluate(v_soln[0].sym, swarm.data) +
-            (1-phi) * v_star.data[:,0]
-        )
-        v_star.data[:,1] = (
-            phi * uw.function.evaluate(v_soln[1].sym, swarm.data) +
-            (1-phi) * v_star.data[:,1]
-        )
+    DvDt.update(dt=delta_t, evalf=False)
+    stress_star_update_dt.update(dt=delta_t, evalf=False)
+    
+    # update integration swarm
+    swarm.advection(v_soln.sym, delta_t, corrector=False, evalf=False)
   
-
     # update passive swarm
-    passive_swarm.advection(v_soln.fn, delta_t, corrector=False)
+    passive_swarm.advection(v_soln.fn, delta_t, corrector=False, evalf=False)
     
-    npoints = 20
+    # add new points at the inflow 
+    npoints = 50
     passive_swarm.dm.addNPoints(npoints)
     with passive_swarm.access(passive_swarm.particle_coordinates):
         for i in range(npoints):
@@ -578,40 +555,38 @@ for step in range(0, maxsteps):
                 -1 : -(npoints + 1) : -1, :
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
             
-    # update integration swarm
-    swarm.advection(v_soln.sym, delta_t, corrector=False)
-    
 
-    ps_num = passive_swarm.dm.getSize()
-    
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}, dt_s {} phi {}".format(ts, delta_t, delta_t_swarm, phi))
+        print("Timestep {}, dt {}, dt_s {}".format(ts, delta_t, delta_t_swarm))
 
-    if ts % 5 == 0:
+    if ts % 10 == 0:
         nodal_vorticity_from_v.solve()
-        plot_V_mesh(filename="{}/{}_step_{}".format(outdir,expt_name, ts))
+        plot_V_mesh(filename=f"{outdir}/{expt_name}.{ts:05d}")
+                        
+        pipemesh.write_timestep(expt_name, 
+                                 meshUpdates=True,
+                                 meshVars=[p_soln,v_soln,vorticity,St], 
+                                 outputPath=outdir,
+                                 index=ts
+                        )
         
+        swarm.write_timestep(expt_name,
+                              "active_swarm", 
+                              swarmVars = [v_star, v_star_star, stress_star_p ], 
+                              outputPath=outdir,
+                              index=ts,
+                         )
         
-        savefile = f"{outdir}/{expt_name}"
+        passive_swarm.write_timestep(expt_name,
+                              "passive_swarm", 
+                              swarmVars = None, 
+                              outputPath=outdir,
+                              index=ts,
+                         )
         
-        pipemesh.write_timestep_xdmf(savefile, 
-                                     meshUpdates=True,
-                                     meshVars=[p_soln,v_soln,vorticity], 
-                                     index=ts)
-        
-        passive_swarm.save(filename=f"{savefile}.passive_swarm.{ts}.h5")
            
-        
-    if uw.mpi.rank == 0:
-        print(f"------", flush=True)
-
-        
+    elapsed_time += delta_t 
     ts += 1
+# -
 
-
-
-
-
-
-
-
+# ls -trl output_res_033/ | tail -20

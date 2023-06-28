@@ -50,13 +50,10 @@ def test_stokes_boxmesh(mesh):
     )
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-    # stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    # stokes.constitutive_model.Parameters.viscosity = 1
     stokes.constitutive_model = (
-        uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh.dim)
+        uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(u)
     )
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
-    stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
     if mesh.dim == 2:
         stokes.bodyforce = sympy.Matrix([0, x])

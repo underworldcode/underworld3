@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -45,6 +45,10 @@ meshball = uw.meshing.SegmentedSphere(
     coordinatesNative=True,
 )
 
+uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+    meshball.dm, [0.0, 0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 2 * np.pi, 0.0]
+)
+
 meshball_xyz = uw.meshing.SegmentedSphere(
     radiusOuter=r_o,
     radiusInner=r_i,
@@ -64,7 +68,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -147,11 +151,10 @@ stokes = uw.systems.Stokes(
 stokes.petsc_options["snes_rtol"] = 1.0e-5
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
+    v_soln
 )
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.penalty = 0.0
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # Velocity boundary conditions
 
@@ -184,10 +187,9 @@ stokes_xyz = uw.systems.Stokes(
     solver_name="stokes_xyz",
 )
 stokes_xyz.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball_xyz.dim
+    v_soln_xyz
 )
 stokes_xyz.constitutive_model.Parameters.viscosity = 1
-stokes_xyz.saddle_preconditioner = 1 / stokes_xyz.constitutive_model.Parameters.viscosity
 stokes_xyz.petsc_options["snes_rtol"] = 1.0e-5
 
 # Velocity boundary conditions
@@ -223,35 +225,8 @@ stokes_xyz._setup_terms()
 
 
 # + tags=[]
-# Check this can work 
-options = stokes_xyz.petsc_options
-options.setValue("fieldsplit_velocity_ksp_type", "preonly")
-options.setValue("fieldsplit_pressure_ksp_type", "preonly")
-options.setValue("fieldsplit_pressure_pc_type", "lu")
-options.setValue("fieldsplit_velocity_pc_type", "lu")
-# stokes_xyz.solve(zero_init_guess=True)
-# -
-
-options = stokes.petsc_options
-# options.setValue("fieldsplit_velocity_ksp_monitor", None)
-# options.setValue("fieldsplit_pressure_ksp_monitor", None)
-options.setValue("snes_rtol",1.0e-2)
-options.setValue("ksp_rtol",1.0e-2)
-options.setValue("ksp_monitor",None)
-options.setValue("pc_gamg_agg_nsmooths", 3)
-options.setValue("pc_gamg_threshold", 0.25)
-options.delValue("pc_use_amat")
-options.setValue("fieldsplit_velocity_ksp_rtol", 1.0e-2)
-options.setValue("fieldsplit_pressure_ksp_rtol", 1.0e-2)
-# options.setValue("fieldsplit_velocity_ksp_type", "preonly")
-# options.setValue("fieldsplit_pressure_ksp_type", "preonly")
-# options.setValue("fieldsplit_pressure_pc_type", "lu")
-# options.setValue("fieldsplit_velocity_pc_type", "lu")
-
-
-# + tags=[]
 stokes._setup_terms()
-# stokes.solve(zero_init_guess=True)
+stokes.solve(zero_init_guess=True)
 # -
 
 stokes._u_f0

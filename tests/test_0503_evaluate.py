@@ -121,7 +121,6 @@ def test_vector_dot_product():
 
 # that test needs to be able to take degree as a parameter...
 def test_polynomial_mesh_var_degree():
-
     mesh = uw.meshing.StructuredQuadBox()
     maxdegree = 10
     vars = []
@@ -244,7 +243,6 @@ def test_polynomial_mesh_var_sympy():
 # NOTE THAT WE NEEDED TO DISABLE MESH HASHING FOR 3D MESH FOR SOME REASON.
 # CHECK `DMInterpolationSetUp_UW()` FOR DETAILS.
 def test_3d_cross_product():
-
     # Create a set of evaluation coords in 3d
     n = 10
     x = np.linspace(0.1, 0.9, n)

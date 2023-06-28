@@ -119,9 +119,9 @@ stokes = Stokes(
 )
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
+    v_soln
 )
-stokes.constitutive_model.Parameters.viscosity = 1
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # There is a null space if there are no fixed bcs, so we'll do this:
 
@@ -177,9 +177,6 @@ stokes.saddle_preconditioner = 1.0
 stokes.petsc_options["ksp_monitor"] = None
 stokes.tolerance = 1.0e-4
 
-# -
-
-stokes.petsc_options.getAll()
 
 # +
 from underworld3 import timing
@@ -210,7 +207,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 600]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
@@ -252,3 +249,5 @@ if uw.mpi.size == 1:
 # -
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_rms
+
+

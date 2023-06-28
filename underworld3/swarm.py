@@ -7,7 +7,9 @@ import petsc4py.PETSc as PETSc
 from mpi4py import MPI
 
 import underworld3 as uw
-from underworld3.utilities import _api_tools
+from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities._api_tools import uw_object
+
 import underworld3.timing as timing
 
 import h5py
@@ -41,7 +43,7 @@ class SwarmPICLayout(Enum):
 # and the duplication should be removed.
 
 
-class SwarmVariable(_api_tools.Stateful):
+class SwarmVariable(Stateful):
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -94,6 +96,8 @@ class SwarmVariable(_api_tools.Stateful):
                     "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
                 )
 
+        self.vtype = vtype
+
         if not isinstance(vtype, uw.VarType):
             raise ValueError(
                 "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
@@ -101,11 +105,11 @@ class SwarmVariable(_api_tools.Stateful):
 
         if vtype == uw.VarType.SCALAR:
             self.num_components = 1
-            self.shape = 1
+            self.shape = (1, 1)
             self.cpt_map = 0
         elif vtype == uw.VarType.VECTOR:
             self.num_components = mesh.dim
-            self.shape = mesh.dim
+            self.shape = (1, mesh.dim)
             self.cpt_map = tuple(range(0, mesh.dim))
         elif vtype == uw.VarType.TENSOR:
             self.num_components = mesh.dim * mesh.dim
@@ -115,6 +119,8 @@ class SwarmVariable(_api_tools.Stateful):
             self.shape = (mesh.dim, mesh.dim)
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
+
+        self._data_container = np.empty(self.shape, dtype=object)
 
         if (dtype == float) or (dtype == "float") or (dtype == np.float64):
             self.dtype = float
@@ -156,9 +162,65 @@ class SwarmVariable(_api_tools.Stateful):
 
         self._register = _register
 
+        from collections import namedtuple
+
+        SwarmVariable_ij = namedtuple("SwarmVariable_ij", ["data", "sym"])
+
+        if self._proxy:
+            for i in range(0, self.shape[0]):
+                for j in range(0, self.shape[1]):
+                    self._data_container[i, j] = SwarmVariable_ij(
+                        data=f"SwarmVariable[...].data is only available within mesh.access() context",
+                        sym=self.sym[i, j],
+                    )
+
         super().__init__()
 
         return
+
+    def __getitem__(self, indices):
+        if not isinstance(indices, tuple):
+            if isinstance(indices, int) and self.shape[0] == 1:
+                i = 0
+                j = indices
+            else:
+                raise IndexError(
+                    "SwarmVariable[i,j] access requires one or two indices "
+                )
+        else:
+            i, j = indices
+
+        return self._data_container[i, j]
+
+    ## Should be a single master copy
+    def _data_layout(self, i, j=None):
+        # mapping
+
+        if self.vtype == uw.VarType.SCALAR:
+            return 0
+        if self.vtype == uw.VarType.VECTOR:
+            if j is None:
+                return i
+            elif i == 0:
+                return j
+            else:
+                raise IndexError(
+                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                )
+        if self.vtype == uw.VarType.TENSOR:
+            if self.swarm.mesh.dim == 2:
+                return ((0, 1), (2, 3))[i][j]
+            else:
+                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            if self.swarm.mesh.dim == 2:
+                return ((0, 2), (2, 1))[i][j]
+            else:
+                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+
+        if self.vtype == uw.VarType.MATRIX:
+            return i + j * self.shape[0]
 
     def _create_proxy_variable(self):
         # release if defined
@@ -525,7 +587,15 @@ class IndexSwarmVariable(SwarmVariable):
     def sym(self):
         return self._MaskArray
 
-    #
+    @property
+    def sym_1d(self):
+        return self._MaskArray
+
+    # We could also add a __getitem__ call to access each mask
+
+    def __getitem__(self, index):
+        return self.sym[index]
+
     def createMask(self, funcsList):
         """
         This creates a masked sympy function of swarm variables required for Underworld's solvers
@@ -624,7 +694,7 @@ class IndexSwarmVariable(SwarmVariable):
 
 
 # @typechecked
-class Swarm(_api_tools.Stateful):
+class Swarm(Stateful):
     instances = 0
 
     @timing.routine_timer_decorator
@@ -1329,6 +1399,15 @@ class Swarm(_api_tools.Stateful):
             else:
                 # increment variable state
                 var._increment()
+
+            # make view for each var component
+            if var._proxy:
+                for i in range(0, var.shape[0]):
+                    for j in range(0, var.shape[1]):
+                        var._data_container[i, j] = var._data_container[i, j]._replace(
+                            data=var.data[:, var._data_layout(i, j)],
+                        )
+
         # if particles moving, update swarm state
         if self.particle_coordinates in writeable_vars:
             self._increment()
@@ -1385,10 +1464,52 @@ class Swarm(_api_tools.Stateful):
                     ):
                         var._update()
 
+                    if var._proxy:
+                        for i in range(0, var.shape[0]):
+                            for j in range(0, var.shape[1]):
+                                # var._data_ij[i, j] = None
+                                var._data_container[i, j] = var._data_container[
+                                    i, j
+                                ]._replace(
+                                    data=f"SwarmVariable[...].data is only available within mesh.access() context",
+                                )
+
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time() - stime, "Swarm.access", 1)
 
         return exit_manager(self)
+
+    ## Better to have one master copy - this one is cut'n'pasted from
+    ## the MeshVariable class
+
+    def _data_layout(self, i, j=None):
+        # mapping
+
+        if self.vtype == uw.VarType.SCALAR:
+            return 0
+        if self.vtype == uw.VarType.VECTOR:
+            if j is None:
+                return i
+            elif i == 0:
+                return j
+            else:
+                raise IndexError(
+                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                )
+        if self.vtype == uw.VarType.TENSOR:
+            if self.mesh.dim == 2:
+                return ((0, 1), (2, 3))[i][j]
+            else:
+                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            if self.mesh.dim == 2:
+                return ((0, 2), (2, 1))[i][j]
+            else:
+                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+
+        if self.vtype == uw.VarType.MATRIX:
+            return i + j * self.shape[0]
 
     @timing.routine_timer_decorator
     def _get_map(self, var):
@@ -1637,13 +1758,15 @@ class Swarm(_api_tools.Stateful):
         return
 
 
-class Lagrangian_Updater:
+class Lagrangian_Updater(uw_object):
+    r"""Swarm-based Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, \(\psi\) on the swarm across timesteps.
 
-    """Swarm-based Lagrangian History Manager:
+    \(\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad\)
 
-    This manages the update of a Lagrangian variable, $\psi$
-    on the swarm across timesteps.
+    \(\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad\)
 
+    \(\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}\)
     """
 
     instances = 0  # count how many of these there are in order to create unique private mesh variable ids
@@ -1664,6 +1787,8 @@ class Lagrangian_Updater:
         self.dt_physical = dt_physical
         self.verbose = verbose
 
+        # psi and psi_star must have the same shape
+
         if isinstance(psi_star, SwarmVariable):
             self.order = 1
             self.psi_star = list(psi_star)
@@ -1672,32 +1797,135 @@ class Lagrangian_Updater:
 
         return
 
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r"$\quad\Delta t_{\textrm{phys}} = $ "
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
     def update(
         self,
         dt: float,
         evalf: Optional[bool] = False,
+        average_over_dt: Optional[bool] = True,
     ):
-        phi = min(1.0, dt / self.dt_physical)
+        if average_over_dt:
+            phi = min(1.0, dt / self.dt_physical)
+        else:
+            phi = 1.0
+
+        print(f"PHI -> {phi}", flush=True)
 
         for h in range(self.order):
             i = self.order - (h + 1)
 
             # copy the information down the chain
             with self.swarm.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+                self.psi_star[i].data[...] = (
+                    phi * self.psi_star[i - 1].data[...]
+                    + (1 - phi) * self.psi_star[i].data[...]
+                )
 
         if evalf:
-            with self.swarm.access(self.psi_star[0]):
-                for c in range(self.psi_star[0].num_components):
-                    self.psi_star[0].data[:, c] = (
-                        phi * uw.function.evalf(self.psi[c], self.swarm.data)
-                        + (1 - phi) * self.psi_star[0].data[:, c]
-                    )
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        delta_psi = uw.function.evalf(
+                            self.psi[i, j] - psi_star_0[i, j].sym, self.swarm.data
+                        )
+
+                        psi_star_0[i, j].data[:] += phi * delta_psi
 
         else:
-            with self.swarm.access(self.psi_star[0]):
-                for c in range(self.psi_star[0].num_components):
-                    self.psi_star[0].data[:, c] = (
-                        phi * uw.function.evaluate(self.psi[c], self.swarm.data)
-                        + (1 - phi) * self.psi_star[0].data[:, c]
-                    )
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        delta_psi = uw.function.evaluate(
+                            self.psi[i, j] - psi_star_0[i, j].sym, self.swarm.data
+                        )
+
+                        psi_star_0[i, j].data[:] += phi * delta_psi
+
+
+class Lagrangian_Derivative(Lagrangian_Updater):
+    r"""
+    Sets up a specific type of Lagrangian update for managing time derivatives
+
+    $$\frac{D \mathbf{s}}{Dt} \sim \frac{\mathbf{s} - \mathbf{s}^*}{\Delta t}$$
+
+    and higher order equivalents using the backward differentiation formulae
+    """
+
+    def __call__(self, delta_t, order=None):
+        return self._bdf(delta_t, order)
+
+    def _bdf(self, delta_t, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        # By hand for now ... and this should have some error checks / default behaviour
+
+        match order:
+            case 1:
+                return sympy.UnevaluatedExpr(
+                    self.psi - self.psi_star[0].sym
+                ) / sympy.UnevaluatedExpr(delta_t)
+            case 2:
+                return sympy.UnevaluatedExpr(
+                    3 * self.psi / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                ) / sympy.UnevaluatedExpr(delta_t)
+            case 3:
+                return sympy.UnevaluatedExpr(
+                    11 * self.psi / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                ) / sympy.UnevaluatedExpr(delta_t)
+
+
+class Lagrangian_Flux(Lagrangian_Updater):
+    r"""
+    Sets up a specific type of Lagrangian update for managing flux history
+
+    $$\frac{D \mathbf{s}}{Dt} \sim \frac{\mathbf{s} - \mathbf{s}^*}{\Delta t}$$
+
+    and higher order equivalents using the backward differentiation formulae
+    """
+
+    def __call__(self, order):
+        return self._adams_moulton(order)
+
+    def _adams_moulton(self, order):
+        order = max(1, min(self.order, order))
+
+        # By hand for now ... and this should have some error checks / default behaviour
+
+        # match order:
+        #     case 1:
+        #         return (self.psi.sym - self.psi_star[0].sym) / delta_t
+        #     case 2:
+        #         return (
+        #             3 * self.psi / 2 - 2 * self.psi_star[0] + self.psi_star[1]
+        #         ) / delta_t
+        #     case 3:
+        #         return (
+        #             11 * self.psi / 6
+        #             - 3 * self.psi_star[0]
+        #             + 3 * self.psi_star[1] / 2
+        #             - self.psi_star[2] / 3
+        #         ) / delta_t

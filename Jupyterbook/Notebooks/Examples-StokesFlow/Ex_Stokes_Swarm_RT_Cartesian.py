@@ -101,10 +101,11 @@ with swarm.access(material):
     )
 
 material.sym
+
+
+# +
+# print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 # -
-
-
-print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
 
 X = meshbox.CoordinateSystem.X
@@ -126,7 +127,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
@@ -264,7 +265,7 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "pythreejs"
     pv.global_theme.smooth_shading = False
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -362,10 +363,12 @@ def plot_mesh(filename):
 
 t_step = 0
 
+# !mkdir output
+
 # +
 # Update in time
 
-expt_name = "output/swarm_rt"
+expt_name = "swarm_rt"
 
 for step in range(0, 200):
 
@@ -385,11 +388,17 @@ for step in range(0, 200):
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
         # "Checkpoints"
-        savefile = f"output/swarm_rt_xy"    
-        meshbox.write_checkpoint(savefile, 
-                              meshUpdates=False, 
-                              meshVars=[p_soln,v_soln, m_cont], 
-                              index=step)
-
+        savefile = f"swarm_rt_xy"    
+        
+        meshbox.write_timestep(expt_name, 
+                                 meshUpdates=True,
+                                 meshVars=[p_soln,v_soln, m_cont], 
+                                 outputPath="output",
+                                 index=t_step
+                        )
+        
 
     t_step += 1
+# -
+
+

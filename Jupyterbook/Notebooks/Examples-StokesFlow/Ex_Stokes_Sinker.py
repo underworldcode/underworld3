@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -127,7 +127,7 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
 
 
 stokes.add_dirichlet_bc(
@@ -186,7 +186,7 @@ import vtk
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
+pv.global_theme.anti_aliasing = "msaa"
 pv.global_theme.jupyter_backend = "panel"
 pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -239,7 +239,7 @@ def plot_T_mesh(filename):
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
 stokes.penalty = 1.0
-stokes.saddle_preconditioner = 1.0 / viscosity
+
 
 # +
 # stokes.petsc_options.view()
@@ -278,12 +278,6 @@ timing.start()
 stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
-
-# +
-# stokes.solve(zero_init_guess=False)
-
-# +
-# stokes.snes.view()
 # -
 
 while step < nstep:
@@ -292,9 +286,6 @@ while step < nstep:
     ySinker[step] = ymin
     tSinker[step] = time
 
-    ### solve stokes
-
-    stokes.solve(zero_init_guess=False)
 
     ### estimate dt
     dt = stokes.estimate_dt()
@@ -306,25 +297,16 @@ while step < nstep:
     ## PS - the function.evaluate needs fixing to take sympy.Matrix functions
 
     swarm.advection(stokes.u.sym, dt, corrector=True)
-
-    ### get velocity on particles
-    #     with swarm.access():
-    #         vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
-
-    #     ### advect swarm
-    #     with swarm.access(swarm.particle_coordinates):
-    #         swarm.particle_coordinates.data[:] += dt * vel_on_particles
-
-    ### advect tracer
-    # vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
-    # tracer += dt * vel_on_tracer
+    
+    ### solve stokes
+    stokes.solve(zero_init_guess=False)
 
     ### print some stuff
     if uw.mpi.size == 1:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
         plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 
-    mesh.write_checkpoint(
+    mesh.write_timestep(
         "stokesSinker", meshUpdates=False, meshVars=[p, v], index=step
     )
 
@@ -438,3 +420,5 @@ if uw.mpi.size == 1:
     # pl.screenshot(filename="SinkerSolution_hr.png", window_size=(4000, 2000))
 
     pl.show(cpos="xy")
+
+

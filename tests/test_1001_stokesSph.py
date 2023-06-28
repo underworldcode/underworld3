@@ -30,11 +30,8 @@ def test_stokes_sphere(mesh):
     )
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-        mesh.dim
-    )
+    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(u)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
-    stokes.saddle_preconditioner = 1.0
 
     stokes.tolerance = 1.0e-2
     stokes.petsc_options["ksp_monitor"] = None

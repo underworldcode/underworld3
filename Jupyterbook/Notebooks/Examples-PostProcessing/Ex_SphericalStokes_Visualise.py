@@ -17,11 +17,13 @@ pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 # -
 
-# ls -tr /Users/lmoresi/+Simulations/InnerCore/
+# ls -tr /Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr
 
 # +
-basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr/free_slip_sphere.h5"
+checkpoint_dir = "/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr"
+checkpoint_base = f"free_slip_sphere"
 # basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic0_QTemp_mr/free_slip_sphere.h5"
+
 
 step = 210
 
@@ -51,7 +53,11 @@ t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 print(f"Read swarm data", flush=True)
 swarm.load(f"{basename}.passive_swarm.{step}.h5")
 
-v_soln.read_from_vertex_checkpoint(f"{basename}.u.0.h5", "u")
+v_soln.read_timestep(checkpoint_base, "u", 0, outputPath=checkpoint_dir)
+t_soln.read_timestep( checkpoint_base, "deltaT", 0, outputPath=checkpoint_dir)
+
+
+v_soln.read_timestep
 t_soln.read_from_vertex_checkpoint(f"{basename}.DeltaT.0.h5", "DeltaT")
 
 # +

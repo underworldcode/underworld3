@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -41,8 +41,8 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity = 1
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model.Parameters.viscosity=1
 
 
 # %%
@@ -82,11 +82,8 @@ stokes.bodyforce = sympy.Matrix(
 # +
 # This is the other way to impose no vertical 
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
-# -
-
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
 
 # +
 # free slip.
@@ -111,6 +108,10 @@ stokes.petsc_options["snes_monitor"]= None
 stokes.petsc_options["ksp_monitor"] = None
 
 
+stokes
+
+stokes.constitutive_model
+
 # %%
 # Solve time
 stokes.solve()
@@ -128,7 +129,10 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     import pyvista as pv
     import vtk
     
-    pv.start_xvfb()
+    try:
+        pv.start_xvfb()
+    except OSError:
+        pass
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
@@ -171,13 +175,12 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 # ## SolCx from the same setup
 
 # +
-# %%
 stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)]
 )
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
     (
@@ -186,14 +189,32 @@ viscosity_fn = sympy.Piecewise(
     ),
     (1.0, True),
 )
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
-# %%
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
+print(stokes.constitutive_model._is_setup)
+print(stokes.constitutive_model._solver_is_setup)
 
-stokes.constitutive_model.Parameters.viscosity
-stokes.solve()
+# -
 
+
+# stokes._setup_terms()
+print(stokes.constitutive_model._is_setup)
+print(stokes.constitutive_model._solver_is_setup)
+
+stokes._u_f1[0,0]
+
+# +
+# stokes._setup_terms()
+# -
+
+stokes.constitutive_model.viscosity
+
+stokes._setup_terms()
+stokes._u_f1
+
+
+
+stokes.solve(zero_init_guess=False)
 
 # +
 # check the mesh if in a notebook / serial
@@ -271,6 +292,3 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
-
-# +
-# 

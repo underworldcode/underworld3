@@ -50,15 +50,15 @@
 # and 
 #
 # $$
-#      \rho\frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t}  = \rho g - \nabla \cdot \left[
-#                                                           \frac{5}{12} \boldsymbol{\tau} 
-#                                                           - \frac{8}{12} \boldsymbol{\tau^{*}}
-#                                                           + \frac{1}{12} \boldsymbol{\tau^{* *}} \right]
-#                                                         - \nabla p 
+#      \rho\frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t}  
+#              = \rho g - \nabla \cdot \left[ \frac{5}{12} \boldsymbol{\tau} 
+# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\boldsymbol{\\tau^{*}}"}
+#                                            - \frac{1}{12} \boldsymbol{\tau^{**}}
+#                                                           \right] - \nabla p 
 # $$
 #
-#
-# $\boldsymbol\tau^*$ and $\boldsymbol\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
+# Where $\boldsymbol\tau^*$ and $\boldsymbol\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
+# + \frac [markdown] {"incorrectly_encoded_metadata": "{1}{12} \\boldsymbol{\\tau^{* *}} \\right]"}
 #
 # In the Navier-stokes problem, it is common to write $\boldsymbol\tau=\eta \left(\nabla \mathbf u + (\nabla \mathbf u)^T \right)$ and $\boldsymbol\tau^*=\eta \left(\nabla \mathbf u^* + (\nabla \mathbf u^*)^T \right)$ which ignores  rotation and shearing of the stress during the interval $\Delta T$. This simplifies the implementation because only the velocity history is required, not the history of the stress tensor.
 #  
@@ -120,7 +120,9 @@
 #
 # $$
 #     \frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t} =   \rho g 
-#                 - \nabla \cdot \left[ \frac{5 \dot{\boldsymbol\varepsilon} \eta_{\textrm{eff_(2)}}}{6} - \frac{5 \eta \boldsymbol\tau^{*}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} - \frac{\boldsymbol\tau^{**}}{12}
+#                 - \nabla \cdot \left[ \frac{5 \dot{\boldsymbol\varepsilon} \eta_{\textrm{eff_(2)}}}{6} + 
+#                  \frac{5 \eta \boldsymbol\tau^{*}}{3 \cdot \left(2 \Delta t \mu + 3 \eta\right)} + \frac{2\boldsymbol\tau^{*}}{3}               
+#                - \frac{5 \eta \boldsymbol\tau^{**}}{12 \cdot \left(2 \Delta t \mu + 3 \eta\right)} - \frac{\boldsymbol\tau^{**}}{12}
 #                                                                     \right] + \nabla p
 # $$
 #
@@ -131,6 +133,23 @@
 # $$
 #     \nabla\cdot\left[ \color{blue}{ \boldsymbol{\tau} - p \boldsymbol{I}   }   \right] = \color{green}{\frac{D \boldsymbol{u}}{Dt}} - \rho g
 # $$
+# -
+# $$
+# \frac{5 \dot\varepsilon \eta_\textrm{eff}}{6} + \frac{5 \eta \tau^{*}}{3 \cdot \left(2 \Delta\,\!t \mu + 3 \eta\right)} - \frac{5 \eta \tau^{**}}{12 \cdot \left(2 \Delta\,\!t \mu + 3 \eta\right)} + \frac{2 \tau^{*}}{3} - \frac{\tau^{**}}{12}
+# $$
+
+# ## Mock up ... BDF / Adams-Moulton coefficients
+#
+# dot_f term will need BDf coefficients (https://en.wikipedia.org/wiki/Backward_differentiation_formula)
+#
+# Flux history for Adams Moulton 
+# Substitute for present stress in ADM
+#
+#
+#
+#
+#
+
 # + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
 import os
 
@@ -158,14 +177,16 @@ from underworld3 import timing
 resolution = uw.options.getReal("model_resolution", default=0.033)
 mu = uw.options.getInt("mu", default=0.5)
 maxsteps = uw.options.getInt("max_steps", default=500)
-# -
 
 
+# +
 mesh1 = uw.meshing.UnstructuredSimplexBox(
     minCoords=(-1.5,-0.5),
     maxCoords=(+1.5,+0.5),
     cellSize=resolution,
 )
+
+x,y = mesh1.X
 
 # +
 U = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, vtype=uw.VarType.VECTOR, degree=2)
@@ -173,6 +194,7 @@ P = uw.discretisation.MeshVariable("P", mesh1, 1, vtype=uw.VarType.SCALAR, degre
 T = uw.discretisation.MeshVariable("T", mesh1, 1, vtype=uw.VarType.SCALAR,  degree=3)
 
 # Nodal values of deviatoric stress (symmetric tensor)
+
 work   = uw.discretisation.MeshVariable("W", mesh1, 1, vtype=uw.VarType.SCALAR, degree=2, continuous=False)
 St = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=2, 
                                          continuous=False, varsymbol=r"{\tau}")
@@ -211,20 +233,6 @@ stress_star_star = uw.swarm.SwarmVariable(r"stress_2dt", swarm,
                                      varsymbol=r"{\tau^{**}_{p}}",)
 
 swarm.populate(fill_param=2)
-# -
-
-stress_star.sym
-
-with swarm.access():
-    evaluated = uw.function.evaluate(1.0 + U.sym_1d[0] + U.sym_1d[1], swarm.particle_coordinates.data[0:100])
-
-
-
-
-
-evaluated
-
-0/0
 
 # +
 stokes = uw.systems.Stokes(
@@ -237,28 +245,34 @@ stokes = uw.systems.Stokes(
 
 stokes
 # -
+uw.systems.Stokes
 
 
+# +
+from sympy import UnevaluatedExpr
+
+st = sympy.UnevaluatedExpr(stokes.constitutive_model.viscosity)*sympy.UnevaluatedExpr(stokes.strainrate)
+st
 
 # +
 eta_0 = sympy.sympify(10)**-6
 C_0 = sympy.log(10**6)
 
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(stokes._u)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = sympy.symbols(r"\eta")
 stokes.constitutive_model.Parameters.shear_modulus = sympy.symbols(r"\mu")
 stokes.constitutive_model.Parameters.stress_star = stress_star.sym
 stokes.constitutive_model.Parameters.dt_elastic = sympy.symbols(r"\Delta\ t") # sympy.sympify(1) / 10
 stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
 stokes.constitutive_model.Parameters.strainrate_inv_II_min = 0
-
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
 stokes.constitutive_model
 # -
 
 stokes.constitutive_model.Parameters.viscosity
+
+0/0
+
 
 # +
 # Set solve options here (or remove default values
@@ -280,16 +294,24 @@ stokes.add_dirichlet_bc((0.0), "Right", (1))
 
 # -
 
-stokes.constitutive_model.flux(stokes.strainrate)
-
 stokes._setup_problem_description()
 
-stokes._u_f1
+t0 = St.sym
+t1 = stress_star.sym
+t0+t1
 
-# Jacobian, d sigma_ij / edot_kl
+# +
+t2 = t0+t1
+t2
 
+t2_II_sq = (t2**2).trace()/2
+t2_II = sympy.sqrt(t2_II_sq)
 
-0/0
+overshoot = sympy.simplify(sympy.sqrt(t2_II_sq) / tauY)
+overshoot
+# -
+
+t2_II_sq
 
 stokes.constitutive_model.flux(stokes.strainrate)
 
@@ -328,7 +350,7 @@ stokes.constitutive_model
 
 # -
 
-stokes.stress_1d[0].expand()
+stokes.stress_deviator_1d[2]
 
 0/0
 
@@ -342,9 +364,10 @@ stokes.solve()
 s = sympy.Symbol(r"\tau")
 s1 = sympy.Symbol(r"\tau^*")
 s2 = sympy.Symbol(r"\tau^**")
-dt = sympy.Symbol(r"\Delta\ t")
+dt = sympy.Symbol(r"\Delta\,\!t")
 mu = sympy.Symbol(r"\mu")
 eta = sympy.Symbol(r"\eta")
+eta_p = sympy.Symbol(r"\eta_p")
 eta_eff = sympy.Symbol(r"\eta_\textrm{eff}")
 edot = sympy.Symbol(r"\dot\varepsilon")
 tr = sympy.Symbol(r"t_r")
@@ -356,19 +379,44 @@ sdot1 = (s - s1)/dt
 
 # 2nd order difference for stress rate
 sdot2 = (3 * s - 4 * s1 + s2) / (2 * dt)
+# -
+
+
 
 
 # +
 display( sdot1 )
-display(sdot1 / (2 * mu) + s / (2 * eta))
-print(sympy.latex(sdot1 / (2 * mu) + s / (2 * eta)))
-Seq1 = sympy.Equality(sympy.simplify(sdot1 / (2 * mu) + s / (2 * eta)),edot)
+display(sdot1 / (2 * mu) + s / (2 * eta)) # + s / (2 * eta_p))
+print(sympy.latex(sdot1 / (2 * mu) + s / (2 * eta) + s / (2 * eta_p)))
+Seq1 = sympy.Equality(sympy.simplify(sdot1 / (2 * mu) + s / (2 * eta) + 0 * s / (2 * eta_p) ),edot)
 display(Seq1)
 
 # solve this for an expression in terms of the present stress, $\tau$
 a = sympy.simplify(sympy.solve(Seq1, s)[0]).expand()
 display(a)
+
+# b = sympy.simplify(sympy.solve(Seq1, eta_p)[0]).expand()
+# display(b)
 # -
+
+S = a.subs(edot, stokes.strainrate).subs(s1, stress_star.sym)
+SII = sympy.simplify((S**2).trace())
+
+# +
+## yielding case
+
+tauY = sympy.symbols(r"\tau_y")
+
+# -
+
+
+
+etaY2 = tauY / (2 * edot + (s1 - tauY) / (mu * dt))
+etaY2
+
+sympy.simplify(etaY - etaY2)
+
+stokes.constitutive_model.Parameters.ve_effective_viscosity
 
 sympy.simplify(a/2 + s1 / 2).expand().collect(s1)
 

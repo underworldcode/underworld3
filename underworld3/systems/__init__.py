@@ -21,3 +21,4 @@ from .solvers import (
 from .solvers import SNES_AdvectionDiffusion_SLCN as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
 from .solvers import SNES_NavierStokes_Swarm as NavierStokesSwarm
+from .solvers import SNES_NavierStokes as NavierStokes

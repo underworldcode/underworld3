@@ -322,7 +322,7 @@ class Mesh(_api_tools.Stateful):
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^9} |"
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^11} |"
                     )
 
                 print(

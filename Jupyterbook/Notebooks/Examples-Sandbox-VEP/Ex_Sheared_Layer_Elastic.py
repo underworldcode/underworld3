@@ -35,6 +35,13 @@ from underworld3 import timing
 resolution = uw.options.getReal("model_resolution", default=0.05)
 mu = uw.options.getInt("mu", default=0.5)
 maxsteps = uw.options.getInt("max_steps", default=500)
+
+
+## Define units here and physical timestep numbers etc.
+
+observation_timescale = 0.01
+
+
 # -
 
 
@@ -67,22 +74,19 @@ mesh1.dm.view()
 #     mesh1.dm, [0.1, 0.0], [-1.5, 0.0], [1.5, 0.0])
 
 # mesh1.dm.view()
-
-# +
-v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=True)
-work   = uw.discretisation.MeshVariable("W", mesh1, 1, vtype=uw.VarType.SCALAR, degree=2, continuous=False)
-Stress = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=2, 
-                                         continuous=False, varsymbol=r"{\sigma}")
-
-strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
-strain_rate_inv2_p = uw.discretisation.MeshVariable("eps_p", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
-dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=2)
 # -
 
-mesh1.view()
+v_soln = uw.discretisation.MeshVariable("U", mesh1, mesh1.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable("P", mesh1, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=True)
+Stress = uw.discretisation.MeshVariable(r"Stress", mesh1, (2,2), vtype=uw.VarType.SYM_TENSOR, degree=2, 
+                                         continuous=True, varsymbol=r"{\sigma}")
+work   = uw.discretisation.MeshVariable("W", mesh1, 1, vtype=uw.VarType.SCALAR, degree=2, 
+                                         continuous=True)
+strain_rate_inv2 = uw.discretisation.MeshVariable("eps_dot", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon}")
+strain_rate_inv2_pl = uw.discretisation.MeshVariable("eps_dot_pl", mesh1, 1, degree=2, varsymbol=r"{\dot\varepsilon_{pl}}")
+dev_stress_inv2 = uw.discretisation.MeshVariable("tau", mesh1, 1, degree=2)
 
-mesh1.dm.view()
+mesh1.view()
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=5)
@@ -108,6 +112,11 @@ stress_star_p = uw.swarm.SwarmVariable(r"stress_p", swarm,
                                      varsymbol=r"{\sigma^{*}_{p}}",)
 
 swarm.populate(fill_param=2)
+
+stress_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
+                                Stress.sym, 
+                                [stress_star_p], 
+                                dt_physical=observation_timescale)
 # -
 
 # Some useful coordinate stuff
@@ -136,16 +145,19 @@ viscosity_L = sympy.Piecewise(
     (1000, True),
 )
 
+
 # -
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(
+                        u=v_soln,
+                        flux_dt=stress_star_update_dt
+)
 
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_L
 stokes.constitutive_model.Parameters.shear_modulus = sympy.sympify(100)
 stokes.constitutive_model.Parameters.stress_star = stress_star_p.sym
-stokes.constitutive_model.Parameters.dt_elastic = sympy.sympify(1)
+stokes.constitutive_model.Parameters.dt_elastic = sympy.sympify(observation_timescale)
 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 stokes.constitutive_model
 
@@ -156,16 +168,15 @@ sigma_projector.uw_function = stokes.stress_1d
 nodal_strain_rate_inv2 = uw.systems.Projection(
     mesh1, strain_rate_inv2, solver_name="edot_II"
 )
+
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
-nodal_strain_rate_inv2.smoothing = 0.0e-3
-nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
+nodal_strain_rate_inv2.smoothing = 1.0e-3
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
 nodal_tau_inv2.uw_function = (
-    2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+    2 * stokes.constitutive_model.viscosity * stokes._Einv2
 )
 nodal_tau_inv2.smoothing = 1.0e-3
-nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
 
 
@@ -187,48 +198,53 @@ stokes.add_dirichlet_bc((0.0), "Left", (1))
 stokes.add_dirichlet_bc((0.0), "Right", (1))
 
 # -
-
-
-stokes.constitutive_model.flux_1d(stokes.strainrate)
-stokes.constitutive_model.flux(stokes.strainrate)
-
-stress_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
-                                                  Stress.sym, 
-                                                  [stress_star_p], 
-                                                  dt_physical=stokes.constitutive_model.Parameters.dt_elastic[0])
-
+stress_star_update_dt.psi_star[0].sym
 
 stokes.solve()
 
+stokes.constitutive_model.Parameters.strainrate_inv_II_min = 0.00001
+stokes.constitutive_model.Parameters.yield_stress = 50
+
+stokes
+
+stokes.stress[0,0]
+
 # +
-sigma_projector.uw_function = stokes.stress_deviator_1d
-sigma_projector.solve()
-
-with swarm.access(stress_star_p), mesh1.access():
-    stress_star_p.data[...] = Stress.rbf_interpolate(swarm.particle_coordinates.data)
-
 nodal_strain_rate_inv2.solve()
+
+sigma_projector.uw_function = stokes.stress_deviator
+sigma_projector.solve()
 # -
+with swarm.access(stress_star_p), mesh1.access():
+    stress_star_p.data[...] = 0.0 # Stress.rbf_interpolate(swarm.particle_coordinates.data)
+
 
 timing.reset()
 timing.start()
 
-# +
-stokes.solve(zero_init_guess=False, picard = -1)
+print("Setup terms", flush=True)
 
+stokes._setup_terms()
+
+stokes.stress[0,0]
+
+
+
+stokes.solve(zero_init_guess=False, verbose=True)
 timing.print_table(display_fraction=1)
+print(stokes._u.max(), stokes._p.max())
 
 
 # +
-
-S = stokes.stress_deviator
-nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace()) / 2))
-nodal_tau_inv2.solve()
-
 nodal_strain_rate_inv2.uw_function = stokes._Einv2
 nodal_strain_rate_inv2.solve()
 
+S = stokes.stress_deviator
+nodal_tau_inv2.uw_function = stokes.constitutive_model.viscosity * 2 *  stokes._Einv2 
+nodal_tau_inv2.solve()
+# -
 
+stokes.constitutive_model.flux_dt
 
 # +
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
@@ -274,7 +290,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         # clim=[0.0,1.0],
-        scalars="SStar",
+        scalars="Strs",
         use_transparency=False,
         opacity=0.5,
     )
@@ -297,50 +313,52 @@ def return_points_to_domain(coords):
 
 ts = 0
 
-stokes.constitutive_model
+stress_star_update_dt.view()
 
-sympy.simplify(stokes._Einv2 - 0.5 * (stokes.constitutive_model.Parameters.yield_stress[0] /
-                                  stokes.constitutive_model.Parameters.shear_viscosity_0[0]))
-
-
-# +
+# + tags=[]
 expt_name = f"shear_band_sw_nonp_{mu}"
 
-for step in range(0, 10):
+for step in range(0, 75):
     
     stokes.solve(zero_init_guess=False)
     
-    delta_t = stokes.estimate_dt()
+    delta_t = 0.01
     
     nodal_strain_rate_inv2.uw_function = (sympy.Max(0.0, stokes._Einv2 - 
-                       0.5 * stokes.constitutive_model.Parameters.yield_stress[0] / stokes.constitutive_model.Parameters.shear_viscosity_0[0]))
+                       0.5 * stokes.constitutive_model.Parameters.yield_stress / stokes.constitutive_model.Parameters.shear_viscosity_0))
     nodal_strain_rate_inv2.solve()
 
-    with mesh1.access(strain_rate_inv2_p):
-        strain_rate_inv2_p.data[...] = strain_rate_inv2.data.copy()
+    with mesh1.access(strain_rate_inv2_pl):
+        strain_rate_inv2_pl.data[...] = strain_rate_inv2.data.copy()
         
     nodal_strain_rate_inv2.uw_function = stokes._Einv2
     nodal_strain_rate_inv2.solve()
     
+    S = stokes.stress_deviator
+    nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace()) / 2))
+    nodal_tau_inv2.solve()
+    
+    if uw.mpi.rank==0:
+        print(f"Stress Inv II -  {dev_stress_inv2.mean()}")
+        
+    sigma_projector.solve()
+    stress_star_update_dt.update(dt=delta_t, evalf=True)
+ 
     with swarm.access(strain), mesh1.access():
         XX = swarm.particle_coordinates.data[:,0]
         YY = swarm.particle_coordinates.data[:,1]
         mask =  (2*XX/3)**4 # * 1.0 - (YY * 2)**8 
-        strain.data[:,0] +=  delta_t * mask * strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0] - 0.1 * delta_t
-        strain_dat = delta_t * mask *  strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0]
-        print(f"dStrain / dt = {delta_t * (mask * strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0]).mean()}, {delta_t}")
-        print(f"Sstar[0]     = {(mask * stress_star_p.data[:,0]).mean()}")
-        print(f"Sstar[1]     = {(mask * stress_star_p.data[:,1]).mean()}")
-        print(f"Sstar[2]     = {(mask * stress_star_p.data[:,2]).mean()}")
+        strain.data[:,0] +=  delta_t * mask * strain_rate_inv2_pl.rbf_interpolate(swarm.data)[:,0] - 0.1 * delta_t
+        strain_dat = delta_t * mask *  strain_rate_inv2_pl.rbf_interpolate(swarm.data)[:,0]
         
-        
-    sigma_projector.solve()
-    stress_star_update_dt.update(dt=delta_t, evalf=False)
-
-        
+        if uw.mpi.rank == 0:
+            print(f"Sstar[0,0]     = {(np.sqrt(stress_star_p[0,0].data[:]**2)).mean()}")
+            print(f"Sstar[1,0]     = {(np.sqrt(stress_star_p[0,1].data[:]**2)).mean()}")
+            print(f"Sstar[1,1]     = {(np.sqrt(stress_star_p[1,1].data[:]**2)).mean()}")
+            
     mesh1.write_timestep(expt_name,
                          meshUpdates=False,
-                         meshVars=[p_soln,v_soln,strain_rate_inv2_p], 
+                         meshVars=[p_soln,v_soln,strain_rate_inv2_pl], 
                          outputPath="output",
                          index=ts)
     
@@ -349,13 +367,18 @@ for step in range(0, 10):
 
     # Update the swarm locations
     swarm.advection(v_soln.sym, delta_t=delta_t, 
-                 restore_points_to_domain_func=None) 
+                 restore_points_to_domain_func=None, evalf=True) 
     
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))
         
     ts += 1
+# -
 
+
+stokes.constitutive_model.stress_projection()[0,0]
+
+stokes.stress[0,0]
 
 # +
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
@@ -374,7 +397,7 @@ if uw.mpi.size == 1:
     pvmesh.point_data["Strs"] = dev_stress_inv2.rbf_interpolate(pvpoints)
     pvmesh.point_data["Mat"] = material.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strn"] = strain._meshVar.rbf_interpolate(pvpoints)
-    pvmesh.point_data["SStar"] = stress_star_p._meshVar.rbf_interpolate(pvpoints)
+    pvmesh.point_data["SStar"] = uw.function.evalf(stress_star_p[1,1].sym, pvpoints)
 
     # Velocity arrows
     
@@ -401,7 +424,7 @@ if uw.mpi.size == 1:
         edge_color="Grey",
         show_edges=True,
         # clim=[0.0,1.0],
-        scalars="SStar",
+        scalars="Mat",
         use_transparency=False,
         opacity=0.5,
     )
@@ -414,9 +437,9 @@ if uw.mpi.size == 1:
         
     pl.show()
 # -
+stress_star_p._meshVar.min()
 
-
-
+nodal_tau_inv2.snes.cancelMonitor()
 
 
 
@@ -498,8 +521,8 @@ for step in range(0, 10):
                        0.5 * stokes.constitutive_model.Parameters.yield_stress / stokes.constitutive_model.Parameters.shear_viscosity_0))
     nodal_strain_rate_inv2.solve()
 
-    with mesh1.access(strain_rate_inv2_p):
-        strain_rate_inv2_p.data[...] = strain_rate_inv2.data.copy()
+    with mesh1.access(strain_rate_inv2_pl):
+        strain_rate_inv2_pl.data[...] = strain_rate_inv2.data.copy()
         
     nodal_strain_rate_inv2.uw_function = stokes._Einv2
     nodal_strain_rate_inv2.solve()
@@ -508,13 +531,13 @@ for step in range(0, 10):
         XX = swarm.particle_coordinates.data[:,0]
         YY = swarm.particle_coordinates.data[:,1]
         mask =  (2*XX/3)**4 # * 1.0 - (YY * 2)**8 
-        strain.data[:,0] +=  delta_t * mask * strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0] - 0.1 * delta_t
-        strain_dat = delta_t * mask *  strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0]
-        print(f"dStrain / dt = {delta_t * (mask * strain_rate_inv2_p.rbf_interpolate(swarm.data)[:,0]).mean()}, {delta_t}")
+        strain.data[:,0] +=  delta_t * mask * strain_rate_inv2_pl.rbf_interpolate(swarm.data)[:,0] - 0.1 * delta_t
+        strain_dat = delta_t * mask *  strain_rate_inv2_pl.rbf_interpolate(swarm.data)[:,0]
+        print(f"dStrain / dt = {delta_t * (mask * strain_rate_inv2_pl.rbf_interpolate(swarm.data)[:,0]).mean()}, {delta_t}")
         
     mesh1.write_timestep_xdmf(f"{expt_name}", 
                          meshUpdates=False,
-                         meshVars=[p_soln,v_soln,strain_rate_inv2_p], 
+                         meshVars=[p_soln,v_soln,strain_rate_inv2_pl], 
                          swarmVars=[strain],
                          index=ts)
     
@@ -560,7 +583,7 @@ if uw.mpi.size == 1:
     pvmesh.point_data["P"] = p_soln.rbf_interpolate(pvpoints)
     pvmesh.point_data["Edot"] = strain_rate_inv2.rbf_interpolate(pvpoints)
     # pvmesh.point_data["Visc"] = np.exp(node_viscosity.rbf_interpolate(pvpoints))
-    pvmesh.point_data["Edotp"] = strain_rate_inv2_p.rbf_interpolate(pvpoints)
+    pvmesh.point_data["Edotp"] = strain_rate_inv2_pl.rbf_interpolate(pvpoints)
     pvmesh.point_data["Strs"] = dev_stress_inv2.rbf_interpolate(pvpoints)
     # pvmesh.point_data["StrY"] =  yield_stress.rbf_interpolate(pvpoints)
     # pvmesh.point_data["dStrY"] = pvmesh.point_data["StrY"] - 2 *  pvmesh.point_data["Visc"] * pvmesh.point_data["Edot"] 
@@ -625,7 +648,7 @@ plt.scatter(mesh1.data[:,0], mesh1.data[:,1], c=pvmesh.point_data["Strn"])
 with swarm.access():
     print(strain.data.max())
 
-strain_rate_inv2_p.rbf_interpolate(mesh1.data).max()
+strain_rate_inv2_pl.rbf_interpolate(mesh1.data).max()
 
 
 

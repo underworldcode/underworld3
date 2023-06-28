@@ -137,7 +137,7 @@ v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
 p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=1 )
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
 
 # %%
 #### No slip

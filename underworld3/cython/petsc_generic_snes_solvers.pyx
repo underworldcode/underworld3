@@ -10,6 +10,8 @@ import underworld3
 import underworld3 as uw
 from   underworld3.utilities._jitextension import getext  
 import underworld3.timing as timing
+from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities._api_tools import class_or_instance_method
 
 include "petsc_extras.pxi"
 
@@ -19,7 +21,7 @@ include "petsc_extras.pxi"
 ## methods for the petsc_options ... 
 
 
-class Solver:
+class Solver(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
         - `SNES_Scalar`
@@ -29,40 +31,16 @@ class Solver:
     This class is not intended to be used directly
     """    
 
-    def _ipython_display_(self):
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        ## Docstring (static)
-        docstring = dedent(self.__doc__)
-        docstring = docstring.replace('\(','$').replace('\)','$')
-        display(Markdown(docstring))
+
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
-
-        ## Usually, there are constitutive parameters that can be included in the ipython display 
-
-    def view(self):
-        self._ipython_display_()
         return
 
-    # The purpose of the classmethods is to provide generic docstrings 
-    # for the class before it is used
-
-    @classmethod
-    def _ipython_display_(cls):
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        ## Docstring (static)
-        docstring = dedent(cls.__doc__)
-        docstring = docstring.replace('\(','$').replace('\)','$')
-        display(Markdown(docstring))
-   
-
-    @classmethod
-    def view(cls):
-        cls._ipython_display_()
-        return
 
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
@@ -140,7 +118,6 @@ class Solver:
         # is the model appropriate for SNES_Scalar solvers ?
         self.is_setup = False
         self._constitutive_model = model
-        self._constitutive_model.solver = self 
 
 
     def validate_solver(self):
@@ -398,7 +375,7 @@ class SNES_Scalar(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
-
+        self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
     def solve(self, 
@@ -414,7 +391,7 @@ class SNES_Scalar(Solver):
             system solution. Otherwise, the current values of `self.u` 
             and `self.p` will be used.
         """
-        if (not self.is_setup) or _force_setup:
+        if (not self.is_setup) or (not self.constitutive_model._solver_is_setup) or _force_setup:
             self._setup_terms()
 
         gvec = self.dm.getGlobalVec()
@@ -750,6 +727,7 @@ class SNES_Vector(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
     def solve(self, 
@@ -941,7 +919,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.bcs = []
         self._constitutive_model = None
-        self._saddle_preconditioner = sympy.sympify(1)
+        self._saddle_preconditioner = None
 
         # Construct strainrate tensor for future usage.
         # Grab gradients, and let's switch out to sympy.Matrix notation
@@ -1130,14 +1108,8 @@ class SNES_Stokes_SaddlePt(Solver):
         # the required permutation for a non-symmetric problem 
         permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
         # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (2,0,3,1) # ? same symmetry as I_ijkl ? # Ugh
-        # permutation = (1,3,0,2) # ? same symmetry as I_ijkl ? # XX 
-        # permutation = (3,1,0,2) # ? same symmetry as I_ijkl ? # XX 
         # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
-        
-        # permutation = (3,2,1,0) # ? same symmetry as I_ijkl ? # XX
-        # permutation = (2,0,1,3) # ? same symmetry as I_ijkl ?
-        # permutation = (0,1,3,2) # ? same symmetry as I_ijkl ?
+
 
         self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -1177,7 +1149,10 @@ class SNES_Stokes_SaddlePt(Solver):
 
         ## PP block is a preconditioner term, not auto-constructed
 
-        self._pp_G0 = self.saddle_preconditioner
+        if self.saddle_preconditioner is not None:
+            self._pp_G0 = self.saddle_preconditioner
+        else:
+            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.viscosity)
 
         fns_jacobian.append(self._pp_G0)
 
@@ -1207,7 +1182,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
         if self.verbose and uw.mpi.rank==0:
             print(f"Stokes: Compilation complete, Now set residuals", flush=True)
-
 
         # set functions 
 
@@ -1289,11 +1263,13 @@ class SNES_Stokes_SaddlePt(Solver):
             self._subdict[name] = (isets[index],dms[index])
 
         self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
     def solve(self, 
               zero_init_guess: bool =True, 
               picard: int = 0,
+              verbose=False,
               _force_setup:    bool =False, ):
         """
         Generates solution to constructed system.
@@ -1307,7 +1283,7 @@ class SNES_Stokes_SaddlePt(Solver):
         """
 
         if (not self.is_setup) or _force_setup:
-            self._setup_terms()
+            self._setup_terms(verbose)
 
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
@@ -1354,12 +1330,15 @@ class SNES_Stokes_SaddlePt(Solver):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec) 
 
+
         # Standard Newton solve 
 
         self.tolerance = tolerance
         self.snes.setType(snes_type)
         self.snes.setFromOptions()    
         self.snes.solve(None, gvec)
+        self.snes.setType("newtonls")
+
 
         cdef Vec clvec
         cdef DM csdm
