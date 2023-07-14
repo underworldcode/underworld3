@@ -1,0 +1,30 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "julesg/auto-docker" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:    
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Login to DockerHub
+        uses: docker/login-action@v2 
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PWORD }}
+          
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4.1.1
+        with:
+          context: .
+          push: true
+          file: ./Dockerfile
+          platforms: linux/amd64
+          tags: julesg/underworld3:${{ github.ref_name }}-$(date +%s)
