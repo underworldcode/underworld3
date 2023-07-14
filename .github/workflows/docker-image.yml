@@ -27,5 +27,5 @@ jobs:
           push: true
           file: ./Dockerfile
           platforms: linux/amd64
-          tags: julesg/underworld3
+          tags: julesg/underworld3:${{ env.GITHUB_REF_NAME }}
           #-$(date +%s)
