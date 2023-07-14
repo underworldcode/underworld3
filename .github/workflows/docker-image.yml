@@ -2,8 +2,7 @@ name: Docker Image CI
 
 on:
   push:
-    branches: [ "julesg/auto-docker" ]
-
+    branches: [ "VEP-preliminary-implementation" ]
 jobs:
 
   build:
