@@ -954,7 +954,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         nswarm = uw.swarm.Swarm(self.mesh)
         ks = str(self.instances)
         name = r"T^{*^{{[" + ks + "]}}}"
-        nT1 = uw.swarm.SwarmVariable(name, nswarm, 1)
+        nT1 = uw.swarm.SwarmVariable(name, nswarm, 1, proxy_degree=self._u.degree)
         name = r"X0^{*^{{[" + ks + "]}}}"
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim)
 
