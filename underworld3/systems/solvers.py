@@ -1074,14 +1074,16 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         min_dx = self.mesh.get_min_radius()
 
         ## estimate dt of adv and diff components
-        dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv = min_dx / max_magvel_glob
-        ### adv or diff could be 0 if only using one component
-        if dt_adv == 0.0:
+
+        if max_magvel_glob == 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
             dt_estimate = dt_diff
-        elif dt_diff == 0.0:
+        elif diffusivity_glob == 0.0:
+            dt_adv = min_dx / max_magvel_glob
             dt_estimate = dt_adv
         else:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
@@ -1335,18 +1337,20 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         min_dx = self.mesh.get_min_radius()
 
         ## estimate dt of adv and diff components
-        dt_diff = (min_dx**2) / diffusivity_glob
-        dt_adv = min_dx / max_magvel_glob
-        ### adv or diff could be 0 if only using one component
-        if dt_adv == 0.0:
+        
+        if max_magvel_glob == 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
             dt_estimate = dt_diff
-        elif dt_diff == 0.0:
+        elif diffusivity_glob == 0.0:
+            dt_adv = min_dx / max_magvel_glob
             dt_estimate = dt_adv
         else:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
-
+    
     @timing.routine_timer_decorator
     def solve(
         self,
