@@ -799,7 +799,7 @@ class SNES_Vector(Solver):
 class SNES_Stokes_SaddlePt(Solver):
     r"""
     The `SNES_Stokes` solver class provides functionality for solving the *constrained* vector 
-    conservation problem in the unknown $\mathbf{u}$ with the constraint parameter \(\mathrm{p}\):
+    conservation problem in the unknown $\mathbf{u}$ with the constraint parameter $\mathrm{p}$:
 
     $$
     \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} - 

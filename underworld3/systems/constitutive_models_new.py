@@ -28,7 +28,7 @@ class Constitutive_Model(uw_object):
 
      $$ q_i = k_{ij} \frac{\partial T}{\partial x_j}$$
 
-    and the constitutive parameters describe \( k_{ij}\). The template assumes \( k_{ij} = \delta_{ij} \)
+    and the constitutive parameters describe $ k_{ij}$. The template assumes $ k_{ij} = \delta_{ij} $
 
     In a vector problem (such as the Stokes problem), the relationship is
 
@@ -38,8 +38,8 @@ class Constitutive_Model(uw_object):
 
      $$ t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
 
-    and the constitutive parameters describe \(c_{ijkl}\). The template assumes
-    \( k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) \) which is the
+    and the constitutive parameters describe $c_{ijkl}$. The template assumes
+    $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
     4th rank identity tensor accounting for symmetry in the flux and the gradient terms.
     """
 
@@ -250,10 +250,10 @@ class ViscousFlowModel(Constitutive_Model):
     ```
     $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
 
-    where \( \eta \) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $ \eta $ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
-    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
+    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
     in `viscous_model.c`.  Apply the constitutive model using:
@@ -349,10 +349,10 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     ```
     $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
 
-    where \( \eta \) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $ \eta $ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
-    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
+    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
 
 
     In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the *yield stress*.
@@ -817,10 +817,10 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
     ```
     $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
 
-    where \(\eta\) is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply \(\eta_{IJ}\), the Mandel form of the
-    constitutive tensor, or \(\eta_{ijkl}\), the rank 4 tensor.
+    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
     in `viscous_model.c`.  Apply the constitutive model using:
@@ -1537,7 +1537,7 @@ class DiffusionModel(Constitutive_Model):
     q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}
     $$
 
-    where \(\kappa\) is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $\kappa$ is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. Access the constitutive model using:
 
     ```python
@@ -1618,7 +1618,7 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
     $$ \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
         n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] $$
 
-    and \( \hat{\mathbf{n}} \equiv \left\{ n_i \right\} \) is the unit vector
+    and $ \hat{\mathbf{n}} \equiv \left\{ n_i \right\} $ is the unit vector
     defining the local orientation of the weak plane (a.k.a. the director).
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is

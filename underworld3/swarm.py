@@ -1433,6 +1433,7 @@ class Swarm(Stateful):
                     self.em_swarm.dm.restoreField(var.clean_name)
                     var._is_accessed = False
                 # do particle migration if coords changes
+
                 if self.em_swarm.particle_coordinates in writeable_vars:
                     # let's use the mesh index to update the particles owning cells.
                     # note that the `petsc4py` interface is more convenient here as the
@@ -1450,7 +1451,9 @@ class Swarm(Stateful):
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
                     # now migrate.
+
                     self.em_swarm.dm.migrate(remove_sent_points=True)
+
                     # void these things too
                     self.em_swarm._index = None
                     self.em_swarm._nnmapdict = {}
@@ -1661,6 +1664,8 @@ class Swarm(Stateful):
         # forward Euler (1st order)
         else:
             with self.access(self.particle_coordinates):
+                v_at_Vpts = np.zeros_like(self.data)
+
                 if evalf:
                     for d in range(self.dim):
                         v_at_Vpts[:, d] = uw.function.evalf(
@@ -1760,13 +1765,13 @@ class Swarm(Stateful):
 
 class Lagrangian_Updater(uw_object):
     r"""Swarm-based Lagrangian History Manager:
-    This manages the update of a Lagrangian variable, \(\psi\) on the swarm across timesteps.
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
 
-    \(\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad\)
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
 
-    \(\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad\)
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
 
-    \(\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}\)
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
     """
 
     instances = 0  # count how many of these there are in order to create unique private mesh variable ids

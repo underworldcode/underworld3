@@ -38,18 +38,18 @@ class SNES_Poisson(SNES_Scalar):
             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term \(\mathbf{F}\) relates the flux to gradients in the unknown \(u\)
+    The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$
 
     ## Properties
 
-      - The unknown is \(u\)
+      - The unknown is $u$
 
-      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
     one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
-      - \(f\) is a volumetric source term
+      - $f$ is a volumetric source term
     """
 
     instances = 0
@@ -117,29 +117,29 @@ class SNES_Darcy(SNES_Scalar):
             \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}}}
     $$
 
-    The flux term, \(\mathbf{F}\) relates the effective velocity to pressure gradients
+    The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients
 
     $$
     \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
     $$
 
-    The time-dependent term \(\dot{\mathbf{f}}\) is not implemented in this version.
+    The time-dependent term $\dot{\mathbf{f}}$ is not implemented in this version.
 
     ## Properties
 
-      - The unknown is \(h\), the hydraulic head
+      - The unknown is $h$, the hydraulic head
 
-      - The permeability tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The permeability tensor, $\kappa$ is provided by setting the `constitutive_model` property to
     one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
       - Volumetric sources for the pressure gradient are supplied through
-        the \(s\) property [e.g. \(s = \rho g\) ]
+        the $s$ property [e.g. $s = \rho g$ ]
 
-      - \(W\) is a pressure source term
+      - $W$ is a pressure source term
 
-      - \(S_s\) is the specific storage coefficient
+      - $S_s$ is the specific storage coefficient
 
     ## Notes
 
@@ -319,37 +319,37 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{f}_p} = 0
     $$
 
-    The flux term is a deviatoric stress ( \(\boldsymbol{\tau}\) ) related to velocity gradients
-      ( \(\nabla \mathbf{u}\) ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part \(p\)
+    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
 
     $$
         \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
     $$
 
-    The constraint equation, \(\mathbf{f}_p = 0\) is incompressible flow by default but can be set
-    to any function of the unknown  \(\mathbf{u}\) and  \(\nabla\cdot\mathbf{u}\)
+    The constraint equation, $\mathbf{f}_p = 0$ is incompressible flow by default but can be set
+    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
 
     ## Properties
 
-      - The unknowns are velocities \(\mathbf{u}\) and a pressure-like constraint paramter \(\mathbf{p}\)
+      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
 
-      - The viscosity tensor, \(\boldsymbol{\eta}\) is provided by setting the `constitutive_model` property to
+      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
     one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
-      - \(\mathbf f\) is a volumetric source term (i.e. body forces)
+      - $\mathbf f$ is a volumetric source term (i.e. body forces)
       and is set by providing the `bodyforce` property.
 
       - An Augmented Lagrangian approach to application of the incompressibility
     constraint is to penalise incompressibility in the Stokes equation by adding
-    \( \lambda \nabla \cdot \mathbf{u} \) when the weak form of the equations is constructed.
+    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
     (this is in addition to the constraint equation, unlike in the classical penalty method).
     This is activated by setting the `penalty` property to a non-zero floating point value which adds
     the term in the `sympy` expression.
 
       - A preconditioner is usually required for the saddle point system and this is provided
-    though the `saddle_preconditioner` property. The default choice is \(1/\eta\) for a scalar viscosity function.
+    though the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
 
     ## Notes
 
@@ -545,8 +545,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 class SNES_Projection(SNES_Scalar):
     r"""
-    Solves \(u = \tilde{f}\) where \(\tilde{f}\) is a function that can be evaluated within an element and
-    \(u\) is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
+    $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
     the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
     variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
@@ -560,7 +560,7 @@ class SNES_Projection(SNES_Scalar):
             \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{f}}} = 0
     $$
 
-    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
     """
 
     instances = 0
@@ -651,8 +651,8 @@ class SNES_Projection(SNES_Scalar):
 
 class SNES_Vector_Projection(SNES_Vector):
     r"""
-    Solves \(\mathbf{u} = \tilde{\mathbf{f}}\) where \(\tilde{\mathbf{f}}\) is a vector function that can be evaluated within an element and
-    \(\mathbf{u}\) is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
+    $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
     the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
     variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
@@ -666,7 +666,7 @@ class SNES_Vector_Projection(SNES_Vector):
             \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
     $$
 
-    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
     """
 
     instances = 0
@@ -765,8 +765,8 @@ class SNES_Vector_Projection(SNES_Vector):
 
 class SNES_Tensor_Projection(SNES_Projection):
     r"""
-    Solves \(\mathbf{u} = \tilde{\mathbf{f}}\) where \(\tilde{\mathbf{f}}\) is a tensor-valued function that can be evaluated within an element and
-    \(\mathbf{u}\) is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
+    $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
     the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
     variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
@@ -780,7 +780,7 @@ class SNES_Tensor_Projection(SNES_Projection):
             \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
     $$
 
-    Where the term \(\mathbf{F}\) provides a smoothing regularization. \(\alpha\) can be zero.
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
 
     Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.
 
@@ -910,35 +910,35 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term \(\mathbf{F}\) relates diffusive fluxes to gradients in the unknown \(u\). The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field \(\mathbf{v}\) ) are included in the \(\dot{\mathbf{f}}\) term.
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
 
-    The term \(\dot{\mathbf{f}}\) involves upstream sampling to find the value \(u^*\) which represents the value of \(u\) at
+    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
     the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
     swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
 
     ## Properties
 
-      - The unknown is \(u\).
+      - The unknown is $u$.
 
-      - The velocity field is \(\mathbf{v}\) and is provided as a `sympy` function to allow operations such as time-averaging to be
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
         calculated in situ (e.g. `V_Field = v_solution.sym`)
 
-      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
-      - Volumetric sources of \(u\) are specified using the \(f\) property and can be any valid combination of `sympy` functions of position and
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
-      - The `theta` property sets \(\theta\), the parameter that tunes between backward Euler \(\theta=1\), forward Euler \(\theta=0\) and
-        Crank-Nicholson \(\theta=1/2\). The default is to use the Crank-Nicholson value.
+      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
+        Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
 
     ## Notes
 
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for \(u\) but this is not checked.
+        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
     ## Reference
 
@@ -1225,40 +1225,40 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term \(\mathbf{F}\) relates diffusive fluxes to gradients in the unknown \(u\). The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field \(\mathbf{v}\) ) are included in the \(\dot{\mathbf{f}}\) term.
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
 
-    The term \(\dot{\mathbf{f}}\) involves upstream sampling to find the value \(u^*\) which represents the value of \(u\) at
+    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing \(u^*\)
+    **and update** the swarmVariable representing $u^*$
 
     ## Properties
 
-      - The unknown is \(u\).
+      - The unknown is $u$.
 
-      - The velocity field is \(\mathbf{v}\) and is provided as a `sympy` function to allow operations such as time-averaging to be
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
         calculated in situ (e.g. `V_Field = v_solution.sym`)
 
-      - The history variable is \(u^*\) and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
         variable updated.
 
-      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
-      - Volumetric sources of \(u\) are specified using the \(f\) property and can be any valid combination of `sympy` functions of position and
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
-      - The `theta` property sets \(\theta\), the parameter that tunes between backward Euler \(\theta=1\), forward Euler \(\theta=0\) and
-        Crank-Nicholson \(\theta=1/2\). The default is to use the Crank-Nicholson value.
+      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
+        Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
 
     ## Notes
 
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for \(u\) but this is not checked.
+        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
     ## Reference
 
@@ -1510,40 +1510,42 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
             \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term \(\mathbf{F}\) relates diffusive fluxes to gradients in the unknown \(u\). The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field \(\mathbf{v}\) ) are included in the \(\dot{\mathbf{f}}\) term.
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
+    The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ )
+    are included in the $\dot{\mathbf{f}}$ term.
 
-    The term \(\dot{\mathbf{f}}\) involves upstream sampling to find the value \(u^*\) which represents the value of \(u\) at
+    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u ^ { * }$ which represents the value of $u$ at
     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing \(u^*\)
+    **and update** the swarmVariable representing $u^{ * }$
 
     ## Properties
 
-      - The unknown is \(u\).
+      - The unknown is $u$.
 
-      - The velocity field is \(\mathbf{v}\) and is provided as a `sympy` function to allow operations such as time-averaging to be
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
         calculated in situ (e.g. `V_Field = v_solution.sym`)
 
-      - The history variable is \(u^*\) and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
         variable updated.
 
-      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
-      - Volumetric sources of \(u\) are specified using the \(f\) property and can be any valid combination of `sympy` functions of position and
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
-      - The `theta` property sets \(\theta\), the parameter that tunes between backward Euler \(\theta=1\), forward Euler \(\theta=0\) and
-        Crank-Nicholson \(\theta=1/2\).
+      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
+        Crank-Nicholson $\theta=1/2$.
 
     ## Notes
 
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for \(u\) but this is not checked.
+        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
     ## Reference
 
@@ -1882,39 +1884,37 @@ class SNES_NavierStokes(SNES_Stokes):
             \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term \(\mathbf{F}\) relates diffusive fluxes to gradients in the unknown \(u\). The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field \(\mathbf{v}\) ) are included in the \(\dot{\mathbf{f}}\) term.
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
 
-    The term \(\dot{\mathbf{f}}\) involves upstream sampling to find the value \(u^*\) which represents the value of \(u\) at
+    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing \(u^*\)
+    **and update** the swarmVariable representing $u^{ * }$
 
     ## Properties
 
-      - The unknown is \(u\).
+      - The unknown is $u$.
 
-      - The velocity field is \(\mathbf{v}\) and is provided as a `sympy` function to allow operations such as time-averaging to be
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
         calculated in situ (e.g. `V_Field = v_solution.sym`)
 
-      - The history variable is \(u^*\) and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
         variable updated.
 
-      - The diffusivity tensor, \(\kappa\) is provided by setting the `constitutive_model` property to
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
-      - Volumetric sources of \(u\) are specified using the \(f\) property and can be any valid combination of `sympy` functions of position and
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
-
-
 
     ## Notes
 
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for \(u\) but this is not checked.
+        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
     ## Reference
 

@@ -13,7 +13,6 @@ class mesh_vector_calculus:
         self.dim = self.mesh.dim
 
     def cross(self, vector1, vector2):
-
         a = self.to_vector(vector1)
         b = self.to_vector(vector2)
 
@@ -24,7 +23,7 @@ class mesh_vector_calculus:
 
     def curl(self, matrix):
         r"""
-        \( \nabla \times \mathbf{v} \)
+        $ \nabla \times \mathbf{v} $
 
         Returns the curl of a 3D vector field or the out-of-plane
         component of a 2D vector field
@@ -41,7 +40,7 @@ class mesh_vector_calculus:
 
     def divergence(self, matrix):
         r"""
-        \( \nabla \cdot \mathbf{v} \)
+        $ \nabla \cdot \mathbf{v} $
         """
         vector = self.to_vector(matrix)
         scalar_div = sympy.vector.divergence(vector)
@@ -73,7 +72,6 @@ class mesh_vector_calculus:
         return E
 
     def to_vector(self, matrix):
-
         if isinstance(matrix, sympy.vector.Vector):
             return matrix  # No need to convert
 
@@ -93,7 +91,6 @@ class mesh_vector_calculus:
         return vector
 
     def to_matrix(self, vector):
-
         # Almost there ...
 
         if isinstance(vector, sympy.Matrix) and vector.shape == (1, self.dim):
@@ -133,7 +130,6 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
     """
 
     def __init__(self, mesh):
-
         coordinate_type = mesh.CoordinateSystem.coordinate_type
 
         # validation
@@ -150,7 +146,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 
     def divergence(self, matrix):
         r"""
-        \( \nabla \cdot \mathbf{v} \)
+        $ \nabla \cdot \mathbf{v} $
         """
 
         r = self.mesh.CoordinateSystem.N[0]
@@ -273,7 +269,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 
 #     def divergence(self, matrix):
 #         r"""
-#         \( \nabla \cdot \mathbf{v} \)
+#         $ \nabla \cdot \mathbf{v} $
 #         """
 
 #         r = self.mesh.CoordinateSystem.N[0]
@@ -396,7 +392,6 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
     """
 
     def __init__(self, mesh):
-
         coordinate_type = mesh.CoordinateSystem.coordinate_type
 
         # validation
@@ -410,7 +405,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
 
     def divergence(self, matrix):
         r"""
-        \( \nabla \cdot \mathbf{v} \)
+        $ \nabla \cdot \mathbf{v} $
         """
 
         r = self.mesh.CoordinateSystem.N[0]
@@ -536,7 +531,6 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
     """
 
     def __init__(self, mesh):
-
         coordinate_type = mesh.CoordinateSystem.coordinate_type
 
         # validation
@@ -550,7 +544,7 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
 
     def divergence(self, matrix):
         r"""
-        \( \nabla \cdot \mathbf{v} \)
+        $ \nabla \cdot \mathbf{v} $
         """
 
         r = sympy.sympify(1)

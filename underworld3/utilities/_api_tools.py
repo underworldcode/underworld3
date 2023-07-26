@@ -49,7 +49,7 @@ class uw_object:
 
         ## Docstring (static)
         docstring = dedent(self_or_cls.__doc__)
-        docstring = docstring.replace("\(", "$").replace("\)", "$")
+        # docstring = docstring.replace("$", "$").replace("$", "$")
         display(Markdown(docstring))
 
         if inspect.isclass(self_or_cls):
