@@ -41,25 +41,28 @@ import sympy
 
 # + language="sh"
 #
-# # ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_r025_dt005_phi05_no_evalf | tail -10
-# ls -tr /Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_033/*mesh*h5 | tail -10
+# ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std | tail
+# #ls -tr /Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_033/*mesh*h5 | tail -10
 #
 #
+# -
 
+
+# ls /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std/NS_benchmark_DFG2d_2iii_0.033* | tail
 
 # +
 ## Reading the checkpoints back in ... 
 
-step = 150
+step = 390
 
-# checkpoint_dir = "/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_r025_dt005_phi05_no_evalf"
-checkpoint_dir = "/Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_033"
+checkpoint_dir = "/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std"
+# checkpoint_dir = "/Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes//Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std"
 
-checkpoint_base = "NS_benchmark_DFG2d_2iii_0.05"
+checkpoint_base = "NS_benchmark_DFG2d_2iii_0.033"
 base_filename = os.path.join(checkpoint_dir, checkpoint_base)
 
 # +
-mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.00000.h5")
+mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.{step:05d}.h5")
 
 v_soln_ckpt = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p_soln_ckpt = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
@@ -169,7 +172,7 @@ if uw.mpi.size == 1:
 
     pl.add_points(swarm_point_cloud, color="Black",
                   render_points_as_spheres=True,
-                  point_size=3, opacity=0.2
+                  point_size=5, opacity=0.2
                 )
 
     pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.25)

@@ -29,7 +29,6 @@ def UnstructuredSimplexBox(
     refinement=None,
     verbosity=0,
 ):
-
     """
     Generates a 2 or 3-dimensional box mesh.
 
@@ -61,7 +60,6 @@ def UnstructuredSimplexBox(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         gmsh.initialize()
@@ -72,7 +70,6 @@ def UnstructuredSimplexBox(
         dim = len(minCoords)
 
         if dim == 2:
-
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -110,7 +107,6 @@ def UnstructuredSimplexBox(
                 )
 
         else:
-
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
 
@@ -203,7 +199,6 @@ def StructuredQuadBox(
     refinement=None,
     verbosity=0,
 ):
-
     """
     Generates a 2 or 3-dimensional box mesh.
 
@@ -244,7 +239,6 @@ def StructuredQuadBox(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Box")
@@ -253,7 +247,6 @@ def StructuredQuadBox(
         dim = len(minCoords)
 
         if dim == 2:
-
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -305,7 +298,6 @@ def StructuredQuadBox(
             gmsh.model.mesh.set_recombine(2, surface)
 
         else:
-
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
 
@@ -441,17 +433,17 @@ def StructuredQuadBox(
         gmsh.finalize()
 
     new_mesh = Mesh(
-            uw_filename,
-            degree=degree,
-            qdegree=qdegree,
-            boundaries=boundaries,
-            coordinate_system_type=CoordinateSystemType.CARTESIAN,
-            useMultipleTags=True,
-            useRegions=True,
-            markVertices=True,
-            refinement=refinement,
-            refinement_callback=None,
-        )
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        boundaries=boundaries,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        refinement=refinement,
+        refinement_callback=None,
+    )
 
     return new_mesh
 
@@ -467,7 +459,6 @@ def SphericalShell(
     refinement=None,
     verbosity=0,
 ):
-
     # boundaries = {"Lower": 11, "Upper": 12}
     # vertices = {"Centre": 1}
 
@@ -555,7 +546,6 @@ def SphericalShell(
     # and the new dm object needs some tweeks
 
     def spherical_mesh_refinement_callback(dm):
-
         r_o = radiusOuter
         r_i = radiusInner
 
@@ -604,6 +594,7 @@ def SphericalShell(
 
     return new_mesh
 
+
 @timing.routine_timer_decorator
 def QuarterAnnulus(
     radiusOuter: float = 1.0,
@@ -616,11 +607,10 @@ def QuarterAnnulus(
     filename=None,
     verbosity=0,
 ):
-    
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        Left  = 3
+        Left = 3
         Right = 4
         Centre = 10
 
@@ -635,7 +625,6 @@ def QuarterAnnulus(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         gmsh.initialize()
@@ -646,21 +635,16 @@ def QuarterAnnulus(
 
         loops = []
 
-
         if radiusInner > 0.0:
             p1 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
             p4 = gmsh.model.geo.add_point(0.0, radiusInner, 0.0, meshSize=cellSize)
-            
-        
-        print('add points')
-        
+
+        print("add points")
+
         p2 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
         p3 = gmsh.model.geo.add_point(0.0, radiusOuter, 0.0, meshSize=cellSize)
-        
-        
+
         # gmsh.model.geo.rotate([(p2, p3)], 0, 0, 0, 0, 0.3, 0, math.pi / 2)
-        
-        
 
         if radiusInner > 0.0:
             gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
@@ -668,48 +652,45 @@ def QuarterAnnulus(
 
             gmsh.model.geo.rotate([(0, p1)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
             gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
-            
-            
+
             l1 = gmsh.model.geo.add_line(p1, p2)
             l3 = gmsh.model.geo.add_line(p3, p4)
-            
-            print('add lines')
-            
+
+            print("add lines")
+
             c_upper = gmsh.model.geo.add_circle_arc(p2, p0, p3)
             c_lower = gmsh.model.geo.add_circle_arc(p4, p0, p1)
-            
-            print('add circles')
-            
+
+            print("add circles")
+
             loops = [l1, c_upper, l3, c_lower]
 
         else:
             gmsh.model.geo.rotate([(0, p2)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
             gmsh.model.geo.rotate([(0, p3)], 0.0, 0.0, 0.0, 0, 0, 1, np.deg2rad(angle))
-            
+
             l1 = gmsh.model.geo.add_line(p0, p2)
             l3 = gmsh.model.geo.add_line(p3, p0)
-            
+
             c_upper = gmsh.model.geo.add_circle_arc(p2, p0, p3)
-            
+
             loops = [l1, c_upper, l3]
-            
+
         loop = gmsh.model.geo.add_curve_loop(loops)
-        
-        print('add loop')
+
+        print("add loop")
 
         s = gmsh.model.geo.add_plane_surface([loop])
-        
-        
-        
-        print('add plane surface')
-        
+
+        print("add plane surface")
+
         gmsh.model.geo.synchronize()
-        
-        print('synchronize')
-        
+
+        print("synchronize")
+
         gmsh.model.mesh.embed(0, [p0], 2, s)
-        
-        print('embed')
+
+        print("embed")
 
         if radiusInner > 0.0:
             gmsh.model.addPhysicalGroup(
@@ -726,45 +707,45 @@ def QuarterAnnulus(
         gmsh.model.addPhysicalGroup(
             1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
         )
-        
+
         gmsh.model.addPhysicalGroup(
             1, [l1], boundaries.Left.value, name=boundaries.Left.name
         )
-        
+
         gmsh.model.addPhysicalGroup(
             1, [l3], boundaries.Right.value, name=boundaries.Right.name
         )
-            
-        
-        print('add physical groups')
-            
+
+        print("add physical groups")
+
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
-        
-        print('add elements')
+
+        print("add elements")
 
         gmsh.model.geo.synchronize()
-        
-        print('synchronize')
+
+        print("synchronize")
 
         gmsh.model.mesh.generate(2)
-        
-        print('generate')
-        
+
+        print("generate")
+
         gmsh.write(uw_filename)
         gmsh.finalize()
 
     new_mesh = Mesh(
-                    uw_filename,
-                    degree=degree,
-                    qdegree=qdegree,
-                    useMultipleTags=True,
-                    useRegions=True,
-                    markVertices=True,
-                    boundaries=boundaries,
-                    coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
-                    )
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+    )
 
-    return new_mesh 
+    return new_mesh
+
 
 @timing.routine_timer_decorator
 def Annulus(
@@ -778,7 +759,6 @@ def Annulus(
     refinement=None,
     verbosity=0,
 ):
-
     # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
     # vertices = {"Centre": 10}
 
@@ -798,7 +778,6 @@ def Annulus(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         gmsh.initialize()
@@ -866,7 +845,6 @@ def Annulus(
     # and the new dm object needs some tweeks
 
     def annulus_mesh_refinement_callback(dm):
-
         r_o = radiusOuter
         r_i = radiusInner
 
@@ -896,6 +874,17 @@ def Annulus(
 
         return
 
+    def annulus_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -907,6 +896,7 @@ def Annulus(
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
         refinement=refinement,
         refinement_callback=annulus_mesh_refinement_callback,
+        return_coords_to_bounds=annulus_return_coords_to_bounds,
     )
 
     return new_mesh
@@ -943,7 +933,6 @@ def AnnulusInternalBoundary(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         gmsh.initialize()
@@ -984,7 +973,6 @@ def AnnulusInternalBoundary(
 
         c5 = gmsh.model.geo.add_circle_arc(p6, p1, p7)
         c6 = gmsh.model.geo.add_circle_arc(p7, p1, p6)
-
 
         cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries.Upper.value)
 
@@ -1075,7 +1063,6 @@ def CubedSphere(
     filename=None,
     verbosity=0,
 ):
-
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
     The number of elements is the edge of each cube"""
 
@@ -1092,7 +1079,6 @@ def CubedSphere(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         gmsh.initialize()
@@ -1244,7 +1230,6 @@ def SegmentedSphericalSurface2D(
     filename=None,
     verbosity=0,
 ):
-
     num_segments = numSegments
     meshRes = cellSize
 
@@ -1256,7 +1241,6 @@ def SegmentedSphericalSurface2D(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         options = PETSc.Options()
@@ -1406,7 +1390,6 @@ def SegmentedSphere(
     coordinatesNative=False,
     verbosity=0,
 ):
-
     meshRes = cellSize
     num_segments = numSegments
 
@@ -1423,7 +1406,6 @@ def SegmentedSphere(
         uw_filename = filename
 
     if uw.mpi.rank == 0:
-
         import gmsh
 
         options = PETSc.Options()
@@ -1557,7 +1539,6 @@ def SegmentedSphere(
         # Make copies
 
         for i in range(1, num_segments):
-
             new_wedge = gmsh.model.geo.copy([(3, 1)])
             gmsh.model.geo.rotate(new_wedge, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, i * dtheta)
 
@@ -1584,7 +1565,6 @@ def SegmentedSphere(
         radialS = tuple(set(mirror_edges_e).intersection(set(mirror_edges_w)))[0]
 
         for i in range(1, num_segments):
-
             new_wedge = gmsh.model.geo.copy(mirror_wedge)
             gmsh.model.geo.rotate(new_wedge, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, i * dtheta)
 

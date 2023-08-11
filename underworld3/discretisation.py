@@ -11,6 +11,9 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities import _api_tools
+from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities._api_tools import uw_object
+
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
 
@@ -114,7 +117,10 @@ def _from_plexh5(
         return sf0, h5plex
 
 
-class Mesh(_api_tools.Stateful):
+class Mesh(Stateful, uw_object):
+    r"""
+    Mesh class for uw - documentation needed
+    """
     mesh_instances = 0
 
     @timing.routine_timer_decorator
@@ -131,6 +137,7 @@ class Mesh(_api_tools.Stateful):
         filename=None,
         refinement=None,
         refinement_callback=None,
+        return_coords_to_bounds=None,
         boundaries=None,
         distribute=True,
         name=None,
@@ -177,6 +184,7 @@ class Mesh(_api_tools.Stateful):
         self.filename = filename
         self.boundaries = boundaries
         self.refinement_callback = refinement_callback
+        self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
 
         self.dm0 = self.dm.clone()
@@ -1258,7 +1266,35 @@ def MeshVariable(
     )
 
 
-class _MeshVariable(_api_tools.Stateful):
+class _MeshVariable(Stateful, uw_object):
+    """
+    The MeshVariable class generates a variable supported by a finite element mesh and the
+    underlying sympy representation that makes it possible to construct expressions that
+    depend on the values of the MeshVariable.
+
+    To set / read nodal values, use the numpy interface via the 'data' property.
+
+    Parameters
+    ----------
+    varname :
+        A textual name for this variable.
+    mesh :
+        The supporting underworld mesh.
+    num_components :
+        The number of components this variable has.
+        For example, scalars will have `num_components=1`,
+        while a 2d vector would have `num_components=2`.
+    vtype :
+        Optional. The underworld variable type for this variable.
+        If not defined it will be inferred from `num_components`
+        if possible.
+    degree :
+        The polynomial degree for this variable.
+    varsymbol:
+        A symbolic form for printing etc (sympy / latex)
+
+    """
+
     @timing.routine_timer_decorator
     def __init__(
         self,

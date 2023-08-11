@@ -171,6 +171,7 @@ class SNES_Scalar(Solver):
         SNES_Scalar.instances += 1
 
         self.name = solver_name
+        self.verbose = verbose
 
         ## Todo: this is obviously not particularly robust
 
@@ -194,10 +195,19 @@ class SNES_Scalar(Solver):
         self.petsc_options["pc_gamg_agg_nsmooths"] = 2
         self.petsc_options["mg_levels_ksp_max_it"] = 3
         self.petsc_options["mg_levels_ksp_converged_maxits"] = None        
-        self.petsc_options["snes_converged_reason"] = None
-        self.petsc_options["snes_monitor_short"] = None
+
         self.petsc_options["snes_rtol"] = 1.0e-4
         self.petsc_options["mg_levels_ksp_max_it"] = 3
+
+        if self.verbose == True:
+            self.petsc_options["ksp_monitor"] = None
+            self.petsc_options["snes_converged_reason"] = None
+            self.petsc_options["snes_monitor_short"] = None
+        else:
+            self.petsc_options.delValue("ksp_monitor")
+            self.petsc_options.delValue("snes_monitor")
+            self.petsc_options.delValue("snes_monitor_short")
+            self.petsc_options.delValue("snes_converged_reason")
 
         self._u = u_Field
         self.mesh = mesh
@@ -479,6 +489,7 @@ class SNES_Vector(Solver):
 
         SNES_Vector.instances += 1
         self.name = solver_name
+        self.verbose = verbose
 
 
         ## Todo: this is obviously not particularly robust
@@ -496,18 +507,25 @@ class SNES_Vector(Solver):
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_monitor"] = None
         self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
         self.petsc_options["pc_gamg_type"] = "agg"
         self.petsc_options["pc_gamg_repartition"]  = True  
         self.petsc_options["pc_mg_type"]  = "additive"
         self.petsc_options["pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options["snes_converged_reason"] = None
-        self.petsc_options["snes_monitor_short"] = None
         self.petsc_options["snes_rtol"] = 1.0e-3
         self.petsc_options["mg_levels_ksp_max_it"] = 3
         self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+
+        if self.verbose == True:
+            self.petsc_options["ksp_monitor"] = None
+            self.petsc_options["snes_converged_reason"] = None
+            self.petsc_options["snes_monitor_short"] = None
+        else:
+            self.petsc_options.delValue("ksp_monitor")
+            self.petsc_options.delValue("snes_monitor")
+            self.petsc_options.delValue("snes_monitor_short")
+            self.petsc_options.delValue("snes_converged_reason")
 
 
         ## Todo: some validity checking on the size / type of u_Field supplied

@@ -70,7 +70,7 @@ class Constitutive_Model(uw_object):
         self._flux_dt = flux_dt
         self._solver_is_setup = False
 
-        self.Parameters = self._Parameters()
+        self.Parameters = self._Parameters(self)
         self.Parameters._solver = None
         self.Parameters._reset = self._reset
         self._is_setup = False
@@ -96,8 +96,11 @@ class Constitutive_Model(uw_object):
         individual instances of the class.
         """
 
-        def __init__(inner_self):
-            inner_self._solver = None  #### should this be here?
+        def __init__(inner_self, owning_model):
+            # inner_self._solver = None  #### should this be here?
+
+            inner_self.owning_model = owning_model
+            return
 
     @property
     def K(self):
@@ -154,6 +157,9 @@ class Constitutive_Model(uw_object):
         rank 4 tensor. NOTE: `c` is the canonical form of the constitutive relationship.
         """
 
+        if not self._is_setup:
+            self._build_c_tensor()
+
         return self._c.as_immutable()
 
     @property
@@ -169,6 +175,9 @@ class Constitutive_Model(uw_object):
 
     def _q(self, ddu):
         """Generic flux term"""
+
+        if not self._is_setup:
+            self._build_c_tensor()
 
         c = self.c
         rank = len(c.shape)
@@ -270,10 +279,13 @@ class ViscousFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
+            owning_model,
             viscosity: Union[float, sympy.Function] = None,
         ):
             if viscosity is None:
                 viscosity = sympy.sympify(1)
+
+            inner_self.owning_model = owning_model
 
             inner_self._shear_viscosity_0 = sympy.sympify(viscosity)
 
@@ -431,12 +443,15 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         def __init__(
             inner_self,
+            owning_model,
             shear_viscosity_0: Union[float, sympy.Function] = 1,
             shear_viscosity_min: Union[float, sympy.Function] = -sympy.oo,
             yield_stress: Union[float, sympy.Function] = sympy.oo,
             yield_stress_min: Union[float, sympy.Function] = -sympy.oo,
             strainrate_inv_II_min: float = 0.0,
         ):
+            inner_self.owning_model = owning_model
+
             inner_self._shear_viscosity_0 = sympy.sympify(shear_viscosity_0)
             inner_self._yield_stress = sympy.sympify(yield_stress)
             inner_self._yield_stress_min = sympy.sympify(yield_stress_min)
@@ -643,6 +658,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         def __init__(
             inner_self,
+            owning_model,
             shear_viscosity_0: Union[float, sympy.Function] = 1,
             shear_viscosity_min: Union[float, sympy.Function] = -sympy.oo,
             shear_modulus: Union[float, sympy.Function] = sympy.oo,
@@ -652,6 +668,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             stress_star: sympy.Function = None,
             strainrate_inv_II_min: float = 0.0,
         ):
+            inner_self.owning_model = owning_model
+
             if strainrate_inv_II_min is None:
                 strainrate_inv_II = sympy.symbols(
                     r"\left|\dot\epsilon\right|\rightarrow\textrm{not\ defined}"
@@ -1042,9 +1060,9 @@ class DiffusionModel(Constitutive_Model):
     diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
     scalar_solver.constititutive_model = diffusion_model
     ```
-    $$ q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}  $$
+    $$q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}$$
 
-    where $ \kappa $ is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $\kappa$ is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. Access the constitutive model using:
 
     ```python
@@ -1061,9 +1079,11 @@ class DiffusionModel(Constitutive_Model):
 
         def __init__(
             inner_self,
+            owning_model,
             diffusivity: Union[float, sympy.Function] = 1,
         ):
             inner_self._diffusivity = diffusivity
+            inner_self.owning_model = owning_model
 
         @property
         def diffusivity(inner_self):
@@ -1147,10 +1167,13 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
+            owning_model,
             eta_0: Union[float, sympy.Function] = 1,
             eta_1: Union[float, sympy.Function] = 1,
             director: Union[sympy.Matrix, sympy.Function] = sympy.Matrix([0, 0, 1]),
         ):
+            inner_self.owning_model = owning_model
+
             inner_self._eta_0 = eta_0
             inner_self._eta_1 = eta_1
             inner_self._director = director

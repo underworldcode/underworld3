@@ -43,13 +43,13 @@ class SwarmPICLayout(Enum):
 # and the duplication should be removed.
 
 
-class SwarmVariable(Stateful):
+class SwarmVariable(Stateful, uw_object):
     @timing.routine_timer_decorator
     def __init__(
         self,
         name,
         swarm,
-        size,  # only needed if MATRIX type
+        size=None,  # only needed if MATRIX type
         vtype=None,
         dtype=float,
         proxy_degree=1,
@@ -694,7 +694,7 @@ class IndexSwarmVariable(SwarmVariable):
 
 
 # @typechecked
-class Swarm(Stateful):
+class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
@@ -1763,6 +1763,91 @@ class Swarm(Stateful):
         return
 
 
+class NodalPointSwarm(Swarm):
+    r"""Swarm with particles located at the coordinate points of a meshVariable
+
+    The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
+    after they have been moved.
+
+    The purpose of this Swarm is to manage sample points for advection schemes based on upstream sampling
+    (method of characteristics etc)"""
+
+    def __init__(
+        self,
+        trackedVariable: uw.discretisation.MeshVariable,
+    ):
+        self.trackedVariable = trackedVariable
+        self.swarmVariable = None
+        mesh = trackedVariable.mesh
+
+        # Set up a standard swarm
+        super().__init__(mesh)
+
+        nswarm = self
+
+        meshVar_name = trackedVariable.clean_name
+        meshVar_symbol = trackedVariable.symbol
+
+        ks = str(self.instance_number)
+        name = f"{meshVar_name}_star"
+        symbol = rf"{meshVar_symbol}^{{*}}"
+
+        self.swarmVariable = uw.swarm.SwarmVariable(
+            name,
+            nswarm,
+            vtype=trackedVariable.vtype,
+            proxy_degree=trackedVariable.degree,
+            proxy_continuous=trackedVariable.continuous,
+            varsymbol=symbol,
+        )
+
+        # name = f"ns_vector_star_{ks}"
+        # symbol = r"\boldsymbol{q}^{*^{{[" + ks + "]}}}"
+
+        # nq1 = uw.swarm.SwarmVariable(
+        #     name,
+        #     nswarm,
+        #     self.mesh.dim,
+        #     proxy_degree=trackedVariable.degree,
+        #     proxy_continuous=True,
+        #     varsymbol=symbol,
+        # )
+
+        name = f"ns_X0_{ks}"
+        symbol = r"X0^{*^{{[" + ks + "]}}}"
+        nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
+
+        nswarm.dm.finalizeFieldRegister()
+        nswarm.dm.addNPoints(
+            trackedVariable.coords.shape[0] + 1
+        )  # why + 1 ? That's the number of spots actually allocated
+
+        cellid = nswarm.dm.getField("DMSwarm_cellid")
+        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
+        coords[...] = trackedVariable.coords[...]
+        cellid[:] = self.mesh.get_closest_cells(coords)
+
+        # Move slightly within the chosen cell to avoid edge effects
+        centroid_coords = self.mesh._centroids[cellid]
+        shift = 1.0e-1 * self.mesh.get_min_radius()
+        coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
+
+        nswarm.dm.restoreField("DMSwarmPIC_coor")
+        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.migrate(remove_sent_points=True)
+
+        with nswarm.access(nX0):
+            nX0.data[...] = coords
+
+        self._nswarm = nswarm
+        self._X0 = nX0
+
+        return
+
+
+# class SemiLagrangian_Updater(uw_object):
+
+
 class Lagrangian_Updater(uw_object):
     r"""Swarm-based Lagrangian History Manager:
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
@@ -1782,6 +1867,7 @@ class Lagrangian_Updater(uw_object):
         swarm: Swarm,
         psi: sympy.Function,
         psi_star: Union[SwarmVariable, list],
+        # psi_t0: sympy.Function,
         dt_physical: float,
         verbose: Optional[bool] = False,
     ):
@@ -1883,7 +1969,7 @@ class Lagrangian_Derivative(Lagrangian_Updater):
 
         # By hand for now ... and this should have some error checks / default behaviour
 
-        # This is the python 3.10+ version ...
+        # This is the python 3.10+ version ... can't assume 3.10 yet
         # match order:
         #     case 1:
         #         return sympy.UnevaluatedExpr(

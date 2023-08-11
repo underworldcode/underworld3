@@ -9,6 +9,7 @@ class Stateful:
 
     def __init__(self):
         self._state = 0
+        super().__init__()
 
     def _increment(self):
         self._state += 1
@@ -34,12 +35,28 @@ class class_or_instance_method(object):
         return newfunc
 
 
-class uw_object:
+class counted_metaclass(type):
+    def __init__(cls, name, bases, attrs):
+        super().__init__(name, bases, attrs)
+        cls._total_instances = 0
+
+
+class uw_object_counter(object, metaclass=counted_metaclass):
+    def __init__(self):
+        super().__init__()
+        self.__class__._total_instances += 1
+        self.instance_number = self.__class__._total_instances
+
+
+class uw_object(uw_object_counter):
     """
     The UW (mixin) class adds common functionality that we wish to provide on all uw_objects
     such as the view methods (classmethod for generic information and instance method that can be over-ridden)
     to provide instance-specific information
     """
+
+    def __init__(self):
+        super().__init__()
 
     @class_or_instance_method
     def _ipython_display_(self_or_cls):
@@ -64,6 +81,10 @@ class uw_object:
     def view(self_or_cls):
         self_or_cls._ipython_display_()
         return
+
+    @classmethod
+    def total_instances(cls):
+        return cls._total_instances
 
     # placeholder
     def _object_viewer(self):
