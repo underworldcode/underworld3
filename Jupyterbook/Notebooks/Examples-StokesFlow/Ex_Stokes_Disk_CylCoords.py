@@ -275,11 +275,11 @@ if uw.mpi.size == 1:
     pvmesh = pv.read("./tmp_meshball.msh")
 
     with meshball.access():
-        pvmesh.point_data["V"] = uw.function.evaluate(
+        pvmesh.point_data["V"] = uw.function.evalf(
             v_soln.sym.dot(v_soln.sym), meshball.data
         )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evaluate(
+        pvmesh.point_data["P"] = uw.function.evalf(p_cont.sym[0], meshball.data)
+        pvmesh.point_data["T"] = uw.function.evalf(
             t_init_xy, meshball_xyz.data, coord_sys=meshball_xyz.N
         )
 

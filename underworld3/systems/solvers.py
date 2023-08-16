@@ -372,7 +372,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
         solver_name: Optional[str] = "",
-        verbose: Optional[str] = False,
+        verbose: Optional[bool] = False,
     ):
         SNES_Stokes.instances += 1
 
@@ -1005,8 +1005,8 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._setup_problem_description = self.adv_diff_slcn_problem_description
 
         # Add the nodal point swarm which we'll use to track the characteristics
-        nswarm_T = uw.swarm.NodalPointSwarm(self._u)
-        self._nswarm_T = nswarm_T
+        nswarm_u = uw.swarm.NodalPointSwarm(self._u)
+        self._nswarm_u = nswarm_u
 
         # Add the nodal point swarm which we'll use to track the characteristics
         nswarm_F = uw.swarm.NodalPointSwarm(self._F_star)
@@ -2135,6 +2135,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         solver_name: Optional[str] = "",
         restore_points_func: Callable = None,
         verbose: Optional[bool] = False,
+        dt_order: Optional[int] = 1,
     ):
         if solver_name == "":
             solver_name = "NStokes_swarm_{}_".format(self.instance_number)
@@ -2207,6 +2208,19 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
             self.mesh, self._F_star, self._WorkVar, verbose=False
         )
         self._F_star_projection_solver.smoothing = 1.0e-6
+
+        self.du_dt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            u_fn=self._u.sym,
+            V_fn=self._u.sym,
+            vtype=self._u.vtype,
+            degree=self._u.degree,
+            continuous=self._u.continuous,
+            order=1,
+            smoothing=1.0,
+            varsymbol=self._u.symbol,
+            bcs=self.bcs,
+        )
 
         return
 
@@ -2314,7 +2328,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
             for d in range(self._u.num_components):
                 nU1.data[:, d] = uw.function.evaluate(
                     self._u.sym_1d[d], self._nswarm_u.data
-                )  # .reshape(-1, 1)
+                )
 
         # restore coords (will call dm.migrate after context manager releases)
         with self._nswarm_u.access(self._nswarm_u.particle_coordinates):

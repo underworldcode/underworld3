@@ -25,7 +25,7 @@
 #
 # In this benchmark, I have scaled $\rho = 1000$ and $\nu = 1.0$ as otherwise it fails to converge. This occurs because we are locked into a range of $\Delta t$ by the flow velocity (and accurate particle transport), and by the assumption that $\dot{\epsilon}$ is computed in the Eulerian form. The Crank-Nicholson scheme still has some timestep requirements associated with diffusivity (viscosity in this case) and this may be what I am seeing.
 #
-# Velocity is the same, but pressure scales by 1000. This should encourage us to implement scaling / units.
+# Velocity is the same, but pressure scales by 1000. This should encourage us to implement scaling / units for this notebook.
 #
 # Model 4 is not one of the benchmarks, but just turns up the Re parameter to see if the mesh can resolve higher values than 100
 #
@@ -48,7 +48,7 @@ print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=Tr
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc 
 
-resolution = uw.options.getReal("model_resolution", default=0.033)
+resolution = uw.options.getReal("model_resolution", default=30)
 model = uw.options.getInt("model_number", default=5)
 maxsteps = uw.options.getInt("max_steps", default=1000)
 restart_step = uw.options.getInt("restart_step", default=-1)
@@ -75,7 +75,7 @@ elif model == 5:
     expt_name = f"NS_test_Re_1000_SLCN_{resolution}"
 # -
 
-outdir = "output_res_033"
+outdir = f"output_res_{resolution}"
 os.makedirs(".meshes", exist_ok=True)
 os.makedirs(f"{outdir}", exist_ok=True)
 
@@ -84,7 +84,7 @@ import pygmsh
 
 # Mesh a 2D pipe with a circular hole
 
-csize = resolution
+csize = 1.0/resolution
 csize_circle = 0.5 * csize
 res = csize_circle
 
@@ -131,6 +131,19 @@ pipemesh = uw.discretisation.Mesh(f".meshes/ns_pipe_flow_{resolution}.msh",
                                   qdegree=3)
 pipemesh.dm.view()
 
+## Restore inflow samples to inflow points
+
+def pipemesh_return_coords_to_bounds(coords):
+
+    lefty_troublemakers = coords[:,0] < 0.0
+    coords[lefty_troublemakers,0] = 0.0001
+    
+    return(coords)
+
+
+pipemesh.return_coords_to_bounds = pipemesh_return_coords_to_bounds
+
+
 
 # radius_fn = sympy.sqrt(pipemesh.rvec.dot(pipemesh.rvec)) # normalise by outer radius if not 1.0
 # unit_rvec = pipemesh.rvec / (1.0e-10+radius_fn)
@@ -172,45 +185,25 @@ St = uw.discretisation.MeshVariable(r"Stress", pipemesh, (2,2), vtype=uw.VarType
 
 
 # +
-# swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=20)
-# v_star = uw.swarm.SwarmVariable("Vdt_p", swarm, pipemesh.dim, 
-#                             proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{*}}")
-
-# v_star_star = uw.swarm.SwarmVariable("V2dt_p", swarm, pipemesh.dim, 
-#                             proxy_degree=2, proxy_continuous=True, varsymbol=r"{v^{**}}")
-
-# stress_star_p = uw.swarm.SwarmVariable(r"stress_p", swarm,
-#                                      (2,2), vtype=uw.VarType.SYM_TENSOR, 
-#                                      proxy_continuous=True,
-#                                      proxy_degree=2,
-#                                      varsymbol=r"{\sigma^{*}_{p}}",)
-
-
-# swarm.populate(fill_param=3)
-
-
-# # v_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
-# #                                                   v_soln.sym, 
-# #                                                   [v_star, v_star_star], 
-# #                                                   dt_physical=0.01)
-
-# stress_star_update_dt = uw.swarm.Lagrangian_Updater(swarm, 
-#                                                   St.sym, 
-#                                                   [stress_star_p], 
-#                                                   dt_physical=0.01)
-
-
-
-
-
-# +
 # DvDt = uw.swarm.Lagrangian_Derivative(swarm, v_soln.sym, 
 #                                       [v_star, v_star_star], 
 #                                       dt_physical=0.01, 
 #                                       verbose=True)
 # -
 
-print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
+
+
+# +
+# sl_update = uw.swarm.SemiLagrange_Updater(pipemesh, 
+#                               u_fn = v_soln.sym_1d, 
+#                               V_fn = v_soln.sym, 
+#                               vtype=v_soln.vtype,
+#                               degree=v_soln.degree,
+#                               continuous=v_soln.continuous,
+#                               order=1,
+#                               smoothing=1.0,
+#                               varsymbol=v_soln.symbol
+#                       )
 
 # + tags=[]
 passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
@@ -220,13 +213,13 @@ passive_swarm.populate(
 
 
 # add new points at the inflow 
-npoints = 50
+npoints = 100
 passive_swarm.dm.addNPoints(npoints)
 with passive_swarm.access(passive_swarm.particle_coordinates):
     for i in range(npoints):
         passive_swarm.particle_coordinates.data[
             -1 : -(npoints + 1) : -1, :
-        ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
+        ] = np.array([0.01, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
 # -
 nodal_vorticity_from_v = uw.systems.Projection(pipemesh, vorticity)
@@ -281,37 +274,16 @@ if model == 2:  # Steady state !
     )
 
 # -
+navier_stokes.view()
+
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 
 # + tags=[]
 navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
 nodal_vorticity_from_v.solve()
-
-# +
-# stress_projection = uw.systems.Tensor_Projection(
-#     pipemesh, tensor_Field=St, scalar_Field=work
-# )
-# stress_projection.uw_function = navier_stokes.stress_deviator
-# stress_projection.solve()
-
-# with swarm.access(stress_star_p), pipemesh.access():
-#     stress_star_p.data[:,0] = uw.function.evaluate(St.sym_1d[0], swarm.particle_coordinates.data)
-#     stress_star_p.data[:,1] = uw.function.evaluate(St.sym_1d[1], swarm.particle_coordinates.data)
-#     stress_star_p.data[:,2] = uw.function.evaluate(St.sym_1d[2], swarm.particle_coordinates.data)
-
 # -
 
 print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
-
-# +
-# print(f"Test Swarm update 1", flush=True)
-# passive_swarm.advection(v_soln.sym, 0.01 / 3, order=2, corrector=False, evalf=False)
-# print(f"Test Swarm update 2", flush=True)
-# passive_swarm.advection(v_soln.sym, 0.01 / 3, order=2, corrector=False, evalf=False)
-# print(f"Test Swarm update 3", flush=True)
-# -
-
-
 
 
 # + tags=[]
@@ -398,6 +370,19 @@ if uw.mpi.size == 1:
     # pl.remove_scalar_bar("mag")
 
     pl.show()
+# -
+navier_stokes.du_dt.view()
+
+navier_stokes.du_dt.update(dt=0.1)
+
+with pipemesh.access():
+    print(navier_stokes.du_dt.u_star[0].data.max())
+    print(navier_stokes._u_star.data.max())
+
+navier_stokes._u_star.data
+
+0/0
+
 # +
 if uw.mpi.size == 1:
 
@@ -520,7 +505,7 @@ def plot_V_mesh(filename):
 # +
 ts = 0
 elapsed_time = 0.0
-dt_ns = 0.0005
+dt_ns = 2.5e-4
 
 # DvDt.dt_physical = dt_ns
 # stress_star_update_dt.dt_physical = dt_ns
@@ -594,4 +579,4 @@ for step in range(0, maxsteps):
     ts += 1
 # -
 
-# ls -trl output_res_033/ | tail -20
+

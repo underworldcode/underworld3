@@ -1790,7 +1790,7 @@ class NodalPointSwarm(Swarm):
 
         ks = str(self.instance_number)
         name = f"{meshVar_name}_star"
-        symbol = rf"{meshVar_symbol}^{{*}}"
+        symbol = rf"{{ {meshVar_symbol} }}^{{ <*> }}"
 
         self.swarmVariable = uw.swarm.SwarmVariable(
             name,
@@ -1845,7 +1845,269 @@ class NodalPointSwarm(Swarm):
         return
 
 
-# class SemiLagrangian_Updater(uw_object):
+class SemiLagrange_Updater(uw_object):
+    r"""Nodal-Swarm  Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    """
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.bcs = bcs
+        self.verbose = verbose
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can't
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # psi_star is reaching back through each evaluation
+
+        self.u_fn = u_fn
+        self.V_fn = V_fn
+        self.order = order
+
+        if u_fn.shape[0] != 1:
+            raise RuntimeError(
+                f"u_fn should be a (flattened) 1d object (e.g. tau.sym_1d in place of tau.sym)"
+            )
+
+        u_star = []
+        self.u_star = u_star
+
+        for i in range(order):
+            self.u_star.append(
+                uw.discretisation.MeshVariable(
+                    f"u_star_sl_{self.instance_number}_{i}",
+                    self.mesh,
+                    vtype=vtype,
+                    degree=degree,
+                    continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        # We just need one swarm since this is inherently a sequential operation
+        nswarm = uw.swarm.NodalPointSwarm(self.u_star[0])
+        self._nswarm_u = nswarm
+
+        # The projection operator for mapping swarm values to the mesh - needs to be different for
+        # each variable type, unfortunately ...
+
+        if vtype == uw.VarType.SCALAR:
+            self._u_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.u_star[0], verbose=False
+            )
+        elif vtype == uw.VarType.VECTOR:
+            self._u_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh, self.u_star[0], verbose=False
+            )
+        elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            self._WorkVar = uw.discretisation.MeshVariable(
+                f"W_star_slcn_{self.instance_number}",
+                self.mesh,
+                vtype=VarType.SCALAR,
+                degree=degree,
+                continuous=continuous,
+                varsymbol=r"W^{*}",
+            )
+
+            self._u_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
+                self.mesh, self.u_star[0], self._WorkVar, verbose=False
+            )
+
+        self._u_star_projection_solver.bcs = bcs
+        self._u_star_projection_solver.smoothing = smoothing
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        # display(
+        #     Latex(
+        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
+        #         + sympy.sympify(self.dt_physical)._repr_latex_()
+        #     )
+        # )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    def update(
+        self,
+        dt: float,
+        # evalf: Optional[bool] = False,
+        # average_over_dt: Optional[bool] = True,
+    ):
+        # if average_over_dt:
+        #     phi = min(1.0, dt / self.dt_physical)
+        # else:
+        #     phi = 1.0
+
+        ## Progress from the oldest part of the history
+        # 1. Copy the stored values down the chain
+
+        for i in range(self.order - 1, -1, -1):
+            with self.mesh.access(self.u_star[i]):
+                self.u_star[i].data[...] = self.u_star[i - 1].data[...]
+
+        # 2. Compute the upstream values
+
+        for i in range(self.order - 1, -1, -1):
+            print(f"U_star[{i}] - order = {self.order}", flush=True)
+
+            with self._nswarm_u.access(self._nswarm_u._X0):
+                self._nswarm_u._X0.data[...] = self._nswarm_u.data[...]
+
+            # march nodes backwards along characteristics
+            self._nswarm_u.advection(
+                self.V_fn,
+                -dt,
+                order=2,
+                corrector=False,
+                restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+            )
+
+            with self._nswarm_u.access(self._nswarm_u.swarmVariable):
+                for d in range(self.u_fn.shape[1]):
+                    self._nswarm_u.swarmVariable.data[:, d] = uw.function.evaluate(
+                        self.u_fn[d], self._nswarm_u.data
+                    )  # .reshape(-1, 1)
+
+            # restore coords (will call dm.migrate after context manager releases)
+            with self._nswarm_u.access(self._nswarm_u.particle_coordinates):
+                self._nswarm_u.data[...] = self._nswarm_u._X0.data[...]
+
+            # Now project to the mesh using bc's to obtain u_star
+            self._u_star_projection_solver.uw_function = (
+                self._nswarm_u.swarmVariable.sym
+            )
+            self._u_star_projection_solver.solve()
+
+            # Copy data from the projection operator if required
+            if i != 0:
+                with self.mesh.access(self.u_star[i]):
+                    self.u_star[i].data[...] = self.u_star[0].data[...]
+
+        return
+
+
+# class Lagrangian_Derivative(Lagrangian_Updater):
+#     r"""
+#     Sets up a specific type of Lagrangian update for managing time derivatives
+
+#     $$\frac{D \mathbf{s}}{Dt} \sim \frac{\mathbf{s} - \mathbf{s}^*}{\Delta t}$$
+
+#     and higher order equivalents using the backward differentiation formulae
+#     """
+
+#     def __call__(self, delta_t, order=None):
+#         return self._bdf(delta_t, order)
+
+#     def _bdf(self, delta_t, order=None):
+#         if order is None:
+#             order = self.order
+#         else:
+#             order = max(1, min(self.order, order))
+
+#         # By hand for now ... and this should have some error checks / default behaviour
+
+#         # This is the python 3.10+ version ... can't assume 3.10 yet
+#         # match order:
+#         #     case 1:
+#         #         return sympy.UnevaluatedExpr(
+#         #             self.psi - self.psi_star[0].sym
+#         #         ) / sympy.UnevaluatedExpr(delta_t)
+#         #     case 2:
+#         #         return sympy.UnevaluatedExpr(
+#         #             3 * self.psi / 2
+#         #             - 2 * self.psi_star[0].sym
+#         #             + self.psi_star[1].sym / 2
+#         #         ) / sympy.UnevaluatedExpr(delta_t)
+#         #     case 3:
+#         #         return sympy.UnevaluatedExpr(
+#         #             11 * self.psi / 6
+#         #             - 3 * self.psi_star[0].sym
+#         #             + 3 * self.psi_star[1].sym / 2
+#         #             - self.psi_star[2].sym / 3
+#         #         ) / sympy.UnevaluatedExpr(delta_t)
+
+#         # This will have to do for now
+#         if order == 1:
+#             return sympy.UnevaluatedExpr(
+#                 self.psi - self.psi_star[0].sym
+#             ) / sympy.UnevaluatedExpr(delta_t)
+
+#         if order == 2:
+#             return sympy.UnevaluatedExpr(
+#                 3 * self.psi / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
+#             ) / sympy.UnevaluatedExpr(delta_t)
+
+#         if order == 3:
+#             return sympy.UnevaluatedExpr(
+#                 11 * self.psi / 6
+#                 - 3 * self.psi_star[0].sym
+#                 + 3 * self.psi_star[1].sym / 2
+#                 - self.psi_star[2].sym / 3
+#             ) / sympy.UnevaluatedExpr(delta_t)
+
+
+# class Lagrangian_Flux(Lagrangian_Updater):
+#     r"""
+#     Sets up a specific type of Lagrangian update for managing flux history
+
+#     $$\frac{D \mathbf{s}}{Dt} \sim \frac{\mathbf{s} - \mathbf{s}^*}{\Delta t}$$
+
+#     and higher order equivalents using the backward differentiation formulae
+#     """
+
+#     def __call__(self, order):
+#         return self._adams_moulton(order)
+
+#     def _adams_moulton(self, order):
+#         order = max(1, min(self.order, order))
+
+# By hand for now ... and this should have some error checks / default behaviour
+
+# match order:
+#     case 1:
+#         return (self.psi.sym - self.psi_star[0].sym) / delta_t
+#     case 2:
+#         return (
+#             3 * self.psi / 2 - 2 * self.psi_star[0] + self.psi_star[1]
+#         ) / delta_t
+#     case 3:
+#         return (
+#             11 * self.psi / 6
+#             - 3 * self.psi_star[0]
+#             + 3 * self.psi_star[1] / 2
+#             - self.psi_star[2] / 3
+#         ) / delta_t
 
 
 class Lagrangian_Updater(uw_object):
