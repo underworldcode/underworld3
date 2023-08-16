@@ -849,7 +849,7 @@ class SNES_Stokes_SaddlePt(Solver):
                  velocityField : Optional[underworld3.discretisation.MeshVariable] =None,
                  pressureField : Optional[underworld3.discretisation.MeshVariable] =None,
                  solver_name   : Optional[str]                           ="stokes_pt_",
-                 verbose       : Optional[str]                           =False,
+                 verbose       : Optional[bool]                           =False,
                 ):
      
 
