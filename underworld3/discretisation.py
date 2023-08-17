@@ -917,12 +917,15 @@ class Mesh(Stateful, uw_object):
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
-        coordsNewG = matInterp * coordsOld
+        coordsNewG = dmnew.getGlobalVec()
+        matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
         arr = coordsNewL.array
         arrcopy = arr.reshape(-1, self.cdim).copy()
 
+        dmnew.restoreGlobalVec(coordsNewG)
+        dmnew.restoreLocalVec(coordsNewL)
         dmnew.destroy()
         dmfe.destroy()
 

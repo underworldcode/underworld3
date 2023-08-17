@@ -1259,7 +1259,7 @@ class SNES_Stokes_SaddlePt(Solver):
                 else:
                     bc_type = 5
 
-                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)() noexcept>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)  
+                PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)() noexcept>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
 
         self.dm.setUp()
         self.dm.createClosureIndex(None)
@@ -1324,7 +1324,7 @@ class SNES_Stokes_SaddlePt(Solver):
         # self.mesh.dm.createDS()
 
         self.mesh.update_lvec()
-        self.dm.setAuxiliaryVec(self.mesh.lvec)
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Picard solves if requested
 
