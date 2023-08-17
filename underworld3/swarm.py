@@ -825,57 +825,74 @@ class Swarm(Stateful, uw_object):
     def particle_cellid(self):
         return self._cellid_var
 
-    # @timing.routine_timer_decorator
-    # def populate(
-    #     self,
-    #     fill_param: Optional[int] = 3,
-    #     layout: Optional[SwarmPICLayout] = None,
-    # ):
-    #     (
-    #         """
-    #     Populate the swarm with particles throughout the domain.
+    @timing.routine_timer_decorator
+    def populate_petsc(
+        self,
+        fill_param: Optional[int] = 3,
+        layout: Optional[SwarmPICLayout] = None,
+    ):
+        """
+        Populate the swarm with particles throughout the domain.
 
-    #     """
-    #         + SwarmPICLayout.__doc__
-    #         + """
+        When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
+        When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
+        When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
 
-    #     When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
-    #     When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
-    #     When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
+        Parameters
+        ----------
+        fill_param:
+            Parameter determining the particle count per cell for the given layout.
+        layout:
+            Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
+            type cells, and `SwarmPICLayout.GAUSS` otherwise.
 
-    #     Parameters
-    #     ----------
-    #     fill_param:
-    #         Parameter determining the particle count per cell for the given layout.
-    #     layout:
-    #         Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
-    #         type cells, and `SwarmPICLayout.GAUSS` otherwise.
+        """
 
-    #     """
-    #     )
+        self.fill_param = fill_param
 
-    #     self.fill_param = fill_param
+        """
+        Currently (2021.11.15) supported by PETSc release 3.16.x
 
-    #     """
-    #     Currently (2021.11.15) supported by PETSc release 3.16.x
+        When using a DMPLEX the following case are supported:
+              (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
 
-    #     When using a DMPLEX the following case are supported:
-    #           (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
-    #          (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
-    #         (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+        So this means, simplex mesh in 3D only supports GAUSS - This is based
+        on the tensor product locations so it is not even in the cells.
+        """
 
-    #     So this means, simplex mesh in 3D only supports GAUSS - This is based
-    #     on the tensor product locations so it is not even in the cells.
+        if layout == None:
+            if self.mesh.isSimplex == True and self.dim == 2 and fill_param > 1:
+                layout = SwarmPICLayout.REGULAR
+            else:
+                layout = SwarmPICLayout.GAUSS
 
-    #     """
+        if not isinstance(layout, SwarmPICLayout):
+            raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
+
+        self.layout = layout
+        self.dm.finalizeFieldRegister()
+
+        ## Commenting this out for now.
+        ## Code seems to operate fine without it, and the
+        ## existing values are wrong. It should be something like
+        ## `(elend-elstart)*fill_param^dim` for quads, and around
+        ## half that for simplices, depending on layout.
+        # elstart,elend = self.mesh.dm.getHeightStratum(0)
+        # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
+
+        self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
+        return  # self # LM: Is there any reason to return self ?
+
+    #
 
     @timing.routine_timer_decorator
     def populate(
         self,
         fill_param: Optional[int] = 1,
     ):
-        (
-            """
+        """
         Populate the swarm with particles throughout the domain.
 
         Parameters
@@ -888,7 +905,6 @@ class Swarm(Stateful, uw_object):
             Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)
 
         """
-        )
 
         self.fill_param = fill_param
 

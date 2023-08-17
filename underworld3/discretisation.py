@@ -197,6 +197,8 @@ class Mesh(Stateful, uw_object):
 
         ## This is where we can refine the dm if required, and rebuild
 
+        ## Should we call the hierarchical refinement ?
+
         if isinstance(refinement, int):
             for i in range(refinement):
                 self.dm = self.dm.refine()
