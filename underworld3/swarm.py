@@ -1409,6 +1409,7 @@ class Swarm(Stateful, uw_object):
             var._data = self.dm.getField(var.clean_name).reshape(
                 (-1, var.num_components)
             )
+            assert(var._data is not None)
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
