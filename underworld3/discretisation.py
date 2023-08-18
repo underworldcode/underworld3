@@ -501,7 +501,7 @@ class Mesh(Stateful, uw_object):
 
         self._accessed = True
         deaccess_list = []
-        for var in self.vars.values():
+        for var in writeable_vars:
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
@@ -578,12 +578,12 @@ class Mesh(Stateful, uw_object):
                     #         for j in range(0, size[1]):
                     #             block_var._data[i, j] = None
 
-                for i in range(0, var.shape[0]):
-                    for j in range(0, var.shape[1]):
-                        # var._data_ij[i, j] = None
-                        var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=f"MeshVariable[...].data is only available within mesh.access() context",
-                        )
+                    for i in range(0, var.shape[0]):
+                        for j in range(0, var.shape[1]):
+                            # var._data_ij[i, j] = None
+                            var._data_container[i, j] = var._data_container[i, j]._replace(
+                                data=f"MeshVariable[...].data is only available within mesh.access() context",
+                            )
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
@@ -1439,7 +1439,7 @@ class _MeshVariable(Stateful, uw_object):
         # self._data_ij = numpy.empty(self.shape, dtype=object)
         self._data_container = numpy.empty(self.shape, dtype=object)
 
-        self.petsc_fe = PETSc.FE().createDefault(
+        petsc_fe = PETSc.FE().createDefault(
             dim,
             self.num_components,
             self.mesh.isSimplex,
@@ -1449,7 +1449,7 @@ class _MeshVariable(Stateful, uw_object):
         )
 
         self.field_id = self.mesh.dm.getNumFields()
-        self.mesh.dm.setField(self.field_id, self.petsc_fe)
+        self.mesh.dm.setField(self.field_id, petsc_fe)
         field, _ = self.mesh.dm.getField(self.field_id)
         field.setName(self.clean_name)
 
@@ -1465,7 +1465,6 @@ class _MeshVariable(Stateful, uw_object):
                 0,
                 0,
             )(*self.mesh.r)
-            self._sym[0].mesh = self.mesh
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
@@ -1478,7 +1477,6 @@ class _MeshVariable(Stateful, uw_object):
                     comp,
                     comp,
                 )(*self.mesh.r)
-                self._sym[0, comp].mesh = self.mesh
 
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
@@ -1495,7 +1493,6 @@ class _MeshVariable(Stateful, uw_object):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
-                    self._sym[i, j].mesh = self.mesh
 
         elif vtype == uw.VarType.SYM_TENSOR:
             self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
@@ -1515,8 +1512,6 @@ class _MeshVariable(Stateful, uw_object):
                     else:
                         self._sym[i, j] = self._sym[j, i]
 
-                    self._sym[i, j].mesh = self.mesh
-
         elif vtype == uw.VarType.MATRIX:
             self._sym = sympy.Matrix.zeros(self.shape[0], self.shape[1])
 
@@ -1530,7 +1525,6 @@ class _MeshVariable(Stateful, uw_object):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
-                    self._sym[i, j].mesh = self.mesh
                     # n += 1
 
         # This allows us to define a __getitem__ method
@@ -1551,7 +1545,6 @@ class _MeshVariable(Stateful, uw_object):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-        self.mesh.dm.createDS()
 
         return
 
@@ -1938,7 +1931,7 @@ class _MeshVariable(Stateful, uw_object):
         """
         if self._data is None:
             raise RuntimeError(
-                "Data must be accessed via the mesh `access()` context manager."
+                f"Data for field {self.name} must be accessed via the mesh `access()` context manager."
             )
         return self._data
 
