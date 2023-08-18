@@ -1536,7 +1536,6 @@ class _MeshVariable(Stateful, uw_object):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-        self.mesh.dm.createDS()
 
         return
 
