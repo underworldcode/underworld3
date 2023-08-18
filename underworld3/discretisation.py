@@ -492,7 +492,7 @@ class Mesh(Stateful, uw_object):
 
         self._accessed = True
         deaccess_list = []
-        for var in self.vars.values():
+        for var in writeable_vars:
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
