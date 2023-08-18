@@ -203,7 +203,7 @@ class Mesh(Stateful, uw_object):
         #     for i in range(refinement):
         #         self.dm = self.dm.refine()
 
-        if refinement > 0:
+        if not refinement is None and refinement > 0:
             self.dm0 = self.dm
             self.dm_hierarchy = self.dm.refineHierarchy(refinement)
             self.dm_hierarchy = [self.dm] + self.dm_hierarchy
@@ -501,7 +501,7 @@ class Mesh(Stateful, uw_object):
 
         self._accessed = True
         deaccess_list = []
-        for var in writeable_vars:
+        for var in self.vars.values():
             # if already accessed within higher level context manager, continue.
             if var._is_accessed == True:
                 continue
@@ -1545,6 +1545,7 @@ class _MeshVariable(Stateful, uw_object):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
+        self.mesh.dm.createDS()
 
         return
 
