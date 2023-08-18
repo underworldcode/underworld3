@@ -1430,7 +1430,7 @@ class _MeshVariable(Stateful, uw_object):
         # self._data_ij = numpy.empty(self.shape, dtype=object)
         self._data_container = numpy.empty(self.shape, dtype=object)
 
-        self.petsc_fe = PETSc.FE().createDefault(
+        petsc_fe = PETSc.FE().createDefault(
             dim,
             self.num_components,
             self.mesh.isSimplex,
@@ -1440,7 +1440,7 @@ class _MeshVariable(Stateful, uw_object):
         )
 
         self.field_id = self.mesh.dm.getNumFields()
-        self.mesh.dm.setField(self.field_id, self.petsc_fe)
+        self.mesh.dm.setField(self.field_id, petsc_fe)
         field, _ = self.mesh.dm.getField(self.field_id)
         field.setName(self.clean_name)
 
