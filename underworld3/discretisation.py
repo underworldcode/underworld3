@@ -569,12 +569,12 @@ class Mesh(Stateful, uw_object):
                     #         for j in range(0, size[1]):
                     #             block_var._data[i, j] = None
 
-                for i in range(0, var.shape[0]):
-                    for j in range(0, var.shape[1]):
-                        # var._data_ij[i, j] = None
-                        var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=f"MeshVariable[...].data is only available within mesh.access() context",
-                        )
+                    for i in range(0, var.shape[0]):
+                        for j in range(0, var.shape[1]):
+                            # var._data_ij[i, j] = None
+                            var._data_container[i, j] = var._data_container[i, j]._replace(
+                                data=f"MeshVariable[...].data is only available within mesh.access() context",
+                            )
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
