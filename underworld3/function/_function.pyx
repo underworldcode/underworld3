@@ -34,15 +34,15 @@ cdef extern from "petsc.h" nogil:
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """
     This is largely just a shell class to help us differentiate between UW
-    and native Sympy functions. 
+    and native Sympy functions.
     """
     def fdiff(self, argindex):
         """
         We provide an explicit derivative function.
         This allows us to control the way derivative objects are printed,
-        but in the user interface, but more critically it allows us to 
-        patch in code printing implementation for derivatives objects, 
-        as utilised in `_jitextension.py`.  
+        but in the user interface, but more critically it allows us to
+        patch in code printing implementation for derivatives objects,
+        as utilised in `_jitextension.py`.
         """
         # Construct and return the required deriv fn.
         return self._diff[argindex-1](*self.args)
@@ -68,7 +68,7 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
 class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
     """
     This is largely just to help us differentiate between UW
-    and native Sympy functions.  
+    and native Sympy functions.
     """
     def fdiff(self,argindex):
         raise RuntimeError("Second derivatives of Underworld functions are not supported at this time.")
@@ -78,15 +78,15 @@ class UnderworldFunction(sympy.Function):
     This is a metaclass, so it returns programmatic class objects rather
     than instances. This basically follows the pattern of the `sympy.Function`
     metaclass, with two key differences:
-    1. We set `UnderworldAppliedFunction` as the base class. This is really just a 
-       dummy class (see its definition) which allows us to do calls such 
-       as `isinstance(someobj, UnderworldAppliedFunction)` to test if a `sympy` 
-       object is one we've defined. 
+    1. We set `UnderworldAppliedFunction` as the base class. This is really just a
+       dummy class (see its definition) which allows us to do calls such
+       as `isinstance(someobj, UnderworldAppliedFunction)` to test if a `sympy`
+       object is one we've defined.
     2. We grab a weakref of the owning meshvariable onto the *class* itself. Note
-       that it's important that it's recorded onto the class (instead of the instance), 
-       as Sympy internally sometimes uses calls such as `type(obj)(obj.args)` to 
-       replace objects with cloned instances, and therefore 'extra' info must be 
-       recorded onto the class so that the clones are _complete_. 
+       that it's important that it's recorded onto the class (instead of the instance),
+       as Sympy internally sometimes uses calls such as `type(obj)(obj.args)` to
+       replace objects with cloned instances, and therefore 'extra' info must be
+       recorded onto the class so that the clones are _complete_.
 
     Consider the calling pattern
 
@@ -94,7 +94,7 @@ class UnderworldFunction(sympy.Function):
 
     This is equivalent to
 
-    >>> newfnclass = UnderworldFunction(meshvar,name)   # Here we create a new *class*. 
+    >>> newfnclass = UnderworldFunction(meshvar,name)   # Here we create a new *class*.
     >>> newfn = newfnclass(*meshvar.mesh.r)             # Here we create an instance of the class.
 
     Parameters
@@ -111,11 +111,11 @@ class UnderworldFunction(sympy.Function):
         For tensors, the component is a tuple
         For scalars, this value is ignored.
     """
-    def __new__(cls, 
+    def __new__(cls,
                 name     : str,
-                meshvar  : underworld3.discretisation.MeshVariable, 
+                meshvar  : underworld3.discretisation.MeshVariable,
                 vtype    : underworld3.VarType,
-                component: Union[int, tuple] = 0, 
+                component: Union[int, tuple] = 0,
                 data_loc: int = None,
                 *args, **options):
 
@@ -125,7 +125,7 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{{ {}{} }}".format(component[0], component[1])
         else: # other types can manage their own component names
             fname = name
-            
+
         ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), **options)
         # Grab weakref to meshvar.
         import weakref
@@ -145,7 +145,7 @@ class UnderworldFunction(sympy.Function):
             diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
             # Grab weakref to var for derivative fn too.
             diffcls.meshvar   = weakref.ref(meshvar)
-            diffcls.component = data_loc  
+            diffcls.component = data_loc
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
 
@@ -158,45 +158,45 @@ class UnderworldFunction(sympy.Function):
 
 def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None ):
     """
-    Evaluate a given expression at a list of coordinates. 
+    Evaluate a given expression at a list of coordinates.
 
-    Note it is not efficient to call this function to evaluate an expression at 
-    a single coordinate. Instead the user should provide a numpy array of all 
-    coordinates requiring evaluation. 
+    Note it is not efficient to call this function to evaluate an expression at
+    a single coordinate. Instead the user should provide a numpy array of all
+    coordinates requiring evaluation.
 
     Parameters
     ----------
     expr: sympy.Basic
         Sympy expression requiring evaluation.
     coords: numpy.ndarray
-        Numpy array of coordinates to evaluate expression at. 
+        Numpy array of coordinates to evaluate expression at.
     coord_sys: mesh.N vector coordinate system
 
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
-        Not yet implemented. 
+        Not yet implemented.
 
     Notes
     -----
-    This function leverages Sympy's `lambdify` function to provide efficient 
+    This function leverages Sympy's `lambdify` function to provide efficient
     expression evaluation. It operates as follows:
-        1. Extract all Underworld variables functions from the expression. Note that 
+        1. Extract all Underworld variables functions from the expression. Note that
            all variables functions must be leaf nodes of the corresponding expression
-           tree, as the variable function arguments must simply be the coordinate 
+           tree, as the variable function arguments must simply be the coordinate
            vector `mesh.r`. This is a necessary requirement to avoid complication in the
            domain decomposed parallel runtime situation, where a modified variable function
            argument (such as `mesh.r - (10,0)`) might translate the variable function onto
            a neighbouring subdomain. Handling this would result in great complication and
-           inefficiency, and we therefore disallow it. 
+           inefficiency, and we therefore disallow it.
         2. Each variable function is evaluated at the user provided coordinates to generate
            an array of evaluated results.
         3. Replace all variable function instances within the expression with sympy
            symbol placeholders.
         4. Generate a Sympy lambdified expression. This expression takes as arguments the
-           user provided coordinates, and the Underworld variable function placeholders. 
-        5. Evaluate the generated lambdified expresson using the coordinate array and 
+           user provided coordinates, and the Underworld variable function placeholders.
+        5. Evaluate the generated lambdified expresson using the coordinate array and
            evaluated variable function result arrays.
-        6. Return results array for full expression evaluation. 
+        6. Return results array for full expression evaluation.
 
 
     """
@@ -205,7 +205,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
-    
+
     if coords.shape[1] not in [2,3]:
         raise ValueError("Provided `coords` must be 2 dimensional array of coordinates.\n"
                          "For n coordinates:  [[x_0,y_0,z_0],...,[x_n,y_n,z_n]].\n"
@@ -216,9 +216,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
-    
+
     # 1. Extract UW variables.
-    # Let's first collect all the meshvariables present in the expression and check 
+    # Let's first collect all the meshvariables present in the expression and check
     # them for validity. This is applied recursively across the expression
     # Recurse the expression tree.
 
@@ -227,16 +227,16 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     #     if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
     #         raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-            
+
     #     isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-    #     if isUW: 
+    #     if isUW:
     #         varfns.add(exp)
     #         if exp.args != exp.meshvar().mesh.r:
     #             raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
     #                                f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
     #     else:
     #         # Recurse.
-    #         for arg in exp.args: 
+    #         for arg in exp.args:
     #             get_var_fns(arg)
 
     #     return
@@ -248,11 +248,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
             raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-            
+
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         isMatrix = isinstance(exp, sympy.Matrix)
 
-        if isUW: 
+        if isUW:
             varfns.add(exp)
             if exp.args != exp.meshvar().mesh.r:
                 raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
@@ -263,7 +263,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
                     varfns.add(sub_exp)
         else:
             # Recurse.
-            for arg in exp.args: 
+            for arg in exp.args:
                 unpack_var_fns(arg)
 
         return
@@ -288,7 +288,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         for var in mesh.vars.values():
             for subvar in var.sym_1d:
                 varfns.add(subvar)
-        
+
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
     # more general situation.
@@ -310,8 +310,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         on a single mesh.
         """
 
-        import xxhash 
-        
+        import xxhash
+
         # Grab the mesh
         mesh = varfns[0].meshvar().mesh
 
@@ -356,7 +356,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
         # Add interpolation points
         # Get c-pointer to data buffer
-        # First grab copy, as we're unsure about the underlying array's 
+        # First grab copy, as we're unsure about the underlying array's
         # memory layout
 
         coords = np.ascontiguousarray(coords)
@@ -380,8 +380,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
                                "Interpolation location is possibly outside the domain.")
         mesh.update_lvec()
         cdef Vec pyfieldvec = mesh.lvec
-        # Use our custom routine as the PETSc one is broken. 
-    
+        # Use our custom routine as the PETSc one is broken.
+
         ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
@@ -395,7 +395,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             arr = np.ascontiguousarray(outarray[:,var_start+comp])
             varfns_arrays[varfn] = arr
 
-        # Cache these results 
+        # Cache these results
         xxh = xxhash.xxh64()
         xxh.update(np.ascontiguousarray(coords))
         coord_hash = xxh.intdigest()
@@ -403,14 +403,14 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         mesh._evaluation_interpolated_results = varfns_arrays
 
         del outarray
-        del coords 
+        del coords
         del cells
-        outvec.destroy() 
+        outvec.destroy()
 
         return varfns_arrays
 
 
-    # Get map of all variable functions across all meshes. 
+    # Get map of all variable functions across all meshes.
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
         interpolated_var_values = interpolate_vars_on_mesh(vals, coords)
@@ -440,7 +440,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         N = CoordSys3D(f"N")
     else:
         N = mesh.N
-        
+
     r = N.base_scalars()[0:dim]
 
     # This likely never applies any more
@@ -452,7 +452,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, 'numpy' )
 
     # 5. Eval generated lambda expression
-    coords_list = [ coords[:,i] for i in range(dim) ]  
+    coords_list = [ coords[:,i] for i in range(dim) ]
     results = lambfn( coords_list, interpolated_results.values() )
 
     # Truncated out middle index for vector results
@@ -463,7 +463,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     # Making this explicit while hunting for leaks
     for array_item in interpolated_results.values():
-        del array_item 
+        del array_item
 
     del interpolated_results
 
@@ -472,7 +472,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
-# we can pass in the `class_name` parameter. 
+# we can pass in the `class_name` parameter.
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
 
 
@@ -480,45 +480,45 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     """
-    Evaluate a given expression at a list of coordinates. 
+    Evaluate a given expression at a list of coordinates.
 
-    Note it is not efficient to call this function to evaluate an expression at 
-    a single coordinate. Instead the user should provide a numpy array of all 
-    coordinates requiring evaluation. 
+    Note it is not efficient to call this function to evaluate an expression at
+    a single coordinate. Instead the user should provide a numpy array of all
+    coordinates requiring evaluation.
 
     Parameters
     ----------
     expr: sympy.Basic
         Sympy expression requiring evaluation.
     coords: numpy.ndarray
-        Numpy array of coordinates to evaluate expression at. 
+        Numpy array of coordinates to evaluate expression at.
     coord_sys: mesh.N vector coordinate system
 
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
-        Not yet implemented. 
+        Not yet implemented.
 
     Notes
     -----
-    This function leverages Sympy's `lambdify` function to provide efficient 
+    This function leverages Sympy's `lambdify` function to provide efficient
     expression evaluation. It operates as follows:
-        1. Extract all Underworld variables functions from the expression. Note that 
+        1. Extract all Underworld variables functions from the expression. Note that
            all variables functions must be leaf nodes of the corresponding expression
-           tree, as the variable function arguments must simply be the coordinate 
+           tree, as the variable function arguments must simply be the coordinate
            vector `mesh.r`. This is a necessary requirement to avoid complication in the
            domain decomposed parallel runtime situation, where a modified variable function
            argument (such as `mesh.r - (10,0)`) might translate the variable function onto
            a neighbouring subdomain. Handling this would result in great complication and
-           inefficiency, and we therefore disallow it. 
+           inefficiency, and we therefore disallow it.
         2. Each variable function is evaluated at the user provided coordinates to generate
            an array of evaluated results.
         3. Replace all variable function instances within the expression with sympy
            symbol placeholders.
         4. Generate a Sympy lambdified expression. This expression takes as arguments the
-           user provided coordinates, and the Underworld variable function placeholders. 
-        5. Evaluate the generated lambdified expresson using the coordinate array and 
+           user provided coordinates, and the Underworld variable function placeholders.
+        5. Evaluate the generated lambdified expresson using the coordinate array and
            evaluated variable function result arrays.
-        6. Return results array for full expression evaluation. 
+        6. Return results array for full expression evaluation.
 
 
     """
@@ -528,10 +528,10 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
 
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
-    
+
     # 1. Extract UW variables.
 
-    # Let's first collect all the meshvariables present in the expression and check 
+    # Let's first collect all the meshvariables present in the expression and check
     # them for validity. This is applied recursively across the expression
     # Recurse the expression tree.
 
@@ -540,11 +540,11 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
 
         if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
             raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-            
+
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         isMatrix = isinstance(exp, sympy.Matrix)
 
-        if isUW: 
+        if isUW:
             varfns.add(exp)
             if exp.args != exp.meshvar().mesh.r:
                 raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
@@ -555,7 +555,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
                     varfns.add(sub_exp)
         else:
             # Recurse.
-            for arg in exp.args: 
+            for arg in exp.args:
                 unpack_var_fns(arg)
 
         return
@@ -611,7 +611,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
         N = CoordSys3D(f"N")
     else:
         N = mesh.N
-        
+
     r = N.base_scalars()[0:dim]
 
     # # This likely never applies any more
@@ -623,7 +623,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, 'numpy' )
 
     # 5. Eval generated lambda expression
-    coords_list = [ coords[:,i] for i in range(dim) ]  
+    coords_list = [ coords[:,i] for i in range(dim) ]
     results = lambfn( coords_list, interpolated_results.values() )
 
     # 6. Return results
@@ -631,7 +631,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
-# we can pass in the `class_name` parameter. 
+# we can pass in the `class_name` parameter.
 evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 
 # This is the interpolation routine used in function-evaluation above
@@ -666,7 +666,7 @@ evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 
 #     # Add interpolation points
 #     # Get c-pointer to data buffer
-#     # First grab copy, as we're unsure about the underlying array's 
+#     # First grab copy, as we're unsure about the underlying array's
 #     # memory layout
 
 #     coords = np.ascontiguousarray(coords.copy())
@@ -691,7 +691,7 @@ evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 #     mesh.update_lvec()
 #     cdef Vec pyfieldvec = mesh.lvec
 
-#     # Use our custom routine as the PETSc one is broken. 
+#     # Use our custom routine as the PETSc one is broken.
 #     ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
 #     ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
@@ -703,13 +703,10 @@ evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 #                 var_arrays[varfn] = arr.copy()
 
 #     del outarray
-#     del coords 
+#     del coords
 #     del cells
 #     del arr
-    
+
 #     outvec.destroy()
 
 #     return var_arrays
-
-
-
