@@ -424,6 +424,11 @@ class SNES_Scalar(Solver):
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
 
+        for cdm in self.mesh.dm_hierarchy:
+            self.mesh.dm.copyDisc(cdm)
+
+        ## ---- 
+
         cdef DM dm = self.dm
 
         self.mesh.update_lvec()
@@ -783,6 +788,9 @@ class SNES_Vector(Solver):
 
         self.mesh.dm.clearDS()
         self.mesh.dm.createDS()
+
+        for cdm in self.mesh.dm_hierarchy:
+            self.mesh.dm.copyDisc(cdm)
 
         self.mesh.update_lvec()
         cdef DM dm = self.dm
@@ -1320,8 +1328,11 @@ class SNES_Stokes_SaddlePt(Solver):
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        # self.mesh.dm.clearDS()
-        # self.mesh.dm.createDS()
+        self.mesh.dm.clearDS()
+        self.mesh.dm.createDS()
+
+        for cdm in self.mesh.dm_hierarchy:
+            self.mesh.dm.copyDisc(cdm)
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)

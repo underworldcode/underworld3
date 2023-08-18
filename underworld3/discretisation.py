@@ -199,9 +199,18 @@ class Mesh(Stateful, uw_object):
 
         ## Should we call the hierarchical refinement ?
 
-        if isinstance(refinement, int):
-            for i in range(refinement):
-                self.dm = self.dm.refine()
+        # if isinstance(refinement, int):
+        #     for i in range(refinement):
+        #         self.dm = self.dm.refine()
+
+        if refinement > 0:
+            self.dm0 = self.dm
+            self.dm_hierarchy = self.dm.refineHierarchy(refinement)
+            self.dm_hierarchy = [self.dm] + self.dm_hierarchy
+            self.dm = self.dm_hierarchy[-1]
+        else:
+            self.dm_hierarchy = []
+            self.dm0 = self.dm
 
         # This will be done anyway - the mesh maybe in a
         # partially adapted state

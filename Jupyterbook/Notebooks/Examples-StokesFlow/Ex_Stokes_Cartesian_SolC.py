@@ -29,9 +29,9 @@ from underworld3 import function
 import numpy as np
 
 # %%
-n_els = 16
+n_els = 4
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20, qdegree=2
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, qdegree=2, refinement=4
 )
 
 
@@ -50,8 +50,6 @@ stokes.constitutive_model.Parameters.viscosity=1
 import sympy
 from sympy import Piecewise
 
-mesh.dm.view()
-
 x,y = mesh.X
 
 res = 1 / n_els
@@ -61,7 +59,8 @@ base_fn = sympy.exp(-(y**2) * hw)
 right_fn = sympy.exp(-((x - 1.0) ** 2) * hw)
 left_fn = sympy.exp(-(x**2) * hw)
 
-
+options = PETSc.Options()
+options.getAll()
 
 eta_0 = 1.0
 x_c = 0.5
@@ -108,13 +107,25 @@ stokes.petsc_options["snes_monitor"]= None
 stokes.petsc_options["ksp_monitor"] = None
 
 
-stokes
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_levels", 2)
+stokes.petsc_options.delValue("fieldsplit_velocity_pc_mg_type")
 
-stokes.constitutive_model
+
+mesh.dm.view()
+
+# +
+# stokes
+
+# +
+# stokes.constitutive_model
+# -
 
 # %%
 # Solve time
 stokes.solve()
+
+mesh.dm.view()
 
 # ### Visualise it !
 
@@ -136,7 +147,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
