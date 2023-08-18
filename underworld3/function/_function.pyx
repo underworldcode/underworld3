@@ -149,10 +149,6 @@ class UnderworldFunction(sympy.Function):
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
 
-
-        for diff_fn in ourcls._diff:
-            diff_fn.mesh = meshvar.mesh
-
         return ourcls
 
 
