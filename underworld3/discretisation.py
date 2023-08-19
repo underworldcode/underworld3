@@ -1465,6 +1465,7 @@ class _MeshVariable(Stateful, uw_object):
                 0,
                 0,
             )(*self.mesh.r)
+            self._sym[0].mesh = self.mesh
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
@@ -1477,6 +1478,7 @@ class _MeshVariable(Stateful, uw_object):
                     comp,
                     comp,
                 )(*self.mesh.r)
+                self._sym[0, comp].mesh = self.mesh
 
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
@@ -1493,6 +1495,7 @@ class _MeshVariable(Stateful, uw_object):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
+                    self._sym[i, j].mesh = self.mesh
 
         elif vtype == uw.VarType.SYM_TENSOR:
             self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
@@ -1512,6 +1515,8 @@ class _MeshVariable(Stateful, uw_object):
                     else:
                         self._sym[i, j] = self._sym[j, i]
 
+                    self._sym[i, j].mesh = self.mesh
+
         elif vtype == uw.VarType.MATRIX:
             self._sym = sympy.Matrix.zeros(self.shape[0], self.shape[1])
 
@@ -1525,6 +1530,7 @@ class _MeshVariable(Stateful, uw_object):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
+                    self._sym[i, j].mesh = self.mesh
                     # n += 1
 
         # This allows us to define a __getitem__ method
@@ -1932,7 +1938,7 @@ class _MeshVariable(Stateful, uw_object):
         """
         if self._data is None:
             raise RuntimeError(
-                f"Data for field {self.name} must be accessed via the mesh `access()` context manager."
+                "Data must be accessed via the mesh `access()` context manager."
             )
         return self._data
 
