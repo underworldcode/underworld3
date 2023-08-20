@@ -976,24 +976,28 @@ class SNES_Stokes_SaddlePt(Solver):
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {u_degree} which is required by the {self.name} solver")
 
-        self.dm   = mesh.dm.clone()
-        self.dm.createDS()
+        if 0:
+            self.dm = mesh.dm.clone()
+            self.dm.setCoarseDM(mesh.dm.getCoarseDM())
+            self.dm.createDS()
 
-        options = PETSc.Options()
-        options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_u.setName("velocity")
-        self.petsc_fe_u_id = self.dm.getNumFields()
-        self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+            options = PETSc.Options()
+            options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
+            self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "{}_uprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+            self.petsc_fe_u.setName("velocity")
+            self.petsc_fe_u_id = self.dm.getNumFields()
+            self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
-        options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
-        options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
-        options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+            options.setValue("{}_pprivate_petscspace_degree".format(self.petsc_options_prefix), p_degree)
+            options.setValue("{}_pprivate_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
+            options.setValue("{}_pprivate_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
-        self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
-        self.petsc_fe_p.setName("pressure")
-        self.petsc_fe_p_id = self.dm.getNumFields()
-        self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
+            self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "{}_pprivate_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+            self.petsc_fe_p.setName("pressure")
+            self.petsc_fe_p_id = self.dm.getNumFields()
+            self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
+        else:
+            self.dm = mesh.dm
 
         self.is_setup = False
 
