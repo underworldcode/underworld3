@@ -7,12 +7,12 @@ from petsc4py.PETSc cimport Mat, PetscMat
 from petsc4py.PETSc cimport IS,  PetscIS
 from petsc4py.PETSc cimport FE,  PetscFE
 from petsc4py.PETSc cimport DMLabel, PetscDMLabel
-from petsc4py.PETSc cimport PetscQuadrature
+from petsc4py.PETSc cimport PetscQuadrature, PetscSection
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
 
 
 from underworld3.cython.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
-from underworld3.cython.petsc_types cimport PetscErrorCode 
+from underworld3.cython.petsc_types cimport PetscErrorCode
 from underworld3.cython.petsc_types cimport DMBoundaryConditionType
 from underworld3.cython.petsc_types cimport PetscDMBoundaryConditionType
 from underworld3.cython.petsc_types cimport PetscDMBoundaryType
@@ -39,6 +39,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
+    PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
@@ -51,9 +52,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
     PetscErrorCode DMDestroy(PetscDM *dm)
 
-    # Changed recently: Commit 6858538e  
+    # Changed recently: Commit 6858538e
     # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
-    PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[]) 
-    PetscErrorCode DMLocalizeCoordinates(PetscDM dm) 
-
-    
+    PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[])
+    PetscErrorCode DMLocalizeCoordinates(PetscDM dm)
