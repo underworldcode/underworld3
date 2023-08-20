@@ -1273,6 +1273,8 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.dm.setUp()
         self.dm.createClosureIndex(None)
+        for cdm in self.mesh.dm_hierarchy:
+            self.mesh.dm.copyDisc(cdm)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -1330,11 +1332,10 @@ class SNES_Stokes_SaddlePt(Solver):
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        #self.mesh.dm.clearDS()
-        #self.mesh.dm.createDS()
-
-        for cdm in self.mesh.dm_hierarchy:
-            self.mesh.dm.copyDisc(cdm)
+        #for cdm in self.mesh.dm_hierarchy:
+        #    self.mesh.dm.copyDisc(cdm)
+        #    print("Viewing coarse mesh", flush = True)
+        #    cdm.viewFromOptions("-matt_view")
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
