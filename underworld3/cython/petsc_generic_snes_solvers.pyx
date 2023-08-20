@@ -427,7 +427,7 @@ class SNES_Scalar(Solver):
         for cdm in self.mesh.dm_hierarchy:
             self.mesh.dm.copyDisc(cdm)
 
-        ## ---- 
+        ## ----
 
         cdef DM dm = self.dm
 
@@ -1216,10 +1216,6 @@ class SNES_Stokes_SaddlePt(Solver):
             print(f"Stokes: Compilation complete, Now set residuals", flush=True)
 
         # set functions
-
-        self.dm.clearDS()
-        self.dm.createDS()
-
         cdef DS ds = self.dm.getDS()
         PetscDSSetResidual(ds.ds, 0, ext.fns_residual[i_res[u_F0]], ext.fns_residual[i_res[u_F1]])
         PetscDSSetResidual(ds.ds, 1, ext.fns_residual[i_res[p_F0]],                          NULL)
@@ -1334,8 +1330,8 @@ class SNES_Stokes_SaddlePt(Solver):
         # TODO: What does createDS do?
         # TODO: What are the implications of calling this every solve.
 
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
+        #self.mesh.dm.clearDS()
+        #self.mesh.dm.createDS()
 
         for cdm in self.mesh.dm_hierarchy:
             self.mesh.dm.copyDisc(cdm)
