@@ -1338,7 +1338,7 @@ class SNES_Stokes_SaddlePt(Solver):
         #    cdm.viewFromOptions("-matt_view")
 
         self.mesh.update_lvec()
-        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        #self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Picard solves if requested
 
