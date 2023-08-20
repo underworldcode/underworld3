@@ -898,37 +898,39 @@ class SNES_Stokes_SaddlePt(Solver):
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
+        p_name = pressureField.clean_name
+        v_name = velocityField.clean_name
 
         # Works / mostly quick
-        self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options["fieldsplit_pressure_pc_type"] = "gasm"
-        self.petsc_options["fieldsplit_pressure_pc_gasm_type"] = "basic"
+        self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
+        self.petsc_options[f"fieldsplit_{p_name}_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options[f"fieldsplit_{p_name}_pc_type"] = "gasm"
+        self.petsc_options[f"fieldsplit_{p_name}_pc_gasm_type"] = "basic"
 
         ## may be more robust but usually slower
-        # self.petsc_options["fieldsplit_pressure_ksp_type"] = "fgmres"
-        # self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1
-        # self.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
-        # self.petsc_options["fieldsplit_pressure_pc_gamg_type"] = "agg"
-        # self.petsc_options["fieldsplit_pressure_pc_gamg_repartition"] = True
+        # self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
+        # self.petsc_options[f"fieldsplit_{p_name}_ksp_rtol"]  = self._tolerance * 0.1
+        # self.petsc_options[f"fieldsplit_{p_name}_pc_type"] = "gamg"
+        # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_type"] = "agg"
+        # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_repartition"] = True
 
-        self.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options["fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options["fieldsplit_velocity_pc_gamg_type"]  = "agg"
-        self.petsc_options["fieldsplit_velocity_pc_gamg_repartition"]  = True
-        self.petsc_options["fieldsplit_velocity_pc_mg_type"]  = "additive"
-        self.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-        self.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+        self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "cg"
+        self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
+        self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
+        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
+        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_repartition"]  = True
+        self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
+        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths"] = 2
+        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
+        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
 
         self._u = velocityField
         self._p = pressureField
 
         # Create this dict
         self.fields = {}
-        self.fields["pressure"] = self.p
-        self.fields["velocity"] = self.u
+        self.fields[p_name] = self.p
+        self.fields[v_name] = self.u
 
         # Some other setup
 
