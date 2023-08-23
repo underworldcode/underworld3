@@ -739,8 +739,10 @@ class SNES_Vector(Solver):
 
                 PetscDSAddBoundary_UW( cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)() noexcept>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
 
-        self.dm.setUp()
+            self.boundary_conditions = True
 
+        
+        self.dm.setUp()
         self.dm.createClosureIndex(None)
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
@@ -898,8 +900,8 @@ class SNES_Stokes_SaddlePt(Solver):
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
         self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
 
-        p_name = pressureField.clean_name
-        v_name = velocityField.clean_name
+        p_name = "pressure" # pressureField.clean_name
+        v_name = "velocity" # velocityField.clean_name
 
         # Works / mostly quick
         self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
@@ -919,9 +921,9 @@ class SNES_Stokes_SaddlePt(Solver):
         self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
         self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
         self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_repartition"]  = True
-        self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
+        # self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
         self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
+        # self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
         self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
 
         self._u = velocityField
@@ -976,10 +978,19 @@ class SNES_Stokes_SaddlePt(Solver):
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {u_degree} which is required by the {self.name} solver")
 
-        if 0:
+        if 1:
+
+            print("Mansour PATHWAY", flush=True)
+
             self.dm = mesh.dm.clone()
-            self.dm.setCoarseDM(mesh.dm.getCoarseDM())
-            self.dm.createDS()
+            self.dm0 = self.dm
+
+            coarse_dm = mesh.dm.getCoarseDM()
+            if coarse_dm:
+                self.dm.setCoarseDM(coarse_dm)
+
+            print("Mansour # 2", flush=True)
+
 
             options = PETSc.Options()
             options.setValue("{}_uprivate_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
@@ -996,8 +1007,18 @@ class SNES_Stokes_SaddlePt(Solver):
             self.petsc_fe_p.setName("pressure")
             self.petsc_fe_p_id = self.dm.getNumFields()
             self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
+
+            self.dm.createDS()
+            self.dm0.createDS()
+
+            print("Mansour # 4", flush=True)
+
         else:
             self.dm = mesh.dm
+            # Single level copy 
+            self.dm0 = self.mesh.dm.clone()
+            self.mesh.dm.copyFields(self.dm0)
+            self.dm0.createDS()
 
         self.is_setup = False
 
@@ -1094,8 +1115,14 @@ class SNES_Stokes_SaddlePt(Solver):
         # Re-clone the dm before rebuilding everything
         self._build_dm_and_mesh_discretisation()
 
+        print("Mansour path 2.0", flush=True)
+
+
         # residual terms
         self._setup_problem_description()
+
+        print("Mansour path 2.0.5", flush=True)
+
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
@@ -1237,6 +1264,7 @@ class SNES_Stokes_SaddlePt(Solver):
         cdef int ind=1
         cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
+        cdef DM cdm0 = self.dm0
 
         for index,bc in enumerate(self.bcs):
             comps_view = bc.components
@@ -1269,12 +1297,25 @@ class SNES_Stokes_SaddlePt(Solver):
                 else:
                     bc_type = 5
 
+                # if not self.mesh.boundary_conditions:
                 PetscDSAddBoundary_UW(cdm.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)() noexcept>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
+                # PetscDSAddBoundary_UW(cdm0.dm, bc_type, str(boundary).encode('utf8'), str(boundary).encode('utf8'), 0, comps_view.shape[0], <const PetscInt *> &comps_view[0], <void (*)() noexcept>ext.fns_bcs[index], NULL, 1, <const PetscInt *> &ind, NULL)
 
+        self.mesh.boundary_conditions = True
+
+        print("Mansour path 2.1", flush=True)
+        
         self.dm.setUp()
+        # self.dm0.setUp()
+
         self.dm.createClosureIndex(None)
-        for cdm in self.mesh.dm_hierarchy:
-            self.mesh.dm.copyDisc(cdm)
+        # self.dm0.createClosureIndex(None)
+
+        for coarse_dm in self.mesh.dm_hierarchy:
+            self.mesh.dm.copyDisc(coarse_dm)
+
+        print("Mansour path 2.2",flush=True)
+
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -1287,7 +1328,13 @@ class SNES_Stokes_SaddlePt(Solver):
         # These will be used to copy back/forth SNES solutions
         # into user facing variables.
 
-        names, isets, dms = self.dm.createFieldDecomposition()
+        # self.dm0.clearDS()
+        # self.dm0.createDS()
+
+        print("Mansour path 2.3", flush=True)
+
+
+        names, isets, dms = self.dm0.createFieldDecomposition()
         self._subdict = {}
         for index,name in enumerate(names):
             self._subdict[name] = (isets[index],dms[index])
@@ -1338,7 +1385,7 @@ class SNES_Stokes_SaddlePt(Solver):
         #    cdm.viewFromOptions("-matt_view")
 
         self.mesh.update_lvec()
-        #self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Picard solves if requested
 
@@ -1375,6 +1422,7 @@ class SNES_Stokes_SaddlePt(Solver):
         cdef Vec clvec
         cdef DM csdm
         # Copy solution back into user facing variables
+
         with self.mesh.access(self.p, self.u):
             for name,var in self.fields.items():
                 ## print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)

@@ -183,6 +183,8 @@ class Mesh(Stateful, uw_object):
 
         self.filename = filename
         self.boundaries = boundaries
+
+        self.boundary_conditions = False
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
@@ -195,19 +197,17 @@ class Mesh(Stateful, uw_object):
         else:
             print("Warning - not distributing mesh !!", flush=True)
 
-        ## This is where we can refine the dm if required, and rebuild
-
-        ## Should we call the hierarchical refinement ?
-
-        # if isinstance(refinement, int):
-        #     for i in range(refinement):
-        #         self.dm = self.dm.refine()
+        ## This is where we can refine the dm if required, and rebuild / redistribute
 
         if not refinement is None and refinement > 0:
             self.dm0 = self.dm
+            # self.dm.setRefinementUniform()
             self.dm_hierarchy = self.dm.refineHierarchy(refinement)
             self.dm_hierarchy = [self.dm] + self.dm_hierarchy
             self.dm = self.dm_hierarchy[-1]
+            if distribute:
+                self.dm.distribute()
+
         else:
             self.dm_hierarchy = []
             self.dm0 = self.dm
@@ -499,6 +499,8 @@ class Mesh(Stateful, uw_object):
         timing._incrementDepth()
         stime = time.time()
 
+        print(f"ACCESS - 1", flush=True)
+
         self._accessed = True
         deaccess_list = []
         for var in self.vars.values():
@@ -581,12 +583,16 @@ class Mesh(Stateful, uw_object):
                     for i in range(0, var.shape[0]):
                         for j in range(0, var.shape[1]):
                             # var._data_ij[i, j] = None
-                            var._data_container[i, j] = var._data_container[i, j]._replace(
+                            var._data_container[i, j] = var._data_container[
+                                i, j
+                            ]._replace(
                                 data=f"MeshVariable[...].data is only available within mesh.access() context",
                             )
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
+
+                print("Exit manager - ACCESS", flush=True)
 
         return exit_manager(self)
 
@@ -1898,7 +1904,11 @@ class _MeshVariable(Stateful, uw_object):
 
     def _set_vec(self, available):
         if self._lvec == None:
-            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+            tmp_dm = self.mesh.dm.clone()
+            self.mesh.dm.copyFields(tmp_dm)
+            indexset, subdm = tmp_dm.createSubDM(self.field_id)
+
+            # indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
             # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
 
             self._lvec = subdm.createLocalVector()
