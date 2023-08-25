@@ -19,25 +19,37 @@
 # options["help"] = None
 
 
+# +
 # %%
 import petsc4py
 from petsc4py import PETSc
 
+import os
+os.environ["UW_TIMING_ENABLE"] = "1"
+
+
+# +
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
+from underworld3 import timing
+
 import numpy as np
+# -
 
 # %%
 n_els = 4
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, qdegree=2, refinement=4
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, 
+    qdegree=3, refinement=4
 )
 
 
 # %%
-v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2, varsymbol=r"\mathbf{u}")
+p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True, varsymbol=r"{p}")
+T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
+T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -59,8 +71,10 @@ base_fn = sympy.exp(-(y**2) * hw)
 right_fn = sympy.exp(-((x - 1.0) ** 2) * hw)
 left_fn = sympy.exp(-(x**2) * hw)
 
-options = PETSc.Options()
-options.getAll()
+# +
+# options = PETSc.Options()
+# options.getAll()
+# -
 
 eta_0 = 1.0
 x_c = 0.5
@@ -99,33 +113,25 @@ stokes.add_dirichlet_bc(
 
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
-stokes.petsc_options["snes_rtol"] = 1.0e-6
-stokes.petsc_options["ksp_rtol"] = 1.0e-6
-stokes.petsc_options["snes_max_it"] = 10
+# +
+# stokes.petsc_options["snes_rtol"] = 1.0e-6
+# stokes.petsc_options["ksp_rtol"] = 1.0e-6
+# stokes.petsc_options["snes_max_it"] = 10
+# -
+
+stokes.tolerance = 1.0e-6
 
 stokes.petsc_options["snes_monitor"]= None
 stokes.petsc_options["ksp_monitor"] = None
 
 
+stokes.petsc_options["snes_type"] = "newtonls"
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_levels", 2)
 stokes.petsc_options.delValue("fieldsplit_velocity_pc_mg_type")
-
-
-mesh.dm.view()
-
-# +
-# stokes
-
-# +
-# stokes.constitutive_model
-# -
 
 # %%
 # Solve time
-stokes.solve()
-
-mesh.dm.view()
+stokes.solve(picard=3)
 
 # ### Visualise it !
 
@@ -146,7 +152,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         pass
 
     pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
+    pv.global_theme.window_size = [250, 500]
     pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
@@ -183,6 +189,8 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 # -
 
 
+
+
 # ## SolCx from the same setup
 
 # +
@@ -194,38 +202,28 @@ stokes.bodyforce = sympy.Matrix(
 # stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
-    (
-        1.0e6,
-        x > x_c,
-    ),
+    (1.0e4, x > x_c),
     (1.0, True),
 )
 
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
-print(stokes.constitutive_model._is_setup)
-print(stokes.constitutive_model._solver_is_setup)
-
 # -
 
-
-# stokes._setup_terms()
-print(stokes.constitutive_model._is_setup)
-print(stokes.constitutive_model._solver_is_setup)
-
-stokes._u_f1[0,0]
-
-# +
-# stokes._setup_terms()
-# -
-
-stokes.constitutive_model.viscosity
 
 stokes._setup_terms()
 stokes._u_f1
 
+# +
+timing.reset()
+timing.start()
 
 
-stokes.solve(zero_init_guess=False)
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "gamg")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "additive")
+
+stokes.solve(zero_init_guess=True, picard=3)
+
+timing.print_table(display_fraction=0.999)
 
 # +
 # check the mesh if in a notebook / serial
@@ -303,3 +301,12 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
+# -
+
+print(stokes.snes.getConvergenceHistory())
+
+
+
+
+
+

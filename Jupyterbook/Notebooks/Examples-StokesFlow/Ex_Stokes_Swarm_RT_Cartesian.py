@@ -146,10 +146,18 @@ stokes.add_dirichlet_bc(
 
 stokes.rtol = 1.0e-3 # rough solution is all that's needed
 
+print("Stokes setup", flush=True)
+
 m_solver = uw.systems.Projection(meshbox, m_cont)
 m_solver.uw_function = material.sym[1]
 m_solver.smoothing = 1.0e-3
 m_solver.solve()
+
+print("Solve projection ... done", flush=True)
+
+stokes._setup_terms()
+
+print("Stokes terms ... done", flush=True)
 
 stokes.solve(zero_init_guess=True)
 

@@ -42,7 +42,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size = 1
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -59,7 +59,7 @@ r_o = 1.0
 r_i = 0.5
 
 if problem_size <= 1:
-    res = 0.2
+    res = 0.4
 elif problem_size == 2:
     res = 0.1
 elif problem_size == 3:
@@ -72,7 +72,10 @@ elif problem_size >= 6:
     res = 0.005
 # -
 
-meshball = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
+meshball = uw.meshing.Annulus(radiusOuter=r_o,
+                              radiusInner=r_i,
+                              cellSize=res,
+                              refinement=2,)
 
 
 meshball.dm.view()
@@ -133,12 +136,29 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 # -
 
 
-pressure_solver = uw.systems.Projection(meshball, p_cont)
-pressure_solver.uw_function = p_soln.sym[0]
-pressure_solver.smoothing = 1.0e-3
+meshball.dm0.view()
+
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.delValue("fieldsplit_velocity_pc_mg_type")
+# stokes.petsc_options["fieldsplit_velocity_mg_levels_0_ksp_type"] = "preonly"
+# stokes.petsc_options["fieldsplit_velocity_mg_levels_0_pc_type"] = "svd"
+
+# +
+# pressure_solver = uw.systems.Projection(meshball, p_cont)
+# pressure_solver.uw_function = p_soln.sym[0]
+# pressure_solver.smoothing = 1.0e-3
+# -
 
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
 t_init = sympy.cos(3 * th)
+
+
+
+
+
+
+
+
 
 # +
 # Write density into a variable for saving
@@ -149,20 +169,23 @@ with meshball.access(t_soln):
     )
     print(t_soln.data.min(), t_soln.data.max())
 
+
 with meshball.access(maskr):
     maskr.data[:, 0] = uw.function.evaluate(
         r, coords=maskr.coords, coord_sys=meshball.N
     )
 
 # +
-I = uw.maths.Integral(meshball, surface_fn)
-s_norm = I.evaluate()
-print(s_norm)
+# I = uw.maths.Integral(meshball, surface_fn)
+# s_norm = I.evaluate()
+# print(s_norm)
 
-I.fn = base_fn
-b_norm = I.evaluate()
-print(b_norm)
+# I.fn = base_fn
+# b_norm = I.evaluate()
+# print(b_norm)
 # +
+s_norm = 1
+b_norm = 1
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
 if free_slip_upper:
@@ -174,6 +197,7 @@ stokes.bodyforce = unit_rvec * buoyancy_force
 # This may help the solvers - penalty in the preconditioner
 stokes.saddle_preconditioner = 1.0
 
+stokes.petsc_options["snes_type"] = "fas"
 stokes.petsc_options["ksp_monitor"] = None
 stokes.tolerance = 1.0e-4
 
@@ -188,12 +212,12 @@ timing.print_table()
 print("", flush=True)
 # -
 
-stokes._u_f0[0]
+stokes.snes.view()
 
 # +
 # Pressure at mesh nodes
 
-pressure_solver.solve()
+# pressure_solver.solve()
 
 # +
 # check the mesh if in a notebook / serial
@@ -246,8 +270,9 @@ if uw.mpi.size == 1:
     )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
     pl.show(cpos="xy")
+# +
+# usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
+# usol_rms
 # -
-usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
-usol_rms
 
-
+stokes.snes.view()

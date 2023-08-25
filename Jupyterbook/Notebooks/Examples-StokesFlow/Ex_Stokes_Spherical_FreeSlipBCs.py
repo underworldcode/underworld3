@@ -108,7 +108,7 @@ Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # + tags=[]
 if problem_size <= 1: 
-    cell_size = 0.30
+    cell_size = 0.50
 elif problem_size == 2: 
     cell_size = 0.15
 elif problem_size == 3: 
@@ -130,14 +130,12 @@ timing.reset()
 timing.start()
 
 # +
-options = PETSc.Options()
-options["dm_adaptor"] = "parmmg"
-
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
     radiusOuter=r_o,
     cellSize=cell_size,
     qdegree=2,
+    refinement=2,
 )
 
 meshball.dm.view()
@@ -204,12 +202,12 @@ v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 # +
 
-I = uw.maths.Integral(meshball, surface_fn_a)
-s_norm = I.evaluate()
-I.fn = base_fn_a
+# I = uw.maths.Integral(meshball, surface_fn_a)
+# s_norm = I.evaluate()
+# I.fn = base_fn_a
 
-b_norm = I.evaluate()
-s_norm, b_norm
+# b_norm = I.evaluate()
+# s_norm, b_norm
 
 
 
@@ -227,10 +225,19 @@ stokes = uw.systems.Stokes(
 stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_max_it"] = 1 # for timing cases only - force 1 snes iteration for all examples
+
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.delValue("fieldsplit_velocity_pc_mg_type")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_levels", 2)
+# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_pc_type"] = "sor"
+# stokes.petsc_options[f"fieldsplit_velocity_mg_coarse_ksp_type"] = "preonly"
+# stokes.petsc_options["fieldsplit_velocity_mg_level_0_pc_type"] = "svd"
+
 stokes.penalty = 0.1
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
+    v_soln
 )
 stokes.constitutive_model.Parameters.viscosity = 1
 
@@ -269,7 +276,10 @@ timing.reset()
 timing.start()
 
 stokes.solve(zero_init_guess=True)
+# -
 
+
+stokes.snes.view()
 
 # +
 
@@ -278,52 +288,52 @@ stokes.solve(zero_init_guess=True)
 # remove it from the force terms and solution to prevent it growing if present
 
 
-I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
-norm = I0.evaluate()
-I0.fn = v_soln.sym.dot(v_soln.sym)
-vnorm = np.sqrt(I0.evaluate())
+# I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
+# norm = I0.evaluate()
+# I0.fn = v_soln.sym.dot(v_soln.sym)
+# vnorm = np.sqrt(I0.evaluate())
 
-for i in range(10):
+# for i in range(10):
 
-    I0.fn = v_soln.sym.dot(v_rbm_x)
-    x_ns = I0.evaluate() / norm
-    I0.fn = v_soln.sym.dot(v_rbm_y)
-    y_ns = I0.evaluate() / norm
-    I0.fn = v_soln.sym.dot(v_rbm_z)
-    z_ns = I0.evaluate() / norm
+#     I0.fn = v_soln.sym.dot(v_rbm_x)
+#     x_ns = I0.evaluate() / norm
+#     I0.fn = v_soln.sym.dot(v_rbm_y)
+#     y_ns = I0.evaluate() / norm
+#     I0.fn = v_soln.sym.dot(v_rbm_z)
+#     z_ns = I0.evaluate() / norm
 
-    null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
+#     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
-    # print(
-    #     "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-    #         i, x_ns, y_ns, z_ns, null_space_err
-    #     )
-    # )
+#     # print(
+#     #     "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
+#     #         i, x_ns, y_ns, z_ns, null_space_err
+#     #     )
+#     # )
 
-    with meshball.access(v_soln):
-        ## Note, we have to add in something in the missing component (and it has to be spatially variable ??)
-        v_soln.data[:, 0] -= uw.function.evaluate(
-            x_ns * v_rbm_x[0] + y_ns * v_rbm_y[0] + z_ns * v_rbm_z[0], v_soln.coords
-        )
+#     with meshball.access(v_soln):
+#         ## Note, we have to add in something in the missing component (and it has to be spatially variable ??)
+#         v_soln.data[:, 0] -= uw.function.evaluate(
+#             x_ns * v_rbm_x[0] + y_ns * v_rbm_y[0] + z_ns * v_rbm_z[0], v_soln.coords
+#         )
 
-        v_soln.data[:, 1] -= uw.function.evaluate(
-            x_ns * v_rbm_x[1] + y_ns * v_rbm_y[1] + z_ns * v_rbm_z[1], v_soln.coords
-        )
+#         v_soln.data[:, 1] -= uw.function.evaluate(
+#             x_ns * v_rbm_x[1] + y_ns * v_rbm_y[1] + z_ns * v_rbm_z[1], v_soln.coords
+#         )
 
-        v_soln.data[:, 2] -= uw.function.evaluate(
-            x_ns * v_rbm_x[2] + y_ns * v_rbm_y[2] + z_ns * v_rbm_z[2], v_soln.coords
-        )
+#         v_soln.data[:, 2] -= uw.function.evaluate(
+#             x_ns * v_rbm_x[2] + y_ns * v_rbm_y[2] + z_ns * v_rbm_z[2], v_soln.coords
+#         )
 
-    null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
+#     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
-    if null_space_err < 1.0e-6:
-        if uw.mpi.rank == 0:
-            print(
-                "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total) - |V| ({:.4})".format(
-                    i, x_ns, y_ns, z_ns, null_space_err, vnorm
-                )
-            )
-        break
+#     if null_space_err < 1.0e-6:
+#         if uw.mpi.rank == 0:
+#             print(
+#                 "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total) - |V| ({:.4})".format(
+#                     i, x_ns, y_ns, z_ns, null_space_err, vnorm
+#                 )
+#             )
+#         break
 
 # -
 timing.print_table()
@@ -356,7 +366,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
     pv.global_theme.anti_aliasing = "fxaa"
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
     meshball.vtk("tmp_meshball.vtk")

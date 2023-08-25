@@ -66,8 +66,6 @@ def _from_gmsh(
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
     if uw.mpi.rank == 0:
-        # print(f"Processing gmsh file {filename}")
-
         plex_0 = PETSc.DMPlex().createFromFile(filename, comm=PETSc.COMM_SELF)
 
         plex_0.setName("uw_mesh")
@@ -76,8 +74,6 @@ def _from_gmsh(
         viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0)
         viewer.destroy()
-
-        # print(f"Mesh saved to {filename}.h5")
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -139,7 +135,6 @@ class Mesh(Stateful, uw_object):
         refinement_callback=None,
         return_coords_to_bounds=None,
         boundaries=None,
-        distribute=True,
         name=None,
         *args,
         **kwargs,
@@ -147,10 +142,7 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
-        if distribute:
-            comm = PETSc.COMM_WORLD
-        else:
-            comm = PETSc.COMM_SELF
+        comm = PETSc.COMM_WORLD
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -181,10 +173,14 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        # Use grid hashing for point location
+        options = PETSc.Options()
+        options["dm_plex_hash_location"] = None
+        self.dm.setFromOptions()
+
         self.filename = filename
         self.boundaries = boundaries
 
-        self.boundary_conditions = False
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
@@ -192,34 +188,33 @@ class Mesh(Stateful, uw_object):
         self.dm0 = self.dm.clone()
         self.sf1 = None
 
-        if distribute:
-            self.sf1 = self.dm.distribute()
-        else:
-            print("Warning - not distributing mesh !!", flush=True)
-
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
         if not refinement is None and refinement > 0:
-            self.dm0 = self.dm
-            # self.dm.setRefinementUniform()
+            self.dm.setRefinementUniform()
             self.dm_hierarchy = self.dm.refineHierarchy(refinement)
             self.dm_hierarchy = [self.dm] + self.dm_hierarchy
-            self.dm = self.dm_hierarchy[-1]
-            if distribute:
-                self.dm.distribute()
+            self.dm_h = self.dm_hierarchy[-1]
+            self.dm_h.setName("uw_hierarchical_dm")
+
+            if callable(refinement_callback):
+                for dm in self.dm_hierarchy:
+                    refinement_callback(dm)
+
+            # Single level equivalent dm
+            self.dm = self.dm_h.clone()
+
+            # Distribute the dms we will use, but not the template
+            self.dm_h.distribute()
+            self.dm.distribute()
 
         else:
-            self.dm_hierarchy = []
-            self.dm0 = self.dm
+            self.dm.distribute()
+            self.dm_hierarchy = [self.dm]
+            self.dm_h = self.dm.clone()
 
         # This will be done anyway - the mesh maybe in a
         # partially adapted state
-
-        if callable(refinement_callback):
-            refinement_callback(self.dm)
-
-        ## Do we want to save the refined mesh or allow it to be reconstructed
-        ## from the coarse mesh ?
 
         if self.sf1 and self.sf0:
             self.sf = self.sf0.compose(self.sf1)
@@ -229,7 +224,6 @@ class Mesh(Stateful, uw_object):
         if self.name is None:
             self.name = "mesh"
             self.dm.setName("uw_mesh")
-
         else:
             self.dm.setName(f"uw_{self.name}")
 
@@ -257,11 +251,6 @@ class Mesh(Stateful, uw_object):
             self.isSimplex = self.dm.isSimplex()
         except:
             self.isSimplex = simplex
-
-        # Use grid hashing for point location
-        options = PETSc.Options()
-        options["dm_plex_hash_location"] = None
-        self.dm.setFromOptions()
 
         # self._vars = weakref.WeakValueDictionary()
         self._vars = {}
@@ -349,6 +338,22 @@ class Mesh(Stateful, uw_object):
                     flush=True,
                 )
 
+    def clone_dm_hierarchy(self):
+        """
+        Clone the dm hierarchy on the mesh
+        """
+
+        dm_hierarchy = self.dm_hierarchy
+
+        new_dm_hierarchy = []
+        for dm in dm_hierarchy:
+            new_dm_hierarchy.append(dm.clone())
+
+        for i, dm in enumerate(new_dm_hierarchy[:-1]):
+            new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
+
+        return new_dm_hierarchy
+
     def nuke_coords_and_rebuild(self):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
 
@@ -418,8 +423,11 @@ class Mesh(Stateful, uw_object):
                 # self.dm.createDS()
                 # create the local vector (memory chunk) and attach to original dm
                 self._lvec = self.dm.createLocalVec()
+
             # push avar arrays into the parent dm array
             a_global = self.dm.getGlobalVec()
+
+            # The field decomposition seems to fail if coarse DMs are present
             names, isets, dms = self.dm.createFieldDecomposition()
 
             with self.access():
@@ -498,8 +506,6 @@ class Mesh(Stateful, uw_object):
 
         timing._incrementDepth()
         stime = time.time()
-
-        print(f"ACCESS - 1", flush=True)
 
         self._accessed = True
         deaccess_list = []
@@ -591,8 +597,6 @@ class Mesh(Stateful, uw_object):
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
-
-                print("Exit manager - ACCESS", flush=True)
 
         return exit_manager(self)
 
@@ -1904,12 +1908,7 @@ class _MeshVariable(Stateful, uw_object):
 
     def _set_vec(self, available):
         if self._lvec == None:
-            tmp_dm = self.mesh.dm.clone()
-            self.mesh.dm.copyFields(tmp_dm)
-            indexset, subdm = tmp_dm.createSubDM(self.field_id)
-
-            # indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
-            # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
+            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
             self._lvec = subdm.createLocalVector()
             self._lvec.zeroEntries()  # not sure if required, but to be sure.

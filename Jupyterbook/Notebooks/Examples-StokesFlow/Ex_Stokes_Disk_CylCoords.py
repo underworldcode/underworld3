@@ -23,6 +23,8 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+from IPython.display import display
+
 import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
@@ -64,7 +66,9 @@ elif problem_size >= 4:
 
 
 meshball_xyz_tmp = uw.meshing.Annulus(
-    radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./tmp_meshball.msh"
+    radiusOuter=r_o, radiusInner=r_i, cellSize=res, 
+    refinement=0,
+    filename="./tmp_meshball.msh"
 )
 
 
@@ -204,10 +208,10 @@ if not free_slip_upper:
     stokes_xy.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
 
 stokes_xy.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-# -
-pressure_solver = uw.systems.Projection(meshball, p_cont)
-pressure_solver.uw_function = p_soln.sym[0]
-pressure_solver.smoothing = 1.0e-3
+# +
+# pressure_solver = uw.systems.Projection(meshball, p_cont)
+# pressure_solver.uw_function = p_soln.sym[0]
+# pressure_solver.smoothing = 1.0e-3
 
 # +
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
@@ -237,7 +241,7 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-pressure_solver.solve()
+# pressure_solver.solve()
 # -
 
 
