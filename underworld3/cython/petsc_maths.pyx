@@ -78,8 +78,9 @@ class Integral:
 
         self.dm = self.mesh.dm  # .clone()
         mesh=self.mesh
-
-        cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], self.mesh.vars.values(), verbose=False)
+        
+        compiled_extns, dictionaries = getext(self.mesh, [self.fn,], [], [], [], [], self.mesh.vars.values(), verbose=False)
+        cdef PtrContainer ext = compiled_extns
 
         # Pull out vec for variables, and go ahead with the integral
 

@@ -23,7 +23,6 @@ options = PETSc.Options()
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
 
-
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
 
@@ -143,12 +142,45 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
 #### No slip
 sol_vel = sympy.Matrix([0.,0.])
 
-# stokes.add_dirichlet_bc( sol_vel, ["Left", "Right"],  [0,1] )  # left/right: components, function, markers
-# stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [0,1] )  # top/bottom: components, function, markers 
-
 ### free slip
-stokes.add_dirichlet_bc( sol_vel, ["Left", "Right"],  [0] )  # left/right: components, function, markers
-stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [1] )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( sol_vel, "Left",  0 )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( sol_vel, "Right",  0 )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( sol_vel, "Top",  1 )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( sol_vel, "Bottom",  1 )  # left/right: components, function, markers
+
+
+
+# %%
+## Solver
+
+stokes.petsc_options["snes_type"] = "newtonls"
+stokes.petsc_options["ksp_type"] = "fgmres"
+
+stokes.petsc_options["snes_monitor"]= None
+stokes.petsc_options["ksp_monitor"] = None
+
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+
+# gasm is super-fast ... but mg seems to be bulletproof
+# gamg is toughest wrt viscosity
+
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+
+# # # mg, multiplicative - very robust ... similar to gamg, additive
+
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 
 # %%
@@ -195,7 +227,7 @@ def plot_mat():
 
     pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = 'msaa'
     pv.global_theme.jupyter_backend = 'panel'
     pv.global_theme.smooth_shading = True
 
@@ -231,13 +263,9 @@ if render and uw.mpi.size == 1:
 
 # %%
 ### linear solve
-stokes.constitutive_model.Parameters.viscosity = ndim(ref_viscosity * u.pascal*u.second)
-# stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
+stokes.constitutive_model.Parameters.shear_viscosity_0 = ndim(ref_viscosity * u.pascal*u.second)
 stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
 
-
-# %%
-stokes.constitutive_model.Parameters.viscosity
 
 # %%
 stokes.solve()

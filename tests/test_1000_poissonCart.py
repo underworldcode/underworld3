@@ -33,8 +33,8 @@ def test_poisson_boxmesh(mesh):
     poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(u)
     poisson.constitutive_model.Parameters.diffusivity = 1
     poisson.f = 0.0
-    poisson.add_dirichlet_bc(1.0, "Bottom")
-    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.add_dirichlet_bc(1.0, "Bottom", 0)
+    poisson.add_dirichlet_bc(0.0, "Top", 0)
     poisson.solve()
 
     assert poisson.snes.getConvergedReason() > 0

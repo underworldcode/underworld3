@@ -192,8 +192,26 @@ class Mesh(Stateful, uw_object):
 
         if not refinement is None and refinement > 0:
             self.dm.setRefinementUniform()
-            self.dm_hierarchy = self.dm.refineHierarchy(refinement)
-            self.dm_hierarchy = [self.dm] + self.dm_hierarchy
+            self.dm.distribute()
+
+            # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
+
+            # This is preferable to the refineHierarchy call
+            # because we can repair the refined mesh at each
+            # step along the way
+
+            self.dm_hierarchy = [self.dm]
+            for i in range(refinement):
+                dm_refined = self.dm_hierarchy[i].refine()
+                dm_refined.setCoarseDM(self.dm_hierarchy[i])
+
+                if callable(refinement_callback):
+                    refinement_callback(dm_refined)
+
+                self.dm_hierarchy.append(dm_refined)
+
+            # self.dm_hierarchy = [self.dm] + self.dm_hierarchy
+
             self.dm_h = self.dm_hierarchy[-1]
             self.dm_h.setName("uw_hierarchical_dm")
 
@@ -203,10 +221,6 @@ class Mesh(Stateful, uw_object):
 
             # Single level equivalent dm
             self.dm = self.dm_h.clone()
-
-            # Distribute the dms we will use, but not the template
-            self.dm_h.distribute()
-            self.dm.distribute()
 
         else:
             self.dm.distribute()
@@ -380,17 +394,19 @@ class Mesh(Stateful, uw_object):
             PETSc.COMM_WORLD,
         )
 
+        self.dm.projectCoordinates(self.petsc_fe)
+
         ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
-        if self.degree != 1:
-            # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
-            # issues with petsc that we see in parallel - in which case there is a fallback, pass no
-            # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
-            # (but it should !)
+        # if self.degree == 1:
+        #     # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
+        #     # issues with petsc that we see in parallel - in which case there is a fallback, pass no
+        #     # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
+        #     # (but it should !)
 
-            self.dm.projectCoordinates(self.petsc_fe)
+        #     self.dm.projectCoordinates(self.petsc_fe)
 
-        else:
-            uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
+        # else:
+        #     uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
 

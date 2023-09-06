@@ -5,9 +5,10 @@ import sympy
 import underworld3
 import underworld3.timing as timing
 from typing import Optional
+from collections import namedtuple
 
 
-## This is not required in sympy 1.9
+## This is not required in sympy >= 1.9
 
 # def diff_fn1_wrt_fn2(fn1, fn2):
 #     """
@@ -34,7 +35,14 @@ _ext_dict = {}
 
 @timing.routine_timer_decorator
 def getext(
-    mesh, fns_residual, fns_jacobian, fns_bcs, primary_field_list, verbose=False
+    mesh,
+    fns_residual,
+    fns_jacobian,
+    fns_bcs,
+    fns_bd_residual,
+    fns_bd_jacobian,
+    primary_field_list,
+    verbose=False,
 ):
     """
     Check if we've already created an equivalent extension
@@ -44,7 +52,13 @@ def getext(
 
     time_s = time.time()
 
-    fns = tuple(fns_residual) + tuple(fns_jacobian) + tuple(fns_bcs)
+    fns = (
+        tuple(fns_residual)
+        + tuple(fns_jacobian)
+        + tuple(fns_bcs)
+        + tuple(fns_bd_residual)
+        + tuple(fns_bd_jacobian)
+    )
     import os
 
     if "UW_JITNAME" in os.environ:  # If var specified, probably testing.
@@ -54,6 +68,7 @@ def getext(
         jitname += "_" + str(len(_ext_dict.keys()))
     else:  # Else name from fns hash
         jitname = abs(hash((mesh, fns)))
+
     # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
         _createext(
@@ -62,13 +77,44 @@ def getext(
             fns_residual,
             fns_jacobian,
             fns_bcs,
+            fns_bd_residual,
+            fns_bd_jacobian,
             primary_field_list,
             verbose=verbose,
         )
+
+    ## TODO: Return a dictionary to recover the function pointers from the compiled
+    ## functions. Note, keep these by category as the same sympy function has
+    ## different compiled form depending on the function signature
+
     module = _ext_dict[jitname]
     ptrobj = module.getptrobj()
-    # print(f'jit time {time.time()-time_s}')
-    return ptrobj
+    # print(f"jit time {time.time()-time_s}", flush=True)
+
+    i_res = {}
+    for index, fn in enumerate(fns_residual):
+        i_res[fn] = index
+    i_jac = {}
+    for index, fn in enumerate(fns_jacobian):
+        i_jac[fn] = index
+    i_ebc = {}
+    for index, fn in enumerate(fns_jacobian):
+        i_ebc[fn] = index
+    i_bd_res = {}
+    for index, fn in enumerate(fns_bd_residual):
+        i_bd_res[fn] = index
+    i_bd_jac = {}
+    for index, fn in enumerate(fns_bd_jacobian):
+        i_bd_jac[fn] = index
+
+    extn_fn_dict = namedtuple(
+        "Functions",
+        ["res", "jac", "ebc", "bd_res", "bd_jac"],
+    )
+
+    extensions_functions_dicts = extn_fn_dict(i_res, i_jac, i_ebc, i_bd_res, i_bd_jac)
+
+    return ptrobj, extensions_functions_dicts
 
 
 @timing.routine_timer_decorator
@@ -78,6 +124,8 @@ def _createext(
     fns_residual: List[sympy.Basic],
     fns_jacobian: List[sympy.Basic],
     fns_bcs: List[sympy.Basic],
+    fns_bd_residual: List[sympy.Basic],
+    fns_bd_jacobian: List[sympy.Basic],
     primary_field_list: List[underworld3.discretisation.MeshVariable],
     verbose: Optional[bool] = False,
 ):
@@ -107,6 +155,12 @@ def _createext(
     fns_bcs:
         List of system's boundary condition sympy functions for which JIT equivalents
         will be generated.
+    fns_bd_residual:
+        List of system's boundary integral sympy functions for which JIT equivalents
+        will be generated.
+    fns_bd_jacobian:
+        List of system's boundary integral jacobian sympy functions for which JIT equivalents
+        will be generated.
     primary_field_list
         List of variables that will map from petsc primary variable arrays. All
         other variables will be obtained from the mesh object and will be mapped to
@@ -119,9 +173,19 @@ def _createext(
     from underworld3 import VarType
 
     # Note that the order here is important.
-    fns = tuple(fns_residual) + tuple(fns_bcs) + tuple(fns_jacobian)
-    count_residual_sig = len(fns_residual) + len(fns_bcs)
+    fns = (
+        tuple(fns_residual)
+        + tuple(fns_bcs)
+        + tuple(fns_jacobian)
+        + tuple(fns_bd_residual)
+        + tuple(fns_bd_jacobian)
+    )
+
+    count_residual_sig = len(fns_residual)
+    count_bc_sig = len(fns_bcs)
     count_jacobian_sig = len(fns_jacobian)
+    count_bd_residual_sig = len(fns_bd_residual)
+    count_bd_jacobian_sig = len(fns_bd_jacobian)
 
     # `_ccode` patching
     def ccode_patch_fns(varlist, prefix_str):
@@ -196,6 +260,10 @@ def _createext(
     ccode_patch_fns(primary_field_list, "petsc_u")
     # Also patch `BaseScalar` types
     type(mesh.N.x)._ccode = lambda self, printer: f"petsc_x[{self._id[0]}]"
+
+    # Some way to patch in the boundary normals that petsc supplies to bd point functions
+    # Need to add a matching symbol on the mesh in sympy (e.g. mesh.Gamma)
+    # type(mesh.Gamma)._ccode = lambda self, printer: f"petsc_n[{self._id[0]}]"
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,
@@ -303,6 +371,8 @@ setup(ext_modules=cythonize(ext_mods))
 
     residual_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t,                           const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
     jacobian_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t, PetscReal petsc_u_tShift, const PetscReal petsc_x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
+    bd_residual_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t,                           const PetscReal petsc_x[], const PetscReal petsc_n[], PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
+    bd_jacobian_sig = "(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar petsc_u[], const PetscScalar petsc_u_t[], const PetscScalar petsc_u_x[], const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar petsc_a[], const PetscScalar petsc_a_t[], const PetscScalar petsc_a_x[], PetscReal petsc_t, PetscReal petsc_u_tShift, const PetscReal petsc_x[],  const PetscReal petsc_n[],PetscInt numConstants, const PetscScalar constants[], PetscScalar out[])"
 
     # Create header top content.
     h_str = """
@@ -320,7 +390,7 @@ static inline double Heaviside_2 (double x, double mid_val) { return x < 0 ? 0 :
 
     # Create cython top content.
     pyx_str = """
-from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn
+from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscScalar, PetscErrorCode, PetscBool, PetscDSResidualFn, PetscDSJacobianFn, PetscDSBdResidualFn, PetscDSBdJacobianFn
 from underworld3.cython.petsc_types cimport PtrContainer
 from libc.stdlib cimport malloc
 from libc.math cimport *
@@ -350,43 +420,138 @@ cdef extern from "cy_ext.h" nogil:
 
     h_str += "\n"
     # Print equations
-    for eqn in eqns[0:count_residual_sig]:
+    eqn_index_0 = 0
+    eqn_index_1 = count_residual_sig
+
+    for eqn in eqns[eqn_index_0:eqn_index_1]:
         h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
             randstr, eqn[0], residual_sig, eqn[1]
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
 
-    for eqn in eqns[count_residual_sig:]:
+    eqn_index_0 = eqn_index_1
+    eqn_index_1 = eqn_index_1 + count_bc_sig
+
+    # The bcs have the same signature as the residuals (at present)
+    # but we leave this separate in case it changes in later PETSc implementations
+
+    for eqn in eqns[eqn_index_0:eqn_index_1]:
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+            randstr, eqn[0], residual_sig, eqn[1]
+        )
+        pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
+
+    eqn_index_0 = eqn_index_1
+    eqn_index_1 = eqn_index_1 + count_jacobian_sig
+
+    for eqn in eqns[eqn_index_0:eqn_index_1]:
         h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
             randstr, eqn[0], jacobian_sig, eqn[1]
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
 
+    eqn_index_0 = eqn_index_1
+    eqn_index_1 = eqn_index_1 + count_bd_residual_sig
+    for eqn in eqns[eqn_index_0:eqn_index_1]:
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+            randstr, eqn[0], bd_residual_sig, eqn[1]
+        )
+        pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_residual_sig)
+
+    eqn_index_0 = eqn_index_1
+    eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
+    for eqn in eqns[eqn_index_0:eqn_index_1]:
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+            randstr, eqn[0], bd_jacobian_sig, eqn[1]
+        )
+        pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_jacobian_sig)
+
     codeguys.append(["cy_ext.h", h_str])
     # Note that the malloc below will cause a leak, but it's just a bunch of function
-    # pointers so we don't need to worry about it
+    # pointers so we don't need to worry about it (yet)
     pyx_str += """
 cpdef PtrContainer getptrobj():
     clsguy = PtrContainer()
     clsguy.fns_residual = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
     clsguy.fns_jacobian = <PetscDSJacobianFn*> malloc({}*sizeof(PetscDSJacobianFn))
     clsguy.fns_bcs      = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
+    clsguy.fns_bd_residual = <PetscDSBdResidualFn*> malloc({}*sizeof(PetscDSBdResidualFn))  
+    clsguy.fns_bd_jacobian = <PetscDSBdJacobianFn*> malloc({}*sizeof(PetscDSBdJacobianFn))
 """.format(
-        len(fns_residual), count_jacobian_sig, len(fns_bcs)
+        len(fns_residual),
+        len(fns_jacobian),
+        len(fns_bcs),
+        len(fns_bd_residual),
+        len(fns_bd_jacobian),
     )
 
-    for index, eqn in enumerate(eqns[0 : len(fns_residual)]):
+    eqn_count = 0
+    for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_residual)]):
         pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(
             index, randstr, eqn[0]
         )
-    for index, eqn in enumerate(eqns[count_residual_sig:]):
-        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
-    for index, eqn in enumerate(eqns[len(fns_residual) : count_residual_sig]):
+        eqn_count += 1
+
+    residual_equations = (0, eqn_count)
+
+    for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bcs)]):
         pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(
             index, randstr, eqn[0]
         )
+        eqn_count += 1
+
+    boundary_equations = (residual_equations[1], eqn_count)
+
+    for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_jacobian)]):
+        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
+        eqn_count += 1
+
+    jacobian_equations = (boundary_equations[1], eqn_count)
+
+    for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_residual)]):
+        pyx_str += "    clsguy.fns_bd_residual[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
+        eqn_count += 1
+
+    boundary_residual_equations = (jacobian_equations[1], eqn_count)
+
+    for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_jacobian)]):
+        pyx_str += "    clsguy.fns_bd_jacobian[{}] = {}_petsc_{}\n".format(
+            index, randstr, eqn[0]
+        )
+        eqn_count += 1
+
+    boundary_jacobian_equations = (boundary_residual_equations[1], eqn_count)
+
+    if underworld3.mpi.rank == 0 and verbose:
+        print(
+            f"{randstr}    Equation count - {eqn_count}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_residual):5d} residuals:       {residual_equations}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_jacobian):5d} jacobians:       {jacobian_equations}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bcs):5d} boundaries:           {boundary_equations}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bd_residual):5d} boundary_res: {boundary_residual_equations}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bd_jacobian):5d} boundary_jac: {boundary_jacobian_equations}",
+            flush=True,
+        )
+
     pyx_str += "    return clsguy"
     codeguys.append(["cy_ext.pyx", pyx_str])
 

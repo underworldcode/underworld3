@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -62,7 +62,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
 
 # Non-linear diffusivity
 
@@ -74,17 +74,24 @@ display(poisson.constitutive_model.c)
 
 # projector for diffusivity (though we can just switch the rhs for the gradient object
 
+# +
 diffusivity = uw.systems.Projection(mesh, kappa)
 diffusivity.uw_function = sympy.Matrix(
     [poisson.constitutive_model.Parameters.diffusivity]
 )
-diffusivity.add_dirichlet_bc(k, ["Top", "Bottom", "Left", "Right"], components=0)
-diffusivity.smoothing = 1.0e-3
+
+diffusivity.add_dirichlet_bc(k, "Bottom", component=0)
+diffusivity.add_dirichlet_bc(k, "Top", component=0)
+diffusivity.add_dirichlet_bc(k, "Right", component=0)
+diffusivity.add_dirichlet_bc(k, "Left", component=0)
+
+diffusivity.smoothing = 1.0e-6
+# -
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-poisson.constitutive_model.Parameters.diffusivity = 1
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.constitutive_model.Parameters.diffusivity
 
 # %%
@@ -100,12 +107,18 @@ x, y = mesh.X
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, ["Bottom", "Top", "Right", "Left"])
+poisson.add_dirichlet_bc(abs_r2, "Bottom" , component=0)
+poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
 
+# +
 # %%
 # Linear model - starting guess
+
 poisson.constitutive_model.Parameters.diffusivity = 1
 poisson.solve(zero_init_guess=True)
+# -
 
 # %%
 # Solve time

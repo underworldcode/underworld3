@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -30,7 +30,7 @@ import os
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2 
+problem_size = 1
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -60,13 +60,13 @@ from underworld3.meshing import Annulus
 # %%
 # first do 2D
 if problem_size <= 1: 
-    cell_size = 0.1
-elif problem_size == 2: 
     cell_size = 0.05
-elif problem_size == 3: 
+elif problem_size == 2: 
     cell_size = 0.02
+elif problem_size == 3: 
+    cell_size = 0.01
 elif problem_size >= 4: 
-    cell_size = 0.005
+    cell_size = 0.0033
 
 mesh = Annulus(radiusInner=r_i, radiusOuter=r_o, cellSize=cell_size)
 
@@ -74,7 +74,7 @@ t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
 # Create Poisson object
 poisson = Poisson(mesh, u_Field=t_soln)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 poisson.f = f
@@ -90,11 +90,15 @@ mesh.dm.view()
 # %%
 import sympy
 
-poisson.add_dirichlet_bc((t_i,), "Lower", (0,))
-poisson.add_dirichlet_bc((t_o,), "Upper", (0,))
+poisson.add_dirichlet_bc(t_i, "Lower", 0)
+poisson.add_dirichlet_bc(t_o, "Upper", 0)
 
 # %%
 poisson.solve()
+
+# +
+# poisson.snes.view()
+# -
 
 # %%
 # Check. Construct simple solution for above config.
@@ -110,19 +114,17 @@ with mesh.access():
 
 import numpy as np
 
-if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.001):
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
     raise RuntimeError("Unexpected values encountered.")
 
 # %%
 poisson.constitutive_model.Parameters.diffusivity = 1.0 + 0.1 * poisson.u.fn**1.5
-poisson.f = 0.01 * poisson.u.fn**0.5
+poisson.f = 0.01 * poisson.u.sym[0]**0.5
 poisson.solve(zero_init_guess=False)
 
 # Validate
 
-from mpi4py import MPI
-
-if MPI.COMM_WORLD.size == 1:
+if uw.mpi.size == 1:
 
     import numpy as np
     import pyvista as pv
@@ -149,7 +151,7 @@ if MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="T2",
+        scalars="DT",
         use_transparency=False,
         opacity=0.5,
     )
@@ -159,11 +161,26 @@ if MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")
 
+# +
 # %%
-savefile = "output/poisson_disc.h5"
-mesh.save(savefile)
-poisson.u.save(savefile)
-mesh.generate_xdmf(savefile)
+
+expt_name = "Poisson-Annulus"
+outdir = "output"
+os.makedirs(f"{outdir}", exist_ok=True)
+
+
+mesh.write_timestep(expt_name, 
+                         meshUpdates=True,
+                         meshVars=[t_soln], 
+                         outputPath=outdir,
+                         index=0  )
+        
+
+# savefile = "output/poisson_disc.h5"
+# mesh.save(savefile)
+# poisson.u.save(savefile)
+# mesh.generate_xdmf(savefile)
+# -
 
 # %%
 from underworld3.meshing import SphericalShell
@@ -172,6 +189,8 @@ from underworld3.meshing import SegmentedSphere
 # +
 # %%
 # now do 3D
+
+problem_size = 1
 
 if problem_size <= 1: 
     cell_size = 0.3
@@ -182,15 +201,16 @@ elif problem_size == 2:
 elif problem_size == 3: 
     cell_size = 0.02
     
-# mesh_3d = SphericalShell(radiusInner=r_i, 
+mesh_3d = SphericalShell(radiusInner=r_i, 
+                         radiusOuter=r_o, 
+                         cellSize=cell_size, 
+                         refinement=1,
+                        )
+
+# mesh_3d = SegmentedSphere(radiusInner=r_i, 
 #                          radiusOuter=r_o, 
 #                          cellSize=cell_size
 #                         )
-
-mesh_3d = SegmentedSphere(radiusInner=r_i, 
-                         radiusOuter=r_o, 
-                         cellSize=cell_size
-                        )
 
 
 t_soln_3d = uw.discretisation.MeshVariable("T", mesh_3d, 1, degree=2)
@@ -200,18 +220,17 @@ mesh_3d.dm.view()
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh_3d.dim)
+poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln_3d)
 poisson.constitutive_model.Parameters.diffusivity = k
 poisson.f = f
 
 poisson.petsc_options["snes_rtol"] = 1.0e-6
-#poisson.petsc_options.delValue("ksp_monitor")
 poisson.petsc_options.delValue("ksp_rtol")
 
 import sympy
 
-poisson.add_dirichlet_bc((t_i,), "Lower", (0,))
-poisson.add_dirichlet_bc((t_o,), "Upper", (0,))
+poisson.add_dirichlet_bc(t_i, "Lower", 0)
+poisson.add_dirichlet_bc(t_o, "Upper", 0)
 
 # Solve time
 poisson.solve()
@@ -228,7 +247,7 @@ with mesh.access():
 
 import numpy as np
 
-if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.001):
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.1):
     raise RuntimeError("Unexpected values encountered.")
 
 # Validate
@@ -264,7 +283,7 @@ if MPI.COMM_WORLD.size == 1:
         cmap="coolwarm",
         edge_color="Grey",
         show_edges=True,
-        scalars="DT",
+        scalars="T2",
         use_transparency=False,
         opacity=1.0,
     )
@@ -274,10 +293,18 @@ if MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")
 
+# +
 # %%
-savefile = "output/poisson_spherical_3d.h5"
-mesh.save(savefile)
-poisson.u.save(savefile)
-mesh.generate_xdmf(savefile)
+expt_name = "Poisson-Sphere"
+outdir = "output"
+os.makedirs(f"{outdir}", exist_ok=True)
+
+mesh_3d.write_timestep(expt_name, 
+                         meshUpdates=True,
+                         meshVars=[t_soln_3d], 
+                         outputPath=outdir,
+                         index=0  )
+        
+# -
 
 

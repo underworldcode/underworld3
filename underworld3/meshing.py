@@ -1019,22 +1019,6 @@ def AnnulusInternalBoundary(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-    #     plex_0 = gmsh2dmplex(
-    #         uw_filename,
-    #         useMultipleTags=True,
-    #         useRegions=True,
-    #         markVertices=True,
-    #         comm=PETSc.COMM_SELF,
-    #     )
-
-    #     viewer = PETSc.ViewerHDF5().create(
-    #         uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-    #     )
-    #     viewer(plex_0)
-
-    # # Now do this collectively
-    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
-
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -1061,6 +1045,7 @@ def CubedSphere(
     qdegree: int = 2,
     simplex: bool = False,
     filename=None,
+    refinement=None,
     verbosity=0,
 ):
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
@@ -1187,22 +1172,39 @@ def CubedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-        # plex_0 = gmsh2dmplex(
-        #     uw_filename,
-        #     useMultipleTags=True,
-        #     useRegions=True,
-        #     markVertices=True,
-        #     comm=PETSc.COMM_SELF,
-        # )
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
 
-        # viewer = PETSc.ViewerHDF5().create(
-        #     uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        # )
-        # viewer(plex_0)
+        import underworld3 as uw
 
-    # Now do this collectively
-    # gmsh_plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
-    # sf, plex = gmsh2dmplex(uw_filename, comm)
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
 
     new_mesh = Mesh(
         uw_filename,
@@ -1211,6 +1213,8 @@ def CubedSphere(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
     )
 

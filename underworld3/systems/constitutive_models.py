@@ -68,7 +68,6 @@ class Constitutive_Model(uw_object):
         self.dim = u.mesh.dim
         self.u_dim = u.num_components
         self._flux_dt = flux_dt
-        self._solver_is_setup = False
 
         self.Parameters = self._Parameters(self)
         self.Parameters._solver = None

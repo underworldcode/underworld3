@@ -94,7 +94,7 @@ uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
 )
 meshball.dm.view()
 
-meshball_xyz = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
+meshball_xyz = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=5)
 
 display(meshball_xyz.CoordinateSystem.type)
 display(meshball_xyz.CoordinateSystem.N)
@@ -161,12 +161,14 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes.add_dirichlet_bc(0.0, "Upper", 0)
+    stokes.add_dirichlet_bc(0.0, "Upper", 1)
+
 else:
-    stokes.add_dirichlet_bc((0.0), "Upper", (0,))
+    stokes.add_dirichlet_bc(0.0, "Upper", 0)
 
-stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-
+stokes.add_dirichlet_bc(0.0, "Lower", 0)
+stokes.add_dirichlet_bc(0.0, "Lower", 1)
 # -
 
 
@@ -186,7 +188,7 @@ stokes.strainrate
 radius_fn = meshball_xyz.CoordinateSystem.xR[0]
 radius_fn = r_xy.sym[0]
 
-hw = 1000.0 / res
+hw = 20000.0 / res
 surface_fn = sympy.exp(-((radius_fn - r_o) ** 2) * hw)
 base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 
@@ -205,9 +207,12 @@ stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes_xy.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes_xy.add_dirichlet_bc(0.0, "Upper", 0)
+    stokes_xy.add_dirichlet_bc(0.0, "Upper", 1)
 
-stokes_xy.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
+stokes_xy.add_dirichlet_bc(0.0, "Lower", 0)
+stokes_xy.add_dirichlet_bc(0.0, "Lower", 1)
+
 # +
 # pressure_solver = uw.systems.Projection(meshball, p_cont)
 # pressure_solver.uw_function = p_soln.sym[0]
@@ -230,7 +235,7 @@ with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
         meshball_xyz.CoordinateSystem.xR[0], coords=r_xy.coords, coord_sys=meshball_xyz.N )
 
-stokes._setup_terms()
+stokes._setup_pointwise_functions()
 
 stokes._p_f0
 
@@ -288,12 +293,12 @@ if uw.mpi.size == 1:
         )
 
     usol = np.empty_like(v_soln.coords)
-    usol[:, 0] = uw.function.evaluate(U_xy[0], v_soln.coords)
-    usol[:, 1] = uw.function.evaluate(U_xy[1], v_soln.coords)
+    usol[:, 0] = uw.function.evalf(U_xy[0], v_soln.coords)
+    usol[:, 1] = uw.function.evalf(U_xy[1], v_soln.coords)
 
     usol_xy = np.empty_like(v_soln_xy.coords)
-    usol_xy[:, 0] = uw.function.evaluate(v_soln_xy.sym[0], v_soln_xy.coords)
-    usol_xy[:, 1] = uw.function.evaluate(v_soln_xy.sym[1], v_soln_xy.coords)
+    usol_xy[:, 0] = uw.function.evalf(v_soln_xy.sym[0], v_soln_xy.coords)
+    usol_xy[:, 1] = uw.function.evalf(v_soln_xy.sym[1], v_soln_xy.coords)
 
     xy = np.empty_like(v_soln.coords)
     xy[:, 0] = uw.function.evaluate(
@@ -319,7 +324,7 @@ if uw.mpi.size == 1:
         pvmesh,
         cmap="coolwarm",
         edge_color="Grey",
-        scalars="P",
+        scalars="T",
         show_edges=True,
         use_transparency=False,
         opacity=0.75,

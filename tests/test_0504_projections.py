@@ -69,9 +69,9 @@ def test_vector_projection():
     vector_projection.uw_function = v_values.sym
     vector_projection.smoothing = 1.0e-3
 
-    vector_projection.add_dirichlet_bc((0.0,), "Right", (0,))
-    vector_projection.add_dirichlet_bc((0.0,), "Top", (1,))
-    vector_projection.add_dirichlet_bc((0.0,), "Bottom", (1,))
+    vector_projection.add_dirichlet_bc(0.0, "Right", 0)
+    vector_projection.add_dirichlet_bc(0.0, "Top", 1)
+    vector_projection.add_dirichlet_bc(0.0, "Bottom", 1)
 
     vector_projection.solve()
 

@@ -1132,6 +1132,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         zero_init_guess: bool = True,
         timestep: float = None,
         _force_setup: bool = False,
+        verbose=False,
     ):
         """
         Generates solution to constructed system.
@@ -1146,8 +1147,13 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
-        if (not self.is_setup) or _force_setup:
-            self._setup_terms()
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
 
         ####################################################################
         ## Update the Temperature part - should be built in to a manager ...
@@ -1477,6 +1483,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         zero_init_guess: bool = True,
         timestep: float = None,
         _force_setup: bool = False,
+        verbose=False,
     ):
         """
         Generates solution to constructed system.
@@ -1491,8 +1498,13 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
-        if (not self.is_setup) or _force_setup:
-            self._setup_terms()
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
 
         # Make sure we update the projection of the swarm variable if requested
 

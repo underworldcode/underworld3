@@ -108,7 +108,7 @@ Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # + tags=[]
 if problem_size <= 1: 
-    cell_size = 0.50
+    cell_size = 0.33
 elif problem_size == 2: 
     cell_size = 0.15
 elif problem_size == 3: 
@@ -130,12 +130,20 @@ timing.reset()
 timing.start()
 
 # +
-meshball = uw.meshing.SphericalShell(
+# meshball = uw.meshing.SphericalShell(
+#     radiusInner=r_i,
+#     radiusOuter=r_o,
+#     cellSize=cell_size,
+#     qdegree=2,
+#     refinement=0,
+# )
+
+meshball = uw.meshing.CubedSphere(
     radiusInner=r_i,
     radiusOuter=r_o,
-    cellSize=cell_size,
+    numElements=3,
+    refinement=0,
     qdegree=2,
-    refinement=2,
 )
 
 meshball.dm.view()
@@ -201,13 +209,12 @@ v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 
 # +
+I = uw.maths.Integral(meshball, surface_fn_a)
+s_norm = I.evaluate()
+I.fn = base_fn_a
 
-# I = uw.maths.Integral(meshball, surface_fn_a)
-# s_norm = I.evaluate()
-# I.fn = base_fn_a
-
-# b_norm = I.evaluate()
-# s_norm, b_norm
+b_norm = I.evaluate()
+s_norm, b_norm
 
 
 
@@ -226,20 +233,30 @@ stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_max_it"] = 1 # for timing cases only - force 1 snes iteration for all examples
 
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-stokes.petsc_options.delValue("fieldsplit_velocity_pc_mg_type")
-# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_levels", 2)
-# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_pc_type"] = "sor"
-# stokes.petsc_options[f"fieldsplit_velocity_mg_coarse_ksp_type"] = "preonly"
-# stokes.petsc_options["fieldsplit_velocity_mg_level_0_pc_type"] = "svd"
+stokes.petsc_options["snes_type"] = "newtonls"
+stokes.petsc_options["ksp_type"] = "fgmres"
 
-stokes.penalty = 0.1
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "multiplicative")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_levels", 1)
+# stokes.petsc_options["fieldsplit_velocity_mg_coarse_ksp_type"] = "preonly"
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+
+stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "fgmres"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "kaskade")
+stokes.penalty = 1.0
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
     v_soln
 )
-stokes.constitutive_model.Parameters.viscosity = 1
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # thermal buoyancy force
 buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
@@ -251,14 +268,19 @@ free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
 stokes.bodyforce = unit_rvec * buoyancy_force
 stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
-stokes.saddle_preconditioner = 1.0
-
 # Velocity boundary conditions
-# stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Upper", (0,1,2))
-# stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Lower", (0,1,2))
+
+# stokes.add_dirichlet_bc(0.0, "Lower", 0)
+# stokes.add_dirichlet_bc(0.0, "Lower", 1)
+# stokes.add_dirichlet_bc(0.0, "Lower", 2)
+# stokes.add_dirichlet_bc(0.0, "Upper", 0)
+# stokes.add_dirichlet_bc(0.0, "Upper", 1)
+# stokes.add_dirichlet_bc(0.0, "Upper", 2)
+
 # -
 
-stokes._setup_terms()
+stokes._setup_pointwise_functions()
+stokes._setup_discretisation()
 
 # +
 with meshball.access(meshr):
@@ -271,15 +293,14 @@ with meshball.access(t_soln):
 
 
 # +
-timing.print_table()
 timing.reset()
 timing.start()
 
 stokes.solve(zero_init_guess=True)
-# -
 
 
-stokes.snes.view()
+# +
+# stokes.snes.view()
 
 # +
 
@@ -288,65 +309,40 @@ stokes.snes.view()
 # remove it from the force terms and solution to prevent it growing if present
 
 
-# I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
-# norm = I0.evaluate()
-# I0.fn = v_soln.sym.dot(v_soln.sym)
-# vnorm = np.sqrt(I0.evaluate())
+I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
+norm = I0.evaluate()
+I0.fn = v_soln.sym.dot(v_soln.sym)
+vnorm = np.sqrt(I0.evaluate())
 
 # for i in range(10):
 
-#     I0.fn = v_soln.sym.dot(v_rbm_x)
-#     x_ns = I0.evaluate() / norm
-#     I0.fn = v_soln.sym.dot(v_rbm_y)
-#     y_ns = I0.evaluate() / norm
-#     I0.fn = v_soln.sym.dot(v_rbm_z)
-#     z_ns = I0.evaluate() / norm
+I0.fn = v_soln.sym.dot(v_rbm_x)
+x_ns = I0.evaluate() / norm
+I0.fn = v_soln.sym.dot(v_rbm_y)
+y_ns = I0.evaluate() / norm
+I0.fn = v_soln.sym.dot(v_rbm_z)
+z_ns = I0.evaluate() / norm
 
-#     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
+null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
 
-#     # print(
-#     #     "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
-#     #         i, x_ns, y_ns, z_ns, null_space_err
-#     #     )
-#     # )
-
-#     with meshball.access(v_soln):
-#         ## Note, we have to add in something in the missing component (and it has to be spatially variable ??)
-#         v_soln.data[:, 0] -= uw.function.evaluate(
-#             x_ns * v_rbm_x[0] + y_ns * v_rbm_y[0] + z_ns * v_rbm_z[0], v_soln.coords
-#         )
-
-#         v_soln.data[:, 1] -= uw.function.evaluate(
-#             x_ns * v_rbm_x[1] + y_ns * v_rbm_y[1] + z_ns * v_rbm_z[1], v_soln.coords
-#         )
-
-#         v_soln.data[:, 2] -= uw.function.evaluate(
-#             x_ns * v_rbm_x[2] + y_ns * v_rbm_y[2] + z_ns * v_rbm_z[2], v_soln.coords
-#         )
-
-#     null_space_err = np.sqrt(x_ns**2 + y_ns**2 + z_ns**2) / vnorm
-
-#     if null_space_err < 1.0e-6:
-#         if uw.mpi.rank == 0:
-#             print(
-#                 "{}: Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total) - |V| ({:.4})".format(
-#                     i, x_ns, y_ns, z_ns, null_space_err, vnorm
-#                 )
-#             )
-#         break
-
+print(
+    "Rigid body: {:.4}, {:.4}, {:.4} / {:.4}  (x,y,z axis / total)".format(
+        x_ns, y_ns, z_ns, null_space_err
+    )
+)
 # -
 timing.print_table()
 
-savefile = "output/stokesSphere_orig.h5"
-meshball.save(savefile)
-# v_soln.save(savefile)
-# p_soln.save(savefile)
-meshball.generate_xdmf(savefile)
-meshball.write_checkpoint("output/stokesSphere", 
-                          meshUpdates=True, 
-                          meshVars=[p_soln,v_soln], 
-                          index=0)
+# +
+# savefile = "output/stokesSphere_orig.h5"
+# meshball.save(savefile)
+# # v_soln.save(savefile)
+# # p_soln.save(savefile)
+# meshball.generate_xdmf(savefile)
+# meshball.write_checkpoint("output/stokesSphere", 
+#                           meshUpdates=True, 
+#                           meshVars=[p_soln,v_soln], 
+#                           index=0)
 
 
 # +
@@ -372,9 +368,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     meshball.vtk("tmp_meshball.vtk")
     pvmesh = pv.read("tmp_meshball.vtk")
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_forcing_fn, meshball.data, meshball.N)
-    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
-    pvmesh.point_data["S"] = uw.function.evaluate(
+    pvmesh.point_data["T"] = uw.function.evalf(t_forcing_fn, meshball.data, meshball.N)
+    pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], meshball.data)
+    pvmesh.point_data["S"] = uw.function.evalf(
         v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
     )
 
@@ -382,7 +378,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     arrow_loc[...] = stokes.u.coords[...]
 
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[...] = uw.function.evaluate(stokes.u.fn, stokes.u.coords)
+    arrow_length[:,0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
+    arrow_length[:,1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
+    arrow_length[:,2] = uw.function.evalf(stokes.u.sym[2], stokes.u.coords)
 
     clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
 # -
@@ -407,3 +405,5 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
+
+

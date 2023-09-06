@@ -76,10 +76,8 @@ stokes = Stokes(
 # Constant viscosity
 
 viscosity = 1
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
-stokes.saddle_preconditioner = 1.0 / viscosity
-
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(stokes.u)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.tolerance=1.0e-3
 
 # Velocity boundary conditions
@@ -87,6 +85,9 @@ stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
 stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
+# -
+
+
 
 # +
 # Create a density structure / buoyancy force
@@ -114,7 +115,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
 adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 

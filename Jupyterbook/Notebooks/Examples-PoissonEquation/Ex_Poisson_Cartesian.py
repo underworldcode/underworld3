@@ -33,13 +33,15 @@ import numpy as np
 import sympy
 
 from IPython.display import display
-# -
 
 
+# +
 mesh1 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                           cellSize=1.0 / 4, refinement=4)
+
 mesh2 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
                                           cellSize=1.0 / 4, regular=True, refinement=4)
+# -
 
 # pick a mesh
 mesh = mesh1
@@ -63,24 +65,31 @@ poisson.constitutive_model.c
 # +
 # Set some things
 poisson.f = 0.0
-poisson.add_dirichlet_bc(1.0, "Bottom")
-poisson.add_dirichlet_bc(0.0, "Top")
+poisson.add_dirichlet_bc(1.0, "Bottom", component=0)
+poisson.add_dirichlet_bc(0.0, "Top", component=0)
 
 poisson.tolerance = 1.0e-6
+poisson.petsc_options["snes_type"] = "newtonls"
+poisson.petsc_options["ksp_type"] = "fgmres"
+
 poisson.petsc_options['snes_monitor'] = None
-# poisson.petsc_options['ksp_monitor'] = None
+poisson.petsc_options['ksp_monitor'] = None
 poisson.petsc_options.setValue("pc_type", "mg")
-poisson.petsc_options.delValue("pc_mg_type")
-# poisson.petsc_options.setValue("pc_mg_type", "kaskade")
-# poisson.petsc_options.setValue("pc_mg_cycle_type", "w")
+poisson.petsc_options.setValue("pc_mg_type", "multiplicative")
+poisson.petsc_options.setValue("pc_mg_type", "kaskade")
+# poisson.petsc_options["mg_levels"] = mesh.dm.getRefineLevel()-2
+poisson.petsc_options["mg_levels_ksp_type"] = "fgmres"
+poisson.petsc_options["mg_levels_ksp_max_it"] = 100
+poisson.petsc_options["mg_levels_ksp_converged_maxits"] = None
+poisson.petsc_options["mg_coarse_pc_type"] = "svd"
 
 # -
 
 poisson.view()
 
-poisson._setup_terms()
+poisson._setup_pointwise_functions(verbose=True)
 
-poisson.snes.view()
+poisson._setup_discretisation()
 
 timing.reset()
 timing.start()
@@ -88,6 +97,8 @@ timing.start()
 # %%
 # Solve time
 poisson.solve()
+
+type(poisson.F1)
 
 # %%
 # Check. Construct simple linear function which is solution for
@@ -99,7 +110,7 @@ with mesh.access():
     mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.data)
     if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
         print("Unexpected values encountered.")
-        
+
 
 # Validate
 
@@ -218,7 +229,10 @@ if uw.mpi.size == 1:
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, ["Bottom", "Top", "Right", "Left"])
+poisson.add_dirichlet_bc(abs_r2, "Bottom" , component=0)
+poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
 
 display(poisson.f)
 
@@ -240,7 +254,7 @@ poisson.constitutive_model.c
 
 
 # %%
-poisson._setup_terms()
+poisson._setup_pointwise_functions()
 poisson._G3
 
 
@@ -334,7 +348,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="K",
+        scalars="T",
         use_transparency=False,
         opacity=0.5,
         scalar_bar_args=sargs,
@@ -348,4 +362,6 @@ if uw.mpi.size == 1:
 poisson.snes.view()
 
 timing.print_table()
+
+
 

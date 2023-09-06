@@ -5,15 +5,13 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Linear diffusion of a hot pipe
 #
 # - Using the adv_diff solver.
@@ -55,7 +53,6 @@ l0 = 1e5  ### 100 km in m (length of box)
 time_scale = l0**2 / k0  ### s
 time_scale_Myr = time_scale / (60 * 60 * 24 * 365.25 * 1e6)
 
-# %%
 # mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True)
 
 mesh = uw.meshing.StructuredQuadBox(
@@ -63,7 +60,6 @@ mesh = uw.meshing.StructuredQuadBox(
 )
 
 
-# %%
 # Create adv_diff object
 
 # Set some things
@@ -74,7 +70,6 @@ tmax = 1.0
 
 # Create an adv
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
@@ -84,13 +79,13 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(T)
 adv_diff.constitutive_model.Parameters.diffusivity = k
 
 # %%
 ### fix temp of top and bottom walls
-adv_diff.add_dirichlet_bc(0.5, "Bottom")
-adv_diff.add_dirichlet_bc(0.5, "Top")
+adv_diff.add_dirichlet_bc(0.5, "Bottom", 0)
+adv_diff.add_dirichlet_bc(0.5, "Top", 0)
 
 
 # %%
@@ -118,7 +113,7 @@ def plot_fig():
 
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 250]
-        pv.global_theme.antialiasing = True
+        pv.global_theme.anti_aliasing = "msaa"
         pv.global_theme.jupyter_backend = "panel"
         pv.global_theme.smooth_shading = True
 
@@ -180,8 +175,7 @@ def plot_fig():
 
 plot_fig()
 
-# %%
-### Vertical profile across the centre of the box
+# ## Vertical profile across the centre of the box
 
 ### y coords to sample
 sample_y = np.arange(
@@ -234,22 +228,25 @@ def diffusion_1D(sample_points, tempProfile, k, model_dt):
     return T
 
 
-# %%
 ### get the initial temp profile
 tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
-# %%
+# +
+
 step = 0
 time = 0.0
+# -
 
 # %%
 nsteps = 21
 
-# %%
-# if uw.mpi.size == 1:
-#     ''' create figure to show the temp diffuses '''
-#     plt.figure(figsize=(9, 3))
-#     plt.plot(t0, sample_points[:,1], ls=':')
+# +
+
+if uw.mpi.size == 1:
+    ''' create figure to show the temp diffuses '''
+    plt.figure(figsize=(9, 3))
+    plt.plot(t0, sample_points[:,1], ls=':')
+# -
 
 
 while step < nsteps:
@@ -259,7 +256,7 @@ while step < nsteps:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.5f}")
 
     ### 1D profile from underworld
-    t1 = uw.function.evaluate(adv_diff.u.fn, sample_points)
+    t1 = uw.function.evalf(adv_diff.u.sym[0], sample_points)
 
     if uw.mpi.size == 1 and step % 10 == 0:
         """compare 1D and 2D models"""
@@ -281,10 +278,3 @@ while step < nsteps:
 
     step += 1
     time += dt
-
-# plt.show()
-
-# %%
-plot_fig()
-
-# %%
