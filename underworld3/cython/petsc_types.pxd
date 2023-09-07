@@ -42,8 +42,8 @@ ctypedef void (*PetscDSBdJacobianFn)(
 
 cdef class PtrContainer:
     cdef PetscDSResidualFn*    fns_residual
-    cdef PetscDSJacobianFn*    fns_jacobian
     cdef PetscDSResidualFn*    fns_bcs
+    cdef PetscDSJacobianFn*    fns_jacobian
     cdef PetscDSBdResidualFn*  fns_bd_residual
     cdef PetscDSBdJacobianFn*  fns_bd_jacobian
 

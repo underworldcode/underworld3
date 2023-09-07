@@ -45,13 +45,13 @@ mesh = uw.meshing.UnstructuredSimplexBox(regular=True,
     qdegree=3, refinement=3
 )
 
-mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(n_els, n_els),
-    minCoords=(0.0, 0.0), 
-    maxCoords=(1.0, 1.0), 
-    qdegree=3, 
-    refinement=3
-)
+# mesh = uw.meshing.StructuredQuadBox(
+#     elementRes=(n_els, n_els),
+#     minCoords=(0.0, 0.0), 
+#     maxCoords=(1.0, 1.0), 
+#     qdegree=3, 
+#     refinement=3
+# )
 # -
 
 

@@ -43,6 +43,7 @@ def getext(
     fns_bd_jacobian,
     primary_field_list,
     verbose=False,
+    clear_cache=False,
 ):
     """
     Check if we've already created an equivalent extension
@@ -54,8 +55,8 @@ def getext(
 
     fns = (
         tuple(fns_residual)
-        + tuple(fns_jacobian)
         + tuple(fns_bcs)
+        + tuple(fns_jacobian)
         + tuple(fns_bd_residual)
         + tuple(fns_bd_jacobian)
     )
@@ -75,8 +76,8 @@ def getext(
             jitname,
             mesh,
             fns_residual,
-            fns_jacobian,
             fns_bcs,
+            fns_jacobian,
             fns_bd_residual,
             fns_bd_jacobian,
             primary_field_list,
@@ -94,15 +95,19 @@ def getext(
     i_res = {}
     for index, fn in enumerate(fns_residual):
         i_res[fn] = index
+
+    i_ebc = {}
+    for index, fn in enumerate(fns_bcs):
+        i_ebc[fn] = index
+
     i_jac = {}
     for index, fn in enumerate(fns_jacobian):
         i_jac[fn] = index
-    i_ebc = {}
-    for index, fn in enumerate(fns_jacobian):
-        i_ebc[fn] = index
+
     i_bd_res = {}
     for index, fn in enumerate(fns_bd_residual):
         i_bd_res[fn] = index
+
     i_bd_jac = {}
     for index, fn in enumerate(fns_bd_jacobian):
         i_bd_jac[fn] = index
@@ -122,8 +127,8 @@ def _createext(
     name: str,
     mesh: underworld3.discretisation.Mesh,
     fns_residual: List[sympy.Basic],
-    fns_jacobian: List[sympy.Basic],
     fns_bcs: List[sympy.Basic],
+    fns_jacobian: List[sympy.Basic],
     fns_bd_residual: List[sympy.Basic],
     fns_bd_jacobian: List[sympy.Basic],
     primary_field_list: List[underworld3.discretisation.MeshVariable],
@@ -186,6 +191,10 @@ def _createext(
     count_jacobian_sig = len(fns_jacobian)
     count_bd_residual_sig = len(fns_bd_residual)
     count_bd_jacobian_sig = len(fns_bd_jacobian)
+
+    print("Compiler: ")
+    for i, fn in enumerate(fns):
+        print(f" {i}: {fn}")
 
     # `_ccode` patching
     def ccode_patch_fns(varlist, prefix_str):
@@ -473,14 +482,14 @@ cdef extern from "cy_ext.h" nogil:
 cpdef PtrContainer getptrobj():
     clsguy = PtrContainer()
     clsguy.fns_residual = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
-    clsguy.fns_jacobian = <PetscDSJacobianFn*> malloc({}*sizeof(PetscDSJacobianFn))
     clsguy.fns_bcs      = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
+    clsguy.fns_jacobian = <PetscDSJacobianFn*> malloc({}*sizeof(PetscDSJacobianFn))
     clsguy.fns_bd_residual = <PetscDSBdResidualFn*> malloc({}*sizeof(PetscDSBdResidualFn))  
     clsguy.fns_bd_jacobian = <PetscDSBdJacobianFn*> malloc({}*sizeof(PetscDSBdJacobianFn))
 """.format(
         len(fns_residual),
-        len(fns_jacobian),
         len(fns_bcs),
+        len(fns_jacobian),
         len(fns_bd_residual),
         len(fns_bd_jacobian),
     )
@@ -525,32 +534,6 @@ cpdef PtrContainer getptrobj():
         eqn_count += 1
 
     boundary_jacobian_equations = (boundary_residual_equations[1], eqn_count)
-
-    if underworld3.mpi.rank == 0 and verbose:
-        print(
-            f"{randstr}    Equation count - {eqn_count}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {len(fns_residual):5d} residuals:       {residual_equations}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {len(fns_jacobian):5d} jacobians:       {jacobian_equations}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {len(fns_bcs):5d} boundaries:           {boundary_equations}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {len(fns_bd_residual):5d} boundary_res: {boundary_residual_equations}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {len(fns_bd_jacobian):5d} boundary_jac: {boundary_jacobian_equations}",
-            flush=True,
-        )
 
     pyx_str += "    return clsguy"
     codeguys.append(["cy_ext.pyx", pyx_str])
@@ -613,3 +596,33 @@ cpdef PtrContainer getptrobj():
             f"your Underworld runtime.\n"
             f"Please contact the developers if you are unable to resolve the issue."
         )
+
+    if underworld3.mpi.rank == 0 and verbose:
+        print(f"Location of compiled module: {str(tmpdir)}")
+
+        print(
+            f"{randstr}    Equation count - {eqn_count}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_residual):5d}    residuals: {residual_equations[0]}->{residual_equations[1]-1}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bcs):5d}   boundaries: {boundary_equations[0]}->{boundary_equations[1]-1}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_jacobian):5d}    jacobians: {jacobian_equations[0]}->{jacobian_equations[1]-1}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bd_residual):5d} boundary_res: {boundary_residual_equations[0]}->{boundary_residual_equations[1]-1}",
+            flush=True,
+        )
+        print(
+            f"{randstr}   {len(fns_bd_jacobian):5d} boundary_jac: {boundary_jacobian_equations[0]}->{boundary_jacobian_equations[1]-1}",
+            flush=True,
+        )
+
+    return

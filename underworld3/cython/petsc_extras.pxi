@@ -32,10 +32,11 @@ cdef CHKERRQ(PetscErrorCode ierr):
 
 cdef extern from "petsc_compat.h":
 
-    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt,                                                      void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
+    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
     # PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
     PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
+    PetscErrorCode UW_PetscDSViewWF(PetscDS)     
 
     # PetscErrorCode DMAddBoundary(PetscDM, DMBoundaryConditionType, const char name[], DMLabel label, PetscInt Nv, PetscInt values[], PetscInt field, PetscInt Nc, PetscInt comps[], void (*)(), void (*)(), void *ctx, PetscInt *bd)
 

@@ -2,6 +2,7 @@ import pytest
 import underworld3 as uw
 
 structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
+
 unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
     cellSize=0.1, regular=False
 )

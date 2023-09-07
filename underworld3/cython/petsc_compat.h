@@ -51,6 +51,18 @@ PetscErrorCode UW_PetscDSSetBdResidual(PetscDS ds, DMLabel label, PetscInt label
     return 1;
 }
 
+PetscErrorCode UW_PetscDSViewWF(PetscDS ds)
+{
+
+    PetscWeakForm wf;
+
+    // PetscCall(PetscDSGetBoundary(ds, bd, &wf1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+    PetscCall(PetscDSGetWeakForm(ds, &wf));
+    PetscCall(PetscWeakFormView(wf, NULL));
+
+    return 1;
+}
+
 // PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
 //                                        PetscInt f, PetscInt part,
 //                                        PetscInt idx0, void (*bcFunc_f0)(void),

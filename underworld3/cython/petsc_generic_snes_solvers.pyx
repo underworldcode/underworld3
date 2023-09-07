@@ -67,7 +67,7 @@ class Solver(uw_object):
         import numpy as np
         from collections import namedtuple
         BC = namedtuple('NaturalBC', ['component', 'fn_f', 'fn_F', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.natural_bcs.append(BC(component, sympify(fn_f), sympify(fn_F), boundary,-1, "natural", -1))
+        self.natural_bcs.append(BC(component, sympy.Matrix([[sympify(fn_f)]]).as_immutable(), sympy.Matrix([[sympify(fn_F)]]).as_immutable(), boundary,-1, "natural", -1))
 
     # Use FE terminology 
     @timing.routine_timer_decorator
@@ -86,7 +86,7 @@ class Solver(uw_object):
  
         from collections import namedtuple
         BC = namedtuple('EssentialBC', ['component', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_bcs.append(BC(component,sympify(fn), boundary, -1,  'essential', -1))
+        self.essential_bcs.append(BC(component,sympy.Matrix([[sympify(fn)]]).as_immutable(), boundary, -1,  'essential', -1))
 
     ## Properties that are common to all solvers
 
@@ -1272,8 +1272,8 @@ class SNES_Stokes_SaddlePt(Solver):
         self.petsc_options["snes_use_ew_version"] = 3
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 1.0  # rule of thumb
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.0333
+        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1  # rule of thumb
+        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.033
 
 
     @property
@@ -1667,7 +1667,7 @@ class SNES_Stokes_SaddlePt(Solver):
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
-            bc_type = 6
+            bc_type = 2
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{component:2d}").encode('utf8'), 
@@ -1675,7 +1675,7 @@ class SNES_Stokes_SaddlePt(Solver):
                                 0,  # field ID in the DM
                                 component, 
                                 # <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>NULL, 
+                                <void (*)() noexcept> NULL, 
                                 NULL, 
                                 1, 
                                 <const PetscInt *> &ind, 
@@ -1692,6 +1692,7 @@ class SNES_Stokes_SaddlePt(Solver):
                 print(" - component: {}".format(bc.component))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
+
 
             boundary = bc.boundary
             label = self.dm.getLabel(boundary)
@@ -1713,6 +1714,8 @@ class SNES_Stokes_SaddlePt(Solver):
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
+            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
+
             bc_type = 5
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
@@ -1720,7 +1723,7 @@ class SNES_Stokes_SaddlePt(Solver):
                                 str(boundary).encode('utf8'), 
                                 0, 
                                 component, 
-                                <void (*)() noexcept>ext.fns_bcs[index], 
+                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
                                 NULL, 
                                 1, 
                                 <const PetscInt *> &ind, 
@@ -1728,11 +1731,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
-        
-        
-        
-        
-        # self.dm.createDS()
 
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
@@ -1804,20 +1802,28 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
 
-        # Rebuild this lot (check - is it required ?)
+        if verbose:
+            print(f"Problem Residuals, Jacobians loaded", flush=True)
+            UW_PetscDSViewWF(ds.ds)
+
+
+        # Rebuild this lot
 
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
+            # coarse_dm.createDS()
 
         for coarse_dm in self.dm_hierarchy:
             coarse_dm.createClosureIndex(None)
 
         self.dm.setUp()
 
+
+
+
         # coarse_dm = self.dm.getCoarseDM()
         # self.dm.copyDisc(coarse_dm)
-
 
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)

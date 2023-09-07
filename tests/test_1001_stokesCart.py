@@ -4,7 +4,7 @@ import underworld3 as uw
 
 # These are tested by test_001_meshes.py
 
-structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
+structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(3,) * 2)
 
 unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
     cellSize=0.2, regular=False, qdegree=2, refinement=1
@@ -149,7 +149,7 @@ def test_stokes_boxmesh_bc_failure():
     stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
     if mesh.dim == 2:
-        stokes.bodyforce = sympy.Matrix([0, x])
+        stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x])
 
         stokes.add_dirichlet_bc(0.0, "Bottom", 0)
         stokes.add_dirichlet_bc(0.0, "Bottom", 1)
@@ -160,7 +160,7 @@ def test_stokes_boxmesh_bc_failure():
         stokes.add_dirichlet_bc(0.0, "Left", 0)
         stokes.add_dirichlet_bc(0.0, "Right", 0)
     else:
-        stokes.bodyforce = sympy.Matrix([0, x, 0])
+        stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x, 0])
 
         stokes.add_dirichlet_bc(0.0, "Bottom", 0)
         stokes.add_dirichlet_bc(0.0, "Bottom", 1)

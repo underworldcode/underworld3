@@ -94,6 +94,8 @@ else:
 
 
 problem_size = uw.options.getInt("problem_size", default=1)
+grid_refinement = uw.options.getInt("grid_refinement", default=0)
+grid_type = uw.options.getString("grid_type", default="simplex")
 
 
 # +
@@ -130,21 +132,23 @@ timing.reset()
 timing.start()
 
 # +
-# meshball = uw.meshing.SphericalShell(
-#     radiusInner=r_i,
-#     radiusOuter=r_o,
-#     cellSize=cell_size,
-#     qdegree=2,
-#     refinement=0,
-# )
+if "simplex" in grid_type:
 
-meshball = uw.meshing.CubedSphere(
-    radiusInner=r_i,
-    radiusOuter=r_o,
-    numElements=3,
-    refinement=0,
-    qdegree=2,
-)
+    meshball = uw.meshing.SphericalShell(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        cellSize=cell_size,
+        qdegree=2,
+        refinement=0,
+    )
+else:
+    meshball = uw.meshing.CubedSphere(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        numElements=3,
+        refinement=0,
+        qdegree=2,
+    )
 
 meshball.dm.view()
 # -
