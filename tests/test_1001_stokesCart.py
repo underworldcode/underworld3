@@ -57,33 +57,45 @@ def test_stokes_boxmesh(mesh):
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.petsc_options["ksp_type"] = "fgmres"
 
+    stokes.petsc_options["snes_type"] = "newtonls"
+    stokes.petsc_options["ksp_type"] = "fgmres"
+    stokes.petsc_options["ksp_monitor"] = None
+    stokes.petsc_options["snes_monitor"] = None
+    stokes.tolerance = 1.0e-3
+
+    # stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+    stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+    stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+
+    stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+    stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+    stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+    stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
+    stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+
     if mesh.dim == 2:
-        stokes.bodyforce = sympy.Matrix([0, x])
+        stokes.bodyforce = sympy.Matrix([0.0, sympy.sin(x)])
 
-        stokes.add_dirichlet_bc(0.0, "Bottom", 0)
-        stokes.add_dirichlet_bc(0.0, "Bottom", 1)
+        stokes.add_natural_bc((0.0, -5.0 * u.sym[1]), "Top")
+        stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
 
-        stokes.add_dirichlet_bc(0.0, "Top", 0)
-        stokes.add_dirichlet_bc(0.0, "Top", 1)
+        # stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+        stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+        stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
-        stokes.add_dirichlet_bc(0.0, "Left", 0)
-        stokes.add_dirichlet_bc(0.0, "Right", 0)
     else:
-        stokes.bodyforce = sympy.Matrix([0, x, 0])
+        stokes.bodyforce = sympy.Matrix([0, sympy.sin(x), 0])
 
-        stokes.add_dirichlet_bc(0.0, "Bottom", 0)
-        stokes.add_dirichlet_bc(0.0, "Bottom", 1)
-        stokes.add_dirichlet_bc(0.0, "Bottom", 2)
-
-        stokes.add_dirichlet_bc(0.0, "Top", 0)
-        stokes.add_dirichlet_bc(0.0, "Top", 1)
-        stokes.add_dirichlet_bc(0.0, "Top", 2)
-
-        stokes.add_dirichlet_bc(0.0, "Left", 0)
-        stokes.add_dirichlet_bc(0.0, "Right", 0)
-
-        stokes.add_dirichlet_bc(0.0, "Front", 2)
-        stokes.add_dirichlet_bc(0.0, "Back", 2)
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Top")
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Bottom")
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Left")
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Right")
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Front")
+        stokes.add_essential_bc([0.0, 0.0, 0.0], "Back")
 
     stokes.solve()
 

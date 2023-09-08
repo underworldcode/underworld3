@@ -25,7 +25,7 @@ import sympy
 
 # %%
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, qdegree=3
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 3.0, qdegree=2
 )
 
 mesh.dm.view()
@@ -143,8 +143,8 @@ diffusivity.solve()
 
 # non-linear smoothing term (probably not needed especially at the boundary)
 
-# gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y)
-# gradient.solve(_force_setup=True)
+gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y)
+gradient.solve(_force_setup=True)
 
 # %%
 gradT_projector.solve()
@@ -172,7 +172,7 @@ if MPI.COMM_WORLD.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 

@@ -61,32 +61,52 @@ class Solver(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_natural_bc(self, fn_f, fn_F, boundary, component=None):
+    def add_natural_bc(self, fn_f, boundary, components=None):
         
         self.is_setup = False
         import numpy as np
+
+        if components is None:
+            cpts_list = []
+            for i, fn in enumerate(fn_f):
+                if fn != sympy.oo and fn != -sympy.oo:
+                    cpts_list.append(i)
+            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
+
+        sympy_fn = sympy.Matrix((fn_f)).as_immutable()
+
         from collections import namedtuple
-        BC = namedtuple('NaturalBC', ['component', 'fn_f', 'fn_F', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.natural_bcs.append(BC(component, sympy.Matrix([[sympify(fn_f)]]).as_immutable(), sympy.Matrix([[sympify(fn_F)]]).as_immutable(), boundary,-1, "natural", -1))
+        BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
+        self.natural_bcs.append(BC(components, sympy_fn, boundary,-1, "natural", -1, {}))
 
     # Use FE terminology 
     @timing.routine_timer_decorator
-    def add_essential_bc(self, fn, boundary, component=0):
-        self.add_dirichlet_bc(fn, boundary, component)
+    def add_essential_bc(self, fn, boundary, components=None):
+        self.add_dirichlet_bc(fn, boundary, components)
         return
 
     @timing.routine_timer_decorator
-    def add_dirichlet_bc(self, fn, boundary, component):
+    def add_dirichlet_bc(self, fn, boundary, components=None):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
 
         self.is_setup = False
         import numpy as np
- 
+
+        if components is None:
+            cpts_list = []
+            for i, bc_fn in enumerate(fn):
+                if bc_fn != sympy.oo and fn != -sympy.oo:
+                    cpts_list.append(i)
+                
+            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
+
+        sympy_fn = sympy.Matrix((fn)).as_immutable()
+
         from collections import namedtuple
-        BC = namedtuple('EssentialBC', ['component', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_bcs.append(BC(component,sympy.Matrix([[sympify(fn)]]).as_immutable(), boundary, -1,  'essential', -1))
+        BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+        self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
 
     ## Properties that are common to all solvers
 
@@ -302,16 +322,17 @@ class SNES_Scalar(Solver):
 
         # set functions
         cdef int ind=1
+        cdef int [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
 
         for index,bc in enumerate(self.natural_bcs):
 
-            component = bc.component
+            components = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - components: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -336,13 +357,15 @@ class SNES_Scalar(Solver):
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
             bc_type = 6
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
                                 0,  # field ID in the DM
-                                component, 
-                                # <const PetscInt *> &comps_view[0], 
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
                                 NULL, 
                                 1, 
@@ -382,13 +405,17 @@ class SNES_Scalar(Solver):
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
             bc_type = 5
+            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0, 
-                                component, 
-                                <void (*)() noexcept>ext.fns_bcs[index], 
+                                0,  # field ID in the DM
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0], 
+                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
                                 NULL, 
                                 1, 
                                 <const PetscInt *> &ind, 
@@ -401,7 +428,7 @@ class SNES_Scalar(Solver):
         return
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False):
         import sympy
 
         N = self.mesh.N
@@ -511,13 +538,10 @@ class SNES_Scalar(Solver):
                                        tuple(fns_bd_residual), 
                                        tuple(fns_bd_jacobian), 
                                        primary_field_list=prim_field_list, 
-                                       verbose=verbose)
+                                       verbose=verbose, 
+                                       debug=debug,)
 
         return
-
-
-
-
 
 
     @timing.routine_timer_decorator
@@ -529,7 +553,6 @@ class SNES_Scalar(Solver):
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
-
 
         i_res = self.ext_dict.res
 
@@ -573,7 +596,8 @@ class SNES_Scalar(Solver):
     def solve(self,
               zero_init_guess: bool =True,
               _force_setup:    bool =False,
-              verbose:         bool=False, ):
+              verbose:         bool=False,
+              debug:           bool=False, ):
         """
         Generates solution to constructed system.
 
@@ -588,7 +612,7 @@ class SNES_Scalar(Solver):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose)
+            self._setup_pointwise_functions(verbose, debug=debug)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
@@ -837,13 +861,15 @@ class SNES_Vector(Solver):
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
             bc_type = 6
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
                                 0,  # field ID in the DM
-                                component, 
-                                # <const PetscInt *> &comps_view[0], 
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
                                 NULL, 
                                 1, 
@@ -854,11 +880,9 @@ class SNES_Vector(Solver):
 
 
         for index,bc in enumerate(self.essential_bcs):
-            # comps_view = bc.component
-            component = bc.component
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -883,13 +907,17 @@ class SNES_Vector(Solver):
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
             bc_type = 5
+            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0, 
-                                component, 
-                                <void (*)() noexcept>ext.fns_bcs[index], 
+                                0,  # field ID in the DM
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0], 
+                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
                                 NULL, 
                                 1, 
                                 <const PetscInt *> &ind, 
@@ -914,7 +942,7 @@ class SNES_Vector(Solver):
 
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False):
         import sympy
 
         N = self.mesh.N
@@ -982,7 +1010,8 @@ class SNES_Vector(Solver):
                                        [x.fn_f for x in self.natural_bcs], 
                                        [x.fn_F for x in self.natural_bcs], 
                                        primary_field_list=prim_field_list, 
-                                       verbose=verbose)
+                                       verbose=verbose, 
+                                       debug=debug,)
 
         cdef PtrContainer ext = self.compiled_extensions
 
@@ -1043,6 +1072,7 @@ class SNES_Vector(Solver):
               zero_init_guess: bool =True,
               _force_setup:    bool =False,
               verbose=False,
+              debug=False,
                ):
         """
         Generates solution to constructed system.
@@ -1059,7 +1089,7 @@ class SNES_Vector(Solver):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose)
+            self._setup_pointwise_functions(verbose, debug=debug)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
@@ -1101,11 +1131,14 @@ class SNES_Vector(Solver):
         # Copy solution back into user facing variable
         with self.mesh.access(self.u):
             self.dm.globalToLocal(gvec, lvec)
+            print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
+
 
             # add back boundaries.
             # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
             # derived from the system-dm (as opposed to the var.vec local vector), else
             # failures can occur.
+
             ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
             self.u.vec.array[:] = lvec.array[:]
 
@@ -1409,7 +1442,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False):
         import sympy
 
         # Any property changes will trigger this
@@ -1529,32 +1562,34 @@ class SNES_Stokes_SaddlePt(Solver):
             if bc.fn_f is not None:
 
                 bd_F0  = sympy.Array(bc.fn_f)
-                self._bd_f0 = sympy.ImmutableDenseMatrix(bd_F0)
+                bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
 
-                G0 = sympy.derive_by_array(self._bd_f0, U)
-                G1 = sympy.derive_by_array(self._bd_f0, self._L)
+                G0 = sympy.derive_by_array(bd_F0, U)
+                G1 = sympy.derive_by_array(bd_F0, self._L)
 
-                self._bd_uu_G0 = sympy.ImmutableMatrix(G0.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                self._bd_uu_G1 = sympy.ImmutableMatrix(G1.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
+                bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
 
-                fns_bd_residual += [self._bd_f0]
-                fns_bd_jacobian += [self._bd_uu_G0, self._bd_uu_G1]
+                fns_bd_residual += [bc.fns["u_f0"]]
+                fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
   
-            if bc.fn_F is not None:
+            # Going to leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
 
-                bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
-                self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
+            # if bc.fn_F is not None:
+
+            #     bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
+            #     self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
 
 
-                G2 = sympy.derive_by_array(self._bd_f1, U)
-                G3 = sympy.derive_by_array(self._bd_f1, self._L)
+            #     G2 = sympy.derive_by_array(self._bd_f1, U)
+            #     G3 = sympy.derive_by_array(self._bd_f1, self._L)
 
-                self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-                self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+            #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
+            #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
-                fns_bd_residual += [self._bd_f1]
-                fns_bd_jacobian += [self._bd_uu_G2, self._bd_uu_G3]
+            #     fns_bd_residual += [self._bd_f1]
+            #     fns_bd_jacobian += [self._bd_uu_G2, self._bd_uu_G3]
 
 
         self._fns_bd_residual = fns_bd_residual
@@ -1582,7 +1617,8 @@ class SNES_Stokes_SaddlePt(Solver):
                                        tuple(fns_bd_residual), 
                                        tuple(fns_bd_jacobian), 
                                        primary_field_list=prim_field_list, 
-                                       verbose=verbose)
+                                       verbose=verbose, 
+                                       debug=debug,)
 
         return
 
@@ -1640,12 +1676,11 @@ class SNES_Stokes_SaddlePt(Solver):
 
         for index,bc in enumerate(self.natural_bcs):
 
-            component = bc.component
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
-                print(" - fn:         {} ".format(bc.fn))
+                print(" - fn:         {} ".format(bc.fn_f))
 
             boundary = bc.boundary
             label = self.dm.getLabel(boundary)
@@ -1667,15 +1702,17 @@ class SNES_Stokes_SaddlePt(Solver):
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
-            bc_type = 2
+            bc_type = 6
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
                                 0,  # field ID in the DM
-                                component, 
-                                # <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept> NULL, 
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0], 
+                                <void (*)() noexcept>NULL, 
                                 NULL, 
                                 1, 
                                 <const PetscInt *> &ind, 
@@ -1685,11 +1722,9 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
         for index,bc in enumerate(self.essential_bcs):
-            # comps_view = bc.component
-            component = bc.component
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1714,15 +1749,18 @@ class SNES_Stokes_SaddlePt(Solver):
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
-            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
 
             bc_type = 5
+            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
+            num_constrained_components = bc.components.shape[0]
+            comps_view = bc.components
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
-                                str(boundary+f"{component:2d}").encode('utf8'), 
+                                str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
                                 0, 
-                                component, 
+                                num_constrained_components,
+                                <const PetscInt *> &comps_view[0],  
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
                                 NULL, 
                                 1, 
@@ -1772,33 +1810,41 @@ class SNES_Stokes_SaddlePt(Solver):
         cdef DMLabel c_label
 
         for bc in self.natural_bcs:
+            # Note, currently only works for 1 bc - need to save the jacobian functions for each bc
 
             i_bd_res = self.ext_dict.bd_res
+            i_bd_jac = self.ext_dict.bd_jac
 
             c_label = self.dm.getLabel(bc.boundary)
 
             boundary_id = bc.PETScID
             label_val = bc.boundary_label_val
-            idx0 = bc.component
-            idx1 = bc.component
+            idx0 = 0
+            # idx1 = bc.component
 
             if c_label and label_val != -1:
 
                 if bc.fn_f is not None:
-                    fn_f_key = sympy.ImmutableDenseMatrix(sympy.Array(bc.fn_f))
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                                            0, 0, 
-                                            idx0, ext.fns_bd_residual[i_bd_res[fn_f_key]], 
-                                            0, NULL)
+                    ## Note: we should consider the other coupling terms here up can be non-zero 
 
-                if bc.fn_F is not None:
+                    UW_PetscDSSetBdTerms(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 0, 0,
+                                    idx0, ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
+                                    0, NULL, 
+                                    0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
+                                    0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
+                                    0, NULL, 
+                                    0, NULL) # G2, G3 not defined
 
-                    fn_F_key = sympy.ImmutableDenseMatrix(sympy.Array(bc.fn_F))
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                                            0, 0, 
-                                            idx1, NULL, 
-                                            0, ext.fns_bd_residual[i_bd_res[fn_F_key]])
+
+                # if bc.fn_F is not None:
+
+                #     fn_F_key = sympy.ImmutableDenseMatrix(sympy.Array(bc.fn_F))
+                #     UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                #                             0, 0, 
+                #                             idx1, NULL, 
+                #                             0, ext.fns_bd_residual[i_bd_res[fn_F_key]])
 
 
 
@@ -1818,9 +1864,6 @@ class SNES_Stokes_SaddlePt(Solver):
             coarse_dm.createClosureIndex(None)
 
         self.dm.setUp()
-
-
-
 
         # coarse_dm = self.dm.getCoarseDM()
         # self.dm.copyDisc(coarse_dm)
@@ -1852,6 +1895,7 @@ class SNES_Stokes_SaddlePt(Solver):
               zero_init_guess: bool =True,
               picard: int = 0,
               verbose=False,
+              debug=False,
               _force_setup: bool =False, ):
         """
         Generates solution to constructed system.
@@ -1868,7 +1912,7 @@ class SNES_Stokes_SaddlePt(Solver):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose)
+            self._setup_pointwise_functions(verbose, debug=debug)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
@@ -1944,7 +1988,7 @@ class SNES_Stokes_SaddlePt(Solver):
         with self.mesh.access(self.p, self.u):
 
             for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)
+                print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)
 
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
 
@@ -1961,6 +2005,8 @@ class SNES_Stokes_SaddlePt(Solver):
 
                 clvec = lvec
                 csdm = sdm
+                
+                print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
 
                 # Now copy into the user vec.

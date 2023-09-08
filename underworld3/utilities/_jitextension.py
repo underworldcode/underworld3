@@ -44,6 +44,7 @@ def getext(
     primary_field_list,
     verbose=False,
     clear_cache=False,
+    debug=False,
 ):
     """
     Check if we've already created an equivalent extension
@@ -82,6 +83,7 @@ def getext(
             fns_bd_jacobian,
             primary_field_list,
             verbose=verbose,
+            debug=debug,
         )
 
     ## TODO: Return a dictionary to recover the function pointers from the compiled
@@ -133,6 +135,7 @@ def _createext(
     fns_bd_jacobian: List[sympy.Basic],
     primary_field_list: List[underworld3.discretisation.MeshVariable],
     verbose: Optional[bool] = False,
+    debug: Optional[bool] = False,
 ):
     """
     This creates the required extension which houses the JIT
@@ -414,6 +417,7 @@ cdef extern from "cy_ext.h" nogil:
     # results in only the first JIT module working (with all
     # subsequent modules pointing towards the first's symbols).
     # Tags: RTLD_LOCAL, RTLD_Global, Gadi.
+
     import string
     import random
     import os
@@ -433,8 +437,9 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_1 = count_residual_sig
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1]
+        debug_str = rf'fprintf(stdout,"  res - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
+            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
 
@@ -445,8 +450,9 @@ cdef extern from "cy_ext.h" nogil:
     # but we leave this separate in case it changes in later PETSc implementations
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1]
+        debug_str = rf'fprintf(stdout,"  ebc - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ... \n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
+            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
 
@@ -454,24 +460,27 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_1 = eqn_index_1 + count_jacobian_sig
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
+        debug_str = rf'fprintf(stdout,"  jac - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ... \n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
         h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
-            randstr, eqn[0], jacobian_sig, eqn[1]
+            randstr, eqn[0], jacobian_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_residual_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_residual_sig, eqn[1]
+        debug_str = rf'fprintf(stdout,"bcres - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
+            randstr, eqn[0], bd_residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_residual_sig)
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
+        debug_str = rf'fprintf(stdout,"bcjac - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
         h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_jacobian_sig, eqn[1]
+            randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_jacobian_sig)
 

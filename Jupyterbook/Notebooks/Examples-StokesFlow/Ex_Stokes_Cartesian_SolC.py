@@ -39,19 +39,22 @@ import numpy as np
 # +
 # %%
 n_els = 4
+refinement = 3
 
-mesh = uw.meshing.UnstructuredSimplexBox(regular=True,
+mesh1 = uw.meshing.UnstructuredSimplexBox(regular=True,
     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, 
-    qdegree=3, refinement=3
+    qdegree=3, refinement=refinement
 )
 
-# mesh = uw.meshing.StructuredQuadBox(
-#     elementRes=(n_els, n_els),
-#     minCoords=(0.0, 0.0), 
-#     maxCoords=(1.0, 1.0), 
-#     qdegree=3, 
-#     refinement=3
-# )
+mesh2 = uw.meshing.StructuredQuadBox(
+    elementRes=(n_els, n_els),
+    minCoords=(0.0, 0.0), 
+    maxCoords=(1.0, 1.0), 
+    qdegree=3, 
+    refinement=refinement
+)
+
+mesh = mesh2
 # -
 
 
@@ -59,7 +62,7 @@ mesh.dm.view()
 
 # %%
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2, varsymbol=r"\mathbf{u}")
-p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True, varsymbol=r"{p}")
+p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=False, varsymbol=r"{p}")
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
 
@@ -117,10 +120,10 @@ stokes.bodyforce = sympy.Matrix(
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
 
-stokes.add_dirichlet_bc(0.0, "Left", 0)  
-stokes.add_dirichlet_bc(0.0, "Right", 0)  
-stokes.add_dirichlet_bc(0.0, "Top", 1)  
-stokes.add_dirichlet_bc(0.0, "Bottom", 1)  
+stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
 
 
@@ -161,9 +164,9 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 # # # mg, multiplicative - very robust ... similar to gamg, additive
 
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 # -
 

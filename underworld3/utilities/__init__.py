@@ -14,27 +14,4 @@ if not petsc_dir + "/lib/petsc/bin" in sys.path:
 from .uw_petsc_gen_xdmf import *
 from .uw_swarmIO import *
 
-from ._utils import gather_data
-
-# =====
-# Maybe the following should be moved to _utils.py ?? 
-# =====
-
-# A couple of useful h5 tricks
-def h5_scan(filename):
-    h5file = h5py.File(filename)
-    entities = []
-    h5file.visit(entities.append)
-    h5file.close()
-
-    return entities
-
-
-def mem_footprint():
-    """Returns resident set size in Mb for this process"""
-    import os, psutil
-
-    pid = os.getpid()
-    python_process = psutil.Process(pid)
-
-    return python_process.memory_info().rss // 1000000
+from ._utils import *
