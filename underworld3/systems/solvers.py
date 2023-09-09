@@ -1476,7 +1476,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
-
+    
     @timing.routine_timer_decorator
     def solve(
         self,
