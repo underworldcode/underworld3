@@ -377,10 +377,10 @@ class SNES_Scalar(Solver):
 
         for index,bc in enumerate(self.essential_bcs):
             
-            component = bc.component
+            component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -833,10 +833,10 @@ class SNES_Vector(Solver):
 
         for index,bc in enumerate(self.natural_bcs):
 
-            component = bc.component
+            component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.component))
+                print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1131,7 +1131,8 @@ class SNES_Vector(Solver):
         # Copy solution back into user facing variable
         with self.mesh.access(self.u):
             self.dm.globalToLocal(gvec, lvec)
-            print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
+            if verbose:
+                print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
 
 
             # add back boundaries.

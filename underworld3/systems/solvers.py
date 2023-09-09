@@ -255,6 +255,7 @@ class SNES_Darcy(SNES_Scalar):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        verbose: bool = False,
         _force_setup: bool = False,
     ):
         """
@@ -271,6 +272,10 @@ class SNES_Darcy(SNES_Scalar):
 
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+            
 
         # Solve pressure
 
@@ -290,8 +295,8 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def _setup_terms(self):
         self._v_projector.uw_function = self.darcy_flux
-        self._v_projector._setup_terms()
-        super()._setup_terms()
+        self._v_projector._setup_pointwise_functions()#._setup_terms()
+        super()._setup_pointwise_functions()#._setup_terms()
 
 
 ## --------------------------------
@@ -1483,7 +1488,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         zero_init_guess: bool = True,
         timestep: float = None,
         _force_setup: bool = False,
-        verbose=False,
+        verbose: bool = False,
     ):
         """
         Generates solution to constructed system.
@@ -1502,9 +1507,11 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             self.is_setup = False
 
         if not self.is_setup:
+            self._setup_terms()
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+            
 
         # Make sure we update the projection of the swarm variable if requested
 
@@ -1521,9 +1528,9 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def _setup_terms(self):
         if self.projection:
             self._u_star_projector.bcs = self.bcs
-            self._u_star_projector._setup_terms()
+            self._u_star_projector._setup_pointwise_functions()#_setup_terms()
 
-        super()._setup_terms()
+        super()._setup_pointwise_functions()#._setup_terms()
 
 
 #################################################
@@ -1857,6 +1864,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        verbose: bool = False,
         _force_u_star_projection: bool = False,
         _force_setup: bool = False,
     ):
@@ -1877,6 +1885,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
         if (not self.is_setup) or _force_setup:
             self._setup_terms()
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
 
         # Make sure we update the projection of the swarm variable if requested
         # But, this can break down on the first solve if there are constraints and bcs
@@ -1898,9 +1909,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         if self.projection:
             # self._u_star_projector.bcs = self.bcs
             # self._u_star_projector.
-            self._u_star_projector._setup_terms()
+            self._u_star_projector._setup_pointwise_functions()#_setup_terms()
 
-        super()._setup_terms()
+        super()._setup_pointwise_functions()#._setup_terms()
 
 
 ## Should we put in some TS style functionality here ... e.g. an Adam's moulton sympy wrapper or a BDF wrapper
@@ -2054,6 +2065,7 @@ class SNES_NavierStokes(SNES_Stokes):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        verbose: bool = False,
         _force_setup: bool = False,
     ):
         """
@@ -2074,7 +2086,10 @@ class SNES_NavierStokes(SNES_Stokes):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if (not self.is_setup) or _force_setup:
-            self._setup_terms()
+             # self._setup_terms()
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
 
         # Over to you Stokes Solver
         super().solve(zero_init_guess)
@@ -2294,6 +2309,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        verbose: bool = False,
         _force_setup: bool = False,
     ):
         """
@@ -2314,7 +2330,10 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if (not self.is_setup) or _force_setup:
-            self._setup_terms()
+            # self._setup_terms()
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
 
         ## Update the semi-lagrange terms here
 

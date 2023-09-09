@@ -752,8 +752,8 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import generateXdmf
 
         ### save mesh vars
-        fname = f"./{outputPath}{'step_'}{index:04d}.h5"
-        xfname = f"./{outputPath}{'step_'}{index:04d}.xdmf"
+        fname = f"./{outputPath}{'step_'}{index:05d}.h5"
+        xfname = f"./{outputPath}{'step_'}{index:05d}.xdmf"
         #### create petsc viewer
         viewer = PETSc.ViewerHDF5().createHDF5(
             fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
