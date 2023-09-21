@@ -435,8 +435,8 @@ class Mesh(Stateful, uw_object):
 
         if self._stale_lvec:
             if not self._lvec:
-                # self.dm.clearDS()
-                # self.dm.createDS()
+                self.dm.clearDS()
+                self.dm.createDS()
                 # create the local vector (memory chunk) and attach to original dm
                 self._lvec = self.dm.createLocalVec()
 
@@ -1295,15 +1295,40 @@ def MeshVariable(
         return mesh.vars[clean_name]
 
     if mesh._accessed:
-        print(
-            "It is not possible to add new variables to a mesh after existing variables have been accessed"
-        )
-        print(f"Variable {name} has NOT been added to mesh {mesh.instance}")
-        return
+        ## Before adding a new variable, we first snapshot the data from the mesh.dm
+        ## (if not accessed, then this will not be necessary and may break)
 
-    return _MeshVariable(
+        existing_data = mesh.lvec.copy()
+        mesh._lvec = None
+        mesh._stale_lvec = True
+
+    new_meshVariable = _MeshVariable(
         varname, mesh, num_components, vtype, degree, continuous, varsymbol
     )
+
+    if mesh._accessed:
+        ## Before adding a new variable, we first snapshot the data from the mesh.dm
+        ## (if not accessed, then this will not be necessary and may break)
+
+        dm1 = mesh.dm.clone()
+        mesh.dm.copyFields(dm1)
+        dm1.createDS()
+        mesh.dm = dm1
+
+        mdm_is, _ = mesh.dm.createSubDM(range(0, mesh.dm.getNumFields() - 1))
+        vec1 = mesh.dm.getLocalVec()
+        vsub1 = vec1.getSubVector(mdm_is)
+        vsub1.array[...] = existing_data.array[...]
+        vec1.restoreSubVector(mdm_is, vsub1)
+        mesh.dm.restoreLocalVec(vec1)
+
+    # print(
+    #     "It is not possible to add new variables to a mesh after existing variables have been accessed"
+    # )
+    # print(f"Variable {name} has NOT been added to mesh {mesh.instance}")
+    # return
+
+    return new_meshVariable
 
 
 class _MeshVariable(Stateful, uw_object):
@@ -1430,16 +1455,6 @@ class _MeshVariable(Stateful, uw_object):
         self.degree = degree
         self.continuous = continuous
 
-        options = PETSc.Options()
-        name0 = "VAR"  # self.clean_name ## Filling up the options database
-        options.setValue(f"{name0}_petscspace_degree", degree)
-        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
-        options.setValue(
-            f"{name0}_petscdualspace_lagrange_node_endpoints", False
-        )  # only active if discontinuous
-
-        dim = self.mesh.dm.getDimension()
-
         # First create the petsc FE object of the
         # correct size / dimension to represent the
         # unknowns when used in computations (for tensors)
@@ -1462,22 +1477,7 @@ class _MeshVariable(Stateful, uw_object):
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
 
-        # self._data_ij = numpy.empty(self.shape, dtype=object)
         self._data_container = numpy.empty(self.shape, dtype=object)
-
-        petsc_fe = PETSc.FE().createDefault(
-            dim,
-            self.num_components,
-            self.mesh.isSimplex,
-            self.mesh.qdegree,
-            name0 + "_",
-            PETSc.COMM_WORLD,
-        )
-
-        self.field_id = self.mesh.dm.getNumFields()
-        self.mesh.dm.setField(self.field_id, petsc_fe)
-        field, _ = self.mesh.dm.getField(self.field_id)
-        field.setName(self.clean_name)
 
         # create associated sympy function
         from underworld3.function import UnderworldFunction
@@ -1577,7 +1577,7 @@ class _MeshVariable(Stateful, uw_object):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-        self.mesh.dm.createDS()
+        self._setup_ds()
 
         return
 
@@ -1921,6 +1921,33 @@ class _MeshVariable(Stateful, uw_object):
 
         if self.vtype == uw.VarType.MATRIX:
             return i + j * self.shape[0]
+
+    def _setup_ds(self):
+        options = PETSc.Options()
+        name0 = "VAR"  # self.clean_name ## Filling up the options database
+        options.setValue(f"{name0}_petscspace_degree", self.degree)
+        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", self.continuous)
+        options.setValue(
+            f"{name0}_petscdualspace_lagrange_node_endpoints", False
+        )  # only active if discontinuous
+
+        dim = self.mesh.dm.getDimension()
+        petsc_fe = PETSc.FE().createDefault(
+            dim,
+            self.num_components,
+            self.mesh.isSimplex,
+            self.mesh.qdegree,
+            name0 + "_",
+            PETSc.COMM_WORLD,
+        )
+
+        self.field_id = self.mesh.dm.getNumFields()
+        self.mesh.dm.addField(petsc_fe)
+        field, _ = self.mesh.dm.getField(self.field_id)
+        field.setName(self.clean_name)
+        self.mesh.dm.createDS()
+
+        return
 
     def _set_vec(self, available):
         if self._lvec == None:

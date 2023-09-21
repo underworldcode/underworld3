@@ -1,15 +1,20 @@
-# # Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
+# # Field Advection solver test
 #
+# Shear flow driven by a pre-defined, rigid body rotation in a disc or by the boundary conditions
 #
 
 # +
 import petsc4py
 from petsc4py import PETSc
 
+import os
+os.environ["UW_TIMING_ENABLE"] = "1"
+
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
 from underworld3 import VarType
+from underworld3 import timing
 
 import numpy as np
 
@@ -23,14 +28,7 @@ options = PETSc.Options()
 
 # options.getAll()
 # -
-
-
-
-
-# +
-
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.05, qdegree=3)
-# -
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
 
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
@@ -69,6 +67,32 @@ adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_so
 adv_diff.constitutive_model.Parameters.diffusivity=k
 
 
+
+# +
+dTdt = uw.swarm.SemiLagrange_Updater(meshball, adv_diff._u.sym, 
+                                     adv_diff._V.sym, vtype=uw.VarType.SCALAR,
+                                     degree=3, continuous=True,
+                                     varsymbol=r'T',
+                                     verbose=True,
+                                     bcs=adv_diff.essential_bcs,
+                                     order=2,smoothing=0.00001,                                 
+                                )
+
+dQdt = uw.swarm.SemiLagrange_Updater(meshball, adv_diff.constitutive_model.flux_1d, 
+                                     adv_diff._V.sym, vtype=uw.VarType.VECTOR,
+                                     degree=2, continuous=True,
+                                     varsymbol=r'Q',
+                                     verbose=True,
+                                     bcs=None,
+                                     order=3,smoothing=0.00001,                                 
+                                )
+# -
+
+
+
+dQdt.u_star[0].sym
+
+dTdt.u_star[0].sym
 
 # +
 # Create a density structure / buoyancy force
@@ -133,8 +157,6 @@ with meshball.access(t_0, t_soln):
 # -
 
 
-
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -177,9 +199,7 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
-
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
-
+    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.66)
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     # pl.remove_scalar_bar("T")
@@ -254,12 +274,39 @@ scalar_projection_solver = uw.systems.solvers.SNES_Projection(
 scalar_projection_solver.uw_function = t_soln.sym[0]
 scalar_projection_solver.bcs = adv_diff.bcs
 scalar_projection_solver.solve() 
+# -
+
+
 
 
 # +
+timing.reset()
+timing.start()
 
 delta_t = 0.05
-adv_diff.solve(timestep=delta_t*0.005)
+print(f"-----", flush=True)
+dTdt.update(dt = delta_t )
+dQdt.update(dt = delta_t )
+
+adv_diff.solve(timestep=delta_t)
+# -
+
+with meshball.access():
+    print(dTdt.u_star[1].max())
+    print(dQdt.u_star[1].max())
+
+
+
+
+with meshball.access():
+    print(adv_diff._u_star.data.max())    
+    print(adv_diff._F_star.data.max())
+
+dTdt.bdf(dt=0.01)
+
+
+
+0/0
 
 # +
 # Advection/diffusion model / update in time
@@ -271,7 +318,7 @@ plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 for step in range(0, 20):
 
     # delta_t will be baked in when this is defined ... so re-define it
-    adv_diff.solve(timestep=delta_t)
+    adv_diff.solve(timestep=delta_t, verbose=False)
 
     # stats then loop
 
@@ -352,6 +399,9 @@ if uw.mpi.size == 1:
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
 # -
-t_soln.num_components
+uw.timing.print_table()
+
+
+#
 
 

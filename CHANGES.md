@@ -2,6 +2,24 @@ CHANGES: Underworld3
 ====================
 
 
+```{note}
+Test
+```
+
+
+```python
+
+```
+
+```python
+
+```
+
+# 2023-08-27
+
+  - Geometrical multigrid (necessary changes to DM setup)
+
+
 ## 2023-05-20
 
   - Rewrite the constitutive model to understand the concept of materials

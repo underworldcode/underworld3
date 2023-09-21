@@ -12,7 +12,7 @@ include "petsc_extras.pxi"
 
 ## This is currently wrapped in petsc4py but returns zero
 
-def petsc_fvm_get_min_radius(mesh) -> double:
+def petsc_fvm_get_min_radius(mesh) -> float:
         """
         This method returns the minimum distance from any cell centroid to a face.
         It wraps to the PETSc `DMPlexGetMinRadius` routine. 
@@ -60,7 +60,7 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         return cell_radii, cell_centroids
 
 
-def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundary_label_value, marked_faces=True) -> double:
+def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundary_label_value, marked_faces=True) -> float:
         """
         Wraps DMPlexCreateSubmesh
         """
@@ -236,3 +236,26 @@ def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         # incoming_dm.localizeCoordinates()
 
         return 
+
+
+def petsc_vec_concatenate( inputVecs  ):
+
+        inputVecs = list(inputVecs)
+        # nx = len(inputVecs)
+
+        outputVec = PETSc.Vec().create()
+
+        cdef Py_ssize_t i, nx = len(inputVecs)
+        cdef PetscInt n = <PetscInt> nx
+
+        cdef PetscVec cvecs[100]
+        cdef Vec output_cVec = Vec()
+
+        for i from 0 <= i < nx: 
+                cvecs[i] = (<Vec?>inputVecs[i]).vec
+
+        ierr = VecConcatenate(nx, cvecs, &output_cVec.vec, NULL)
+
+        outputVec = output_cVec
+
+        return outputVec

@@ -41,7 +41,9 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*, PetscInt, void*, PetscInt, void*)
     PetscErrorCode UW_PetscDSSetBdTerms(PetscDS , PetscDMLabel , PetscInt , PetscInt , PetscInt , PetscInt , PetscInt, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *)
     PetscErrorCode UW_PetscDSViewWF(PetscDS)     
-
+    PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)     
+    
+    # PetscErrorCode UW_PetscVecConcatenate(PetscInt, PetscVec[], PetscVec *)
     # PetscErrorCode DMAddBoundary(PetscDM, DMBoundaryConditionType, const char name[], DMLabel label, PetscInt Nv, PetscInt values[], PetscInt field, PetscInt Nc, PetscInt comps[], void (*)(), void (*)(), void *ctx, PetscInt *bd)
 
 cdef extern from "petsc.h" nogil:
@@ -69,3 +71,6 @@ cdef extern from "petsc.h" nogil:
     # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
     PetscErrorCode DMSetPeriodicity(PetscDM dm, PetscReal maxCell[], PetscReal Lstart[], PetscReal L[])
     PetscErrorCode DMLocalizeCoordinates(PetscDM dm)
+
+    # Not wrapped at this point
+    PetscErrorCode VecConcatenate(PetscInt nx, const PetscVec X[], PetscVec *, PetscIS *)

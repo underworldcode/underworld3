@@ -75,7 +75,7 @@ PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS ds, DMLabel label, PetscInt label
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    //    PetscCall(PetscWeakFormSetIndexBdJacobian(wf, label, label_val, f, g, part, idx0, bcFunc_g0, idx1, bcFunc_g1, idx2, bcFunc_g2, idx3, bcFunc_g3));
+    PetscCall(PetscWeakFormSetIndexBdJacobian(wf, label, label_val, f, g, part, idx0, bcFunc_g0, idx1, bcFunc_g1, idx2, bcFunc_g2, idx3, bcFunc_g3));
 
     return 1;
 }
@@ -105,3 +105,23 @@ PetscErrorCode UW_PetscDSViewWF(PetscDS ds)
 
     return 1;
 }
+
+PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
+{
+
+    PetscWeakForm wf;
+
+    PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+    PetscCall(PetscWeakFormView(wf, NULL));
+
+    return 1;
+}
+
+// PetscErrorCode UW_PetscVecConcatenate(PetscInt nx, Vec inputVecs[], Vec *outputVec)
+// {
+//     IS *x_is;
+
+//     PetscErrorCode VecConcatenate(nx, inputVecs, outputVec, &x_is);
+
+//     return 1;
+// }

@@ -5,7 +5,7 @@ import numpy as np
 import io
 import sys
 from collections import UserString
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 
 
 # # Capture the stdout to an object
@@ -41,10 +41,12 @@ class CaptureStdout(UserString, redirect_stdout):
         self.split = split
         UserString.__init__(self, seq=seq)
         redirect_stdout.__init__(self, self._io)
+        redirect_stderr.__init__(self, self._io)
         return
 
     def __enter__(self, *args, **kwargs):
         redirect_stdout.__enter__(self, *args, **kwargs)
+        redirect_stderr.__enter__(self, *args, **kwargs)
         return self
 
     def __exit__(self, *args, **kwargs):
@@ -52,6 +54,7 @@ class CaptureStdout(UserString, redirect_stdout):
         if self.split:
             self.data = self.data.splitlines()
         redirect_stdout.__exit__(self, *args, **kwargs)
+        redirect_stderr.__exit__(self, *args, **kwargs)
 
         return
 

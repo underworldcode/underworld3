@@ -1409,7 +1409,7 @@ class Swarm(Stateful, uw_object):
             var._data = self.dm.getField(var.clean_name).reshape(
                 (-1, var.num_components)
             )
-            assert(var._data is not None)
+            assert var._data is not None
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
@@ -1870,8 +1870,6 @@ class SemiLagrange_Updater(uw_object):
     $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
     """
 
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
-
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1951,10 +1949,7 @@ class SemiLagrange_Updater(uw_object):
                 varsymbol=r"W^{*}",
             )
 
-            self._u_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
-                self.mesh, self.u_star[0], self._WorkVar, verbose=False
-            )
-
+        self._u_star_projection_solver.uw_function = self.u_fn
         self._u_star_projection_solver.bcs = bcs
         self._u_star_projection_solver.smoothing = smoothing
 
@@ -1989,11 +1984,14 @@ class SemiLagrange_Updater(uw_object):
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain
 
-        for i in range(self.order - 1, -1, -1):
+        for i in range(self.order - 1, 0, -1):
+            print(f"Copy u_star[{i-1}] to u_star[{i}]", flush=True)
             with self.mesh.access(self.u_star[i]):
                 self.u_star[i].data[...] = self.u_star[i - 1].data[...]
 
         # 2. Compute the upstream values
+
+        # We use the u_star variable as a working value here so we have to work backwards
 
         for i in range(self.order - 1, -1, -1):
             print(f"U_star[{i}] - order = {self.order}", flush=True)
@@ -2010,10 +2008,15 @@ class SemiLagrange_Updater(uw_object):
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
             )
 
+            if i == 0:
+                # Recalculate u_star from u_fn
+                self._u_star_projection_solver.uw_function = self.u_fn
+                self._u_star_projection_solver.solve()
+
             with self._nswarm_u.access(self._nswarm_u.swarmVariable):
-                for d in range(self.u_fn.shape[1]):
+                for d in range(self.u_star[i].shape[1]):
                     self._nswarm_u.swarmVariable.data[:, d] = uw.function.evaluate(
-                        self.u_fn[d], self._nswarm_u.data
+                        self.u_star[i].sym[d], self._nswarm_u.data
                     )  # .reshape(-1, 1)
 
             # restore coords (will call dm.migrate after context manager releases)
@@ -2030,6 +2033,34 @@ class SemiLagrange_Updater(uw_object):
             if i != 0:
                 with self.mesh.access(self.u_star[i]):
                     self.u_star[i].data[...] = self.u_star[0].data[...]
+
+        return
+
+    def bdf(self, dt):
+        if self.order == 1:
+            with sympy.core.evaluate(False):
+                bdf_1 = (self.u_fn - self.u_star[0].sym) / dt
+            return bdf_1
+
+        elif self.order == 2:
+            with sympy.core.evaluate(False):
+                bdf_2 = (
+                    3 * self.u_fn / 2 - 2 * self.u_star[0].sym + self.u_star[1].sym / 2
+                ) / dt
+            return bdf_2
+
+        elif self.order == 3:
+            with sympy.core.evaluate(False):
+                bdf_3 = (
+                    11 * self.u_fn / 6
+                    - 3 * self.u_star[0].sym
+                    + 3 * self.u_star[1].sym / 2
+                    - self.u_star[2].sym / 3
+                ) / dt
+            return bdf_3
+
+    def adams_moulton(self):
+        pass
 
         return
 

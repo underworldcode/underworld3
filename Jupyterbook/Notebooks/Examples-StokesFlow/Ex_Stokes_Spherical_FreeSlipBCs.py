@@ -410,4 +410,6 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # OR
     pl.show(cpos="xy")
 
+stokes._uu_G0
+
 

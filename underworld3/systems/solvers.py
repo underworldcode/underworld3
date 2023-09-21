@@ -275,7 +275,6 @@ class SNES_Darcy(SNES_Scalar):
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
-            
 
         # Solve pressure
 
@@ -295,8 +294,8 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def _setup_terms(self):
         self._v_projector.uw_function = self.darcy_flux
-        self._v_projector._setup_pointwise_functions()#._setup_terms()
-        super()._setup_pointwise_functions()#._setup_terms()
+        self._v_projector._setup_pointwise_functions()  # ._setup_terms()
+        super()._setup_pointwise_functions()  # ._setup_terms()
 
 
 ## --------------------------------
@@ -1002,7 +1001,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             self.mesh,
             vtype=VarType.VECTOR,
             degree=self._u.degree - 1,
-            continuous=False,
+            continuous=True,
             varsymbol=r"F^{*}",
         )
 
@@ -1023,13 +1022,13 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         # set up a projection solver for _u_star_Field and for the flux term
 
         self._u_star_projection_solver = uw.systems.solvers.SNES_Projection(
-            self.mesh, self._u_star, verbose=False
+            self.mesh, self._u_star, verbose=True
         )
         self._u_star_projection_solver.bcs = self.bcs
         self._u_star_projection_solver.smoothing = 1.0e-6
 
         self._F_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
-            self.mesh, self._F_star, verbose=False
+            self.mesh, self._F_star, verbose=True
         )
         self._F_star_projection_solver.smoothing = 1.0e-6
 
@@ -1230,8 +1229,8 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._F_star_projection_solver.uw_function = nF1.sym
         self._F_star_projection_solver.solve()
 
-        self._F_star_projection_solver.uw_function = nF1.sym
-        self._F_star_projection_solver.solve()
+        # self._F_star_projection_solver.uw_function = nF1.sym
+        # self._F_star_projection_solver.solve()
 
         ######################################################################
 
@@ -1481,7 +1480,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate
-    
+
     @timing.routine_timer_decorator
     def solve(
         self,
@@ -1511,7 +1510,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
-            
 
         # Make sure we update the projection of the swarm variable if requested
 
@@ -1528,9 +1526,9 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def _setup_terms(self):
         if self.projection:
             self._u_star_projector.bcs = self.bcs
-            self._u_star_projector._setup_pointwise_functions()#_setup_terms()
+            self._u_star_projector._setup_pointwise_functions()  # _setup_terms()
 
-        super()._setup_pointwise_functions()#._setup_terms()
+        super()._setup_pointwise_functions()  # ._setup_terms()
 
 
 #################################################
@@ -1909,9 +1907,9 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         if self.projection:
             # self._u_star_projector.bcs = self.bcs
             # self._u_star_projector.
-            self._u_star_projector._setup_pointwise_functions()#_setup_terms()
+            self._u_star_projector._setup_pointwise_functions()  # _setup_terms()
 
-        super()._setup_pointwise_functions()#._setup_terms()
+        super()._setup_pointwise_functions()  # ._setup_terms()
 
 
 ## Should we put in some TS style functionality here ... e.g. an Adam's moulton sympy wrapper or a BDF wrapper
@@ -2086,7 +2084,7 @@ class SNES_NavierStokes(SNES_Stokes):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if (not self.is_setup) or _force_setup:
-             # self._setup_terms()
+            # self._setup_terms()
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)

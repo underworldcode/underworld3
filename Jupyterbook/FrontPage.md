@@ -1,6 +1,10 @@
 
 # The Underworld Geodynamics Platform
 
+```{warning}
+Warning - Underworld 3 is still in $\beta$ release
+```
+
 ![](./Figures/SocialShare.png)
 
 ## A parallel, python, particle-in-cell, finite-element code for Geodynamics
@@ -16,7 +20,7 @@ Underworld is an open-source, particle-in-cell finite element code tuned for lar
   - [Underworld documentation](https://underworldcode.github.io/underworld3/main)
   - [Underworld api documentation](https://underworldcode.github.io/underworld3/main_api)
   - [Underworld beta documentation](https://underworldcode.github.io/underworld3)
-  
+
 
 ### Governance
 

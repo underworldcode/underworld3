@@ -200,12 +200,18 @@ class Constitutive_Model(uw_object):
         match the PETSc field storage pattern for symmetric tensors.
         """
 
-        flux = self.flux()
+        flux = self.flux
+
+        if flux.shape[0] == 1:
+            return flux
+
+        if flux.shape[1] == 1:
+            return flux.T
 
         assert (
             flux.is_symmetric()
-        ), "The conversion to Voigt form is only defined for symmetric tensors in underworld\
-            but for non-symmetric tensors, the .flatten() method is a potential replacement"
+        ), "The conversion of tensors to Voigt form is only defined for symmetric tensors in underworld\
+            but for non-symmetric tensors, the .flat() method is a potential replacement"
 
         return uw.maths.tensor.rank2_to_voigt(flux, dim=self.dim)
 

@@ -33,6 +33,29 @@ from collections import namedtuple
 _ext_dict = {}
 
 
+# Generates the C debugging string for the compiled function block
+def debugging_text(randstr, fn, fn_type, eqn_no):
+    try:
+        object_size = len(fn.flat())
+    except:
+        object_size = 1
+
+    outstr = "out[0]"
+    for i in range(1, object_size):
+        outstr += f", out[{i}]"
+
+    formatstr = "%6e, " * object_size
+
+    debug_str = f"/* {fn} */\n"
+    debug_str += f"/* Size = {object_size} */\n"
+    debug_str += f'FILE *fp; fp = fopen( "{randstr}_debug.txt", "a" );\n'
+    debug_str += f'fprintf(fp,"{fn_type} - equation {eqn_no} at (%6e, %6e, %.6e) -> ", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2]);\n'
+    debug_str += f'fprintf(fp,"{formatstr}\\n", {outstr});\n'
+    debug_str += f"fclose(fp);"
+
+    return debug_str
+
+
 @timing.routine_timer_decorator
 def getext(
     mesh,
@@ -45,6 +68,7 @@ def getext(
     verbose=False,
     clear_cache=False,
     debug=False,
+    debug_name=None,
 ):
     """
     Check if we've already created an equivalent extension
@@ -63,11 +87,19 @@ def getext(
     )
     import os
 
-    if "UW_JITNAME" in os.environ:  # If var specified, probably testing.
+    # if verbose and uw.mpi.rank == 0:
+    #     for i, fn in enumerate(fns):
+    #         print(f"JIT: [{i:3d}] -> {fn}", flush=True)
+
+    if debug_name is not None:
+        jitname = debug_name
+
+    elif "UW_JITNAME" in os.environ:  # If var specified, probably testing.
         jitname = os.environ["UW_JITNAME"]
         # Note, extensions cannot be replaced, so need to append count to ensure
         # unique modules.
         jitname += "_" + str(len(_ext_dict.keys()))
+
     else:  # Else name from fns hash
         jitname = abs(hash((mesh, fns)))
 
@@ -84,6 +116,7 @@ def getext(
             primary_field_list,
             verbose=verbose,
             debug=debug,
+            debug_name=debug_name,
         )
 
     ## TODO: Return a dictionary to recover the function pointers from the compiled
@@ -136,6 +169,7 @@ def _createext(
     primary_field_list: List[underworld3.discretisation.MeshVariable],
     verbose: Optional[bool] = False,
     debug: Optional[bool] = False,
+    debug_name=None,
 ):
     """
     This creates the required extension which houses the JIT
@@ -194,10 +228,6 @@ def _createext(
     count_jacobian_sig = len(fns_jacobian)
     count_bd_residual_sig = len(fns_bd_residual)
     count_bd_jacobian_sig = len(fns_bd_jacobian)
-
-    print("Compiler: ")
-    for i, fn in enumerate(fns):
-        print(f" {i}: {fn}")
 
     # `_ccode` patching
     def ccode_patch_fns(varlist, prefix_str):
@@ -332,7 +362,7 @@ def _createext(
             fn = sympy.Matrix([fn])
 
         if verbose:
-            print("Processing JIT {} / {}".format(index, fn))
+            print("Processing JIT {:4d} / {}".format(index, fn))
 
         out = sympy.MatrixSymbol("out", *fn.shape)
         eqn = ("eqn_" + str(index), printer.doprint(fn, out))
@@ -425,23 +455,29 @@ cdef extern from "cy_ext.h" nogil:
     if not "UW_JITNAME" in os.environ:
         randstr = "".join(random.choices(string.ascii_uppercase, k=5))
     else:
-        randstr = "FUNC_" + str(len(_ext_dict.keys()))
+        if debug_name is None:
+            randstr = "FUNC_" + str(len(_ext_dict.keys()))
+        else:
+            randstr = debug_name
 
     # Print includes
     for header in printer.headers:
         h_str += '#include "{}"\n'.format(header)
 
     h_str += "\n"
+
     # Print equations
     eqn_index_0 = 0
     eqn_index_1 = count_residual_sig
+    fn_counter = 0
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = rf'fprintf(stdout,"  res - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        debug_str = debugging_text(randstr, fns[fn_counter], "  res", fn_counter)
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
+        fn_counter += 1
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bc_sig
@@ -450,39 +486,44 @@ cdef extern from "cy_ext.h" nogil:
     # but we leave this separate in case it changes in later PETSc implementations
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = rf'fprintf(stdout,"  ebc - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ... \n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        debug_str = debugging_text(randstr, fns[fn_counter], "  ebc", fn_counter)
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
+        fn_counter += 1
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_jacobian_sig
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = rf'fprintf(stdout,"  jac - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ... \n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+        debug_str = debugging_text(randstr, fns[fn_counter], "  jac", fn_counter)
+
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], jacobian_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
+        fn_counter += 1
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_residual_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = rf'fprintf(stdout,"bcres - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
+        debug_str = debugging_text(randstr, fns[fn_counter], "bdres", fn_counter)
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], bd_residual_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_residual_sig)
+        fn_counter += 1
 
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = rf'fprintf(stdout,"bcjac - {randstr}_{eqn[0]} at (%6e, %6e, %.6e) -> %.6e ...\n", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], out[0] );'
-        h_str += "void {}_petsc_{}{}\n{{\n{}\n}}\n\n".format(
+        debug_str = debugging_text(randstr, fns[fn_counter], "bdjac", fn_counter)
+        h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str if debug else ""
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_jacobian_sig)
+        fn_counter += 1
 
     codeguys.append(["cy_ext.h", h_str])
     # Note that the malloc below will cause a leak, but it's just a bunch of function
@@ -610,27 +651,27 @@ cpdef PtrContainer getptrobj():
         print(f"Location of compiled module: {str(tmpdir)}")
 
         print(
-            f"{randstr}    Equation count - {eqn_count}",
+            f"{randstr} Equation count - {eqn_count}",
             flush=True,
         )
         print(
-            f"{randstr}   {len(fns_residual):5d}    residuals: {residual_equations[0]}->{residual_equations[1]-1}",
+            f"{randstr}   {len(fns_residual):5d}    residuals: {residual_equations[0]}:{residual_equations[1]}",
             flush=True,
         )
         print(
-            f"{randstr}   {len(fns_bcs):5d}   boundaries: {boundary_equations[0]}->{boundary_equations[1]-1}",
+            f"{randstr}   {len(fns_bcs):5d}   boundaries: {boundary_equations[0]}:{boundary_equations[1]}",
             flush=True,
         )
         print(
-            f"{randstr}   {len(fns_jacobian):5d}    jacobians: {jacobian_equations[0]}->{jacobian_equations[1]-1}",
+            f"{randstr}   {len(fns_jacobian):5d}    jacobians: {jacobian_equations[0]}:{jacobian_equations[1]}",
             flush=True,
         )
         print(
-            f"{randstr}   {len(fns_bd_residual):5d} boundary_res: {boundary_residual_equations[0]}->{boundary_residual_equations[1]-1}",
+            f"{randstr}   {len(fns_bd_residual):5d} boundary_res: {boundary_residual_equations[0]}:{boundary_residual_equations[1]}",
             flush=True,
         )
         print(
-            f"{randstr}   {len(fns_bd_jacobian):5d} boundary_jac: {boundary_jacobian_equations[0]}->{boundary_jacobian_equations[1]-1}",
+            f"{randstr}   {len(fns_bd_jacobian):5d} boundary_jac: {boundary_jacobian_equations[0]}:{boundary_jacobian_equations[1]}",
             flush=True,
         )
 
