@@ -159,7 +159,6 @@ class SwarmVariable(Stateful, uw_object):
 
         # recycle swarm
         self._rebuild_on_cycle = rebuild_on_cycle
-
         self._register = _register
 
         from collections import namedtuple
@@ -426,7 +425,6 @@ class SwarmVariable(Stateful, uw_object):
         else:
             with self.swarm.access(self):
                 if comm.rank == 0:
-                    # print(f'start {self.name} on {comm.rank}')
                     with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
                         if compression == True:
                             h5f.create_dataset(
@@ -443,17 +441,14 @@ class SwarmVariable(Stateful, uw_object):
                                 chunks=True,
                                 maxshape=(None, self.data.shape[1]),
                             )
-                    # print(f'finish {self.name} on {comm.rank}')
                 comm.barrier()
                 for proc in range(1, comm.size):
                     if comm.rank == proc:
-                        # print(f'start {self.name} on {comm.rank}')
                         with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
                             h5f["data"].resize(
                                 (h5f["data"].shape[0] + self.data.shape[0]), axis=0
                             )
                             h5f["data"][-self.data.shape[0] :] = self.data[:]
-                        # print(f'finish {self.name} on {comm.rank}')
                     comm.barrier()
                 comm.barrier()
 
@@ -701,13 +696,15 @@ class Swarm(Stateful, uw_object):
     def __init__(self, mesh, recycle_rate=0):
         Swarm.instances += 1
 
+        self.celldm = mesh.dm.clone()
+
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
-        self.dm.setCellDM(mesh.dm)
+        self.dm.setCellDM(self.celldm)
         self._data = None
 
         # Is the swarm a streak-swarm ?
@@ -1898,7 +1895,8 @@ class SemiLagrange_Updater(uw_object):
 
         # psi is evaluated/stored at `order` timesteps. We can't
         # be sure if psi is a meshVariable or a function to be evaluated
-        # psi_star is reaching back through each evaluation
+        # psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
 
         self.u_fn = u_fn
         self.V_fn = V_fn
@@ -1985,17 +1983,13 @@ class SemiLagrange_Updater(uw_object):
         # 1. Copy the stored values down the chain
 
         for i in range(self.order - 1, 0, -1):
-            print(f"Copy u_star[{i-1}] to u_star[{i}]", flush=True)
             with self.mesh.access(self.u_star[i]):
                 self.u_star[i].data[...] = self.u_star[i - 1].data[...]
 
         # 2. Compute the upstream values
 
         # We use the u_star variable as a working value here so we have to work backwards
-
         for i in range(self.order - 1, -1, -1):
-            print(f"U_star[{i}] - order = {self.order}", flush=True)
-
             with self._nswarm_u.access(self._nswarm_u._X0):
                 self._nswarm_u._X0.data[...] = self._nswarm_u.data[...]
 
@@ -2017,7 +2011,7 @@ class SemiLagrange_Updater(uw_object):
                 for d in range(self.u_star[i].shape[1]):
                     self._nswarm_u.swarmVariable.data[:, d] = uw.function.evaluate(
                         self.u_star[i].sym[d], self._nswarm_u.data
-                    )  # .reshape(-1, 1)
+                    )
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_u.access(self._nswarm_u.particle_coordinates):
@@ -2036,28 +2030,34 @@ class SemiLagrange_Updater(uw_object):
 
         return
 
-    def bdf(self, dt):
-        if self.order == 1:
-            with sympy.core.evaluate(False):
-                bdf_1 = (self.u_fn - self.u_star[0].sym) / dt
-            return bdf_1
+    def bdf(self, dt, order=None):
+        if order is None:
+            order = self.order
 
-        elif self.order == 2:
-            with sympy.core.evaluate(False):
-                bdf_2 = (
+        with sympy.core.evaluate(False):
+            one_over_dt = 1 / sympy.sympify(dt)
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf = self.u_fn - self.u_star[0].sym
+
+            elif order == 2:
+                bdf = (
                     3 * self.u_fn / 2 - 2 * self.u_star[0].sym + self.u_star[1].sym / 2
-                ) / dt
-            return bdf_2
+                )
 
-        elif self.order == 3:
-            with sympy.core.evaluate(False):
-                bdf_3 = (
+            elif order == 3:
+                bdf = (
                     11 * self.u_fn / 6
                     - 3 * self.u_star[0].sym
                     + 3 * self.u_star[1].sym / 2
                     - self.u_star[2].sym / 3
-                ) / dt
-            return bdf_3
+                )
+
+        with sympy.core.evaluate(False):
+            bdf = bdf * one_over_dt
+
+        return bdf
 
     def adams_moulton(self):
         pass
@@ -2224,7 +2224,7 @@ class Lagrangian_Updater(uw_object):
         else:
             phi = 1.0
 
-        print(f"PHI -> {phi}", flush=True)
+        # print(f"PHI -> {phi}", flush=True)
 
         for h in range(self.order):
             i = self.order - (h + 1)

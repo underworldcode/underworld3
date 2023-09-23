@@ -101,7 +101,7 @@ def getext(
         jitname += "_" + str(len(_ext_dict.keys()))
 
     else:  # Else name from fns hash
-        jitname = abs(hash((mesh, fns)))
+        jitname = abs(hash((mesh, fns, tuple(mesh.vars.keys()))))
 
     # Create the module if not in dictionary
     if jitname not in _ext_dict.keys():
@@ -118,6 +118,9 @@ def getext(
             debug=debug,
             debug_name=debug_name,
         )
+    else:
+        if verbose and underworld3.mpi.rank == 0:
+            print("JIT compiled module cached ... ", flush=True)
 
     ## TODO: Return a dictionary to recover the function pointers from the compiled
     ## functions. Note, keep these by category as the same sympy function has

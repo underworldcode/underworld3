@@ -301,8 +301,6 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
-
-
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
         This function performs the interpolation for the given variables

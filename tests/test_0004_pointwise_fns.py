@@ -61,8 +61,8 @@ def test_build_functions():
     # print(captured_setup_solver, flush=True)
     # print("============", flush=True)
 
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_FN_{counter}")
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_FN_{counter}/cy_ext.h")
+    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0004_0")
+    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0004_0/cy_ext.h")
 
     # Solver JIT (incompressibility constraint)
     assert (
@@ -239,6 +239,8 @@ def teardown_function():
     ]:
         if os.path.exists(debug_file):
             os.remove(debug_file)
+
+    del os.environ["UW_JITNAME"]
 
 
 # Run the script in test mode

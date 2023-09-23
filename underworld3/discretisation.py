@@ -557,13 +557,6 @@ class Mesh(Stateful, uw_object):
                         data=var.data[:, var._data_layout(i, j)],
                     )
 
-        # This is not needed if we can index into the block variables
-        # for block_var in self.block_vars.values():
-        #     size = block_var.shape
-        #     for i in range(0, size[0]):
-        #         for j in range(0, size[1]):
-        #             block_var._data[i, j] = block_var._vars[i, j].data
-
         class exit_manager:
             def __init__(self, mesh):
                 self.mesh = mesh
@@ -595,16 +588,8 @@ class Mesh(Stateful, uw_object):
                     var._set_vec(available=False)
                     var._is_accessed = False
 
-                    # This is not needed if we can index into the block variables
-                    # for block_var in self.mesh.block_vars.values():
-                    #     size = block_var.shape
-                    #     for i in range(0, size[0]):
-                    #         for j in range(0, size[1]):
-                    #             block_var._data[i, j] = None
-
                     for i in range(0, var.shape[0]):
                         for j in range(0, var.shape[1]):
-                            # var._data_ij[i, j] = None
                             var._data_container[i, j] = var._data_container[
                                 i, j
                             ]._replace(
@@ -1298,35 +1283,31 @@ def MeshVariable(
         ## Before adding a new variable, we first snapshot the data from the mesh.dm
         ## (if not accessed, then this will not be necessary and may break)
 
+        mesh.update_lvec()
         existing_data = mesh.lvec.copy()
-        mesh._lvec = None
-        mesh._stale_lvec = True
 
     new_meshVariable = _MeshVariable(
         varname, mesh, num_components, vtype, degree, continuous, varsymbol
     )
 
     if mesh._accessed:
-        ## Before adding a new variable, we first snapshot the data from the mesh.dm
-        ## (if not accessed, then this will not be necessary and may break)
+        ## Recreate the mesh variable dm and restore the data
 
         dm1 = mesh.dm.clone()
         mesh.dm.copyFields(dm1)
-        dm1.createDS()
         mesh.dm = dm1
+        mesh.dm.clearDS()
+        mesh.dm.createDS()
+        # mesh.dm.setUp()
 
         mdm_is, _ = mesh.dm.createSubDM(range(0, mesh.dm.getNumFields() - 1))
-        vec1 = mesh.dm.getLocalVec()
-        vsub1 = vec1.getSubVector(mdm_is)
-        vsub1.array[...] = existing_data.array[...]
-        vec1.restoreSubVector(mdm_is, vsub1)
-        mesh.dm.restoreLocalVec(vec1)
 
-    # print(
-    #     "It is not possible to add new variables to a mesh after existing variables have been accessed"
-    # )
-    # print(f"Variable {name} has NOT been added to mesh {mesh.instance}")
-    # return
+        mesh._lvec = mesh.dm.createLocalVec()
+        vsub1 = mesh._lvec.getSubVector(mdm_is)
+        vsub1.array[...] = existing_data.array[...]
+        mesh._lvec.restoreSubVector(mdm_is, vsub1)
+
+        mesh.dm = mesh.dm
 
     return new_meshVariable
 

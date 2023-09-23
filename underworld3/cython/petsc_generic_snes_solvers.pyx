@@ -605,6 +605,7 @@ class SNES_Scalar(Solver):
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setFromOptions()
 
+
         cdef DM dm = self.dm
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
@@ -645,7 +646,7 @@ class SNES_Scalar(Solver):
             with self.mesh.access():
                 self.dm.localToGlobal(self.u.vec, gvec)
         else:
-            gvec.array[:] = 0.
+            gvec.array[:] = 0.0
 
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures()
@@ -660,8 +661,9 @@ class SNES_Scalar(Solver):
         # PETSc == 3.16 introduced an explicit interface
         # for setting the aux-vector which we'll use when available.
 
-
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+
+
 
         # solve
         self.snes.solve(None, gvec)
@@ -1002,8 +1004,6 @@ class SNES_Vector(Solver):
 
         fns_jacobian = (self._G0, self._G1, self._G2, self._G3)
 
-
-
         # Now natural bcs (compiled into boundary integral terms)
         # Need to loop on them all ... 
 
@@ -1049,8 +1049,6 @@ class SNES_Vector(Solver):
 
         self._fns_bd_residual = fns_bd_residual
         self._fns_bd_jacobian = fns_bd_jacobian
-
-
 
 
         ##################
@@ -1156,6 +1154,8 @@ class SNES_Vector(Solver):
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
+
+
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
@@ -1196,7 +1196,6 @@ class SNES_Vector(Solver):
             self.dm.globalToLocal(gvec, lvec)
             if verbose:
                 print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
-
 
             # add back boundaries.
             # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
@@ -1731,7 +1730,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.dm.createDS()
 
-
         ## This part is done once on the solver dm ... not required every time we update the functions ... 
         ## the values of the natural bcs can be updated
 
@@ -1929,10 +1927,9 @@ class SNES_Stokes_SaddlePt(Solver):
         for coarse_dm in self.dm_hierarchy:
             coarse_dm.createClosureIndex(None)
 
+        self.dm.createDS()
         self.dm.setUp()
 
-        # coarse_dm = self.dm.getCoarseDM()
-        # self.dm.copyDisc(coarse_dm)
 
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
@@ -1994,17 +1991,12 @@ class SNES_Stokes_SaddlePt(Solver):
                     subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
-        # Call `createDS()` on aux dm. This is necessary after the
+        # Call `createDS()` on aux dm. This is necessary ... is it ?
  
+        self.mesh.dm.createDS()
+        self.mesh.dm.setUp()
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-
-
-
-
-
-
-
 
         # Picard solves if requested
 
@@ -2048,12 +2040,14 @@ class SNES_Stokes_SaddlePt(Solver):
             self.tolerance = tolerance
             self.snes.setType(snes_type)
             self.snes.setFromOptions()
+            print(f"SNES solve", flush=True)
             self.snes.solve(None, gvec)
+            print(f"SNES solve ... done", flush=True)
 
         cdef Vec clvec
         cdef DM csdm
 
-        # Copy solution back into user facing variables
+        # Copy solution back into user facing variables 
 
         with self.mesh.access(self.p, self.u):
 
@@ -2086,4 +2080,4 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.dm.restoreGlobalVec(gvec)
 
-        return self.snes.getConvergedReason()
+        return self.snes.getConvergedReason() 
