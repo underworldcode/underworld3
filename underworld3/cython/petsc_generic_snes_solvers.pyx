@@ -159,6 +159,7 @@ class Solver(uw_object):
         # is the model appropriate for SNES_Scalar solvers ?
         self.is_setup = False
         self._constitutive_model = model
+        self._constitutive_model._solver_is_setup = False
 
 
     def validate_solver(self):
@@ -1993,8 +1994,8 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # Call `createDS()` on aux dm. This is necessary ... is it ?
  
-        self.mesh.dm.createDS()
-        self.mesh.dm.setUp()
+        # self.mesh.dm.createDS()
+        # self.mesh.dm.setUp()
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
@@ -2040,9 +2041,7 @@ class SNES_Stokes_SaddlePt(Solver):
             self.tolerance = tolerance
             self.snes.setType(snes_type)
             self.snes.setFromOptions()
-            print(f"SNES solve", flush=True)
             self.snes.solve(None, gvec)
-            print(f"SNES solve ... done", flush=True)
 
         cdef Vec clvec
         cdef DM csdm

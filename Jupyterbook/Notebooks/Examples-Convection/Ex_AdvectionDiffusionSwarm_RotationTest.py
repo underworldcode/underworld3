@@ -40,7 +40,7 @@ t_soln_dt = uw.discretisation.MeshVariable("Tdt", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-swarm = uw.swarm.Swarm(mesh=meshball, recycle_rate=3)
+swarm = uw.swarm.Swarm(mesh=meshball, recycle_rate=0)
 T1 = uw.swarm.SwarmVariable(r"T^{(-\Delta t)}", swarm, 1, proxy_degree=2, proxy_continuous=False)
 X1 = uw.swarm.SwarmVariable(r"X^{(-\Delta t)}", swarm, 2)
 swarm.populate(fill_param=4)
@@ -267,8 +267,8 @@ for step in range(0, 1+20*substeps):
     adv_diff.solve(timestep=delta_t) 
     
     # Update the swarm vallues
-    with swarm.access(T1):
-        T1.data[:,0] = (1.0-phi) * T1.data[:,0] + phi * uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+    # with swarm.access(T1):
+    #     T1.data[:,0] = (1.0-phi) * T1.data[:,0] + phi * uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
     
     # Update the swarm locations
     swarm.advection(v_soln.sym,

@@ -1,4 +1,4 @@
-# # Field Advection solver test
+# # Field (SemiLagrange) Advection solver test
 #
 # Shear flow driven by a pre-defined, rigid body rotation in a disc or by the boundary conditions
 #
@@ -17,6 +17,7 @@ from underworld3 import VarType
 from underworld3 import timing
 
 import numpy as np
+import sympy
 
 options = PETSc.Options()
 # options["help"] = None
@@ -28,15 +29,35 @@ options = PETSc.Options()
 
 # options.getAll()
 # -
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=2, qdegree=3)
 
 
+# +
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3, varsymbol=r"T_{0}")
 
+# Create a temperature structure / buoyancy force
 
+import sympy
 
+radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
+
+# Some useful coordinate stuff
+
+x, y = meshball.X
+r, th = meshball.CoordinateSystem.xR
+
+# Rigid body rotation v_theta = constant, v_r = 0.0
+
+theta_dot = 2.0 * np.pi  # i.e one revolution in time 1.0
+v_x = -r * theta_dot * sympy.sin(th)
+v_y = r * theta_dot * sympy.cos(th)
+
+with meshball.access(v_soln):
+    v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords)
+    v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords)
 
 # +
 # swarm  = uw.swarm.Swarm(mesh=meshball)
@@ -60,64 +81,20 @@ delta_t = 1.0
 
 # +
 adv_diff = uw.systems.AdvDiffusion(
-    meshball, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff", 
+    meshball, 
+    u_Field=t_soln,
+    V_fn=v_soln, 
+    solver_name="adv_diff", 
+    order = 2,
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
 adv_diff.constitutive_model.Parameters.diffusivity=k
 
-
-
-# +
-dTdt = uw.swarm.SemiLagrange_Updater(meshball, adv_diff._u.sym, 
-                                     adv_diff._V.sym, vtype=uw.VarType.SCALAR,
-                                     degree=3, continuous=True,
-                                     varsymbol=r'T',
-                                     verbose=True,
-                                     bcs=adv_diff.essential_bcs,
-                                     order=2,smoothing=0.00001,                                 
-                                )
-
-dQdt = uw.swarm.SemiLagrange_Updater(meshball, adv_diff.constitutive_model.flux_1d, 
-                                     adv_diff._V.sym, vtype=uw.VarType.VECTOR,
-                                     degree=2, continuous=True,
-                                     varsymbol=r'Q',
-                                     verbose=True,
-                                     bcs=None,
-                                     order=3,smoothing=0.00001,                                 
-                                )
 # -
 
 
 
-dQdt.u_star[0].sym
-
-dTdt.u_star[0].sym
-
-# +
-# Create a density structure / buoyancy force
-# gravity will vary linearly from zero at the centre
-# of the sphere to (say) 1 at the surface
-
-import sympy
-
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
-unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
-
-# Some useful coordinate stuff
-
-x, y = meshball.X
-r, th = meshball.CoordinateSystem.xR
-
-# Rigid body rotation v_theta = constant, v_r = 0.0
-
-theta_dot = 2.0 * np.pi  # i.e one revolution in time 1.0
-v_x = -r * theta_dot * sympy.sin(th)
-v_y = r * theta_dot * sympy.cos(th)
-
-with meshball.access(v_soln):
-    v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords)
-    v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords)
 
 # +
 # Define T boundary conditions via a sympy function
@@ -125,7 +102,6 @@ with meshball.access(v_soln):
 import sympy
 
 abs_r = sympy.sqrt(meshball.rvec.dot(meshball.rvec))
-
 init_t = sympy.exp(-30.0 * (meshball.N.x**2 + (meshball.N.y - 0.75) ** 2))
 
 adv_diff.add_dirichlet_bc(0.0, "Lower")
@@ -154,9 +130,6 @@ with meshball.access(t_0, t_soln):
 
 # # delta_t will be baked in when this is defined ... so re-define it
 # adv_diff.solve(timestep=delta_t) # , coords=coords)
-# -
-
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -264,69 +237,87 @@ def plot_T_mesh(filename):
     # pl.show()
 
 
-# +
-with meshball.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
-
-scalar_projection_solver = uw.systems.solvers.SNES_Projection(
-            meshball, t_0
-        )
-scalar_projection_solver.uw_function = t_soln.sym[0]
-scalar_projection_solver.bcs = adv_diff.bcs
-scalar_projection_solver.solve() 
-# -
-
-
-
+t_soln2 = uw.discretisation.MeshVariable("U2", meshball, vtype=uw.VarType.SCALAR, degree=2)
 
 # +
 timing.reset()
 timing.start()
 
-delta_t = 0.05
-print(f"-----", flush=True)
-dTdt.update(dt = delta_t )
-dQdt.update(dt = delta_t )
+delta_t = 0.025
 
-adv_diff.solve(timestep=delta_t)
-# -
+adv_diff.solve(timestep=delta_t, verbose=False, _force_setup=False)
 
-with meshball.access():
-    print(dTdt.u_star[1].max())
-    print(dQdt.u_star[1].max())
+# +
+# check the mesh if in a notebook / serial
 
 
+if uw.mpi.size == 1:
 
+    import numpy as np
+    import pyvista as pv
+    import vtk
 
-with meshball.access():
-    print(adv_diff._u_star.data.max())    
-    print(adv_diff._F_star.data.max())
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.anti_aliasing = "msaa"
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
 
-dTdt.bdf(dt=0.01)
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")
 
+    points = np.zeros((t_soln.coords.shape[0], 3))
+    points[:, 0] = t_soln.coords[:, 0]
+    points[:, 1] = t_soln.coords[:, 1]
 
+    point_cloud = pv.PolyData(points)
 
-0/0
+    with meshball.access():
+        point_cloud.point_data["T"] = t_soln.data.copy()
+
+    with meshball.access():
+        usol = v_soln.data.copy()
+
+    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
+    arrow_loc[:, 0:2] = v_soln.coords[...]
+
+    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
+    arrow_length[:, 0:2] = usol[...]
+
+    pl = pv.Plotter()
+
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
+    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.66)
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+
+    # pl.remove_scalar_bar("T")
+    pl.remove_scalar_bar("mag")
+
+    pl.show()
 
 # +
 # Advection/diffusion model / update in time
 
 expt_name = "rotation_test_slcn"
 
+delta_t = 0.05
+
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(0, 20):
+for step in range(0, 19):
 
     # delta_t will be baked in when this is defined ... so re-define it
     adv_diff.solve(timestep=delta_t, verbose=False)
 
     # stats then loop
 
-    tstats = t_soln.stats()
+    # tstats = t_soln.stats()
 
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))
-        print(tstats)
+        # print(tstats)
 
     plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 
@@ -403,5 +394,9 @@ uw.timing.print_table()
 
 
 #
+
+adv_diff._f0
+
+adv_diff._f1
 
 

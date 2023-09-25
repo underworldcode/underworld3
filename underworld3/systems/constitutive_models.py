@@ -72,9 +72,6 @@ class Constitutive_Model(uw_object):
         self.Parameters = self._Parameters(self)
         self.Parameters._solver = None
         self.Parameters._reset = self._reset
-        self._is_setup = False
-        self._solver_is_setup = False
-
         self._material_properties = None
 
         ## Default consitutive tensor is the identity
@@ -87,6 +84,8 @@ class Constitutive_Model(uw_object):
         self._K = sympy.sympify(1)
         self._C = None
 
+        self._reset()
+
         super().__init__()
 
     class _Parameters:
@@ -96,8 +95,6 @@ class Constitutive_Model(uw_object):
         """
 
         def __init__(inner_self, owning_model):
-            # inner_self._solver = None  #### should this be here?
-
             inner_self.owning_model = owning_model
             return
 

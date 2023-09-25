@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -52,12 +52,14 @@
 # $$
 #      \rho\frac{\mathbf{u}_{[3]} - \mathbf{u}^*}{\Delta t}  
 #              = \rho g - \nabla \cdot \left[ \frac{5}{12} \boldsymbol{\tau} 
-# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\boldsymbol{\\tau^{*}}"}
-#                                            - \frac{1}{12} \boldsymbol{\tau^{**}}
+#                                                          - \frac{1}{12} \boldsymbol{\tau^{**}}
 #                                                           \right] - \nabla p 
 # $$
 #
 # Where $\boldsymbol\tau^*$ and $\boldsymbol\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
+# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\boldsymbol{\\tau^{*}}"}
+#
+
 # + \frac [markdown] {"incorrectly_encoded_metadata": "{1}{12} \\boldsymbol{\\tau^{* *}} \\right]"}
 #
 # In the Navier-stokes problem, it is common to write $\boldsymbol\tau=\eta \left(\nabla \mathbf u + (\nabla \mathbf u)^T \right)$ and $\boldsymbol\tau^*=\eta \left(\nabla \mathbf u^* + (\nabla \mathbf u^*)^T \right)$ which ignores  rotation and shearing of the stress during the interval $\Delta T$. This simplifies the implementation because only the velocity history is required, not the history of the stress tensor.
@@ -131,8 +133,9 @@
 # ---
 #
 # $$
-#     \nabla\cdot\left[ \color{blue}{ \boldsymbol{\tau} - p \boldsymbol{I}   }   \right] = \color{green}{\frac{D \boldsymbol{u}}{Dt}} - \rho g
+# \nabla\cdot\left[ \color{blue}{ \boldsymbol{\tau} - p \boldsymbol{I}   }   \right] = \color{green}{\frac{D \boldsymbol{u}}{Dt}} - \rho g
 # $$
+#
 # -
 # $$
 # \frac{5 \dot\varepsilon \eta_\textrm{eff}}{6} + \frac{5 \eta \tau^{*}}{3 \cdot \left(2 \Delta\,\!t \mu + 3 \eta\right)} - \frac{5 \eta \tau^{**}}{12 \cdot \left(2 \Delta\,\!t \mu + 3 \eta\right)} + \frac{2 \tau^{*}}{3} - \frac{\tau^{**}}{12}
@@ -505,7 +508,7 @@ def return_points_to_domain(coords):
 
 ts = 0
 
-# + {"tags": []}
+# +
 delta_t = stokes.estimate_dt()
 
 expt_name = f"output/shear_band_sw_nonp_{mu}"

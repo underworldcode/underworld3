@@ -27,7 +27,7 @@ def test_adv_diff_annulus():
     adv_diff = uw.systems.AdvDiffusion(
         mesh,
         u_Field=t_soln,
-        V_Field=v_soln,
+        V_fn=v_soln,
         solver_name="adv_diff",
     )
 

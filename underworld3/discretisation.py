@@ -1307,7 +1307,7 @@ def MeshVariable(
         vsub1.array[...] = existing_data.array[...]
         mesh._lvec.restoreSubVector(mdm_is, vsub1)
 
-        mesh.dm = mesh.dm
+        # mesh.dm = mesh.dm
 
     return new_meshVariable
 

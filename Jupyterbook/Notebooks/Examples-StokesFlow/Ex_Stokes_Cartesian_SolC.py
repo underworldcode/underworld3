@@ -179,6 +179,10 @@ stokes._setup_pointwise_functions(verbose=True)
 stokes._setup_discretisation(verbose=True)
 stokes.dm.ds.view()
 
+
+
+
+
 # %%
 # Solve time
 stokes.solve()
