@@ -1890,10 +1890,10 @@ class SemiLagrange_Updater(uw_object):
         self.V_fn = V_fn
         self.order = order
 
-        if psi_fn.shape[0] != 1:
-            raise RuntimeError(
-                f"u_fn should be a (flattened) 1d object (e.g. tau.sym_1d in place of tau.sym)"
-            )
+        # if psi_fn.shape[0] != 1:
+        #     raise RuntimeError(
+        #         f"u_fn should be a (flattened) 1d object (e.g. tau.sym_1d in place of tau.sym)"
+        #     )
 
         psi_star = []
         self.psi_star = psi_star
@@ -1931,7 +1931,7 @@ class SemiLagrange_Updater(uw_object):
             self._WorkVar = uw.discretisation.MeshVariable(
                 f"W_star_slcn_{self.instance_number}",
                 self.mesh,
-                vtype=VarType.SCALAR,
+                vtype=uw.VarType.SCALAR,
                 degree=degree,
                 continuous=continuous,
                 varsymbol=r"W^{*}",
@@ -1986,7 +1986,7 @@ class SemiLagrange_Updater(uw_object):
         #     phi = 1.0
 
         if verbose and uw.mpi.rank == 0:
-            print(f"Update {self.u_fn}", flush=True)
+            print(f"Update {self.psi_fn}", flush=True)
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain
@@ -2177,22 +2177,24 @@ class Lagrangian_Updater(uw_object):
             with self.swarm.access(psi_star_0):
                 for i in range(psi_star_0.shape[0]):
                     for j in range(psi_star_0.shape[1]):
-                        delta_psi = uw.function.evalf(
-                            self.psi[i, j] - psi_star_0[i, j].sym, self.swarm.data
-                        )
+                        updated_psi = uw.function.evalf(self.psi[i, j], self.swarm.data)
 
-                        psi_star_0[i, j].data[:] += phi * delta_psi
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
 
         else:
             psi_star_0 = self.psi_star[0]
             with self.swarm.access(psi_star_0):
                 for i in range(psi_star_0.shape[0]):
                     for j in range(psi_star_0.shape[1]):
-                        delta_psi = uw.function.evaluate(
-                            self.psi[i, j] - psi_star_0[i, j].sym, self.swarm.data
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j] - psi_star_0[i, j].sym, self.swarm.data
                         )
 
-                        psi_star_0[i, j].data[:] += phi * delta_psi
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
 
     def bdf(self, order=None):
         """Backwards differentiation form for calculating DuDt

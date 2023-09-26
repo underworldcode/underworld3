@@ -29,7 +29,7 @@ options = PETSc.Options()
 
 # options.getAll()
 # -
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=2, qdegree=3)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3)
 
 
 # +
@@ -85,7 +85,7 @@ adv_diff = uw.systems.AdvDiffusion(
     u_Field=t_soln,
     V_fn=v_soln, 
     solver_name="adv_diff", 
-    order = 2,
+    order = 1,
 )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
@@ -397,6 +397,6 @@ uw.timing.print_table()
 
 adv_diff._f0
 
-adv_diff._f1
+
 
 

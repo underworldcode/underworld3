@@ -1,4 +1,4 @@
-# # Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
+# # Swarm Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
 #
 # This example uses the Swarm advection approach rather than SLCN
 
@@ -26,10 +26,7 @@ options = PETSc.Options()
 # +
 import meshio
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, 
-                              radiusInner=0.5, 
-                              cellSize=0.05, 
-                              qdegree=3)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3)
 x,y = meshball.X
 # -
 
@@ -267,8 +264,8 @@ for step in range(0, 1+20*substeps):
     adv_diff.solve(timestep=delta_t) 
     
     # Update the swarm vallues
-    # with swarm.access(T1):
-    #     T1.data[:,0] = (1.0-phi) * T1.data[:,0] + phi * uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+    with swarm.access(T1):
+         T1.data[:,0] = (1.0-phi) * T1.data[:,0] + phi * uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
     
     # Update the swarm locations
     swarm.advection(v_soln.sym,
@@ -357,3 +354,6 @@ if uw.mpi.size == 1:
 # v_soln.save(savefile)
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
+# -
+
+
