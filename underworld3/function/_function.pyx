@@ -562,9 +562,9 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     for varfn in varfns:
 
         if mesh is None:
-            mesh = varfn.mesh
+            mesh = varfn.meshvar().mesh
         else:
-            if mesh != varfn.mesh:
+            if mesh != varfn.meshvar().mesh:
                 raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
 
     # 2. Evaluate all mesh variables - there is no real
