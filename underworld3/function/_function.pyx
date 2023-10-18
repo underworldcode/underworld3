@@ -149,9 +149,6 @@ class UnderworldFunction(sympy.Function):
             diffcls.diffindex = index
             ourcls._diff.append(diffcls)
 
-        for diff_fn in ourcls._diff:
-            diff_fn.mesh = meshvar.mesh
-
         return ourcls
 
 
@@ -269,13 +266,15 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     unpack_var_fns(expr)
 
+    # Check the same mesh is used for all mesh variables
     mesh = None
     for varfn in varfns:
 
         if mesh is None:
-            mesh = varfn.mesh
+            mesh = varfn.meshvar().mesh
+            #mesh = varfn.mesh
         else:
-            if mesh != varfn.mesh:
+            if mesh != varfn.meshvar().mesh:
                 raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
 
     if (len(varfns)==0) and (coords is None):
