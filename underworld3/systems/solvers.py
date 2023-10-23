@@ -1,11 +1,8 @@
 import sympy
 from sympy import sympify
-from sympy.vector import gradient, divergence
 import numpy as np
 
 from typing import Optional, Callable, Union
-
-from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
@@ -84,8 +81,6 @@ class SNES_Poisson(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
-        dim = self.mesh.dim
-        N = self.mesh.N
 
         # f1 residual term (weighted integration) - scalar function
         self._f0 = self.F0 - self.f
@@ -194,8 +189,6 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
-        dim = self.mesh.dim
-        N = self.mesh.N
 
         # f1 residual term (weighted integration)
         self._f0 = self.F0 - self.f
@@ -409,7 +402,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @timing.routine_timer_decorator
     def stokes_problem_description(self):
         dim = self.mesh.dim
-        N = self.mesh.N
 
         # residual terms can be redefined here. We leave the
         # F0, F1, PF0 terms in place to allow injection of
@@ -597,8 +589,6 @@ class SNES_Projection(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-        dim = self.mesh.dim
-        N = self.mesh.N
 
         # residual terms - defines the problem:
         # solve for a best fit to the continuous mesh
@@ -704,8 +694,6 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-        dim = self.mesh.dim
-        N = self.mesh.N
 
         # residual terms - defines the problem:
         # solve for a best fit to the continuous mesh
@@ -854,8 +842,6 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
-        dim = self.mesh.dim
-        N = self.mesh.N
 
         # residual terms - defines the problem:
         # solve for a best fit to the continuous mesh
@@ -1029,7 +1015,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         return
 
     def adv_diff_slcn_problem_description(self):
-        N = self.mesh.N
 
         # f0 residual term
         self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
@@ -1105,7 +1090,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             max_diffusivity = k
 
         ### required modules
-        import math
         from mpi4py import MPI
 
         # with self.mesh.access(self.k):
@@ -1314,7 +1298,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         return
 
     def adv_diff_swarm_problem_description(self):
-        N = self.mesh.N
 
         # f0 residual term
         self._f0 = self.F0 - self.f + (self.u.sym - self.u_star_fn) / self.delta_t
@@ -1393,7 +1376,6 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             max_diffusivity = k
 
         ### required modules
-        import math
         from mpi4py import MPI
 
         # with self.mesh.access(self.k):
@@ -1659,7 +1641,6 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         return
 
     def navier_stokes_swarm_problem_description(self):
-        N = self.mesh.N
         dim = self.mesh.dim
 
         # terms that become part of the weighted integral
@@ -1961,7 +1942,6 @@ class SNES_NavierStokes(SNES_Stokes):
         return
 
     def navier_stokes_swarm_problem_description(self):
-        N = self.mesh.N
         dim = self.mesh.dim
 
         # terms that become part of the weighted integral
@@ -2108,7 +2088,6 @@ class SNES_NavierStokes_SLCN_old(SNES_Stokes):
         solver_name: Optional[str] = "",
         restore_points_func: Callable = None,
         verbose: Optional[bool] = False,
-        dt_order: Optional[int] = 1,
     ):
         if solver_name == "":
             solver_name = "NStokes_swarm_{}_".format(self.instance_number)
@@ -2198,7 +2177,6 @@ class SNES_NavierStokes_SLCN_old(SNES_Stokes):
         return
 
     def navier_stokes_slcn_problem_description(self):
-        N = self.mesh.N
         dim = self.mesh.dim
 
         # Time derivatives should be managed as part of the semi-lagrange scheme (including
@@ -2477,7 +2455,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         return
 
     def navier_stokes_slcn_problem_description(self):
-        N = self.mesh.N
 
         # f0 residual term
         self._u_f0 = (
