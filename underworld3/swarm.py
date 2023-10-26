@@ -2043,8 +2043,9 @@ class SemiLagrange_Updater(uw_object):
         return
 
     def bdf(self, order=None):
-        """Backwards differentiation form for calculating DuDt
+        r"""Backwards differentiation form for calculating DuDt
         Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
         if order is None:
             order = self.order
         else:
@@ -2200,8 +2201,9 @@ class Lagrangian_Updater(uw_object):
                         )
 
     def bdf(self, order=None):
-        """Backwards differentiation form for calculating DuDt
+        r"""Backwards differentiation form for calculating DuDt
         Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
         if order is None:
             order = self.order
         else:

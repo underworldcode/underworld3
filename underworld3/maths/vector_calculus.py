@@ -385,7 +385,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 
 
 class mesh_vector_calculus_spherical(mesh_vector_calculus):
-    """
+    r"""
     mesh_vector_calculus module for div, grad, curl etc that apply in
     native spherical coordinates r, \theta, \phi in the standard definition
     (radius, colatitude, longitude)
