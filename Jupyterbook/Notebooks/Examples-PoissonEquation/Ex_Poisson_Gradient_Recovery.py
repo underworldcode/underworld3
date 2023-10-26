@@ -80,10 +80,10 @@ diffusivity.uw_function = sympy.Matrix(
     [poisson.constitutive_model.Parameters.diffusivity]
 )
 
-diffusivity.add_dirichlet_bc(k, "Bottom", component=0)
-diffusivity.add_dirichlet_bc(k, "Top", component=0)
-diffusivity.add_dirichlet_bc(k, "Right", component=0)
-diffusivity.add_dirichlet_bc(k, "Left", component=0)
+diffusivity.add_dirichlet_bc(k, "Bottom", components=0)
+diffusivity.add_dirichlet_bc(k, "Top", components=0)
+diffusivity.add_dirichlet_bc(k, "Right", components=0)
+diffusivity.add_dirichlet_bc(k, "Left", components=0)
 
 diffusivity.smoothing = 1.0e-6
 # -
@@ -107,10 +107,10 @@ x, y = mesh.X
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, "Bottom", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Bottom", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Top", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Right", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Left", components=0)
 
 # +
 # %%

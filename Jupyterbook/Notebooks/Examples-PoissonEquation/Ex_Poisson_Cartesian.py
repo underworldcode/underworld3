@@ -74,8 +74,8 @@ poisson.constitutive_model.c
 # +
 # Set some things
 poisson.f = 0.0
-poisson.add_dirichlet_bc(1.0, "Bottom", component=0)
-poisson.add_dirichlet_bc(0.0, "Top", component=0)
+poisson.add_dirichlet_bc(1.0, "Bottom", components=0)
+poisson.add_dirichlet_bc(0.0, "Top", components=0)
 
 poisson.tolerance = 1.0e-6
 poisson.petsc_options["snes_type"] = "newtonls"
@@ -236,10 +236,10 @@ if uw.mpi.size == 1:
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, "Bottom", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
-poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
+poisson.add_dirichlet_bc(abs_r2, "Bottom", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Top", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Right", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Left", components=0)
 
 display(poisson.f)
 
