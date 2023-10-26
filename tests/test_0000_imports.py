@@ -24,6 +24,7 @@ def test_underworld3_global_import():
 
 # If the standard import fails, these are the individual modules that underworld imports.
 
+
 # +
 def test_underworld_mesh_import():
     import underworld3.discretisation
@@ -46,7 +47,7 @@ def test_underworld_systems_import():
 
 
 def test_underworld_tools_import():
-    import underworld3.tools
+    import underworld3.utilities.tools
 
 
 def test_underworld_kdtree_import():

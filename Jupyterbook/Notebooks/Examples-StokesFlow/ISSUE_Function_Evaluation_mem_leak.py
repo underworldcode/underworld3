@@ -18,7 +18,7 @@
 # There is a memory leak in the function.evaluate routine when mapping from mesh to swarm.
 # There seems to be no memory leak with function.evaluate() on the mesh points.
 #
-# The visualisation tends to be leaky as well, so I have removed all of that. 
+# The visualisation tends to be leaky as well, so I have removed all of that.
 #
 
 # +
@@ -29,12 +29,11 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-print(f"Memory usage: {uw.utilities.mem_footprint()} Mb");
+print(f"Memory usage: {uw.utilities.mem_footprint()} Mb")
 
-cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
+cell_size = uw.options.getReal("mesh_cell_size", default=1.0 / 32)
 particle_fill = uw.options.getInt("particle_fill", default=6)
 viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
-
 
 
 # +
@@ -106,7 +105,7 @@ density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
 mat_viscosity = np.array([viscosityRatio, 1])
 viscosity = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
 
-print(f"Memory usage: {uw.utilities.mem_footprint()} Mb");
+print(f"Memory usage: {uw.utilities.mem_footprint()} Mb")
 
 # +
 # Create Stokes object
@@ -119,7 +118,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -density])
 stokes.saddle_preconditioner = 1.0 / viscosity
@@ -141,41 +140,36 @@ stokes.solve(zero_init_guess=True)
 delta_t = min(10.0, stokes.estimate_dt())
 
 # +
-# Update 
+# Update
 
 for step in range(0, 10):
+    print(f"Memory usage: {uw.utilities.mem_footprint()} Mb")
 
-    print(f"Memory usage: {uw.utilities.mem_footprint()} Mb");
-    
     with meshbox.access():
-        print(f"Memory usage 0.1: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 0.1: {uw.utilities.mem_footprint()} Mb")
         uw.function.evaluate(y, meshbox.data)
-        print(f"Memory usage 0.2: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 0.2: {uw.utilities.mem_footprint()} Mb")
 
-    
     with swarm.access():
-        print(f"Memory usage 1.1: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 1.1: {uw.utilities.mem_footprint()} Mb")
         uw.function.evaluate(x, swarm.particle_coordinates.data)
-        print(f"Memory usage 1.2: {uw.utilities.mem_footprint()} Mb");
-    
+        print(f"Memory usage 1.2: {uw.utilities.mem_footprint()} Mb")
+
     with swarm.access():
-        print(f"Memory usage 2.1: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 2.1: {uw.utilities.mem_footprint()} Mb")
         uw.function.evaluate(v_soln.sym[0], swarm.particle_coordinates.data)
-        print(f"Memory usage 2.2: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 2.2: {uw.utilities.mem_footprint()} Mb")
 
     with meshbox.access():
-        print(f"Memory usage 3.1: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 3.1: {uw.utilities.mem_footprint()} Mb")
         uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        print(f"Memory usage 3.2: {uw.utilities.mem_footprint()} Mb");
+        print(f"Memory usage 3.2: {uw.utilities.mem_footprint()} Mb")
 
-    
     # update swarm / swarm variables
 
-    print(f"Memory usage 4.1: {uw.utilities.mem_footprint()} Mb");
+    print(f"Memory usage 4.1: {uw.utilities.mem_footprint()} Mb")
     swarm.advection(v_soln.sym, delta_t)
-    print(f"Memory usage 4.2: {uw.utilities.mem_footprint()} Mb");
+    print(f"Memory usage 4.2: {uw.utilities.mem_footprint()} Mb")
 
 
 # -
-
-

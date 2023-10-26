@@ -51,9 +51,10 @@ if MPI.COMM_WORLD.rank == 0:
     if not os.path.exists(outputPath):
         os.makedirs(outputPath)
 
-from underworld3.tools import parse_cmd_line_options
+from underworld3.utilities.tools import parse_cmd_line_options
 
 parse_cmd_line_options()
+
 
 # %%
 def do_uw3():
@@ -85,7 +86,10 @@ def do_uw3():
     sys.pushErrorHandler("traceback")
 
     mesh = uw.discretisation.Box(
-        elementRes=(n_els,) * dim, minCoords=(0.0,) * dim, maxCoords=(boxLength, 1.0), simplex=False
+        elementRes=(n_els,) * dim,
+        minCoords=(0.0,) * dim,
+        maxCoords=(boxLength, 1.0),
+        simplex=False,
     )
     u_degree = 1
     stokes = Stokes(mesh, u_degree=u_degree)
@@ -106,7 +110,9 @@ def do_uw3():
     np.random.seed(0)
     with swarm.access(swarm.particle_coordinates):
         factor = 0.5 * boxLength / n_els / fill_param
-        swarm.particle_coordinates.data[:] += factor * np.random.rand(*swarm.particle_coordinates.data.shape)
+        swarm.particle_coordinates.data[:] += factor * np.random.rand(
+            *swarm.particle_coordinates.data.shape
+        )
 
     # define these for convenience.
     denseIndex = 0
@@ -118,13 +124,19 @@ def do_uw3():
 
     # init material variable
     with swarm.access(matSwarmVar):
-        perturbation = offset + amplitude * np.cos(k * swarm.particle_coordinates.data[:, 0])
-        matSwarmVar.data[:, 0] = np.where(perturbation > swarm.particle_coordinates.data[:, 1], lightIndex, denseIndex)
+        perturbation = offset + amplitude * np.cos(
+            k * swarm.particle_coordinates.data[:, 0]
+        )
+        matSwarmVar.data[:, 0] = np.where(
+            perturbation > swarm.particle_coordinates.data[:, 1], lightIndex, denseIndex
+        )
 
     from sympy import Piecewise, ceiling, Abs
 
     density = Piecewise(
-        (0.0, Abs(matSwarmVar.fn - lightIndex) < 0.5), (1.0, Abs(matSwarmVar.fn - denseIndex) < 0.5), (0.0, True)
+        (0.0, Abs(matSwarmVar.fn - lightIndex) < 0.5),
+        (1.0, Abs(matSwarmVar.fn - denseIndex) < 0.5),
+        (0.0, True),
     )
 
     stokes.bodyforce = -density * mesh.N.j
@@ -137,8 +149,12 @@ def do_uw3():
 
     # note with petsc we always need to provide a vector of correct cardinality.
     bnds = mesh.boundary
-    stokes.add_dirichlet_bc((0.0, 0.0), [bnds.TOP, bnds.BOTTOM], (0, 1))  # top/bottom: function, boundaries, components
-    stokes.add_dirichlet_bc((0.0, 0.0), [bnds.LEFT, bnds.RIGHT], 0)  # left/right: function, boundaries, components
+    stokes.add_dirichlet_bc(
+        (0.0, 0.0), [bnds.TOP, bnds.BOTTOM], (0, 1)
+    )  # top/bottom: function, boundaries, components
+    stokes.add_dirichlet_bc(
+        (0.0, 0.0), [bnds.LEFT, bnds.RIGHT], 0
+    )  # left/right: function, boundaries, components
 
     step = 0
     time = 0.0
@@ -169,17 +185,26 @@ def do_uw3():
             # fig.edges(mesh)
             with swarm.access(), mesh.access():
                 figs.swarm_points(
-                    swarm, matSwarmVar.data, pointsize=4, colourmap="blue green", colourbar=False, title=time
+                    swarm,
+                    matSwarmVar.data,
+                    pointsize=4,
+                    colourmap="blue green",
+                    colourbar=False,
+                    title=time,
                 )
                 figs.vector_arrows(mesh, stokes.u.data)
                 # fig.nodes(mesh,matMeshVar.data,colourmap="blue green", pointsize=6, pointtype=4)
-            outputFilename = os.path.join(outputPath, f"uw3_image_{str(step).zfill(4)}.png")
+            outputFilename = os.path.join(
+                outputPath, f"uw3_image_{str(step).zfill(4)}.png"
+            )
             figs.image(outputFilename)
         ptime = delta_time()
 
         dt = stokes.dt()
         with swarm.access():
-            vel_on_particles = uw.function.evaluate(stokes.u.fn, swarm.particle_coordinates.data)
+            vel_on_particles = uw.function.evaluate(
+                stokes.u.fn, swarm.particle_coordinates.data
+            )
         etime = delta_time()
 
         with swarm.access(swarm.particle_coordinates):
@@ -209,7 +234,10 @@ def do_uw2():
     import numpy as np
 
     mesh = uw.discretisation.FeMesh_Cartesian(
-        elementType=("Q1/dQ0"), elementRes=(n_els, n_els), minCoord=(0.0, 0.0), maxCoord=(boxLength, boxHeight)
+        elementType=("Q1/dQ0"),
+        elementRes=(n_els, n_els),
+        minCoord=(0.0, 0.0),
+        maxCoord=(boxLength, boxHeight),
     )
 
     velocityField = mesh.add_variable(nodeDofCount=2)
@@ -226,7 +254,9 @@ def do_uw2():
     materialIndex = swarm.add_variable(dataType="int", count=1)
 
     # Create a layout object, populate the swarm with particles.
-    swarmLayout = uw.swarm.layouts.PerCellSpaceFillerLayout(swarm=swarm, particlesPerCell=30)
+    swarmLayout = uw.swarm.layouts.PerCellSpaceFillerLayout(
+        swarm=swarm, particlesPerCell=30
+    )
     swarm.populate_using_layout(layout=swarmLayout)
 
     # define these for convience.
@@ -273,7 +303,9 @@ def do_uw2():
     # Prescribe degrees of freedom on each node to be considered Dirichlet conditions.
     # In the x direction on allWalls flag as Dirichlet
     # In the y direction on jWalls (horizontal) flag as Dirichlet
-    stokesBC = uw.conditions.DirichletCondition(variable=velocityField, indexSetsPerDof=(allWalls, jWalls))
+    stokesBC = uw.conditions.DirichletCondition(
+        variable=velocityField, indexSetsPerDof=(allWalls, jWalls)
+    )
 
     stokes = uw.systems.Stokes(
         velocityField=velocityField,
@@ -292,7 +324,9 @@ def do_uw2():
     solver.set_outer_rtol(stokes_outer_tol)
 
     # Create a system to advect the swarm
-    advector = uw.systems.SwarmAdvector(swarm=swarm, velocityField=velocityField, order=1)
+    advector = uw.systems.SwarmAdvector(
+        swarm=swarm, velocityField=velocityField, order=1
+    )
 
     # Initialise time and timestep.
     time = 0.0
@@ -305,12 +339,13 @@ def do_uw2():
 
     # define an update function
     def update():
-        dt = advector.get_max_dt()  # retrieve the maximum possible timestep from the advection system.
+        dt = (
+            advector.get_max_dt()
+        )  # retrieve the maximum possible timestep from the advection system.
         advector.integrate(dt)  # advect step.
         return time + dt, step + 1
 
     while time < model_end_time:
-
         # Get solution
         solver.solve()
 
@@ -333,8 +368,18 @@ def do_uw2():
                 ptsobj.vertices(swarm.data)
                 ptsobj.values(values)
 
-            uw2points(figs, swarm, materialIndex.data, pointsize=4, colourmap="blue green", colourbar=False, title=time)
-            outputFilename = os.path.join(outputPath, f"uw2_image_{str(step).zfill(4)}.png")
+            uw2points(
+                figs,
+                swarm,
+                materialIndex.data,
+                pointsize=4,
+                colourmap="blue green",
+                colourbar=False,
+                title=time,
+            )
+            outputFilename = os.path.join(
+                outputPath, f"uw2_image_{str(step).zfill(4)}.png"
+            )
             figs.image(outputFilename)
 
         if uw.mpi.rank == 0:

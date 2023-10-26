@@ -79,7 +79,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(T)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(T)
 adv_diff.constitutive_model.Parameters.diffusivity = k
 
 # %%
@@ -106,7 +106,6 @@ with mesh.access(T):
 # %%
 def plot_fig():
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -243,9 +242,9 @@ nsteps = 21
 # +
 
 if uw.mpi.size == 1:
-    ''' create figure to show the temp diffuses '''
+    """create figure to show the temp diffuses"""
     plt.figure(figsize=(9, 3))
-    plt.plot(t0, sample_points[:,1], ls=':')
+    plt.plot(t0, sample_points[:, 1], ls=":")
 # -
 
 

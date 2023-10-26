@@ -625,6 +625,9 @@ class IndexSwarmVariable(SwarmVariable):
         """
         pass
 
+    def visMask(self):
+        return self.createMask(list(range(self.indices)))
+
     def view(self):
         """
         Show information on IndexSwarmVariable

@@ -72,28 +72,25 @@ with mesh.access(mesh._work_MeshVar):
 print(f"Vvar: {mesh._work_MeshVar.coords.shape}")
 
 # %%
-0/0
+0 / 0
 
 # %%
 mesh.dm.view()
 
 # %%
-with mesh.access(p,v, vc, pc):
-    p.data[:,0] = p.coords[:,0]
-    v.data[:,:] = v.coords[:,:]
-    vc.data[:,:] = 0.0
-    pc.data[:,0] = 0.0
-    
+with mesh.access(p, v, vc, pc):
+    p.data[:, 0] = p.coords[:, 0]
+    v.data[:, :] = v.coords[:, :]
+    vc.data[:, :] = 0.0
+    pc.data[:, 0] = 0.0
+
 if mesh.sf == None:
     mesh.sf = mesh.dm.getDefaultSF()
 
 print(f"MESH.dm chart -> {mesh.dm.getChart()}")
 
 # %%
-mesh.write_visualisation_xdmf(expt_name, 
-                              meshUpdates=True, 
-                              meshVars=[p,v], 
-                              index=0)
+mesh.write_visualisation_xdmf(expt_name, meshUpdates=True, meshVars=[p, v], index=0)
 
 # %%
 # Now just try to save everything using dm stuff
@@ -211,11 +208,11 @@ print(gvecc.array[::10])
 print(gvec.array[::10])
 
 # %%
-0/0
+0 / 0
 
 # %%
-h5 = h5py.File('Monolith_v_np2.h5', "r")
-all_vecs = h5['topologies']['uw_mesh']['dms']['uw_mesh']['vecs']['All']['All'][()]
+h5 = h5py.File("Monolith_v_np2.h5", "r")
+all_vecs = h5["topologies"]["uw_mesh"]["dms"]["uw_mesh"]["vecs"]["All"]["All"][()]
 h5.close()
 
 # %%
@@ -248,7 +245,7 @@ print(f"{uw.mpi.rank} - plvec size - {p._lvec.array.shape}", flush=True)
 # psdm.setSection(psection)
 # psdm.setDefaultSection(psection)
 
-# # ============== 
+# # ==============
 
 vnewis, vsubdm = mesh.dm.createSubDM(v.field_id)
 vlvec = v._lvec
@@ -290,8 +287,8 @@ vsdm.setSection(vsection)
 # %%
 ## local version
 
-def local_version():
 
+def local_version():
     pnewis, psubdm = mesh.dm.createSubDM(p.field_id)
     plvec = p._lvec
 
@@ -307,10 +304,9 @@ def local_version():
     psdm.setSection(psection)
     # psdm.setDefaultSection(psection)
 
-
     filename = f"{expt_name}.P.2.h5"
     viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-    plvec.setName('P')
+    plvec.setName("P")
     mesh.dm.localVectorView(viewer, psubdm, plvec)
     mesh.dm.sectionView(viewer, psdm)
     viewer.destroy()
@@ -328,8 +324,8 @@ def local_version():
     viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
 
     psdmC = psubdmC.clone()
-    psdmC.setName('P')
-    plvecC.setName('P')
+    psdmC.setName("P")
+    plvecC.setName("P")
 
     globalsf, localsf = mesh.dm.sectionLoad(viewer, psdm, sf)
     mesh.dm.localVectorLoad(viewer, psdm, localsf, plvecC)
@@ -374,7 +370,7 @@ psdm.setSection(psection)
 
 filename = f"{expt_name}.P.3.h5"
 viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-pgvec.setName('P')
+pgvec.setName("P")
 
 mesh.dm.sectionView(viewer, psdm)
 # mesh.dm.globalVectorView(viewer, psdm, pgvec)
@@ -400,11 +396,11 @@ filename = f"{expt_name}.P.3.h5"
 viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
 
 psdmC = psubdmC.clone()
-psdmC.setName('P')
-pgvecC.setName('P')
+psdmC.setName("P")
+pgvecC.setName("P")
 
 
-globalsf, localsf = mesh.dm.sectionLoad(viewer, psdmC, sf1) # global
+globalsf, localsf = mesh.dm.sectionLoad(viewer, psdmC, sf1)  # global
 # mesh.dm.globalVectorLoad(viewer, psdm, globalsf, pgvecC)
 viewer.destroy()
 
@@ -422,13 +418,12 @@ sf1.getGraph()[0]
 # sf1, _ = uw.discretisation._from_plexh5("test_checkpointing_np2.mesh.0.h5", return_sf=True)
 
 # %%
-0/0
+0 / 0
 
 # %%
 # mesh.sf.view()
 
 # %%
-
 
 
 # %%
@@ -450,10 +445,10 @@ pgvecC.array
 
 ## Checkpoint 1 variable using dmplex*VectorView
 
+
 def save_mesh_var(var):
-    
     name = var.clean_name
-    
+
     newis, subdm = mesh.dm.createSubDM(var.field_id)
     lvec = var._lvec
     gvec = var._gvec
@@ -461,11 +456,11 @@ def save_mesh_var(var):
     subdm.setName(name)
     section = subdm.getDefaultSection()
     # section.view()
-    
+
     sectiondm = subdm.clone()
     sectiondm.setName(name)
     sectiondm.setSection(section)
-    
+
     # lvec.setName(name)
     # gvec.setName(name)
 
@@ -475,9 +470,10 @@ def save_mesh_var(var):
     mesh.dm.globalVectorView(viewer, sectiondm, gvec)
     mesh.dm.sectionView(viewer, sectiondm)
     viewer.destroy()
-    
+
+
 print("Saving P-Vec", flush=True)
-save_mesh_var(p)  
+save_mesh_var(p)
 print("Saving P-Vec ... done", flush=True)
 
 
@@ -510,7 +506,7 @@ newis, subdm = mesh.dm.createSubDM(pc.field_id)
 gv = subdm.createGlobalVec()
 
 sectiondm = subdm.clone()
-sectiondm.setName('P')
+sectiondm.setName("P")
 sf = subdm.getDefaultSF()
 
 print(f"SF: {sf.getGraph()[0]}", flush=True)
@@ -533,22 +529,22 @@ print(f"LocalSF: {localsf.getGraph()[0]}", flush=True)
 # %%
 # Can we read it ?
 
+
 def load_mesh_var(var, data_name):
-    
     name = data_name
-    
+
     print(f"Loading {data_name} into field {var.field_id}", flush=True)
 
     newis, subdm = mesh.dm.createSubDM(var.field_id)
     lvec = subdm.createLocalVec()
     gvec = subdm.createGlobalVec()
-    
+
     print(f"lvec size: {lvec.array.shape}", flush=True)
     print(f"gvec size: {gvec.array.shape}", flush=True)
-        
+
     sf = subdm.getDefaultSF()
     sectiondm = subdm.clone()
-        
+
     subdm.setName(name)
     sectiondm.setName(name)
     lvec.setName(name)
@@ -558,26 +554,25 @@ def load_mesh_var(var, data_name):
 
     viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
     globalsf, localsf = mesh.dm.sectionLoad(viewer, sectiondm, sf)
-    
 
     section = sectiondm.getSection()
     subdm.setSection(section)
-    
+
     section.view()
-        
+
     mesh.dm.globalVectorLoad(viewer, subdm, globalsf, gvec)
     viewer.destroy()
-    
-    # Copy that back 
-    
+
+    # Copy that back
+
     with mesh.access(var):
         var._gvec.array[...] = gvec.array[...]
-        
+
     print(f"LVEC: {gvec.array[0:10]}", flush=True)
-        
+
     # Do we need to do local2global or does the access manager deal with it ?
-    
-    
+
+
 load_mesh_var(pc, p.clean_name)
 
 # %%
@@ -597,7 +592,7 @@ with mesh.access():
 # %%
 
 # %%
-0/0
+0 / 0
 
 # %%
 # Now, build a mesh using the checkpointed mesh file and read
@@ -616,7 +611,7 @@ if uw.mpi.rank == 0:
     print(f"Original =================", flush=True)
 mesh.dm.view()
 
-if uw.mpi.rank ==0:
+if uw.mpi.rank == 0:
     print(f"New =================", flush=True)
 mesh3.dm.view()
 
@@ -638,92 +633,92 @@ pc.load_from_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
 with mesh3.access():
     V3 = v3.data.copy()
     P3 = p3.data.copy()
-    
+
 with mesh.access():
-    VC = vc.data.copy()    
+    VC = vc.data.copy()
     PC = pc.data.copy()
 
 # %%
 if uw.mpi.rank == 0:
     print(f"Original =================", flush=True)
-    print(mesh.data[0:10,0], flush=True)
+    print(mesh.data[0:10, 0], flush=True)
 
 # %%
 if uw.mpi.rank == 0:
     print(f"New =================", flush=True)
-    print(mesh3.data[0:10,0], flush = True)
+    print(mesh3.data[0:10, 0], flush=True)
 
 # %%
 if uw.mpi.rank == 0:
     print(f"=================", flush=True)
 
 # %%
-0/0
+0 / 0
 
 # %%
-mesh.write_visualisation_xdmf(f"viz_chpt_np{uw.mpi.size}", 
-                              meshUpdates=True, meshVars=[p,v], 
-                              index=0)
-
-
-
+mesh.write_visualisation_xdmf(
+    f"viz_chpt_np{uw.mpi.size}", meshUpdates=True, meshVars=[p, v], index=0
+)
 
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np{uw.mpi.size}.U.0.h5", "r")
 print(h5.keys())
-U = h5['fields']['U'][()]
+U = h5["fields"]["U"][()]
 h5.close()
 
 if uw.mpi.rank == 0:
-    print("U ", U[0:7,0].T)
+    print("U ", U[0:7, 0].T)
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np{uw.mpi.size}.U.1.h5", "r")
-U1 = h5['fields']['U'][()]
+U1 = h5["fields"]["U"][()]
 h5.close()
 
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np{uw.mpi.size}.P.1.h5", "r")
-P1 = h5['fields']['P'][()]
+P1 = h5["fields"]["P"][()]
 h5.close()
 
 if uw.mpi.rank == 0:
-    print("U1", U1[0:7,0].T)
+    print("U1", U1[0:7, 0].T)
     print("P1", P1[0:7].T)
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np{uw.mpi.size}.U.2.h5", "r")
-U2 = h5['fields']['U'][()]
+U2 = h5["fields"]["U"][()]
 h5.close()
 
 if uw.mpi.rank == 0:
-    print("U2", U2[0:7,0].T)
+    print("U2", U2[0:7, 0].T)
 
 # %%
-vc.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name='U')
+vc.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
 
 # %%
 with mesh.access():
     # it should be fine to test this proc-by-proc
-    assert((vc.data - v.data).max() < 0.001)
+    assert (vc.data - v.data).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 1 - re-load success", flush=True)
-    
-    assert((vc.data - vc.coords).max() < 0.001)
+        print("Mesh 1 - re-load success", flush=True)
+
+    assert (vc.data - vc.coords).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 1 validation success", flush=True)
-    
+        print("Mesh 1 validation success", flush=True)
 
 
 # %%
 
 # %%
 # Another option, create an identical mesh and read the checkpoints back in
-# This is likely to work but not if the decomposition in not deterministic 
+# This is likely to work but not if the decomposition in not deterministic
 # (which is not guaranteed, obviously)
 
 mesh2 = uw.meshing.UnstructuredSimplexBox(
@@ -738,25 +733,25 @@ mesh2 = uw.meshing.UnstructuredSimplexBox(
 v2 = uw.discretisation.MeshVariable("U", mesh2, mesh2.dim, degree=2)
 p2 = uw.discretisation.MeshVariable("P", mesh2, 1, degree=1, continuous=True)
 
-v2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name='U')
-p2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name='P')
+v2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
+p2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
 
 with mesh.access(), mesh2.access():
     # it should be fine to test this proc-by-proc
-    assert((v2.data - v.data).max() < 0.001)
+    assert (v2.data - v.data).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 2 re-load success")
-        
-    assert((v2.data - v2.coords).max() < 0.001)
+        print("Mesh 2 re-load success")
+
+    assert (v2.data - v2.coords).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 2 validation success")
+        print("Mesh 2 validation success")
 
 
 # %%
-# Another option, read the checkpointed mesh. 
+# Another option, read the checkpointed mesh.
 # This might give different a different ordering, but the assertion that
-# the values are equivalent to the mesh coords should be fine. 
+# the values are equivalent to the mesh coords should be fine.
 
 meshfilename = f"viz_chpt_np{uw.mpi.size}.mesh.0.h5"
 mesh3 = uw.discretisation.Mesh(meshfilename)
@@ -767,26 +762,25 @@ mesh3.dm.view()
 v3 = uw.discretisation.MeshVariable("U", mesh3, mesh3.dim, degree=2)
 p3 = uw.discretisation.MeshVariable("P", mesh3, 1, degree=1, continuous=True)
 
-v3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name='U')
-p3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name='P')
+v3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
+p3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
 with mesh3.access(), mesh.access():
-    print(f"i   - {uw.mpi.rank}: ", v3.data[0:7,0].T)    
-    print(f"ii  - {uw.mpi.rank}: ", v3.coords[0:7,0].T)    
-    print(f"iii - {uw.mpi.rank}: ", v.data[0:7,0].T)    
+    print(f"i   - {uw.mpi.rank}: ", v3.data[0:7, 0].T)
+    print(f"ii  - {uw.mpi.rank}: ", v3.coords[0:7, 0].T)
+    print(f"iii - {uw.mpi.rank}: ", v.data[0:7, 0].T)
     # print((v3.data - v3.coords).max())
 
 # %%
 with mesh.access(), mesh3.access():
-    assert((v3.data - v3.coords).max() < 0.001)
+    assert (v3.data - v3.coords).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 3 validation success")
-        
+        print("Mesh 3 validation success")
+
     # it should be fine to test this proc-by-proc
-    assert((v3.data - v.data).max() < 0.001)
+    assert (v3.data - v.data).max() < 0.001
     if uw.mpi.rank == 0:
-        print ("Mesh 3 re-load success")
-        
+        print("Mesh 3 re-load success")
 
 
 # %%
@@ -796,34 +790,38 @@ with mesh.access(), mesh3.access():
 # %%
 
 # %%
-0/0
+0 / 0
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np1.mesh.0.h5", "r")
 print(h5.keys())
-print(h5['geometry']['vertices'][()])
+print(h5["geometry"]["vertices"][()])
 h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np1.U.0.h5", "r")
 print(h5.keys())
-print(h5['vertex_fields']['U_P2'][()])
+print(h5["vertex_fields"]["U_P2"][()])
 h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np2.mesh.0.h5", "r")
 print(h5.keys())
-print(h5['geometry']['vertices'][()])
+print(h5["geometry"]["vertices"][()])
 h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File(f"viz_chpt_np2.U.0.h5", "r")
 print(h5.keys())
-print(h5['vertex_fields']['U_P2'][()])
+print(h5["vertex_fields"]["U_P2"][()])
 h5.close()
 
 # %%
@@ -834,7 +832,7 @@ h5.close()
 # # sec.view()
 
 # %%
-# Saved that one ... 
+# Saved that one ...
 
 # viewer = PETSc.ViewerHDF5().create(f"test_vec_p_save.np{uw.mpi.size}.h5", "w", comm=PETSc.COMM_WORLD)
 # viewer(p._gvec)
@@ -862,10 +860,11 @@ h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File(f"test_uw_np2.checkpoint.0.h5", "r")
 print(h5.keys())
-print(h5['topology']['uw_mesh']['dms']['uw_mesh']['order'][()])
-doff = h5['topologies']['uw_mesh']['dms']['P']['section']['field0']['atlasOff'][()]
+print(h5["topology"]["uw_mesh"]["dms"]["uw_mesh"]["order"][()])
+doff = h5["topologies"]["uw_mesh"]["dms"]["P"]["section"]["field0"]["atlasOff"][()]
 h5.close()
 
 # %%
@@ -873,14 +872,10 @@ h5.close()
 # %%
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
 
-stokes.add_dirichlet_bc(
-    (0.0), ["Top", "Bottom"], [1]
-)  
-stokes.add_dirichlet_bc(
-    (0.0), ["Left", "Right"], [0]
-)  
+stokes.add_dirichlet_bc((0.0), ["Top", "Bottom"], [1])
+stokes.add_dirichlet_bc((0.0), ["Left", "Right"], [0])
 
 # %%
 swarm = uw.swarm.Swarm(mesh=mesh)
@@ -923,14 +918,18 @@ stokes.solve(zero_init_guess=True)
 
 # %%
 ## Now we have data we can save
-mesh.write_visualisation_xdmf(f"test_viz_np{uw.mpi.size}", meshUpdates=True, meshVars=[p, v])
+mesh.write_visualisation_xdmf(
+    f"test_viz_np{uw.mpi.size}", meshUpdates=True, meshVars=[p, v]
+)
 
 
 # %%
 mesh.write_checkpoint(f"test_uw_np{uw.mpi.size}", meshUpdates=True, meshVars=[p, v])
 
 # %%
-viewer = PETSc.ViewerHDF5().create(f"test_uw_np{2}.section.0.h5", "w", comm=PETSc.COMM_WORLD)
+viewer = PETSc.ViewerHDF5().create(
+    f"test_uw_np{2}.section.0.h5", "w", comm=PETSc.COMM_WORLD
+)
 section = mesh.dm.getDefaultGlobalSection()
 sectiondm = mesh.dm.clone()
 sectiondm.setName("sectiondm")
@@ -939,10 +938,10 @@ mesh.dm.sectionView(viewer, sectiondm)
 
 # %%
 import h5py
+
 h5 = h5py.File(f"test_uw_np{2}.section.0.h5", "r")
 print(h5.keys())
-print(h5['topologies']['uw_mesh']['dms']['sectiondm'][
-'order'])
+print(h5["topologies"]["uw_mesh"]["dms"]["sectiondm"]["order"])
 h5.close()
 
 # %%
@@ -985,10 +984,11 @@ with mesh.access():
 # %%
 
 # %%
-0/0
+0 / 0
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.mesh.0.h5", "r")
 print(h5.keys())
 h5.close()
@@ -996,7 +996,9 @@ h5.close()
 # %%
 # Mesh plus section in h5
 
-viewer = PETSc.ViewerHDF5().create("test_save_load.mesh.1.h5", "w", comm=PETSc.COMM_WORLD)
+viewer = PETSc.ViewerHDF5().create(
+    "test_save_load.mesh.1.h5", "w", comm=PETSc.COMM_WORLD
+)
 # viewer(mesh.dm)
 mesh.dm.view(viewer)
 mesh.dm.sectionView(viewer, mesh.dm)
@@ -1005,7 +1007,7 @@ mesh.dm.sectionView(viewer, mesh.dm)
 
 ssectiondm = mesh.dm.clone()
 ssectiondm.setName("uw_mesh")
-localsf, globalsf = mesh.dm.sectionLoad(viewer, ssectiondm, mesh.sf0 )
+localsf, globalsf = mesh.dm.sectionLoad(viewer, ssectiondm, mesh.sf0)
 
 # %%
 
@@ -1018,19 +1020,22 @@ localsf, globalsf = mesh.dm.sectionLoad(viewer, ssectiondm, mesh.sf0 )
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.v.1.h5", "r")
 print(h5.keys())
-print(h5['topologies']['uw_mesh']['dms']['U']['vecs']['U']['U'][()][0:10])
+print(h5["topologies"]["uw_mesh"]["dms"]["U"]["vecs"]["U"]["U"][()][0:10])
 h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.p.1.h5", "r")
-print(h5['topologies']['uw_mesh']['dms']['P']['vecs']['P']['P'][()][0:10])
+print(h5["topologies"]["uw_mesh"]["dms"]["P"]["vecs"]["P"]["P"][()][0:10])
 h5.close()
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.U.0.h5", "r")
 print(h5.keys())
 # print(h5['topologies']['uw_mesh']['dms'].keys())
@@ -1050,24 +1055,27 @@ h5.close()
 # sectiondm.setName("uw_section")
 
 # section = mesh.dm.getDefaultGlobalSection()
-viewer = PETSc.ViewerHDF5().create("test_save_load.section.0.h5", "w", comm=PETSc.COMM_WORLD)
+viewer = PETSc.ViewerHDF5().create(
+    "test_save_load.section.0.h5", "w", comm=PETSc.COMM_WORLD
+)
 mesh.dm.sectionView(viewer, mesh.dm)
 
-# Read it back in 
+# Read it back in
 
 # viewer = PETSc.ViewerHDF5().create("test_save_load.section.0.h5", "r", comm=PETSc.COMM_WORLD)
 ssectiondm = mesh.dm.clone()
 ssectiondm.setName("uw_mesh")
-localsf, globalsf = mesh.dm.sectionLoad(viewer, ssectiondm, mesh.sf )
+localsf, globalsf = mesh.dm.sectionLoad(viewer, ssectiondm, mesh.sf)
 
 
 # %%
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.mesh.0.h5", "r")
 print(h5.keys())
-print(h5['topologies']['uw_mesh']['dms']['uw_mesh'].keys())
+print(h5["topologies"]["uw_mesh"]["dms"]["uw_mesh"].keys())
 h5.close()
 
 
@@ -1088,7 +1096,7 @@ mesh.dm.sectionView(viewer, psectiondm)
 
 psectiondmr = subdm.clone()
 psectiondmr.setName("uw_section")
-plocalsf, pglobalsf = mesh.dm.sectionLoad(viewer, psectiondmr, mesh.sf )
+plocalsf, pglobalsf = mesh.dm.sectionLoad(viewer, psectiondmr, mesh.sf)
 
 mesh.dm.globalVectorLoad(viewer, psectiondm, pglobalsf, p._gvec)
 
@@ -1102,12 +1110,13 @@ sec.view()
 psectiondmr.view()
 
 # %%
-0/0
+0 / 0
 
 # %%
 import h5py
+
 h5 = h5py.File("test_save_load.P3.0.h5", "r")
-print(h5['topologies']['uw_mesh']['dms']['uw_section']['section'].keys())
+print(h5["topologies"]["uw_mesh"]["dms"]["uw_section"]["section"].keys())
 h5.close()
 
 # %%
@@ -1123,7 +1132,6 @@ subdm.setName(p.clean_name)
 mesh.dm.globalVectorView(viewer, subdm, p._gvec)
 
 
-
 # %%
 # newis, subdm = mesh.dm.createSubDM([v.field_id])
 
@@ -1135,17 +1143,18 @@ mesh.dm.globalVectorLoad(viewer, subdm, mesh.sf, p._gvec)
 # %%
 
 # %%
-0/0
+0 / 0
 
 # %%
-import h5py 
+import h5py
+
 h5 = h5py.File("test_save_load.P2.0.h5", "r")
 
 # %%
-h5['topologies'].keys()
+h5["topologies"].keys()
 
 # %%
-h5["topologies"]["uw_mesh_topology"]["dms"]["P"]["vecs"]["P"]['P'][()]
+h5["topologies"]["uw_mesh_topology"]["dms"]["P"]["vecs"]["P"]["P"][()]
 
 # %%
 
@@ -1186,7 +1195,7 @@ p2.load("test_save_load.P.0.h5", data_name="P")
 # %%
 
 # %%
-filename="test_save_load.P.0.h5"
+filename = "test_save_load.P.0.h5"
 viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
 
 # %%
@@ -1197,6 +1206,7 @@ mesh2.dm.globalVectorLoad(viewer, subdm, mesh2.sf, p._gvec)
 
 # %%
 import h5py
+
 h5 = h5py.File("./SampleData/Stokes_Sphere_RT_0.1_1.0s.mesh.0.h5")
 
 # %%
@@ -1215,7 +1225,7 @@ if uw.mpi.rank == 0:
 mesh3 = uw.discretisation.Mesh("test_save_load.mesh.0.h5")
 v3 = uw.discretisation.MeshVariable("U3", mesh3, mesh3.dim, degree=2)
 p3 = uw.discretisation.MeshVariable("P3", mesh3, 1, degree=1, continuous=True)
-   
+
 if uw.mpi.rank == 0:
     print("reload U,P from h5 files")
 
@@ -1232,7 +1242,7 @@ with mesh3.access(p3):
 mesh3.dm.setName("uw_mesh_topology")
 viewer = PETSc.ViewerHDF5().create("test_save_load.P2.0.h5", "r", comm=PETSc.COMM_WORLD)
 indexset, subdm = mesh3.dm.createSubDM(p3.field_id)
-subdm.setName('P')
+subdm.setName("P")
 mesh3.dm.globalVectorLoad(viewer, subdm, mesh3.sf, p3._gvec)
 
 # %%
@@ -1242,12 +1252,12 @@ sectiondm = mesh3.dm.clone()
 mesh3.dm.sectionLoad(viewer, sectiondm, mesh3.sf)
 
 # %%
-mesh3.dm.globalVectorLoad(
-    viewer, mesh3.dm, mesh3.sf, p3._gvec
-)
+mesh3.dm.globalVectorLoad(viewer, mesh3.dm, mesh3.sf, p3._gvec)
 
 # %%
-viewer = PETSc.ViewerHDF5().create("./SampleData/Stokes_Sphere_RT_0.1_1.0s.mesh.0.h5", "r", comm=PETSc.COMM_WORLD)
+viewer = PETSc.ViewerHDF5().create(
+    "./SampleData/Stokes_Sphere_RT_0.1_1.0s.mesh.0.h5", "r", comm=PETSc.COMM_WORLD
+)
 
 dm = PETSc.DMPlex().create(comm=PETSc.COMM_WORLD)
 sf = dm.topologyLoad(viewer)
@@ -1273,18 +1283,18 @@ if uw.mpi.rank == 0:
 ## Check the order is OK
 
 with mesh.access():
-    print(v.data[10:20,:])   
+    print(v.data[10:20, :])
 with mesh2.access():
-    print(v2.data[10:20,:])
+    print(v2.data[10:20, :])
 with mesh3.access():
-    print(v3.data[10:20,:])
+    print(v3.data[10:20, :])
 
 
 # %%
 with mesh.access(), mesh2.access():
-    print(v.data[10:20,:]-v2.data[10:20,:])
-    
+    print(v.data[10:20, :] - v2.data[10:20, :])
+
 with mesh.access(), mesh3.access():
-    print(v.data[10:20,:]-v3.data[10:20,:])
+    print(v.data[10:20, :] - v3.data[10:20, :])
 
 # %%

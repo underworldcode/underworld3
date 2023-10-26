@@ -49,35 +49,47 @@ import meshio
 # Generate local mesh on rank 0
 
 if uw.mpi.rank == 0:
-
     with pygmsh.geo.Geometry() as geom:
-
         geom.characteristic_length_max = csize_local
-        outer = geom.add_circle((0.0, 0.0, 0.0), radius_outer, make_surface=False, mesh_size=cell_size_upper)
+        outer = geom.add_circle(
+            (0.0, 0.0, 0.0), radius_outer, make_surface=False, mesh_size=cell_size_upper
+        )
 
         if radius_inner > 0.0:
             inner = geom.add_circle((0.0, 0.0, 0.0), radius_inner, make_surface=False)
             domain = geom.add_circle(
-                (0.0, 0.0, 0.0), radius_outer * 1.25, mesh_size=cell_size_upper * 1.2, holes=[inner]
+                (0.0, 0.0, 0.0),
+                radius_outer * 1.25,
+                mesh_size=cell_size_upper * 1.2,
+                holes=[inner],
             )
             geom.add_physical(inner.curve_loop.curves, label="Lower")
             for l in inner.curve_loop.curves:
                 geom.set_transfinite_curve(
-                    l, num_nodes=int(40 * radius_inner / radius_outer), mesh_type="Progression", coeff=1.0
+                    l,
+                    num_nodes=int(40 * radius_inner / radius_outer),
+                    mesh_type="Progression",
+                    coeff=1.0,
                 )
 
         else:
             centre = geom.add_point((0.0, 0.0, 0.0), mesh_size=cell_size_lower)
-            domain = geom.add_circle((0.0, 0.0, 0.0), radius_outer * 1.25, mesh_size=cell_size_upper)
+            domain = geom.add_circle(
+                (0.0, 0.0, 0.0), radius_outer * 1.25, mesh_size=cell_size_upper
+            )
             geom.in_surface(centre, domain.plane_surface)
             geom.add_physical(centre, label="Centre")
 
         for l in outer.curve_loop.curves:
             geom.in_surface(l, domain.plane_surface)
-            geom.set_transfinite_curve(l, num_nodes=40, mesh_type="Progression", coeff=1.0)
+            geom.set_transfinite_curve(
+                l, num_nodes=40, mesh_type="Progression", coeff=1.0
+            )
 
         for l in domain.curve_loop.curves:
-            geom.set_transfinite_curve(l, num_nodes=40, mesh_type="Progression", coeff=1.0)
+            geom.set_transfinite_curve(
+                l, num_nodes=40, mesh_type="Progression", coeff=1.0
+            )
 
         geom.add_physical(outer.curve_loop.curves, label="Upper")
         geom.add_physical(domain.curve_loop.curves, label="Celestial_Sphere")
@@ -120,7 +132,9 @@ sv = swarm.add_variable("compo", size=1, proxy_degree=3, _nn_proxy=False)
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 gravity_fn = radius_fn
 
@@ -158,16 +172,23 @@ with meshball.access(r_mesh, r_mesh0):
 
 with meshball.access(mask, surface):
     mask.data[...] = uw.function.evaluate(mask_fn, mask.coords).reshape(-1, 1)
-    surface.data[...] = uw.function.evaluate(mask_fn - i_mask_fn, surface.coords).reshape(-1, 1)
+    surface.data[...] = uw.function.evaluate(
+        mask_fn - i_mask_fn, surface.coords
+    ).reshape(-1, 1)
 
-t_init = 0.001 * (sympy.exp(-5.0 * (x**2 + (y - 0.9) ** 2)) + sympy.exp(-10.0 * ((x - 0.8) ** 2 + (y + 0.25) ** 2)))
+t_init = 0.001 * (
+    sympy.exp(-5.0 * (x**2 + (y - 0.9) ** 2))
+    + sympy.exp(-10.0 * ((x - 0.8) ** 2 + (y + 0.25) ** 2))
+)
 # -
 
 
 swarm.populate(fill_param=3)
 
 with swarm.access(sv):
-    sv.data[...] = uw.function.evaluate(t_init, swarm.particle_coordinates.data).reshape(-1, 1)
+    sv.data[...] = uw.function.evaluate(
+        t_init, swarm.particle_coordinates.data
+    ).reshape(-1, 1)
 
 
 # +
@@ -176,7 +197,6 @@ with swarm.access(sv):
 from mpi4py import MPI
 
 if visuals and MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -256,8 +276,8 @@ stokes.petsc_options["snes_rtol"] = 1.0e-4
 # stokes.petsc_options.delValue("ksp_monitor")
 
 viscosity = 0.0 + 1.0 * (mask.fn * 0.9 + 0.1)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / viscosity
 
 stokes.add_dirichlet_bc((0.0, 0.0), "Celestial_Sphere", (0, 1))
@@ -287,10 +307,12 @@ rs = radial_stress[0, 0]
 k = 1.0
 h = 0.0
 
-poisson_vr = uw.systems.Poisson(meshball, u_Field=vr_soln, solver_name="poisson_vr", verbose=False)
+poisson_vr = uw.systems.Poisson(
+    meshball, u_Field=vr_soln, solver_name="poisson_vr", verbose=False
+)
 
-poisson_vr.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-poisson_vr.constitutive_model.Parameters.diffusivity=k
+poisson_vr.constitutive_model = uw.constitutive_models.DiffusionModel(meshball.dim)
+poisson_vr.constitutive_model.Parameters.diffusivity = k
 poisson_vr.f = h
 
 # v_r
@@ -328,7 +350,6 @@ t_mesh = uw.function.evaluate(t_soln.sym[0] * mask.sym[0], meshball.data)
 
 
 if visuals and uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -381,7 +402,13 @@ if visuals and uw.mpi.size == 1:
     pl.add_mesh(pvmesh, "LightGrey", "wireframe")
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="T", use_transparency=False, opacity="M"
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=False,
+        scalars="T",
+        use_transparency=False,
+        opacity="M",
     )
 
     pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-1)
@@ -419,7 +446,6 @@ with meshball.access():
 
 # +
 for it in range(0, 10):
-
     # Use v history to estimate dv/dt, v for half step forward.
 
     delta_r = 0.5 * stokes.estimate_dt() * (1.5 * vr_mesh - 0.5 * vr_mesh_1)
@@ -445,7 +471,9 @@ for it in range(0, 10):
     vr_mesh = uw.function.evaluate(vr_soln.fn, meshball.data)
     xy_mesh_1 = 1.0 * coords + 0.0 * xy_mesh_1
 
-    vsize, vmean, vmin, vmax, vsum, vnorm2, vrms = meshball.stats((surface.fn * vr_soln.fn))
+    vsize, vmean, vmin, vmax, vsum, vnorm2, vrms = meshball.stats(
+        (surface.fn * vr_soln.fn)
+    )
     surface_residual = vrms
     surface_mean_flux = vmean
 
@@ -458,8 +486,11 @@ for it in range(0, 10):
     #     meshball.generate_xdmf(savefile)
 
     if uw.mpi.rank == 0:
-
-        print("surface residual - {} / {}".format(surface_residual / surface_residual_0, surface_residual / norm_0))
+        print(
+            "surface residual - {} / {}".format(
+                surface_residual / surface_residual_0, surface_residual / norm_0
+            )
+        )
         print("surface mean flux - {} / {}".format(surface_mean_flux / vr0, vr0))
 
     if surface_residual / norm_0 < 0.001:
@@ -480,7 +511,6 @@ t_mesh = uw.function.evaluate(t_soln.fn, meshball.data)
 
 
 if visuals and uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -501,11 +531,15 @@ if visuals and uw.mpi.size == 1:
         print("vrsol - magnitude {}".format(np.sqrt((vrsol**2).mean())))
 
     pvmesh.point_data["T"] = t_mesh
-    pvmesh.point_data["Vr"] = uw.function.evaluate(vr_soln.fn * surface_fn, meshball.data)
+    pvmesh.point_data["Vr"] = uw.function.evaluate(
+        vr_soln.fn * surface_fn, meshball.data
+    )
     pvmesh.point_data["M"] = np.clip(mask_mesh, 0.0, 1.0)
     pvmesh.point_data["E"] = err_mesh
     pvmesh.point_data["B"] = uw.function.evaluate(buoyancy_force, meshball.data)
-    pvmesh.point_data["DR"] = uw.function.evaluate(surface.fn * (r_mesh.fn - r_mesh0.fn), meshball.data)
+    pvmesh.point_data["DR"] = uw.function.evaluate(
+        surface.fn * (r_mesh.fn - r_mesh0.fn), meshball.data
+    )
 
     v_vectors = np.zeros((meshball.data.shape[0], 3))
     v_vectors[:, 0:2] = uw.function.evaluate(i_mask_fn * v_soln.fn, meshball.data)
@@ -518,7 +552,9 @@ if visuals and uw.mpi.size == 1:
     arrow_loc[:, 0:2] = v_soln.coords[...]
 
     arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...] * uw.function.evaluate(mask_fn, v_soln.coords).reshape(-1, 1)
+    arrow_length[:, 0:2] = usol[...] * uw.function.evaluate(
+        mask_fn, v_soln.coords
+    ).reshape(-1, 1)
 
     arrow_loc2 = np.zeros((vr_soln.coords.shape[0], 3))
     arrow_loc2[:, 0:2] = vr_soln.coords[...]

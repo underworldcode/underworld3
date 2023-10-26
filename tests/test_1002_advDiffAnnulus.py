@@ -31,7 +31,7 @@ def test_adv_diff_annulus():
         solver_name="adv_diff",
     )
 
-    adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+    adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
     adv_diff.constitutive_model.Parameters.diffusivity = k
 
     radius_fn = sympy.sqrt(

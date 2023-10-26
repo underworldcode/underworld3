@@ -17,7 +17,9 @@ import sympy
 
 # -
 
-meshbox = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24.0, qdegree=3)
+meshbox = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 24.0, qdegree=3
+)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
@@ -48,8 +50,8 @@ stokes.petsc_options["ksp_monitor"] = None
 delta_eta = 1.0e6
 
 viscosity_L = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity_L
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.0
 
@@ -86,8 +88,8 @@ adv_diff = uw.systems.AdvDiffusion(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
-adv_diff.constitutive_model.Parameters.diffusivity=k
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model.Parameters.diffusivity = k
 
 adv_diff.theta = 0.5
 
@@ -102,7 +104,9 @@ viscosity_evaluation.uw_function = 0.1 + 10.0 / (
 viscosity_evaluation.smoothing = 1.0e-3
 #
 stress_inv_evaluation = uw.systems.Projection(meshbox, tau_inv)
-stress_inv_evaluation.uw_function = 2.0 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+stress_inv_evaluation.uw_function = (
+    2.0 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+)
 stress_inv_evaluation.smoothing = 1.0e-3
 
 
@@ -138,10 +142,11 @@ stokes.solve()
 tau_Y = 1.0e5 * (1 + 100 * (1 - y))
 
 viscosity_NL = sympy.Piecewise(
-    (viscosity_L, 2 * viscosity_L * stokes._Einv2 < tau_Y), (tau_Y / (2 * stokes._Einv2), True)
+    (viscosity_L, 2 * viscosity_L * stokes._Einv2 < tau_Y),
+    (tau_Y / (2 * stokes._Einv2), True),
 )
 
-stokes.constitutive_model.Parameters.viscosity=viscosity_NL
+stokes.constitutive_model.Parameters.viscosity = viscosity_NL
 stokes.saddle_preconditioner = 1 / viscosity_NL
 # -
 
@@ -175,7 +180,6 @@ pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 pl = pv.Plotter(window_size=(750, 750))
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -266,9 +270,7 @@ pl = pv.Plotter()
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import vtk
 
@@ -344,7 +346,11 @@ def plot_T_mesh(filename):
             except KeyError:
                 pass
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
 
 # +
@@ -352,7 +358,6 @@ def plot_T_mesh(filename):
 
 
 for step in range(0, 250):
-
     stokes.solve(zero_init_guess=False)
     delta_t = 5.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
@@ -387,7 +392,6 @@ pass
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -427,7 +431,13 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7.5, opacity=0.25)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7.5,
+        opacity=0.25,
+    )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 

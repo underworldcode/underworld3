@@ -48,7 +48,6 @@ y = mesh.N.y
 # +
 
 if uw.mpi.size == 1:
-
     # plot the mesh
     import numpy as np
     import pyvista as pv
@@ -82,7 +81,7 @@ darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
-darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+darcy.constitutive_model = uw.constitutive_models.DiffusionModel(mesh.dim)
 darcy.constitutive_model.Parameters.diffusivity = 1
 
 
@@ -151,7 +150,6 @@ darcy.solve()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk

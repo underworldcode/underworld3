@@ -137,7 +137,7 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 
 # No slip boundary conditions
@@ -180,7 +180,6 @@ mesh.generate_xdmf(savefile)
 # check if that works
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -218,4 +217,3 @@ if uw.mpi.size == 1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-

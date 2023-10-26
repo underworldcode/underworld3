@@ -36,10 +36,10 @@ t_soln0 = uw.discretisation.MeshVariable("T0", mesh, 1, degree=1)
 poisson0 = uw.systems.SNES_Scalar(mesh, u_Field=t_soln0)
 poisson0.F0 = 0.0
 poisson0.F1 = 1.0 * poisson0._L
-poisson0.add_dirichlet_bc(1.0, "Bottom",0)
-poisson0.add_dirichlet_bc(0.0, "Top",0)
+poisson0.add_dirichlet_bc(1.0, "Bottom", 0)
+poisson0.add_dirichlet_bc(0.0, "Top", 0)
 
-poisson0.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln0)
+poisson0.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln0)
 poisson0.constitutive_model.Parameters.diffusivity = 1.0
 # -
 
@@ -53,12 +53,12 @@ poisson0.solve()
 # +
 # Create Poisson object
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 poisson.constitutive_model.Parameters.diffusivity = 1.0
 
 poisson.f = 0.0
-poisson.add_dirichlet_bc(1.0, "Bottom",0)
-poisson.add_dirichlet_bc(0.0, "Top",0)
+poisson.add_dirichlet_bc(1.0, "Bottom", 0)
+poisson.add_dirichlet_bc(0.0, "Top", 0)
 # -
 
 # Solve time
@@ -100,7 +100,6 @@ with mesh.access():
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -137,5 +136,3 @@ if MPI.COMM_WORLD.size == 1:
 
 
 # -
-
-

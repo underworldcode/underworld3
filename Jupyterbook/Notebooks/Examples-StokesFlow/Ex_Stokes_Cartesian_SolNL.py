@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -88,7 +88,7 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 stokes.add_dirichlet_bc(
@@ -103,6 +103,10 @@ stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_rtol"] = 1.0e-5
 
+
+stokes._setup_pointwise_functions(verbose=True)
+stokes._setup_discretisation(verbose=True)
+stokes.dm.ds.view()
 
 # +
 # %%
@@ -121,6 +125,8 @@ inv2 = 1 / 2 * inv2
 inv2 = sympy.sqrt(inv2)
 alpha_by_two = 2 / r0 - 2
 # -
+
+
 
 viscosity = 2 * eta0 * inv2**alpha_by_two
 

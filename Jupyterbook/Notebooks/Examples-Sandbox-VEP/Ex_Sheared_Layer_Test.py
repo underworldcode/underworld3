@@ -258,7 +258,7 @@ viscosity_L = sympy.Piecewise(
 
 
 # + tags=[]
-stokes.constitutive_model = uw.systems.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
 stokes.constitutive_model.Parameters.sigma_star_fn = 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity

@@ -94,7 +94,6 @@ else:
 # Point2 caused a few problems with the mesh reader at one point.
 
 if uw.mpi.rank == 0:
-
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Notch")
@@ -223,6 +222,7 @@ if uw.mpi.rank == 0:
 
 
 from underworld3 import timing
+
 timing.reset()
 timing.start()
 
@@ -394,10 +394,9 @@ stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 stokes.constitutive_model
 
 
-
 viscosity_L = 999.0 * material.sym[0] + 1.0
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.1
@@ -431,7 +430,6 @@ stokes.constitutive_model
 
 
 def surface_integral(mesh, uw_function, mask_fn):
-
     calculator = uw.maths.Integral(mesh, uw_function * mask_fn)
     value = calculator.evaluate()
 
@@ -476,7 +474,6 @@ stokes.petsc_options["snes_atol"] = 1.0e-2
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
 
 
-
 stokes.solve(zero_init_guess=True)
 
 if uw.mpi.rank == 0:
@@ -485,7 +482,6 @@ if uw.mpi.rank == 0:
 
 C0 = 150
 for i in range(10):
-
     mu = 0.75
     C = C0 + (1.0 - i / 9) * 15.0
     if uw.mpi.rank == 0:
@@ -534,7 +530,7 @@ stress_calc.solve()
 ## Save data ...
 
 savefile = f"output/notched_beam_mesh_{problem_size}"
-mesh1.write_checkpoint(savefile, meshUpdates=False, meshVars=[p_soln,v_soln,edot])
+mesh1.write_checkpoint(savefile, meshUpdates=False, meshVars=[p_soln, v_soln, edot])
 # -
 
 # check the mesh if in a notebook / serial

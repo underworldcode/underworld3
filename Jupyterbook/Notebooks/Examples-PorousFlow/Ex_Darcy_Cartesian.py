@@ -54,7 +54,6 @@ mesh.deform_mesh(new_coords=new_coords)
 
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -83,7 +82,7 @@ if uw.mpi.size == 1 and uw.is_notebook:
 # %%
 # Create Poisson object
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
-darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+darcy.constitutive_model = uw.constitutive_models.DiffusionModel(mesh.dim)
 darcy.constitutive_model.Parameters.diffusivity = 1
 darcy.petsc_options.delValue("ksp_monitor")
 
@@ -107,7 +106,6 @@ darcy.solve()
 
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -189,4 +187,3 @@ _, _, _, max_vv, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.j)))
 print("Max horizontal velocity: {:4f}".format(max_vh))
 print("Max vertical velocity:   {:4f}".format(max_vv))
 print("Max pressure         :   {:4f}".format(max_p))
-

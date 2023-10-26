@@ -1,6 +1,5 @@
 # Underworld systems includes solvers and constitutive equations
 
-
 from underworld3.cython.generic_solvers import (
     SNES_Scalar,
     SNES_Vector,
@@ -18,8 +17,9 @@ from .solvers import SNES_Tensor_Projection as Tensor_Projection
 from .solvers import (
     SNES_AdvectionDiffusion_SLCN as AdvDiffusion,
 )  # fix examples then remove this
+
 from .solvers import SNES_AdvectionDiffusion_SLCN as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
 from .solvers import SNES_NavierStokes_Swarm as NavierStokesSwarm
 from .solvers import SNES_NavierStokes_SLCN as NavierStokesSLCN
-from .solvers import SNES_NavierStokes as NavierStokes
+from .solvers import SNES_NavierStokes_Swarm as NavierStokesSwarm

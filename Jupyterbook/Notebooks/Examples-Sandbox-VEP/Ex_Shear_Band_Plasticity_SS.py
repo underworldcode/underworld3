@@ -40,11 +40,9 @@ height = 1.0
 radius = 0.1
 
 if uw.mpi.rank == 0:
-
     # Generate local mesh on boss process
 
     with pygmsh.geo.Geometry() as geom:
-
         geom.characteristic_length_max = csize
 
         inclusion = geom.add_circle(
@@ -125,7 +123,7 @@ stokes = uw.systems.Stokes(
 )
 
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 stokes.penalty = 0.0
@@ -221,7 +219,6 @@ nodal_pres_calc.solve()
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk

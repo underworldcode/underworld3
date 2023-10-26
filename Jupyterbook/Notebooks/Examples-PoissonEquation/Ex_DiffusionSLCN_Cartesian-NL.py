@@ -53,9 +53,8 @@ time_scale = l0**2 / k0  ### s
 time_scale_Myr = time_scale / (60 * 60 * 24 * 365.25 * 1e6)
 
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(xmin, ymin), 
-    maxCoords=(xmax, ymax), 
-    cellSize=1.0 / res, regular=True)
+    minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True
+)
 
 # +
 # mesh = uw.meshing.StructuredQuadBox(
@@ -89,7 +88,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(T)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(T)
 
 
 # %%
@@ -136,7 +135,6 @@ def plot_fig():
     updateFields()
 
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk

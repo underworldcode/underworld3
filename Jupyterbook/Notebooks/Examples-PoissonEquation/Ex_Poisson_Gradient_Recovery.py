@@ -62,7 +62,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 
 # Non-linear diffusivity
 
@@ -90,7 +90,7 @@ diffusivity.smoothing = 1.0e-6
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 poisson.constitutive_model.Parameters.diffusivity = k
 poisson.constitutive_model.Parameters.diffusivity
 
@@ -107,7 +107,7 @@ x, y = mesh.X
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, "Bottom" , component=0)
+poisson.add_dirichlet_bc(abs_r2, "Bottom", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
@@ -165,7 +165,6 @@ with mesh.access():
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk

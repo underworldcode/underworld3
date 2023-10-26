@@ -15,7 +15,6 @@ import underworld3.timing as timing
 
 # class UW_Scalar_Temple(SNES_Scalar):
 
-
 # class UW_Lagrangian_Helper:
 #     """Mixin style ... add some functions to manage swarm updates etc"""
 
@@ -46,7 +45,7 @@ class SNES_Poisson(SNES_Scalar):
       - The unknown is $u$
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
@@ -60,6 +59,8 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
+        DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
         solver_name: str = "",
         verbose=False,
     ):
@@ -71,7 +72,14 @@ class SNES_Poisson(SNES_Scalar):
             solver_name = "Poisson_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, solver_name, verbose)
+        super().__init__(
+            mesh,
+            u_Field,
+            DuDt,
+            DFDt,
+            solver_name,
+            verbose,
+        )
 
         # Register the problem setup function
         self._setup_problem_description = self.poisson_problem_description
@@ -131,7 +139,7 @@ class SNES_Darcy(SNES_Scalar):
       - The unknown is $h$, the hydraulic head
 
       - The permeability tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
@@ -167,7 +175,14 @@ class SNES_Darcy(SNES_Scalar):
             solver_name = "Darcy_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, h_Field, solver_name, verbose)
+        super().__init__(
+            mesh,
+            h_Field,
+            None,  # DuDt
+            None,  # DFDt
+            solver_name,
+            verbose,
+        )
 
         # Register the problem setup function
         self._setup_problem_description = self.darcy_problem_description
@@ -339,7 +354,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
       - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
 
       - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
     It is usually a constant or a function of position / time and may also be non-linear
     or anisotropic.
 
@@ -368,22 +383,42 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     """
 
-    instances = 0
-
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        velocityField: uw.discretisation.MeshVariable,
-        pressureField: uw.discretisation.MeshVariable,
+        constitutive_model_class: Optional[
+            uw.constitutive_models.Constitutive_Model
+        ] = None,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        order: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
     ):
-        SNES_Stokes.instances += 1
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            DuDt,
+            DFDt,
+            order,
+            p_continuous,
+            solver_name,
+            verbose,
+        )
 
+        # change this to be less generic
         if solver_name == "":
-            solver_name = "Stokes_{}_".format(self.instances)
+            self.name = "Stokes_{}_".format(self.instance_number)
 
-        super().__init__(mesh, velocityField, pressureField, solver_name, verbose)
+        # Not clear what we should do for viscoelastic where a
+        # history manager is required to be added later.
+
+        if constitutive_model_class is not None:
+            self._constitutive_model = constitutive_model_class(self.u, self.DFDt)
 
         # User-facing operations are matrices / vectors by preference
 
@@ -568,8 +603,6 @@ class SNES_Projection(SNES_Scalar):
     Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
     """
 
-    instances = 0
-
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -578,20 +611,23 @@ class SNES_Projection(SNES_Scalar):
         solver_name: str = "",
         verbose=False,
     ):
-        SNES_Projection.instances += 1
+        super().__init__(
+            mesh,
+            u_Field,
+            None,  # DuDt
+            None,  # DFDt
+            solver_name,
+            verbose,
+        )
 
         if solver_name == "":
-            solver_name = "SProj_{}_".format(self.instances)
-
-        super().__init__(mesh, u_Field, solver_name, verbose)
+            self.name = "SProj_{}_".format(self.instance_number)
 
         self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(
-            u_Field
-        )
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
 
         return
 
@@ -689,16 +725,22 @@ class SNES_Vector_Projection(SNES_Vector):
         if solver_name == "":
             solver_name = "VProj{}_".format(self.instances)
 
-        super().__init__(mesh, u_Field, u_Field.degree, solver_name, verbose)
+        super().__init__(
+            mesh,
+            u_Field,
+            None,  # DuDt
+            None,  # DFDt
+            u_Field.degree,
+            solver_name,
+            verbose,
+        )
 
         self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.systems.constitutive_models.Constitutive_Model(
-            u_Field
-        )
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
 
         return
 
@@ -791,8 +833,6 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     """
 
-    instances = 0
-
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -802,16 +842,16 @@ class SNES_Tensor_Projection(SNES_Projection):
         solver_name: str = "",
         verbose=False,
     ):
-        SNES_Tensor_Projection.instances += 1
-
         if solver_name == "":
-            solver_name = "TProj{}_".format(self.instances)
+            solver_name = "TProj{}_".format(self.instance_number)
 
         self.t_field = tensor_Field
 
         super().__init__(
             mesh=mesh,
             u_Field=scalar_Field,
+            DuDt=None,  # DuDt
+            DFDt=None,  # DFDt
             solver_name=solver_name,
             verbose=verbose,
         )
@@ -930,7 +970,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not. Currently it is a MeshVariable** this is the desired behaviour though.
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
@@ -981,7 +1021,15 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
 
         ## Parent class will set up default values and load u_Field into the solver
-        super().__init__(mesh, u_Field, solver_name, verbose)
+        ## Add the Lagrangian manager terms once they are defined
+        super().__init__(
+            mesh,
+            u_Field,
+            None,  # DuDt
+            None,  # DFDt
+            solver_name,
+            verbose,
+        )
 
         if isinstance(V_fn, uw.discretisation._MeshVariable):
             self._V_fn = V_fn.sym
@@ -1077,14 +1125,14 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
     #     self._constitutive_model = model
     #     self._constitutive_model._solver_is_setup = False
 
-    @property
-    def theta(self):
-        return self._theta
+    # @property
+    # def theta(self):
+    #     return self._theta
 
-    @theta.setter
-    def theta(self, value):
-        self.is_setup = False
-        self._theta = sympify(value)
+    # @theta.setter
+    # def theta(self, value):
+    #     self.is_setup = False
+    #     self._theta = sympify(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -1228,7 +1276,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         variable updated.
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
@@ -1271,7 +1319,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
             solver_name = "AdvDiff_swarm_{}_".format(self.instances)
 
         ## Parent class will set up default values etc
-        super().__init__(mesh, u_Field, solver_name, verbose)
+        super().__init__(
+            mesh,
+            u_Field,
+            None,  # DuDt
+            None,  # DFDt
+            solver_name,
+            verbose,
+        )
 
         self.delta_t = 1.0
         self.theta = theta
@@ -1479,882 +1534,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         super()._setup_pointwise_functions()  # ._setup_terms()
 
 
-#################################################
-# Swarm-based advection-diffusion
-# solver based on SNES_Poisson and swarm-variable
-# projection
-#
-#################################################
-
-
-class SNES_NavierStokes_Swarm(SNES_Stokes):
-    r"""
-    This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
-
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
-    $$
-
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
-    The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ )
-    are included in the $\dot{\mathbf{f}}$ term.
-
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u ^ { * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
-
-    ## Properties
-
-      - The unknown is $u$.
-
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
-
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
-
-      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
-        Crank-Nicholson $\theta=1/2$.
-
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
-    """
-
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        velocityField: uw.discretisation.MeshVariable = None,
-        pressureField: uw.discretisation.MeshVariable = None,
-        velocityStar: Union[float, sympy.Function] = None,
-        velocityStarStar: Union[float, sympy.Function] = None,
-        stressStar: Union[float, sympy.Function] = None,
-        stressStarStar: Union[float, sympy.Function] = None,
-        rho: Optional[float] = 0.0,
-        solver_name: Optional[str] = "",
-        verbose: Optional[bool] = False,
-        projection: Optional[bool] = False,
-        restore_points_func: Callable = None,
-    ):
-        SNES_NavierStokes_Swarm.instances += 1
-
-        if solver_name == "":
-            solver_name = "NStokes_swarm_{}_".format(self.instances)
-
-        self.delta_t = 1.0
-        self.theta = 0.5
-        self.projection = projection
-        self.rho = rho
-        self._u_star_raw_fn = velocityStar
-        self._u_star_star_raw_fn = velocityStarStar
-        self._stress_star_fn = stressStar
-        self._stress_star_star_fn = stressStarStar
-
-        ## Parent class will set up default values etc
-        super().__init__(
-            mesh,
-            velocityField,
-            pressureField,
-            solver_name,
-            verbose,
-        )
-
-        if projection:
-            # set up a projection solver
-            self._u_star_projected = uw.discretisation.MeshVariable(
-                rf"u_star{self.instances}",
-                self.mesh,
-                self.mesh.dim,
-                degree=self._u.degree,
-                varsymbol=r"{U^{*}}",
-            )
-            self._u_star_projector = uw.systems.solvers.SNES_Vector_Projection(
-                self.mesh, self._u_star_projected
-            )
-
-            options = self._u_star_projector.petsc_options
-            options.delValue("ksp_monitor")
-
-            # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
-            self._u_star_projector.smoothing = 0.0
-            self._u_star_projector.uw_function = self._u_star_raw_fn
-
-            self._u_star_projector.add_dirichlet_bc(
-                (self._u.sym[0],), "All_Boundaries", (0,)
-            )
-            self._u_star_projector.add_dirichlet_bc(
-                (self._u.sym[1],), "All_Boundaries", (1,)
-            )
-            if self.mesh.dim == 3:
-                self._u_star_projector.add_dirichlet_bc(
-                    (self._u.sym[2],), "All_Boundaries", (2,)
-                )
-
-            if self._u_star_star_raw_fn is not None:
-                # set up a projection solver for ustarstar
-                self._u_star_star_projected = uw.discretisation.MeshVariable(
-                    rf"u_star2{self.instances}",
-                    self.mesh,
-                    self.mesh.dim,
-                    degree=self._u.degree,
-                    varsymbol=r"{U^{**}}",
-                )
-                self._u_star_star_projector = uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh, self._u_star_star_projected
-                )
-
-                options = self._u_star_star_projector.petsc_options
-                options.delValue("ksp_monitor")
-
-                # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
-                self._u_star_star_projector.smoothing = 0.0
-                self._u_star_star_projector.uw_function = self._u_star_star_raw_fn
-
-                self._u_star_star_projector.add_dirichlet_bc(
-                    (self._u.sym[0],), "All_Boundaries", (0,)
-                )
-                self._u_star_star_projector.add_dirichlet_bc(
-                    (self._u.sym[1],), "All_Boundaries", (1,)
-                )
-                if self.mesh.dim == 3:
-                    self._u_star_star_projector.add_dirichlet_bc(
-                        (self._u.sym[2],), "All_Boundaries", (2,)
-                    )
-
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_swarm_problem_description
-        self.is_setup = False
-        self.first_solve = True
-
-        self._Estar = self.mesh.vector.strain_tensor(self.u_star_fn)
-
-        return
-
-    def navier_stokes_swarm_problem_description(self):
-        N = self.mesh.N
-        dim = self.mesh.dim
-
-        # terms that become part of the weighted integral
-        self._u_f0 = (
-            self.F0
-            - 1.0 * self.bodyforce
-            + self.rho * (self.u.sym - self.u_star_fn) / self.delta_t
-        )
-
-        if self.u_star_star_fn is not None:
-            self._u_f0 = (
-                self.F0
-                - 1.0 * self.bodyforce
-                + self.rho
-                * (3 * self.u.sym - 4 * self.u_star_fn + self.u_star_star_fn)
-                / (2 * self.delta_t)
-            )
-
-        # Three possibilities here:
-        # 1. no stress history, use gradient of u*
-        # 2. stress_star_fn is defined but stress_star_star is not
-        # 3. stress_star_fn and stress_star_star_fn
-
-        if self.u_star_star_fn is not None:
-            self._u_f1 = (
-                self.F1 + self.stress + self.penalty * self.div_u * sympy.eye(dim)
-            )
-
-        else:
-            if self.stress_star_fn is None and self.stress_star_star_fn is None:
-                self._u_f1 = (
-                    self.F1
-                    + self.stress / 2
-                    + self.stress_star / 2
-                    + self.penalty * self.div_u * sympy.eye(dim)
-                )
-
-            elif self.stress_star_star_fn is None:
-                self._u_f1 = (
-                    self.F1
-                    + self.stress / 2
-                    + self.stress_star_fn / 2
-                    + self.penalty * self.div_u * sympy.eye(dim)
-                )
-
-            else:
-                self._u_f1 = (
-                    self.F1
-                    + 5 * self.stress / 12
-                    + 8 * self.stress_star_fn / 12
-                    - self.stress_star_star_fn / 12
-                    + self.penalty * self.div_u * sympy.eye(dim)
-                )
-
-        # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + sympy.Matrix([self.div_u])
-
-        return
-
-    @property
-    def u(self):
-        return self._u
-
-    @property
-    def u_star_fn(self):
-        if self.projection:
-            return self._u_star_projected.sym
-        else:
-            return self._u_star_raw_fn
-
-    @u_star_fn.setter
-    def u_star_fn(self, uw_function):
-        self.is_setup = False
-        if self.projection:
-            self._u_star_projector.is_setup = False
-            self._u_star_projector.uw_function = uw_function
-
-        self._u_star_raw_fn = uw_function
-
-    @property
-    def u_star_star_fn(self):
-        if self._u_star_star_raw_fn is None:
-            return None
-
-        if self.projection:
-            return self._u_star_star_projected.sym
-        else:
-            return self._u_star_star_raw_fn
-
-    @u_star_star_fn.setter
-    def u_star_star_fn(self, uw_function):
-        self.is_setup = False
-        if self.projection:
-            self._u_star_star_projector.is_setup = False
-            self._u_star_star_projector.uw_function = uw_function
-
-        self._u_star_star_raw_fn = uw_function
-
-    ## Can't really implement this way any more
-    @property
-    def stress_star_deviator(self):
-        return self.constitutive_model._q(self.strainrate_star)
-
-    @property
-    def strainrate_star(self):
-        return sympy.Matrix(self._Estar)
-
-    @property
-    def stress_star(self):
-        return self.stress_star_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-
-    @property
-    def stress_star_fn(self):
-        if self._stress_star_fn is None:
-            return None
-        else:
-            return self._stress_star_fn - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-
-    @property
-    def stress_star_star_fn(self):
-        if self._stress_star_star_fn is None:
-            return None
-        else:
-            return self._stress_star_star_fn - sympy.eye(self.mesh.dim) * (
-                self.p.sym[0]
-            )
-
-    @property
-    def delta_t(self):
-        return self._delta_t
-
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
-
-    @property
-    def theta(self):
-        return self._theta
-
-    @theta.setter
-    def theta(self, value):
-        self.is_setup = False
-        self._theta = sympify(value)
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        verbose: bool = False,
-        _force_u_star_projection: bool = False,
-        _force_setup: bool = False,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        timestep:
-            value used to evaluate inertial contribution
-        """
-
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
-
-        if (not self.is_setup) or _force_setup:
-            self._setup_terms()
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Make sure we update the projection of the swarm variable if requested
-        # But, this can break down on the first solve if there are constraints and bcs
-        # (we might want to use v_star for checkpointing though)
-
-        if self.projection and (not self.first_solve or _force_u_star_projection):
-            self._u_star_projector.solve(zero_init_guess=False)
-            if self.u_star_star_fn is not None:
-                self._u_star_star_projector.solve(zero_init_guess=False)
-
-        # Over to you Stokes Solver
-        super().solve(zero_init_guess)
-        self.first_solve = False
-
-        return
-
-    @timing.routine_timer_decorator
-    def _setup_terms(self):
-        if self.projection:
-            # self._u_star_projector.bcs = self.bcs
-            # self._u_star_projector.
-            self._u_star_projector._setup_pointwise_functions()  # _setup_terms()
-
-        super()._setup_pointwise_functions()  # ._setup_terms()
-
-
-## Should we put in some TS style functionality here ... e.g. an Adam's moulton sympy wrapper or a BDF wrapper
-## Perhaps ... but this can be explicitly written out in sympy for now while we have a look at the patterns
-## and try to see what is fragile
-
-
-class SNES_NavierStokes(SNES_Stokes):
-    r"""
-    This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
-
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
-    $$
-
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
-
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
-
-    ## Properties
-
-      - The unknown is $u$.
-
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
-
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
-
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
-    """
-
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        velocityField: uw.discretisation.MeshVariable = None,
-        pressureField: uw.discretisation.MeshVariable = None,
-        DvDt: uw.swarm.Lagrangian_Updater = None,
-        rho: Optional[float] = 0.0,
-        solver_name: Optional[str] = "",
-        verbose: Optional[bool] = False,
-        restore_points_func: Callable = None,
-    ):
-        SNES_NavierStokes_Swarm.instances += 1
-
-        if solver_name == "":
-            solver_name = "NStokes_swarm_{}_".format(self.instances)
-
-        self.delta_t = 1.0
-        self.rho = rho
-        self.DvDt = DvDt
-
-        ## Stokes class will set up default values etc
-        super().__init__(
-            mesh,
-            velocityField,
-            pressureField,
-            solver_name,
-            verbose,
-        )
-
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_swarm_problem_description
-        self.is_setup = False
-        self.first_solve = True
-
-        self._Estar = self.mesh.vector.strain_tensor(DvDt.psi_star[0].sym)
-
-        return
-
-    def navier_stokes_swarm_problem_description(self):
-        N = self.mesh.N
-        dim = self.mesh.dim
-
-        # terms that become part of the weighted integral
-        self._u_f0 = (
-            self.F0 - 1.0 * self.bodyforce + self.rho * self.DvDt.bdf() / self._delta_t
-        )
-
-        self._u_f1 = (
-            self.F1
-            + self.stress / 2
-            + self.stress_star / 2
-            + self.penalty * self.div_u * sympy.eye(dim)
-        )
-
-        # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + sympy.Matrix([self.div_u])
-
-        return
-
-    @property
-    def u(self):
-        return self._u
-
-    @property
-    def stress_star_deviator(self):
-        return self.constitutive_model._q(self.strainrate_star)
-
-    @property
-    def strainrate_star(self):
-        return sympy.Matrix(self._Estar)
-
-    @property
-    def stress_star(self):
-        return self.stress_star_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-
-    @property
-    def delta_t(self):
-        return self._delta_t
-
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        verbose: bool = False,
-        _force_setup: bool = False,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        timestep:
-            value used to evaluate inertial contribution
-        """
-
-        ## If we try to change this timestep, we have to sync across all the D/Dt terms
-
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
-
-        if (not self.is_setup) or _force_setup:
-            # self._setup_terms()
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Over to you Stokes Solver
-        super().solve(zero_init_guess)
-        self.first_solve = False
-
-        return
-
-
-class SNES_NavierStokes_SLCN_old(SNES_Stokes):
-    r"""
-    This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
-
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
-    $$
-
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
-
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
-
-    ## Properties
-
-      - The unknown is $u$.
-
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
-
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
-
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
-    """
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        velocityField: uw.discretisation.MeshVariable = None,
-        pressureField: uw.discretisation.MeshVariable = None,
-        rho: Optional[float] = 0.0,
-        solver_name: Optional[str] = "",
-        restore_points_func: Callable = None,
-        verbose: Optional[bool] = False,
-        dt_order: Optional[int] = 1,
-    ):
-        if solver_name == "":
-            solver_name = "NStokes_swarm_{}_".format(self.instance_number)
-
-        self.delta_t = 1.0
-        self.rho = rho
-        # self.DvDt = DvDt
-
-        ## Stokes class will set up default values etc
-        super().__init__(
-            mesh,
-            velocityField,
-            pressureField,
-            solver_name,
-            verbose,
-        )
-
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_slcn_problem_description
-        self.is_setup = False
-        self.first_solve = True
-
-        self._u_star = uw.discretisation.MeshVariable(
-            f"u_star_slcn_{self.instance_number}",
-            self.mesh,
-            vtype=self._u.vtype,
-            degree=self._u.degree,
-            continuous=self._u.continuous,
-            varsymbol=rf"{self._u.symbol}^{{*}}",
-        )
-
-        self._F_star = uw.discretisation.MeshVariable(
-            f"F_star_slcn_{self.instance_number}",
-            self.mesh,
-            vtype=VarType.SYM_TENSOR,
-            degree=self._u.degree - 1,
-            continuous=False,
-            varsymbol=r"F^{*}",
-        )
-
-        self._WorkVar = uw.discretisation.MeshVariable(
-            f"W_star_slcn_{self.instance_number}",
-            self.mesh,
-            vtype=VarType.SCALAR,
-            degree=self._u.degree - 1,
-            continuous=False,
-            varsymbol=r"W^{*}",
-        )
-
-        # Add the nodal point swarm which we'll use to track the characteristics
-        nswarm_u = uw.swarm.NodalPointSwarm(self._u)
-        self._nswarm_u = nswarm_u
-
-        # Add the nodal point swarm which we'll use to track the characteristics
-        nswarm_F = uw.swarm.NodalPointSwarm(self._F_star)
-        self._nswarm_F = nswarm_F
-
-        # Note, we really just need F*
-        self._Lstar = self.mesh.vector.jacobian(self._u_star.sym)
-
-        # set up a projection solver for _u_star_Field and for the flux term
-
-        self._u_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
-            self.mesh, self._u_star, verbose=False
-        )
-        self._u_star_projection_solver.bcs = self.bcs
-        self._u_star_projection_solver.smoothing = 1.0e-6
-
-        self._F_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
-            self.mesh, self._F_star, self._WorkVar, verbose=False
-        )
-        self._F_star_projection_solver.smoothing = 1.0e-6
-
-        self.du_dt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            psi_fn=self._u.sym,
-            V_fn=self._u.sym,
-            vtype=self._u.vtype,
-            degree=self._u.degree,
-            continuous=self._u.continuous,
-            order=1,
-            smoothing=1.0,
-            varsymbol=self._u.symbol,
-            bcs=self.bcs,
-        )
-
-        return
-
-    def navier_stokes_slcn_problem_description(self):
-        N = self.mesh.N
-        dim = self.mesh.dim
-
-        # Time derivatives should be managed as part of the semi-lagrange scheme (including
-        # the order of accuracy / storage )
-
-        self._u_f0 = (
-            self.F0
-            - 1.0 * self.bodyforce
-            + self.rho * (self.u.sym - self._u_star.sym) / self.delta_t
-        )
-
-        # Flux history should be managed as part of the semi-lagrange scheme (including
-        # the order of accuracy / storage )
-
-        self._u_f1 = (
-            self.F1
-            + self.stress / 2
-            + self._F_star.sym.T / 2
-            + self.penalty * self.div_u * sympy.eye(dim)
-        )
-
-        # forces in the constraint (pressure) equations
-        self._p_f0 = self.PF0 + sympy.Matrix([self.div_u])
-
-        return
-
-    @property
-    def stress_star_deviator(self):
-        return self.constitutive_model._q(self.strainrate_star)
-
-    @property
-    def strainrate_star(self):
-        return sympy.Matrix(self._Estar)
-
-    @property
-    def stress_star(self):
-        return self.stress_star_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-
-    @property
-    def delta_t(self):
-        return self._delta_t
-
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        verbose: bool = False,
-        _force_setup: bool = False,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        timestep:
-            value used to evaluate inertial contribution
-        """
-
-        ## If we try to change this timestep, we have to sync across all the D/Dt terms
-
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
-
-        if (not self.is_setup) or _force_setup:
-            # self._setup_terms()
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        ## Update the semi-lagrange terms here
-
-        ####################################################################
-        ## Update the U^* part - should be built in to a manager, of course ...
-
-        nX0 = self._nswarm_u._X0
-        nU1 = self._nswarm_u.swarmVariable
-
-        with self._nswarm_u.access(nX0):
-            nX0.data[...] = self._nswarm_u.data[...]
-
-        # march nodes backwards along characteristics
-        self._nswarm_u.advection(
-            self._u.sym,
-            -timestep,
-            order=2,
-            corrector=False,
-            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-        )
-
-        with self._nswarm_u.access(nU1):
-            for d in range(self._u.num_components):
-                nU1.data[:, d] = uw.function.evaluate(
-                    self._u.sym_1d[d], self._nswarm_u.data
-                )
-
-        # restore coords (will call dm.migrate after context manager releases)
-        with self._nswarm_u.access(self._nswarm_u.particle_coordinates):
-            self._nswarm_u.data[...] = nX0.data[...]
-
-        # Now project to the mesh using bc's to obtain u_star
-        self._u_star_projection_solver.uw_function = nU1.sym
-        self._u_star_projection_solver.solve()
-
-        ######################################################################
-
-        ## The transported Flux term
-
-        nX0 = self._nswarm_F._X0
-        nF1 = self._nswarm_F.swarmVariable
-
-        # The flux has to be calculated before we can sample the values
-        self._F_star_projection_solver.uw_function = self.constitutive_model.flux.T
-        self._F_star_projection_solver.solve()
-
-        with self._nswarm_F.access(nX0):
-            nX0.data[...] = self._nswarm_F.data[...]
-
-        # Mid point method to find launch points (T*)
-        self._nswarm_F.advection(
-            self._u.sym,
-            -timestep,
-            order=2,
-            corrector=False,
-            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-        )
-
-        with self._nswarm_F.access(nF1):
-            for d in range(self.mesh.dim):
-                nF1.data[:, d] = uw.function.evaluate(
-                    self._F_star.sym[d], self._nswarm_F.data
-                )  # .reshape(-1, 1)
-
-        # restore coords (will call dm.migrate after context manager releases)
-        with self._nswarm_F.access(self._nswarm_F.particle_coordinates):
-            self._nswarm_F.data[...] = nX0.data[...]
-
-        # This may not be required if we have no bcs to apply
-        self._F_star_projection_solver.uw_function = nF1.sym
-        self._F_star_projection_solver.solve()
-
-        # Over to you Stokes Solver
-        super().solve(zero_init_guess)
-        self.first_solve = False
-
-        return
-
-
+## This one is already updated to work with the Semi-Lagrange updater
 class SNES_NavierStokes_SLCN(SNES_Stokes):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
@@ -2390,7 +1570,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         variable updated.
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.systems.constitutive_models` classes and populating the parameters.
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
         It is usually a constant or a function of position / time and may also be non-linear
         or anisotropic.
 
@@ -2431,11 +1611,16 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         verbose: Optional[bool] = False,
         order: Optional[int] = 1,
     ):
-        if solver_name == "":
-            solver_name = "NavierStokes_slcn_{}_".format(self.instance_number)
-
         ## Parent class will set up default values and load u_Field into the solver
-        super().__init__(mesh, velocityField, pressureField, solver_name, verbose)
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            None,  # DuDt - add later
+            None,  # DFDt - add later
+            solver_name,
+            verbose,
+        )
 
         # These are unique to the advection solver
         self.delta_t = sympy.oo
@@ -2502,14 +1687,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
-    @property
-    def DuDt(self):
-        return self._DuDt
-
-    @property
-    def DFDt(self):
-        return self._DFDt
 
     # @timing.routine_timer_decorator
     # def estimate_dt(self):
@@ -2600,6 +1777,239 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
             self._setup_solver(verbose)
 
         # Update SemiLagrange Flux terms
+        self.DuDt.update(timestep, verbose=verbose)
+        self.DFDt.update(timestep, verbose=verbose)
+
+        super().solve(
+            zero_init_guess,
+            _force_setup=_force_setup,
+            verbose=verbose,
+            picard=0,
+        )
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+
+
+## This one is already updated to work with the Lagrange updater
+class SNES_NavierStokes_Swarm(SNES_Stokes):
+    r"""
+    This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
+    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
+    distributed sampling of upstream values taken from an arbitrary swarm variable.
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
+                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
+        \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+    $$
+
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+
+    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
+    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
+    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
+    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
+    **and update** the swarmVariable representing $u^{ * }$
+
+    ## Properties
+
+      - The unknown is $u$.
+
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+        calculated in situ (e.g. `V_Field = v_solution.sym`)
+
+      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+        variable updated.
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
+        It is usually a constant or a function of position / time and may also be non-linear
+        or anisotropic.
+
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+        `meshVariable` or `swarmVariable` types.
+
+    ## Notes
+
+      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
+        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
+
+    ## Reference
+
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+    """
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\mathrm{u} = $ " + self._u.sym._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{p} = $ " + self._p.sym._repr_latex_()))
+        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
+        display(Latex(rf"$\quad\rho = $ {self.rho}"))
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: uw.discretisation.MeshVariable,
+        pressureField: uw.discretisation.MeshVariable,
+        DuDt: uw.swarm.Lagrangian_Updater = None,
+        DFDt: uw.swarm.Lagrangian_Updater = None,
+        rho: Optional[float] = 0.0,
+        solver_name: Optional[str] = "",
+        restore_points_func: Callable = None,
+        verbose: Optional[bool] = False,
+        order: Optional[int] = 1,
+    ):
+        ## Parent class will set up default values and load u_Field into the solver
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            DuDt,
+            DFDt,
+            solver_name,
+            verbose,
+        )
+
+        # These are unique to the advection solver
+        self.delta_t = sympy.oo
+        self.is_setup = False
+        self.rho = rho
+        self._first_solve = True
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.navier_stokes_slcn_problem_description
+
+        return
+
+    def navier_stokes_slcn_problem_description(self):
+        N = self.mesh.N
+
+        # f0 residual term
+        self._u_f0 = (
+            self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
+        )
+
+        # f1 residual term
+        self._u_f1 = (
+            self.F1
+            + self.DFDt.adams_moulton_flux()
+            - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+        )
+        self._p_f0 = sympy.simplify(self.PF0 + sympy.Matrix((self.constraints)))
+
+        return
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t = sympify(value)
+
+    # @timing.routine_timer_decorator
+    # def estimate_dt(self):
+    #     """
+    #     Calculates an appropriate advective timestep for the given
+    #     mesh and diffusivity configuration.
+    #     """
+
+    #     if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
+    #         k = uw.function.evaluate(
+    #             sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+    #             self.mesh._centroids,
+    #             self.mesh.N,
+    #         )
+    #         max_diffusivity = k.max()
+    #     else:
+    #         k = self.constitutive_model.Parameters.diffusivity
+    #         max_diffusivity = k
+
+    #     ### required modules
+    #     import math
+    #     from mpi4py import MPI
+
+    #     # with self.mesh.access(self.k):
+    #     #     ## get local max diff value
+    #     #     max_diffusivity = self.k.data[:, 0].max()
+    #     ### get the velocity values
+    #     with self.mesh.access(self._V):
+    #         vel = self._V.data
+
+    #     ## get global max dif value
+    #     comm = MPI.COMM_WORLD
+    #     diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+    #     ### get global velocity from velocity field
+    #     max_magvel = np.linalg.norm(vel, axis=1).max()
+    #     max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+    #     ## get radius
+    #     min_dx = self.mesh.get_min_radius()
+
+    #     ## estimate dt of adv and diff components
+
+    #     if max_magvel_glob == 0.0:
+    #         dt_diff = (min_dx**2) / diffusivity_glob
+    #         dt_estimate = dt_diff
+    #     elif diffusivity_glob == 0.0:
+    #         dt_adv = min_dx / max_magvel_glob
+    #         dt_estimate = dt_adv
+    #     else:
+    #         dt_diff = (min_dx**2) / diffusivity_glob
+    #         dt_adv = min_dx / max_magvel_glob
+    #         dt_estimate = min(dt_diff, dt_adv)
+
+    #     return dt_estimate
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+    ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self._DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Update Lagrangian Flux terms
         self.DuDt.update(timestep, verbose=verbose)
         self.DFDt.update(timestep, verbose=verbose)
 

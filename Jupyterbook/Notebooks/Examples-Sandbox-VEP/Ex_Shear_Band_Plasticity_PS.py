@@ -39,11 +39,9 @@ height = 1.0
 radius = 0.2
 
 if uw.mpi.rank == 0:
-
     # Generate local mesh on boss process
 
     with pygmsh.geo.Geometry() as geom:
-
         geom.characteristic_length_max = csize
 
         inclusion = geom.add_circle(
@@ -74,10 +72,9 @@ if uw.mpi.rank == 0:
 # -
 
 
-mesh1 = uw.discretisation.Mesh("tmp_ps_shear_inclusion.msh", 
-                               markVertices=True,
-                               useRegions=True,
-                               simplex=True)
+mesh1 = uw.discretisation.Mesh(
+    "tmp_ps_shear_inclusion.msh", markVertices=True, useRegions=True, simplex=True
+)
 mesh1.dm.view()
 
 # +
@@ -173,7 +170,7 @@ stokes = uw.systems.Stokes(
 )
 
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 stokes.penalty = 0.0
@@ -270,7 +267,6 @@ nodal_strain_rate_inv2.solve()
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -349,5 +345,3 @@ if uw.mpi.size == 1:
 
     pl.show()
 # -
-
-

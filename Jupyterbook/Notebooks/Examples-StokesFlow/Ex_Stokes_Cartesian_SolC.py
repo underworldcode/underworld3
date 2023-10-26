@@ -60,17 +60,13 @@ mesh = mesh1
 
 mesh.dm.view()
 
+stokes = uw.systems.Stokes(mesh, constitutive_model_class=uw.constitutive_models.ViscoElasticPlasticFlowModel)
+v = stokes._u
+p = stokes._p
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
-v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2, varsymbol=r"\mathbf{u}")
-p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=False, varsymbol=r"{p}")
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
-
-# %%
-stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
-stokes.constitutive_model.Parameters.viscosity=1
-
 
 # %%
 # Set some things
@@ -86,10 +82,6 @@ surface_fn = 2 * uw.maths.delta_function(y-1, hw) / uw.maths.delta_function(0.0,
 base_fn = 2 * uw.maths.delta_function(y, hw)
 right_fn = 2 * uw.maths.delta_function(x-1, hw)
 left_fn = 2 * uw.maths.delta_function(x, hw)
-
-surface_fn
-
-uw.function.evalf(surface_fn, np.array([[0.0,1.0]]))
 
 # +
 # options = PETSc.Options()
@@ -173,15 +165,12 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
+
+# +
+# stokes._setup_pointwise_functions(verbose=True)
+# stokes._setup_discretisation(verbose=True)
+# stokes.dm.ds.view()
 # -
-
-stokes._setup_pointwise_functions(verbose=True)
-stokes._setup_discretisation(verbose=True)
-stokes.dm.ds.view()
-
-
-
-
 
 # %%
 # Solve time
@@ -189,45 +178,29 @@ stokes.solve()
 
 stokes._uu_G0
 
-
+0/0
 
 # ### Visualise it !
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size == 1:
+if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
     
     try:
         pv.start_xvfb()
     except OSError:
         pass
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [250, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["P"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, p.sym)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
-    pvmesh.point_data["delta"] = uw.function.evalf(surface_fn, mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
+    velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -242,12 +215,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         opacity=1.0,
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=1)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3)
 
-    pl.show(cpos="xy")
-# -
-# ## SolCx from the same setup
-
+    pl.show(cpos="xy", jupyter_backend='server')
 # +
 stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
@@ -257,7 +227,7 @@ stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
 stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
-    (1.0e6, x > x_c),
+    (1.0e8, x > x_c),
     (1.0, True),
 )
 
@@ -278,36 +248,25 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
+# -
+
+0/0
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
+if uw.mpi.size == 1:
 
-if mpi4py.MPI.COMM_WORLD.size == 1:
 
-    import numpy as np
+
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["P"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, p.sym)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
+    velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -322,10 +281,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         opacity=1.0,
     )
 
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-    #               use_transparency=False, opacity=1.0)
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=50)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50)
 
     pl.show(cpos="xy")
 
@@ -355,3 +311,6 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
+# -
+
+

@@ -19,7 +19,8 @@
 
 # +
 import os
-os.environ['UW_TIMING_ENABLE'] = "1"
+
+os.environ["UW_TIMING_ENABLE"] = "1"
 
 import petsc4py
 from petsc4py import PETSc
@@ -113,7 +114,6 @@ with swarm.access():
     print(material.data.max(), material.data.min())
 
 if False:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -185,11 +185,11 @@ stokes.petsc_options["snes_rtol"] = 1.0e-4
 stokes.petsc_options["snes_rtol"] = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
-buoyancy = Rayleigh * density # * (1 - surface_fn) * (1 - base_fn)
+buoyancy = Rayleigh * density  # * (1 - surface_fn) * (1 - base_fn)
 
 unit_vec_r = mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]
 
@@ -225,7 +225,6 @@ timing.print_table()
 # check the solution
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -316,7 +315,6 @@ pl = pv.Plotter()
 
 
 def plot_mesh(filename):
-
     if uw.mpi.size != 1:
         return
 
@@ -388,8 +386,8 @@ def plot_mesh(filename):
 
     pl.camera_position = "xz"
     pl.screenshot(
-        filename="{}.png".format(filename), 
-        window_size=(1000, 1000), 
+        filename="{}.png".format(filename),
+        window_size=(1000, 1000),
         return_img=False,
     )
 
@@ -406,7 +404,6 @@ t_step = 0
 expt_name = "output/swarm_rt_sph"
 
 for step in range(0, 200):
-
     stokes.solve(zero_init_guess=False)
     delta_t = 2.0 * stokes.estimate_dt()
 

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -66,9 +66,11 @@ elif problem_size >= 4:
 
 
 meshball_xyz_tmp = uw.meshing.Annulus(
-    radiusOuter=r_o, radiusInner=r_i, cellSize=res, 
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=res,
     refinement=0,
-    filename="./tmp_meshball.msh"
+    # filename="tmp_meshball.msh"
 )
 
 
@@ -87,14 +89,16 @@ del meshball_xyz_tmp
 meshball = uw.meshing.Mesh(
     dmplex,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,
-    qdegree=3
+    qdegree=3,
 )
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
     meshball.dm, [0.0, 1.0], [0.0, 0.0], [0.0, 2 * np.pi]
 )
 meshball.dm.view()
 
-meshball_xyz = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=5)
+meshball_xyz = uw.meshing.Annulus(
+    radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=5
+)
 
 display(meshball_xyz.CoordinateSystem.type)
 display(meshball_xyz.CoordinateSystem.N)
@@ -153,9 +157,7 @@ stokes = uw.systems.Stokes(
 
 stokes.tolerance = 1.0e-5
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    v_soln
-)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
@@ -198,9 +200,7 @@ stokes_xy = uw.systems.Stokes(
     pressureField=p_soln_xy,
     solver_name="stokes_xy",
 )
-stokes_xy.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    v_soln_xy
-)
+stokes_xy.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln_xy)
 stokes_xy.constitutive_model.Parameters.shar_viscosity_0 = 1
 stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
 
@@ -233,13 +233,16 @@ stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_
 
 with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
-        meshball_xyz.CoordinateSystem.xR[0], coords=r_xy.coords, coord_sys=meshball_xyz.N )
+        meshball_xyz.CoordinateSystem.xR[0],
+        coords=r_xy.coords,
+        coord_sys=meshball_xyz.N,
+    )
 
 stokes._setup_pointwise_functions()
 
 stokes._p_f0
 
-# + tags=[]
+# +
 from underworld3 import timing
 
 timing.start()
@@ -253,6 +256,8 @@ timing.print_table()
 stokes_xy.tolerance = 1.0e-5
 
 
+stokes_xy
+
 from underworld3 import timing
 
 timing.start()
@@ -262,6 +267,9 @@ timing.print_table()
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
 
+0/0
+
+#
 
 # +
 ## Periodic in theta - the nodes which have been "moved" to a
@@ -270,15 +278,14 @@ U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 ## the xyz mesh for Uxy, and use it for plotting.
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1000, 1000]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
+    # pv.global_theme.anti_aliasing = "fxaa"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     pvmesh = pv.read("./tmp_meshball.msh")
@@ -301,10 +308,10 @@ if uw.mpi.size == 1:
     usol_xy[:, 1] = uw.function.evalf(v_soln_xy.sym[1], v_soln_xy.coords)
 
     xy = np.empty_like(v_soln.coords)
-    xy[:, 0] = uw.function.evaluate(
+    xy[:, 0] = uw.function.evalf(
         meshball.CoordinateSystem.X[0], v_soln.coords, coord_sys=meshball.N
     )
-    xy[:, 1] = uw.function.evaluate(
+    xy[:, 1] = uw.function.evalf(
         meshball.CoordinateSystem.X[1], v_soln.coords, coord_sys=meshball.N
     )
 
@@ -317,9 +324,9 @@ if uw.mpi.size == 1:
     arrow_length_xy = np.zeros((stokes_xy.u.coords.shape[0], 3))
     arrow_length_xy[:, 0:2] = usol_xy[...]
 
-    pl = pv.Plotter(window_size=(750, 750))
+    pl = pv.Plotter()
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
@@ -334,6 +341,9 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc + (0.0, 0.0, 0.0), arrow_length, mag=0.00005, color="Red")
 
     pl.show(cpos="xy")
+# -
+0/0
+
 # +
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_xy_rms = np.sqrt(usol_xy[:, 0] ** 2 + usol_xy[:, 1] ** 2).mean()
@@ -358,13 +368,8 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 stokes
 
 
-
 sympy.oo
 
 T = sympy.oo
 
 sympy.S.Infinity
-
-
-
-

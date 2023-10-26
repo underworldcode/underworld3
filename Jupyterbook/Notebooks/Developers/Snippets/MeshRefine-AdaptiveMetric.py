@@ -1,7 +1,8 @@
 # +
-## Mesh refinement ... 
+## Mesh refinement ...
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 os.environ["SYMPY_USE_CACHE"] = "no"
 
@@ -24,12 +25,11 @@ free_slip_upper = True
 # Earth-like ratio of inner to outer
 r_o = 1.0
 r_i = 0.547
-res = 333 / 6730 
+res = 333 / 6730
 
-mesh0 = uw.meshing.SphericalShell(radiusOuter=r_o, 
-                           radiusInner=r_i, 
-                           cellSize=res,
-                           filename="tmp_low_r.msh")
+mesh0 = uw.meshing.SphericalShell(
+    radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="tmp_low_r.msh"
+)
 
 H = uw.discretisation.MeshVariable("H", mesh0, 1)
 Metric = uw.discretisation.MeshVariable("M", mesh0, 1, degree=1)
@@ -43,21 +43,22 @@ gradS = uw.swarm.SwarmVariable(r"\nabla~T_s", swarm, proxy_degree=1, num_compone
 swarm.populate(fill_param=2)
 
 
-
 # +
 # Mesh independent buoyancy force
 
 x, y, z = mesh0.CoordinateSystem.N
 
 t_forcing_fn = 1.0 * (
-    + sympy.exp(-10.0 * (x**2 + (y - 0.8) ** 2 + z**2))
+    +sympy.exp(-10.0 * (x**2 + (y - 0.8) ** 2 + z**2))
     + sympy.exp(-10.0 * ((x - 0.8) ** 2 + y**2 + z**2))
     + sympy.exp(-10.0 * (x**2 + y**2 + (z - 0.8) ** 2))
 )
 
-grad_fn = 1.0 +  ((t_forcing_fn.diff(x))**2 +
-(t_forcing_fn.diff(y))**2 +
-(t_forcing_fn.diff(z))**2 )
+grad_fn = 1.0 + (
+    (t_forcing_fn.diff(x)) ** 2
+    + (t_forcing_fn.diff(y)) ** 2
+    + (t_forcing_fn.diff(z)) ** 2
+)
 
 # grad_fn = 1.0 + mesh0.vector.gradient(t_forcing_fn**2).dot(mesh0.vector.gradient(t_forcing_fn**2))
 # +
@@ -69,13 +70,11 @@ grad_fn = 1.0 +  ((t_forcing_fn.diff(x))**2 +
 # -
 
 with mesh0.access(grad):
-    grad.data[:,0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
-
-
+    grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
 
 
 with mesh0.access(H):
-    H.data[:,0] = 10 + grad.data[:,0] * 80
+    H.data[:, 0] = 10 + grad.data[:, 0] * 80
     # print(H.data.min())
 
 with swarm.access(gradS):
@@ -87,12 +86,16 @@ with swarm.access(gradS):
 
 icoord, meshA = adaptivity.mesh_adapt_meshVar(mesh0, H, Metric, redistribute=True)
 
-# Add the variables we need to carry over 
+# Add the variables we need to carry over
 gradA = uw.discretisation.MeshVariable(r"\nabla~T", meshA, 1)
-v_soln = uw.discretisation.MeshVariable(r"u", meshA, meshA.dim, degree=2, vtype=uw.VarType.VECTOR)
+v_soln = uw.discretisation.MeshVariable(
+    r"u", meshA, meshA.dim, degree=2, vtype=uw.VarType.VECTOR
+)
 p_soln = uw.discretisation.MeshVariable(r"p", meshA, 1, degree=1, continuous=True)
 
-swarmA = uw.adaptivity.mesh2mesh_swarm(mesh0, meshA, swarm, swarmVarList=[gradS], verbose=True)
+swarmA = uw.adaptivity.mesh2mesh_swarm(
+    mesh0, meshA, swarm, swarmVarList=[gradS], verbose=True
+)
 # -
 gradSA = swarmA.vars["nablaT_s"]
 
@@ -100,7 +103,7 @@ gradSA = swarmA.vars["nablaT_s"]
 # So now we have two meshes that probably have a different decompostions across the available processes.
 # We pass swarms back and forth to carry the information between decompositions.
 #
-# There seems to be some issue when we pass a swarm across the domain - we lose particles if they are not in neighbouring patches. Looking at the source code for DMSwarm, this is probably because there is not a global search implemented in DMPlex and so particles are only handed to neighbours by DMSwarm. Sigh. 
+# There seems to be some issue when we pass a swarm across the domain - we lose particles if they are not in neighbouring patches. Looking at the source code for DMSwarm, this is probably because there is not a global search implemented in DMPlex and so particles are only handed to neighbours by DMSwarm. Sigh.
 #
 # A global accumulation of mesh points is not too bad though, because this is quite light compared to other information in the mesh. It may be more problematic for dense swarms.
 #
@@ -108,7 +111,7 @@ gradSA = swarmA.vars["nablaT_s"]
 # +
 with swarmA.access():
     print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.max()}")
-    
+
 with swarm.access():
     print(f"{uw.mpi.rank}: {gradS.data.min()}, {gradS.data.max()}")
 
@@ -118,7 +121,7 @@ with swarm.access():
 # Maybe not that many (T, for example) but others
 # will be swarm based
 
-adaptivity.mesh2mesh_meshVariable(grad, gradA, verbose=True)    
+adaptivity.mesh2mesh_meshVariable(grad, gradA, verbose=True)
 
 
 # +
@@ -138,14 +141,12 @@ stokes.penalty = 0.1
 
 x, y, z = meshA.CoordinateSystem.N
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshA.dim
-)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshA.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 
 # thermal buoyancy force
 t_forcing_fn = 1.0 * (
-    + sympy.exp(-10.0 * (x**2 + (y - 0.8) ** 2 + z**2))
+    +sympy.exp(-10.0 * (x**2 + (y - 0.8) ** 2 + z**2))
     + sympy.exp(-10.0 * ((x - 0.8) ** 2 + y**2 + z**2))
     + sympy.exp(-10.0 * (x**2 + y**2 + (z - 0.8) ** 2))
 )
@@ -155,8 +156,8 @@ stokes.bodyforce = t_forcing_fn * unit_rvec
 stokes.saddle_preconditioner = 1.0
 
 # Velocity boundary conditions - upper / lower fixed
-stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Upper", (0,1,2))
-stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Lower", (0,1,2))
+stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
+stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
 
 # +
 # stokes.solve()
@@ -164,8 +165,12 @@ stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Lower", (0,1,2))
 # +
 # Save results
 
-meshA.write_timestep_xdmf("adaptor_write_xdmf", meshUpdates=True, 
-                          meshVars=[gradA, v_soln, p_soln], swarmVars=[gradSA])
+meshA.write_timestep_xdmf(
+    "adaptor_write_xdmf",
+    meshUpdates=True,
+    meshVars=[gradA, v_soln, p_soln],
+    swarmVars=[gradSA],
+)
 
 # -
 
@@ -177,7 +182,6 @@ with meshA.access():
 import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -193,18 +197,17 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     meshA.vtk("tmp_meshball.vtk")
     pvmeshA = pv.read("tmp_meshball.vtk")
-    
+
     pvmeshA.points *= 0.999
-    
+
 # -
 if mpi4py.MPI.COMM_WORLD.size == 1:
-
     with meshA.access():
         pvmeshA.point_data["gradS"] = gradSA._meshVar.data
 
     with meshA.access():
         pvmeshA.point_data["gradSi"] = gradA.data
-        
+
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[...] = stokes.u.coords[...]
 
@@ -217,21 +220,20 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 # +
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
-
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
 
     pl.add_mesh(
-        clipped, 
+        clipped,
         cmap="coolwarm",
         edge_color="black",
         style="surface",
-        scalars = "gradSi",
+        scalars="gradSi",
         show_edges=True,
     )
 
     # pl.add_mesh(
-    #     pvmesh0, 
+    #     pvmesh0,
     #     edge_color="grey",
     #     color="grey",
     #     style="wireframe",
@@ -244,7 +246,3 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # OR
     pl.show(cpos="xy")
 # -
-
-
-
-

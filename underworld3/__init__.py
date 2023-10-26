@@ -28,17 +28,17 @@ import underworld3.adaptivity
 import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing
+import underworld3.constitutive_models
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
 import underworld3.maths
-import underworld3.systems.constitutive_models
-import underworld3.tools
 import underworld3.utilities
 import underworld3.kdtree
 import underworld3.mpi
 import underworld3.cython
 import underworld3.scaling
+import underworld3.visualisation
 import numpy as _np
 
 # Info for JIT modules.

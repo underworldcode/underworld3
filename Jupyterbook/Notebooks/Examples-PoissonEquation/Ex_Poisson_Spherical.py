@@ -24,7 +24,7 @@ from underworld3.systems import Poisson
 import numpy as np
 import os
 
-# Define the problem size 
+# Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
 #      3 - medium resolution (be prepared to wait)
@@ -35,7 +35,7 @@ problem_size = 1
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
 
-uw_testing_level = os.environ.get('UW_TESTING_LEVEL')
+uw_testing_level = os.environ.get("UW_TESTING_LEVEL")
 if uw_testing_level:
     try:
         problem_size = int(uw_testing_level)
@@ -59,13 +59,13 @@ from underworld3.meshing import Annulus
 
 # %%
 # first do 2D
-if problem_size <= 1: 
+if problem_size <= 1:
     cell_size = 0.05
-elif problem_size == 2: 
+elif problem_size == 2:
     cell_size = 0.02
-elif problem_size == 3: 
+elif problem_size == 3:
     cell_size = 0.01
-elif problem_size >= 4: 
+elif problem_size >= 4:
     cell_size = 0.0033
 
 mesh = Annulus(radiusInner=r_i, radiusOuter=r_o, cellSize=cell_size)
@@ -74,7 +74,7 @@ t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
 # Create Poisson object
 poisson = Poisson(mesh, u_Field=t_soln)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 poisson.f = f
@@ -119,13 +119,12 @@ if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
 
 # %%
 poisson.constitutive_model.Parameters.diffusivity = 1.0 + 0.1 * poisson.u.fn**1.5
-poisson.f = 0.01 * poisson.u.sym[0]**0.5
+poisson.f = 0.01 * poisson.u.sym[0] ** 0.5
 poisson.solve(zero_init_guess=False)
 
 # Validate
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -169,12 +168,10 @@ outdir = "output"
 os.makedirs(f"{outdir}", exist_ok=True)
 
 
-mesh.write_timestep(expt_name, 
-                         meshUpdates=True,
-                         meshVars=[t_soln], 
-                         outputPath=outdir,
-                         index=0  )
-        
+mesh.write_timestep(
+    expt_name, meshUpdates=True, meshVars=[t_soln], outputPath=outdir, index=0
+)
+
 
 # savefile = "output/poisson_disc.h5"
 # mesh.save(savefile)
@@ -192,23 +189,24 @@ from underworld3.meshing import SegmentedSphere
 
 problem_size = 1
 
-if problem_size <= 1: 
+if problem_size <= 1:
     cell_size = 0.3
-elif problem_size == 1: 
+elif problem_size == 1:
     cell_size = 0.15
-elif problem_size == 2: 
+elif problem_size == 2:
     cell_size = 0.05
-elif problem_size == 3: 
+elif problem_size == 3:
     cell_size = 0.02
-    
-mesh_3d = SphericalShell(radiusInner=r_i, 
-                         radiusOuter=r_o, 
-                         cellSize=cell_size, 
-                         refinement=1,
-                        )
 
-# mesh_3d = SegmentedSphere(radiusInner=r_i, 
-#                          radiusOuter=r_o, 
+mesh_3d = SphericalShell(
+    radiusInner=r_i,
+    radiusOuter=r_o,
+    cellSize=cell_size,
+    refinement=1,
+)
+
+# mesh_3d = SegmentedSphere(radiusInner=r_i,
+#                          radiusOuter=r_o,
 #                          cellSize=cell_size
 #                         )
 
@@ -220,7 +218,7 @@ mesh_3d.dm.view()
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln_3d)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln_3d)
 poisson.constitutive_model.Parameters.diffusivity = k
 poisson.f = f
 
@@ -255,7 +253,6 @@ if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.1):
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -299,12 +296,8 @@ expt_name = "Poisson-Sphere"
 outdir = "output"
 os.makedirs(f"{outdir}", exist_ok=True)
 
-mesh_3d.write_timestep(expt_name, 
-                         meshUpdates=True,
-                         meshVars=[t_soln_3d], 
-                         outputPath=outdir,
-                         index=0  )
-        
+mesh_3d.write_timestep(
+    expt_name, meshUpdates=True, meshVars=[t_soln_3d], outputPath=outdir, index=0
+)
+
 # -
-
-

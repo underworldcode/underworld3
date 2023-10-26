@@ -21,7 +21,8 @@
 
 # +
 import os
-os.environ['UW_TIMING_ENABLE'] = "1"
+
+os.environ["UW_TIMING_ENABLE"] = "1"
 
 import petsc4py
 from petsc4py import PETSc
@@ -37,7 +38,6 @@ if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)
 else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
-
 
 
 # +
@@ -62,19 +62,19 @@ r_i = 0.5
 Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # + tags=[]
-if problem_size <= 1: 
+if problem_size <= 1:
     cell_size = 0.30
-elif problem_size == 2: 
+elif problem_size == 2:
     cell_size = 0.15
-elif problem_size == 3: 
+elif problem_size == 3:
     cell_size = 0.05
-elif problem_size == 4: 
+elif problem_size == 4:
     cell_size = 0.03
-elif problem_size == 5: 
+elif problem_size == 5:
     cell_size = 0.02
-elif problem_size == 6: 
+elif problem_size == 6:
     cell_size = 0.01
-elif problem_size == 7: 
+elif problem_size == 7:
     cell_size = 0.005
 
 res = cell_size
@@ -97,9 +97,11 @@ if path.is_file():
     if uw.mpi.rank == 0:
         print(f"Re-using mesh: {mesh_cache_file}", flush=True)
 
-    meshball = uw.discretisation.Mesh(mesh_cache_file, 
-                                      coordinate_system_type=CoordinateSystemType.SPHERICAL,
-                                      qdegree=2, )   
+    meshball = uw.discretisation.Mesh(
+        mesh_cache_file,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        qdegree=2,
+    )
 else:
     meshball = uw.meshing.SphericalShell(
         radiusInner=r_i,
@@ -111,7 +113,9 @@ else:
 meshball.dm.view()
 # -
 
-v_soln = uw.discretisation.MeshVariable(r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR)
+v_soln = uw.discretisation.MeshVariable(
+    r"u", meshball, meshball.dim, degree=2, vtype=uw.VarType.VECTOR
+)
 p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
@@ -161,12 +165,10 @@ stokes = uw.systems.Stokes(
 
 stokes.tolerance = 1.0e-4
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_max_it"] = 1   # Only for timing examples  
+stokes.petsc_options["snes_max_it"] = 1  # Only for timing examples
 stokes.penalty = 0.1
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
-)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 
 # thermal buoyancy force
@@ -192,7 +194,9 @@ with meshball.access(meshr):
     )  # cf radius_fn which is 0->1
 
 with meshball.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(t_forcing_fn, t_soln.coords, meshball.N).reshape(-1, 1)
+    t_soln.data[...] = uw.function.evaluate(
+        t_forcing_fn, t_soln.coords, meshball.N
+    ).reshape(-1, 1)
 # -
 
 stokes._setup_terms()
@@ -201,7 +205,9 @@ stokes.solve(zero_init_guess=True)
 timing.print_table(display_fraction=0.999)
 
 
-meshball.write_checkpoint(f"output/{expt_name}", meshUpdates=False, meshVars=[p_soln,v_soln])
+meshball.write_checkpoint(
+    f"output/{expt_name}", meshUpdates=False, meshVars=[p_soln, v_soln]
+)
 
 
 # savefile = "output/{}_ts_{}.h5".format(expt_name, 0)

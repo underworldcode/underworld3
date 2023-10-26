@@ -1,0 +1,23 @@
+# See docs at: https://mystmd.org/guide/frontmatter
+version: 1
+project:
+  title: "The Underworld3 Modelling Project"
+  # keywords: []
+  authors: 
+  - name: The Underworld Team
+  github: https://github.com/underworldcode/underworld3
+  bibliography: UnderworldDocumentation.bib
+  license:
+    code: LGPL-3.0-or-later
+    content: CC-BY-4.0
+  subject: Underworld Geodynamics
+site:
+  template: book-theme
+  # title:
+  # logo:
+  nav: []
+  actions:
+    - title: Learn More
+      url: https://mystmd.org/guide
+  domains: []
+

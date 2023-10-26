@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -43,7 +43,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 1
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -122,7 +122,7 @@ stokes = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(
     v_soln
 )
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
@@ -132,23 +132,21 @@ stokes.penalty = 1.0
 # There is a null space if there are no fixed bcs, so we'll do this:
 
 if not free_slip_upper:
-    stokes.add_dirichlet_bc(0.0, "Upper", component=0)
-    stokes.add_dirichlet_bc(0.0, "Upper", component=1)
+    stokes.add_dirichlet_bc((0.0,0.0), "Upper")
 
 if not free_slip_lower:
-    stokes.add_dirichlet_bc(0.0, "Lower", component=0)
-    stokes.add_dirichlet_bc(0.0, "Lower", component=1)
+    stokes.add_dirichlet_bc((0.0,0.0), "Lower")
 
 v_r = v_soln.sym.dot(unit_rvec)*unit_rvec
     
-stokes.add_natural_bc( -1.0e6 * v_r[0], None , "Upper", component=0)
-stokes.add_natural_bc( -1.0e6 * v_r[1], None , "Upper", component=1)
+# stokes.add_natural_bc( -1.0e3 * sympy.Matrix([v_r[0],v_r[1]]), "Upper")
 
 # stokes.add_natural_bc( -1.0, sympy.Matrix((0.0, 0.0)).T , "Upper", component=0)
 # stokes.add_natural_bc( -2.0, sympy.Matrix((0.0, 0.0)).T , "Upper", component=1)
 
-
 stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
+
+
 
 
 # +
@@ -218,8 +216,8 @@ s_norm = 1
 b_norm = 1
 
 buoyancy_force = Rayleigh * gravity_fn * t_init
-# if free_slip_upper:
-#     buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm
+if free_slip_upper:
+    buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn / s_norm
 
 if free_slip_lower:
     buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn / b_norm
@@ -239,19 +237,10 @@ stokes._setup_solver()
 
 timing.reset()
 timing.start()
-# -
-
-
-
-
 # +
 stokes.solve(zero_init_guess=True)
 
 timing.print_table()
-# -
-
-
-
 # +
 # Pressure at mesh nodes
 
@@ -306,7 +295,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.75,
     )
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.00003)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
     pl.show(cpos="xy")
 # -
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()

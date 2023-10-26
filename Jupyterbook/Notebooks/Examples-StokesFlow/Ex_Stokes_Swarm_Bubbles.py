@@ -125,7 +125,6 @@ viscosity = (
 # -
 
 if render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -194,7 +193,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
@@ -231,7 +230,6 @@ stokes.solve(zero_init_guess=True)
 
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -320,9 +318,7 @@ if uw.mpi.size == 1 and render:
 
 
 def plot_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -426,7 +422,6 @@ t_step = 0
 expt_name = "output/blobs"
 
 for step in range(0, 250):
-
     stokes.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
 

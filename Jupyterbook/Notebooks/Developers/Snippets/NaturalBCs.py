@@ -2,7 +2,7 @@ import sympy
 import underworld3 as uw
 import underworld3.maths
 import numpy as np
-import os 
+import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
 # os.environ["UW_JITNAME"] = "TEST_PF"
@@ -11,8 +11,11 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 
 # +
 mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(2,2), minCoords=(0.0,0.0), maxCoords=(1.0,1.0),
-    qdegree=4, refinement=4,
+    elementRes=(2, 2),
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    qdegree=4,
+    refinement=4,
 )
 
 # mesh = uw.meshing.UnstructuredSimplexBox(
@@ -33,20 +36,31 @@ else:
     x, y, z = mesh.X
 
 
-u = uw.discretisation.MeshVariable("U", mesh, mesh.dim, 
-                                   vtype=uw.VarType.VECTOR, 
-                                   degree=2, varsymbol=r"\mathbf{u}",
+u = uw.discretisation.MeshVariable(
+    "U",
+    mesh,
+    mesh.dim,
+    vtype=uw.VarType.VECTOR,
+    degree=2,
+    varsymbol=r"\mathbf{u}",
 )
-p = uw.discretisation.MeshVariable("P",
-    mesh, 1, vtype=uw.VarType.SCALAR, degree=1, continuous=True, 
-                                   varsymbol=r"\mathbf{p}", 
+p = uw.discretisation.MeshVariable(
+    "P",
+    mesh,
+    1,
+    vtype=uw.VarType.SCALAR,
+    degree=1,
+    continuous=True,
+    varsymbol=r"\mathbf{p}",
 )
 
 mesh.qdegree
 
-hw =  mesh.get_min_radius() / (mesh.qdegree + 1)
-surface_fn = 2 * uw.maths.delta_function(y-1, hw) # / uw.maths.delta_function(0.0, hw)
-surface_fn = sympy.Piecewise((1.0,1-y < hw), (0.0, True))
+hw = mesh.get_min_radius() / (mesh.qdegree + 1)
+surface_fn = 2 * uw.maths.delta_function(
+    y - 1, hw
+)  # / uw.maths.delta_function(0.0, hw)
+surface_fn = sympy.Piecewise((1.0, 1 - y < hw), (0.0, True))
 I = uw.maths.Integral(mesh, surface_fn)
 norm = I.evaluate()
 
@@ -58,19 +72,19 @@ norm
 # -
 
 stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(u)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(u)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 if mesh.dim == 2:
-    stokes.bodyforce = sympy.Matrix([0.0, 1.0*sympy.sin(x)])
+    stokes.bodyforce = sympy.Matrix([0.0, 1.0 * sympy.sin(x)])
 
     stokes.add_dirichlet_bc((0.0, 0.0), "Top")
-    stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
-    stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
-    stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+    stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
 
-stokes.petsc_options["snes_monitor"]= None
+stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
 
 # +
@@ -101,7 +115,7 @@ x_c = 0.5
 f_0 = 1.0
 
 stokes.penalty = 0.0
-stokes.bodyforce = sympy.Matrix([[0.0, (1-y)*(1-x)]])
+stokes.bodyforce = sympy.Matrix([[0.0, (1 - y) * (1 - x)]])
 
 
 converged = stokes.solve(verbose=False, debug=False)
@@ -116,16 +130,18 @@ stokes.bodyforce[1] -= 1.0e6 * u.sym[1] * (surface_fn)
 stokes.dm = None
 
 # stokes.add_natural_bc((0.0, pen * u[1].sym), "Top")
-stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
-stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
-stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
-converged = stokes.solve(zero_init_guess=False, picard=0, verbose=False, debug=True, _force_setup=True)
+converged = stokes.solve(
+    zero_init_guess=False, picard=0, verbose=False, debug=True, _force_setup=True
+)
 
 # -
 
 
-surface_fn.subs(y,1).evalf()
+surface_fn.subs(y, 1).evalf()
 
 # Residual term
 #
@@ -141,7 +157,6 @@ surface_fn.subs(y,1).evalf()
 import mpi4py
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -167,13 +182,16 @@ if uw.mpi.size == 1:
     V_anti_coords = (1.0, 1.0) - V.coords
 
     arrow_diff = np.zeros((V.coords.shape[0], 3))
-    arrow_diff[:, 0] = uw.function.evalf(V.sym[0], V.coords) + uw.function.evalf(V.sym[0], V_anti_coords)
-    arrow_diff[:, 1] = uw.function.evalf(V.sym[1], V.coords) + uw.function.evalf(V.sym[1], V_anti_coords)
+    arrow_diff[:, 0] = uw.function.evalf(V.sym[0], V.coords) + uw.function.evalf(
+        V.sym[0], V_anti_coords
+    )
+    arrow_diff[:, 1] = uw.function.evalf(V.sym[1], V.coords) + uw.function.evalf(
+        V.sym[1], V_anti_coords
+    )
 
     arrow_length = np.zeros((V.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evalf(V.sym[0], V.coords) 
-    arrow_length[:, 1] = uw.function.evalf(V.sym[1], V.coords) 
-
+    arrow_length[:, 0] = uw.function.evalf(V.sym[0], V.coords)
+    arrow_length[:, 1] = uw.function.evalf(V.sym[1], V.coords)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -202,4 +220,4 @@ V.coords
 
 stokes.natural_bcs[0].fns["uu_G0"]
 
-# ##### 
+# #####

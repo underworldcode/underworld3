@@ -24,14 +24,13 @@ import numpy as np
 import sympy
 
 
-
 # +
 model = 1
 
 if model == 1:
     free_slip = False
-    expt_name = "NS_flow_coriolis_disk_no_slip"  
-    
+    expt_name = "NS_flow_coriolis_disk_no_slip"
+
 elif model == 2:
     free_slip = True
     expt_name = "NS_flow_coriolis_disk_free_slip"
@@ -40,11 +39,11 @@ elif model == 2:
 
 
 meshball = uw.meshing.Annulus(
-    radiusOuter=1.0, 
-    radiusInner=0.0, 
+    radiusOuter=1.0,
+    radiusInner=0.0,
     cellSize=0.05,
     qdegree=3,
-    filename="tmp_CoriolisDisk.msh"
+    filename="tmp_CoriolisDisk.msh",
 )
 
 # +
@@ -111,22 +110,28 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     solver_name="navier_stokes",
 )
 
-navier_stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
 navier_stokes.constitutive_model.Parameters.viscosity = 1
 navier_stokes.rho = 1000.0
 navier_stokes.theta = 0.5
-navier_stokes.bodyforce = sympy.Matrix([0,0])
+navier_stokes.bodyforce = sympy.Matrix([0, 0])
 
-navier_stokes.saddle_preconditioner = 1.0 / navier_stokes.constitutive_model.Parameters.viscosity
+navier_stokes.saddle_preconditioner = (
+    1.0 / navier_stokes.constitutive_model.Parameters.viscosity
+)
 
 hw = 1000.0 / meshball.get_min_radius()
 surface_fn = sympy.exp(-((r - 1.0) ** 2) * hw)
-free_slip_penalty = 1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+free_slip_penalty = (
+    1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+)
 
 # Velocity boundary conditions
 
 if free_slip:
-    free_slip_penalty = 1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+    free_slip_penalty = (
+        1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+    )
 else:
     free_slip_penalty = 0.0
     navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
@@ -164,9 +169,7 @@ with swarm.access(v_star, remeshed, X_0):
 
 # -
 
-swarm.advection(v_soln.fn, 
-                delta_t=navier_stokes.estimate_dt(),
-                corrector=False)
+swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
 
 
 # +
@@ -181,10 +184,9 @@ pv.global_theme.smooth_shading = True
 
 pl = pv.Plotter()
 
+
 def plot_V_mesh(filename):
-
     if uw.mpi.size == 1:
-
         pvmesh = pv.read("tmp_CoriolisDisk.msh")
 
         with meshball.access():
@@ -220,7 +222,6 @@ def plot_V_mesh(filename):
         )
 
 
-
 # +
 ts = 0
 swarm_loop = 10
@@ -228,7 +229,9 @@ swarm_loop = 10
 Omega = 2.0 * meshball.N.k
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
 navier_stokes.bodyforce -= free_slip_penalty
-navier_stokes.bodyforce -= 2.0 * navier_stokes.rho * meshball.vector.cross(Omega, v_theta)
+navier_stokes.bodyforce -= (
+    2.0 * navier_stokes.rho * meshball.vector.cross(Omega, v_theta)
+)
 # -
 
 
@@ -286,7 +289,6 @@ for step in range(0, 250):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk

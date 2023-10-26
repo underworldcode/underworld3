@@ -34,12 +34,12 @@ from underworld3 import function
 
 import numpy as np
 import sympy
+
 render = True
 
-cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
+cell_size = uw.options.getReal("mesh_cell_size", default=1.0 / 32)
 particle_fill = uw.options.getInt("particle_fill", default=7)
 viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
-
 
 
 # +
@@ -127,7 +127,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
@@ -144,7 +144,7 @@ stokes.add_dirichlet_bc(
 # -
 
 
-stokes.rtol = 1.0e-3 # rough solution is all that's needed
+stokes.rtol = 1.0e-3  # rough solution is all that's needed
 
 print("Stokes setup", flush=True)
 
@@ -166,7 +166,6 @@ stokes.solve(zero_init_guess=True)
 
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -185,7 +184,6 @@ if uw.mpi.size == 1 and render:
     # check the solution
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -270,7 +268,6 @@ import pyvista as pv
 import vtk
 
 if uw.mpi.size == 1:
-
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.anti_aliasing = "msaa"
@@ -279,14 +276,11 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-
     pl = pv.Plotter()
 
 
 def plot_mesh(filename):
-
     if uw.mpi.size == 1:
-
         meshbox.vtk("tmp_box.vtk")
         pvmesh = pv.read("tmp_box.vtk")
 
@@ -379,7 +373,6 @@ t_step = 0
 expt_name = "swarm_rt"
 
 for step in range(0, 200):
-
     stokes.solve(zero_init_guess=False)
     m_solver.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
@@ -396,17 +389,15 @@ for step in range(0, 200):
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
         # "Checkpoints"
-        savefile = f"swarm_rt_xy"    
-        
-        meshbox.write_timestep(expt_name, 
-                                 meshUpdates=True,
-                                 meshVars=[p_soln,v_soln, m_cont], 
-                                 outputPath="output",
-                                 index=t_step
-                        )
-        
+        savefile = f"swarm_rt_xy"
+
+        meshbox.write_timestep(
+            expt_name,
+            meshUpdates=True,
+            meshVars=[p_soln, v_soln, m_cont],
+            outputPath="output",
+            index=t_step,
+        )
 
     t_step += 1
 # -
-
-

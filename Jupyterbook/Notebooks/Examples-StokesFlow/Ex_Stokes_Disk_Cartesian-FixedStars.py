@@ -47,12 +47,14 @@ import os
 os.environ["SYMPY_USE_CACHE"] = "no"
 # -
 
-meshball = uw.meshing.AnnulusFixedStars(radiusFixedStars=r_s,
-                                        radiusOuter=r_o, 
-                                        radiusInner=r_i, 
-                                        cellSize=res, 
-                                        cellSize_FS=res*3,
-                                        filename="tmp_fixedstarsMesh.msh")
+meshball = uw.meshing.AnnulusFixedStars(
+    radiusFixedStars=r_s,
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=res,
+    cellSize_FS=res * 3,
+    filename="tmp_fixedstarsMesh.msh",
+)
 
 
 v_soln = uw.discretisation.MeshVariable(r"\mathbf{u}", meshball, 2, degree=2)
@@ -91,8 +93,7 @@ base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 
 swarm = uw.swarm.Swarm(mesh=meshball)
 material = uw.swarm.SwarmVariable(
-                "M", swarm, num_components=1, 
-                proxy_continuous=False, proxy_degree=0
+    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0
 )
 swarm.populate(fill_param=1)
 
@@ -101,7 +102,6 @@ with swarm.access(material):
 # -
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -115,18 +115,19 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 
     pvmesh = pv.read("tmp_fixedstarsMesh.msh")
-    
+
     with swarm.access():
         points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
         points[:, 0] = swarm.particle_coordinates.data[:, 0]
         points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
+
     pvmesh.point_data["M"] = uw.function.evaluate(
         material.sym[0], meshball.data, meshball.N
     )
-    pvmesh.point_data["C"] = uw.function.evaluate( celestial_fn, meshball.data, meshball.N
+    pvmesh.point_data["C"] = uw.function.evaluate(
+        celestial_fn, meshball.data, meshball.N
     )
-    pvmesh.point_data["S"] = uw.function.evaluate(                                             
+    pvmesh.point_data["S"] = uw.function.evaluate(
         surface_fn - base_fn, meshball.data, meshball.N
     )
 
@@ -134,13 +135,12 @@ if uw.mpi.size == 1:
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
-    
+
     pl = pv.Plotter(window_size=(750, 750))
     # pl.camera_position = "xy"
 
+    pl.add_mesh(pvmesh, "Grey", "wireframe")
 
-    pl.add_mesh(pvmesh,'Grey', 'wireframe')
-    
     pl.add_mesh(
         pvmesh,
         cmap="Greens",
@@ -148,10 +148,10 @@ if uw.mpi.size == 1:
         scalars="C",
         show_edges=True,
         use_transparency=False,
-        clim=[0.66,1],
+        clim=[0.66, 1],
         opacity=0.75,
     )
-    
+
     pl.add_mesh(
         pvmesh,
         cmap="RdBu",
@@ -159,18 +159,20 @@ if uw.mpi.size == 1:
         scalars="S",
         show_edges=True,
         use_transparency=False,
-        clim=[-1,1],
+        clim=[-1, 1],
         opacity=0.5,
     )
-    
-    
-    pl.add_points(point_cloud, cmap="Greys", 
-                  render_points_as_spheres=True, clim=[-0.5,1.0],
-                  point_size=5, opacity=0.66)
-    
 
-    pl.screenshot(filename="Surface.png", window_size=(1000,1000),
-                  return_img=False)
+    pl.add_points(
+        point_cloud,
+        cmap="Greys",
+        render_points_as_spheres=True,
+        clim=[-0.5, 1.0],
+        point_size=5,
+        opacity=0.66,
+    )
+
+    pl.screenshot(filename="Surface.png", window_size=(1000, 1000), return_img=False)
     pl.show(cpos="xy")
 
 # +
@@ -180,13 +182,11 @@ stokes = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
-)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
 
 
 stokes.constitutive_model.Parameters.viscosity = 1.0
-stokes.saddle_preconditioner = 1.0 
+stokes.saddle_preconditioner = 1.0
 
 # There is a null space if there are no fixed bcs, so we'll do this:
 
@@ -208,7 +208,8 @@ t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2)) / 3.5
 
 with meshball.access(t_soln):
     t_soln.data[:, 0] = uw.function.evaluate(
-        t_init, coords=t_soln.coords, coord_sys=meshball.N)
+        t_init, coords=t_soln.coords, coord_sys=meshball.N
+    )
     print(t_soln.data.min(), t_soln.data.max())
 
 
@@ -256,7 +257,6 @@ pressure_solver.solve()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -278,10 +278,9 @@ if uw.mpi.size == 1:
         pvmesh.point_data["T"] = uw.function.evaluate(
             t_init, meshball.data, coord_sys=meshball.N
         )
-        
+
     with swarm.access():
-        pvmesh.cell_data["M"] = material.data[:,0]
-        
+        pvmesh.cell_data["M"] = material.data[:, 0]
 
     with meshball.access():
         usol = stokes.u.data
@@ -304,7 +303,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=1.0,
     )
-    
+
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0002)
 
     pl.add_mesh(
@@ -316,8 +315,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.3,
     )
-      
-    
+
     pl.show(cpos="xy")
 # -
 pvmesh.n_cells
@@ -325,5 +323,3 @@ pvmesh.n_cells
 
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_rms
-
-

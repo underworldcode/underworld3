@@ -24,6 +24,7 @@
 from petsc4py import PETSc
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 import underworld3 as uw
@@ -36,18 +37,26 @@ from IPython.display import display
 
 
 # +
-mesh1 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
-                                          cellSize=1.0 / 4, refinement=4)
+mesh1 = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4, refinement=4
+)
 
-mesh2 = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-                                          cellSize=1.0 / 4, regular=True, refinement=4)
+mesh2 = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    cellSize=1.0 / 4,
+    regular=True,
+    refinement=4,
+)
 # -
 
 # pick a mesh
 mesh = mesh1
 
-phi = uw.discretisation.MeshVariable("Phi", mesh, 1, degree=2, varsymbol=r"\phi" )
-scalar = uw.discretisation.MeshVariable("Theta", mesh, 1, degree=1, continuous=False, varsymbol=r"\Theta")
+phi = uw.discretisation.MeshVariable("Phi", mesh, 1, degree=2, varsymbol=r"\phi")
+scalar = uw.discretisation.MeshVariable(
+    "Theta", mesh, 1, degree=1, continuous=False, varsymbol=r"\Theta"
+)
 
 # Create Poisson object
 
@@ -55,7 +64,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=phi, solver_name="diffusion")
 
 # Constitutive law (diffusivity)
 
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(phi)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(phi)
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 
@@ -72,8 +81,8 @@ poisson.tolerance = 1.0e-6
 poisson.petsc_options["snes_type"] = "newtonls"
 poisson.petsc_options["ksp_type"] = "fgmres"
 
-poisson.petsc_options['snes_monitor'] = None
-poisson.petsc_options['ksp_monitor'] = None
+poisson.petsc_options["snes_monitor"] = None
+poisson.petsc_options["ksp_monitor"] = None
 poisson.petsc_options.setValue("pc_type", "mg")
 poisson.petsc_options.setValue("pc_mg_type", "multiplicative")
 poisson.petsc_options.setValue("pc_mg_type", "kaskade")
@@ -115,7 +124,6 @@ with mesh.access():
 # Validate
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
 
@@ -159,7 +167,7 @@ x, y = mesh.X
 x0 = y0 = 1 / sympy.sympify(2)
 k = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2))
 
-poisson.constitutive_model.Parameters.diffusivity=k
+poisson.constitutive_model.Parameters.diffusivity = k
 
 poisson.constitutive_model.flux
 
@@ -185,7 +193,6 @@ mesh._evaluation_hash = None
 # Visual validation
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
 
@@ -229,7 +236,7 @@ if uw.mpi.size == 1:
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, "Bottom" , component=0)
+poisson.add_dirichlet_bc(abs_r2, "Bottom", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Top", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Right", component=0)
 poisson.add_dirichlet_bc(abs_r2, "Left", component=0)
@@ -239,8 +246,8 @@ display(poisson.f)
 # Constitutive law (diffusivity)
 # Linear solver first
 
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(poisson._u)
-poisson.constitutive_model.Parameters.diffusivity=1
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(poisson._u)
+poisson.constitutive_model.Parameters.diffusivity = 1
 
 poisson.solve()
 
@@ -249,7 +256,7 @@ poisson.solve()
 
 grad_phi = mesh.vector.gradient(phi.sym)
 k = 5 + (grad_phi.dot(grad_phi)) / 2
-poisson.constitutive_model.Parameters.diffusivity=k
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.constitutive_model.c
 
 
@@ -265,7 +272,6 @@ poisson.solve(zero_init_guess=False)
 # Validate
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
 
@@ -316,7 +322,7 @@ projection.solve()
 
 
 with mesh.access():
-    print(phi.stats())    
+    print(phi.stats())
     print(scalar.stats())
 
 # %%
@@ -325,7 +331,6 @@ sympy.diff(scalar.sym[0], mesh.X[1])
 # Validate
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
 
@@ -362,6 +367,3 @@ if uw.mpi.size == 1:
 poisson.snes.view()
 
 timing.print_table()
-
-
-

@@ -105,7 +105,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     cellSize=1.0 / res,
     regular=False,
     qdegree=3,
-    filename="testSimplexMesh.msh"
+    filename="testSimplexMesh.msh",
 )
 
 mesh.dm.view()
@@ -116,7 +116,7 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
 
 
 stokes.add_dirichlet_bc(
@@ -187,7 +187,6 @@ timing.start()
 stokes.solve(zero_init_guess=False)
 
 while step < nsteps:
-
     ### estimate dt
     dt = stokes.estimate_dt()
 
@@ -196,7 +195,6 @@ while step < nsteps:
     ### print updates
     if uw.mpi.rank == 0:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}", flush=True)
-
 
     step += 1
     time += dt

@@ -1,14 +1,12 @@
-
-
-
 # %%
 import petsc4py
 from petsc4py import PETSc
 
 # options = PETSc.Options()
-# options["help"] = None 
+# options["help"] = None
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 
@@ -24,17 +22,21 @@ import numpy as np
 n_els = 4
 refinement = 3
 
-mesh1 = uw.meshing.UnstructuredSimplexBox(regular=True,
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, 
-    qdegree=3, refinement=refinement
+mesh1 = uw.meshing.UnstructuredSimplexBox(
+    regular=True,
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    cellSize=1 / n_els,
+    qdegree=3,
+    refinement=refinement,
 )
 
 mesh2 = uw.meshing.StructuredQuadBox(
     elementRes=(n_els, n_els),
-    minCoords=(0.0, 0.0), 
-    maxCoords=(1.0, 1.0), 
-    qdegree=3, 
-    refinement=refinement
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    qdegree=3,
+    refinement=refinement,
 )
 
 mesh = mesh1
@@ -44,16 +46,24 @@ mesh.dm.view()
 
 
 # %%
-v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2, varsymbol=r"\mathbf{u}")
-p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=False, varsymbol=r"{p}")
-T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
-T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
+v = uw.discretisation.MeshVariable(
+    "v", mesh, mesh.dim, degree=2, varsymbol=r"\mathbf{u}"
+)
+p = uw.discretisation.MeshVariable(
+    "p", mesh, 1, degree=1, continuous=False, varsymbol=r"{p}"
+)
+T = uw.discretisation.MeshVariable(
+    "T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}"
+)
+T2 = uw.discretisation.MeshVariable(
+    "T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}"
+)
 
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 
 # %%
@@ -62,23 +72,23 @@ import sympy
 from sympy import Piecewise
 
 
-x,y = mesh.X
+x, y = mesh.X
 
 
 mesh.get_min_radius()
 
 
 hw = 0.1 * mesh.get_min_radius()
-surface_fn = 2 * uw.maths.delta_function(y-1, hw) / uw.maths.delta_function(0.0, hw)
+surface_fn = 2 * uw.maths.delta_function(y - 1, hw) / uw.maths.delta_function(0.0, hw)
 base_fn = 2 * uw.maths.delta_function(y, hw)
-right_fn = 2 * uw.maths.delta_function(x-1, hw)
+right_fn = 2 * uw.maths.delta_function(x - 1, hw)
 left_fn = 2 * uw.maths.delta_function(x, hw)
 
 
 surface_fn
 
 
-uw.function.evalf(surface_fn, np.array([[0.0,1.0]]))
+uw.function.evalf(surface_fn, np.array([[0.0, 1.0]]))
 
 
 # options = PETSc.Options()
@@ -102,7 +112,7 @@ stokes.bodyforce = sympy.Matrix(
 )
 
 
-# This is the other way to impose no vertical 
+# This is the other way to impose no vertical
 
 stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
 stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
@@ -113,13 +123,10 @@ stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
 
-stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
 stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
-stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
-stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
-
-
-
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
 
 # stokes.petsc_options["snes_rtol"] = 1.0e-6
@@ -130,7 +137,7 @@ stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 stokes.tolerance = 1.0e-3
 
 
-stokes.petsc_options["snes_monitor"]= None
+stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
 
 
@@ -161,7 +168,6 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 
-
 stokes._setup_pointwise_functions(verbose=True)
 stokes._setup_discretisation(verbose=True)
 stokes.dm.ds.view()
@@ -175,22 +181,15 @@ stokes.solve()
 stokes._uu_G0
 
 
-
-
-
-
-
-
 # check the mesh if in a notebook / serial
 
 import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
-    
+
     try:
         pv.start_xvfb()
     except OSError:
@@ -234,14 +233,16 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     pl.show(cpos="xy")
 
 
-
-
-
 stokes.bodyforce = sympy.Matrix(
-    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
+    [
+        0,
+        -sympy.cos(sympy.pi * x)
+        * sympy.sin(2 * sympy.pi * y)
+        * (1 - (surface_fn + base_fn)),
+    ]
 )
 
-stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
+stokes.bodyforce[0] -= 1.0e3 * v.sym[0] * (left_fn + right_fn)
 stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
@@ -252,7 +253,9 @@ viscosity_fn = sympy.Piecewise(
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 
 
-stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
+stokes.saddle_preconditioner = sympy.simplify(
+    1 / (stokes.constitutive_model.viscosity + stokes.penalty)
+)
 
 
 stokes._setup_pointwise_functions()
@@ -273,7 +276,6 @@ timing.print_table(display_fraction=0.999)
 import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk

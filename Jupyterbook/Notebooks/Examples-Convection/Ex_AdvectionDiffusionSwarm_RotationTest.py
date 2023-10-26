@@ -26,8 +26,10 @@ options = PETSc.Options()
 # +
 import meshio
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3)
-x,y = meshball.X
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3
+)
+x, y = meshball.X
 # -
 
 
@@ -38,7 +40,9 @@ t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
 swarm = uw.swarm.Swarm(mesh=meshball, recycle_rate=0)
-T1 = uw.swarm.SwarmVariable(r"T^{(-\Delta t)}", swarm, 1, proxy_degree=2, proxy_continuous=False)
+T1 = uw.swarm.SwarmVariable(
+    r"T^{(-\Delta t)}", swarm, 1, proxy_degree=2, proxy_continuous=False
+)
 X1 = uw.swarm.SwarmVariable(r"X^{(-\Delta t)}", swarm, 2)
 swarm.populate(fill_param=4)
 
@@ -46,7 +50,7 @@ swarm.populate(fill_param=4)
 with swarm.access():
     print(swarm.particle_coordinates.data.shape)
 
-# check that the swarm variable works  as a continuous field as well 
+# check that the swarm variable works  as a continuous field as well
 T1.sym.jacobian(meshball.X)
 
 # +
@@ -64,13 +68,14 @@ delta_t = 1.0
 
 # +
 adv_diff = uw.systems.AdvDiffusionSwarm(
-    meshball, u_Field=t_soln, u_Star_fn=T1.sym, 
-    solver_name="adv_diff_swarms"  # not needed if coords is provided
+    meshball,
+    u_Field=t_soln,
+    u_Star_fn=T1.sym,
+    solver_name="adv_diff_swarms",  # not needed if coords is provided
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
-adv_diff.constitutive_model.Parameters.diffusivity=k
-
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model.Parameters.diffusivity = k
 
 
 # +
@@ -80,7 +85,9 @@ adv_diff.constitutive_model.Parameters.diffusivity=k
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 
 # Some useful coordinate stuff
@@ -113,9 +120,9 @@ adv_diff.add_dirichlet_bc(0.0, "Upper")
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
-    
+
 with swarm.access(T1):
-    T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
 
 
 # +
@@ -130,7 +137,6 @@ adv_diff.solve(timestep=delta_t)
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -168,7 +174,13 @@ if uw.mpi.size == 1:
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.66,
+    )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
@@ -182,9 +194,7 @@ if uw.mpi.size == 1:
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -222,14 +232,24 @@ def plot_T_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.66,
+        )
 
         pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
     # pl.show()
 
@@ -239,10 +259,9 @@ with meshball.access(t_0, t_soln, T1):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
-    
+
 with swarm.access(T1):
-     T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
-    
+    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
 
 
 # +
@@ -252,26 +271,29 @@ delta_t = 0.05
 expt_name = "output/rotation_test_k_001"
 
 substeps = 1
-phi = 1/substeps
+phi = 1 / substeps
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(0, 1+20*substeps):
-
+for step in range(0, 1 + 20 * substeps):
     with meshball.access(t_soln_dt):
         t_soln_dt.data[...] = t_soln.data[...]
 
-    adv_diff.solve(timestep=delta_t) 
-    
+    adv_diff.solve(timestep=delta_t)
+
     # Update the swarm vallues
     with swarm.access(T1):
-         T1.data[:,0] = (1.0-phi) * T1.data[:,0] + phi * uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
-    
+        T1.data[:, 0] = (1.0 - phi) * T1.data[:, 0] + phi * uw.function.evaluate(
+            t_soln.sym[0], swarm.particle_coordinates.data
+        )
+
     # Update the swarm locations
-    swarm.advection(v_soln.sym,
-                    delta_t=delta_t*phi,
-                    corrector=False,
-                    restore_points_to_domain_func=meshball.return_coords_to_bounds) 
+    swarm.advection(
+        v_soln.sym,
+        delta_t=delta_t * phi,
+        corrector=False,
+        restore_points_to_domain_func=meshball.return_coords_to_bounds,
+    )
 
     # stats then loop
 
@@ -295,7 +317,6 @@ for step in range(0, 1+20*substeps):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -335,11 +356,13 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
     pl.add_points(
-        point_cloud, cmap="coolwarm", scalars="T", # clim=[-0.1,0.1],
-        render_points_as_spheres=False, point_size=10, opacity=0.66
+        point_cloud,
+        cmap="coolwarm",
+        scalars="T",  # clim=[-0.1,0.1],
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.66,
     )
-
-
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
@@ -355,5 +378,3 @@ if uw.mpi.size == 1:
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
 # -
-
-

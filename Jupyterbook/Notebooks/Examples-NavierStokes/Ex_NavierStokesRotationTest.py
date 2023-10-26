@@ -39,7 +39,9 @@ options = PETSc.Options()
 # +
 import meshio
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.05, qdegree=3)
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.05, qdegree=3
+)
 
 
 # +
@@ -74,7 +76,9 @@ swarm.populate(fill_param=3)
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
-vorticity = uw.discretisation.MeshVariable("\omega", meshball, 1, degree=1, continuous=False)
+vorticity = uw.discretisation.MeshVariable(
+    "\omega", meshball, 1, degree=1, continuous=False
+)
 
 
 navier_stokes = NavierStokesSLCN(
@@ -95,8 +99,7 @@ nodal_vorticity_from_v.smoothing = 0.0
 # Constant visc
 
 
-navier_stokes.constitutive_model = \
-    uw.systems.constitutive_models.ViscousFlowModel(v_soln)
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
 
 navier_stokes.constitutive_model.Parameters.viscosity = 1.0
 
@@ -105,7 +108,7 @@ navier_stokes.constitutive_model.Parameters.viscosity = 1.0
 
 navier_stokes.rho = 250
 navier_stokes.penalty = 0.1
-navier_stokes.bodyforce = sympy.Matrix([0,0])
+navier_stokes.bodyforce = sympy.Matrix([0, 0])
 # navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
 # Velocity boundary conditions
@@ -130,7 +133,6 @@ nodal_vorticity_from_v.solve()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -140,12 +142,11 @@ if uw.mpi.size == 1:
     pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
-    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
     meshball.vtk("tmp_ball.vtk")
     pvmesh = pv.read("tmp_ball.vtk")
-
 
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
@@ -201,7 +202,6 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
-
     # pl.remove_scalar_bar("T")
     # pl.remove_scalar_bar("mag")
 
@@ -210,25 +210,23 @@ if uw.mpi.size == 1:
 
 # -
 
+
 def plot_V_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
-    
+
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [1250, 1250]
         pv.global_theme.anti_aliasing = "msaa"
         pv.global_theme.jupyter_backend = "panel"
         pv.global_theme.smooth_shading = True
-        pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
-    
+        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+        pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+
         meshball.vtk("tmp_ball.vtk")
         pvmesh = pv.read("tmp_ball.vtk")
-
 
         with swarm.access():
             points = np.zeros((swarm.data.shape[0], 3))
@@ -244,10 +242,11 @@ def plot_V_mesh(filename):
         points[:, 1] = meshball._centroids[:, 1]
         centroid_cloud = pv.PolyData(points)
 
-
         with meshball.access():
             pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], meshball.data)
-            pvmesh.point_data["Omega"] = uw.function.evalf(vorticity.sym[0], meshball.data)
+            pvmesh.point_data["Omega"] = uw.function.evalf(
+                vorticity.sym[0], meshball.data
+            )
 
         with meshball.access():
             usol = v_soln.data.copy()
@@ -294,11 +293,13 @@ def plot_V_mesh(filename):
         )
 
         pl.add_mesh(
-            pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1, # clim=[0.0, 20.0]
+            pvmesh,
+            cmap="RdBu",
+            scalars="Omega",
+            opacity=0.1,  # clim=[0.0, 20.0]
         )
 
         pl.add_mesh(pvstream, opacity=0.33)
-
 
         scale_bar_items = list(pl.scalar_bars.keys())
 
@@ -313,6 +314,7 @@ def plot_V_mesh(filename):
 
         # pl.show()
 
+
 ts = 0
 
 # +
@@ -320,7 +322,6 @@ ts = 0
 
 
 for step in range(0, 250):
-
     delta_t = 5.0 * navier_stokes.estimate_dt()
     navier_stokes.solve(timestep=delta_t)
 
@@ -340,7 +341,3 @@ for step in range(0, 250):
 
     ts += 1
 # -
-
-
-
-

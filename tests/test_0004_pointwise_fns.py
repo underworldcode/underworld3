@@ -38,7 +38,7 @@ p = uw.discretisation.MeshVariable(
 ## This needs to be fixed up for systems that don't use /tmp like this
 def test_build_functions():
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.bodyforce = sympy.Matrix([0.0, 1.0 * sympy.sin(mesh.X[0])])
 
@@ -98,7 +98,7 @@ def test_build_functions():
 ## This needs to be fixed up for systems that don't use /tmp like this
 def test_build_boundary_functions():
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.bodyforce = sympy.Matrix([0.0, 1.0 * sympy.sin(mesh.X[0])])
 
@@ -162,7 +162,7 @@ def test_build_boundary_functions():
 ## This needs to be fixed up for systems that don't use /tmp like this
 def test_debug_pointwise_functions():
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
     stokes.bodyforce = sympy.Matrix([0.0, 1.0 * sympy.sin(mesh.X[0])])
@@ -186,7 +186,7 @@ def test_debug_pointwise_functions():
         )
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.bodyforce = sympy.Matrix([0.0, 1.0 * sympy.sin(mesh.X[0])])
 

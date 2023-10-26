@@ -8,6 +8,7 @@ import petsc4py
 from petsc4py import PETSc
 
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 import underworld3 as uw
@@ -29,7 +30,9 @@ options = PETSc.Options()
 
 # options.getAll()
 # -
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3)
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3
+)
 
 
 # +
@@ -41,7 +44,9 @@ t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3, varsymbol=r"T_
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 
 # Some useful coordinate stuff
@@ -81,19 +86,17 @@ delta_t = 1.0
 
 # +
 adv_diff = uw.systems.AdvDiffusion(
-    meshball, 
+    meshball,
     u_Field=t_soln,
-    V_fn=v_soln, 
-    solver_name="adv_diff", 
-    order = 1,
+    V_fn=v_soln,
+    solver_name="adv_diff",
+    order=1,
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(t_soln)
-adv_diff.constitutive_model.Parameters.diffusivity=k
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model.Parameters.diffusivity = k
 
 # -
-
-
 
 
 # +
@@ -135,7 +138,6 @@ with meshball.access(t_0, t_soln):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -172,7 +174,13 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.66)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7,
+        opacity=0.66,
+    )
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     # pl.remove_scalar_bar("T")
@@ -185,9 +193,7 @@ if uw.mpi.size == 1:
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -225,19 +231,31 @@ def plot_T_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.66,
+        )
 
         pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
     # pl.show()
 
 
-t_soln2 = uw.discretisation.MeshVariable("U2", meshball, vtype=uw.VarType.SCALAR, degree=2)
+t_soln2 = uw.discretisation.MeshVariable(
+    "U2", meshball, vtype=uw.VarType.SCALAR, degree=2
+)
 
 # +
 timing.reset()
@@ -252,7 +270,6 @@ adv_diff.solve(timestep=delta_t, verbose=False, _force_setup=False)
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -289,7 +306,13 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.66)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7,
+        opacity=0.66,
+    )
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     # pl.remove_scalar_bar("T")
@@ -307,7 +330,6 @@ delta_t = 0.05
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
 for step in range(0, 19):
-
     # delta_t will be baked in when this is defined ... so re-define it
     adv_diff.solve(timestep=delta_t, verbose=False)
 
@@ -332,7 +354,6 @@ for step in range(0, 19):
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -372,8 +393,12 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
 
     pl.add_points(
-        point_cloud, cmap="coolwarm", scalars="T", # clim=[-0.2,0.2],
-        render_points_as_spheres=False, point_size=10, opacity=0.66
+        point_cloud,
+        cmap="coolwarm",
+        scalars="T",  # clim=[-0.2,0.2],
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.66,
     )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
@@ -396,7 +421,3 @@ uw.timing.print_table()
 #
 
 adv_diff._f0
-
-
-
-

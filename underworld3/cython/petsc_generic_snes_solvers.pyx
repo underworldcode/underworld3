@@ -31,6 +31,17 @@ class Solver(uw_object):
     This class is not intended to be used directly
     """
 
+
+    def __init__(self):
+
+        super().__init__()
+
+        self._u = None
+        self._DuDt = None
+        self._DFDt = None
+
+        return
+
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
         '''
@@ -150,6 +161,18 @@ class Solver(uw_object):
         return self._u
 
     @property
+    def u(self):
+        return self._u
+
+    @property
+    def DuDt(self):
+        return self._DuDt
+
+    @property
+    def DFDt(self):
+        return self._DFDt
+
+    @property
     def constitutive_model(self):
         return self._constitutive_model
 
@@ -173,7 +196,7 @@ class Solver(uw_object):
             print(f"Vector of unknowns required")
             print(f"{name}.u = uw.discretisation.MeshVariable(...)")
 
-        if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
+        if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
             print(f"Constitutive model required")
             print(f"{name}.constitutive_model = uw.constitutive_models...")
 
@@ -205,10 +228,19 @@ class SNES_Scalar(Solver):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
+                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
                  solver_name: str = "",
                  verbose    = False):
 
+
+        super().__init__()
+
         ## Keep track
+
+        self._u = u_Field
+        self._DuDt = DuDt
+        self._DFDt = DFDt
 
         self.name = solver_name
         self.verbose = verbose
@@ -227,11 +259,8 @@ class SNES_Scalar(Solver):
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
-
         ## FAST as possible for simple problems:
         ## MG, 
-
-
 
         # ROBUST and general GAMG, heavy-duty solvers in the suite
 
@@ -260,6 +289,9 @@ class SNES_Scalar(Solver):
             self.petsc_options.delValue("snes_converged_reason")
 
         self._u = u_Field
+        self._DuDt = DuDt
+        self._DFDt = DFDt
+        
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
@@ -282,7 +314,7 @@ class SNES_Scalar(Solver):
         self.mesh._equation_systems_register.append(self)
 
         self.is_setup = False
-        super().__init__()
+        # super().__init__()
 
     @property
     def tolerance(self):
@@ -708,19 +740,26 @@ class SNES_Vector(Solver):
     This class is used as a base layer for building solvers which translate from the common
     physical conservation laws into this general mathematical form.
     """
-    instances = 0
 
     @timing.routine_timer_decorator
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
+                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
                  degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
 
+
+        super().__init__()
+
+        self._u = u_Field
+        self._DuDt = DuDt
+        self._DFDt = DFDt
+
         ## Keep track
 
-        SNES_Vector.instances += 1
         self.name = solver_name
         self.verbose = verbose
         self._tolerance = 1.0e-4
@@ -768,6 +807,9 @@ class SNES_Vector(Solver):
         ## else:
 
         self._u = u_Field
+        self._DuDt = DuDt
+        self._DFDt = DFDt
+        
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
         self._F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
@@ -796,7 +838,7 @@ class SNES_Vector(Solver):
 
         self.mesh._equation_systems_register.append(self)
 
-        super().__init__()
+        # super().__init__()
 
     @property
     def tolerance(self):
@@ -1239,23 +1281,41 @@ class SNES_Stokes_SaddlePt(Solver):
     physical conservation laws into this general mathematical form.
     """
 
-    instances = 0   # count how many of these there are in order to create unique private mesh variable ids
-
     @timing.routine_timer_decorator
     def __init__(self,
                  mesh          : underworld3.discretisation.Mesh,
-                 velocityField : Optional[underworld3.discretisation.MeshVariable] =None,
-                 pressureField : Optional[underworld3.discretisation.MeshVariable] =None,
+                 velocityField : Optional[underworld3.discretisation.MeshVariable] = None,
+                 pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
+                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 order         : Optional[int] = 2,
+                 p_continuous  : Optional[bool] = True,
                  solver_name   : Optional[str]                           ="stokes_pt_",
                  verbose       : Optional[bool]                           =False,
                 ):
 
 
-        SNES_Stokes_SaddlePt.instances += 1
+        super().__init__()
+
         self.name = solver_name
         self.mesh = mesh
         self.verbose = verbose
         self.dm = None
+
+        self._u = velocityField
+        self._p = pressureField
+        self._DuDt = DuDt
+        self._DFDt = DFDt
+
+        ## Any problem with U,P, just define our own
+        if velocityField == None or pressureField == None:
+
+            i = self.instance_number
+            self._u = uw.discretisation.MeshVariable(f"U{i}", self.mesh, self.mesh.dim, degree=order, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
+            self._p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=order-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
+
+            if self.verbose and uw.mpi.rank == 0:
+                print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")
 
         # I expect the following to break for anyone who wants to name their solver _stokes__ etc etc (LM)
 
@@ -1317,9 +1377,6 @@ class SNES_Stokes_SaddlePt(Solver):
         self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
         self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
 
-        self._u = velocityField
-        self._p = pressureField
-
         # Create this dict
         self.fields = {}
         self.fields[p_name] = self.p
@@ -1353,7 +1410,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # this attrib records if we need to re-setup
         self.is_setup = False
-        super().__init__()
 
 
 
@@ -1497,7 +1553,7 @@ class SNES_Stokes_SaddlePt(Solver):
             print(f"{name}.p = uw.discretisation.MeshVariable(...)")
             raise RuntimeError("Constraint (Pressure): MeshVariable is required")
 
-        if not isinstance(self.constitutive_model, uw.systems.constitutive_models.Constitutive_Model):
+        if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
             print(f"Constitutive model required")
             print(f"{name}.constitutive_model = uw.constitutive_models...")
             raise RuntimeError("Constitutive Model is required")

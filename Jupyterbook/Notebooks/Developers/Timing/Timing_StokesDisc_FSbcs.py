@@ -124,9 +124,7 @@ stokes = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
-)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 
 # There is a null space if there are no fixed bcs, so we'll do this:
@@ -170,8 +168,8 @@ with meshball.access(maskr):
 # +
 buoyancy_force = Rayleigh * gravity_fn * t_init
 if free_slip_upper:
-    buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn # / s_norm
-    buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn # / b_norm
+    buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * surface_fn  # / s_norm
+    buoyancy_force -= 1.0e6 * v_soln.sym.dot(unit_rvec) * base_fn  # / b_norm
 
 stokes.bodyforce = unit_rvec * buoyancy_force
 
@@ -194,5 +192,5 @@ pressure_solver.solve()
 # +
 timing.print_table(display_fraction=0.999)
 
-if uw.mpi.rank==0:
+if uw.mpi.rank == 0:
     print("", flush=True)

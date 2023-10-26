@@ -40,6 +40,12 @@ Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
 package-lock.json
 
+# Myst build relics
+
+Documentation/_build
+Documentation/_build/templates
+
+
 # Mesh files etc
 
 uw_*.msh
