@@ -15,10 +15,10 @@ Not much content in the intro at this point
 
 Update the `_toc.yml` first, then fix the rest
 
-```{iframe} file:///Users/lmoresi/+Underworld/underworld3/Documentation/media/Sinker.html
+```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
+:width: 100%
+:align: center
 
 Caption
 ```
 
-
-Where is the embed ?

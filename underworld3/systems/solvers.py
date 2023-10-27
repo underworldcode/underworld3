@@ -1062,10 +1062,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
 
         # f1 residual term
-
-        # The F* term in here should be computed as the transported form of
-        # the flux before the solve. The solver needs a self._Fstar in place of _Lstar
-
         self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
 
         return

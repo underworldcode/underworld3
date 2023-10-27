@@ -178,29 +178,45 @@ stokes.solve()
 
 stokes._uu_G0
 
-0/0
+
 
 # ### Visualise it !
 
 # +
 # check the mesh if in a notebook / serial
 
+import mpi4py
 
-if uw.mpi.size == 1:
+if mpi4py.MPI.COMM_WORLD.size == 1:
 
+    import numpy as np
     import pyvista as pv
+    import vtk
     
     try:
         pv.start_xvfb()
     except OSError:
         pass
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["P"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, p.sym)
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [250, 500]
+    pv.global_theme.anti_aliasing = "msaa"
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
 
-    velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v)
-    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+
+    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
+    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
+    pvmesh.point_data["delta"] = uw.function.evalf(surface_fn, mesh.data)
+
+    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_loc[:, 0:2] = stokes.u.coords[...]
+
+    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
+    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -215,9 +231,12 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3)
+    pl.add_arrows(arrow_loc, arrow_length, mag=1)
 
-    pl.show(cpos="xy", jupyter_backend='server')
+    pl.show(cpos="xy")
+# -
+# ## SolCx from the same setup
+
 # +
 stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
@@ -248,25 +267,36 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
-# -
-
-0/0
 
 # +
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+import mpi4py
 
+if mpi4py.MPI.COMM_WORLD.size == 1:
 
-
+    import numpy as np
     import pyvista as pv
+    import vtk
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["P"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, p.sym)
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 1200]
+    pv.global_theme.anti_aliasing = "msaa"
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
 
-    velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v)
-    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
+    mesh.vtk("tmp_mesh.vtk")
+    pvmesh = pv.read("tmp_mesh.vtk")
+
+    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
+    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
+
+    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_loc[:, 0:2] = stokes.u.coords[...]
+
+    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
+    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
@@ -281,7 +311,10 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50)
+    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
+    #               use_transparency=False, opacity=1.0)
+
+    pl.add_arrows(arrow_loc, arrow_length, mag=50)
 
     pl.show(cpos="xy")
 
@@ -311,6 +344,3 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
-# -
-
-
