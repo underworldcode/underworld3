@@ -89,7 +89,8 @@ class SNES_Poisson(SNES_Scalar):
 
         ### only setup if a constitutive model is given
         if constitutive_model is not None:
-            self._constitutive_model = constitutive_model(u_Field)
+            # self._constitutive_model = constitutive_model(u=u_Field)
+            self._constitutive_model = constitutive_model(u=u_Field, flux_dt=DFDt, DuDt=DuDt)
         else:
             ### else returns None
             self._constitutive_model = constitutive_model
@@ -124,7 +125,8 @@ class SNES_Poisson(SNES_Scalar):
     @constitutive_model.setter
     def constitutive_model(self, model):
         if model is not None:
-            self._constitutive_model = model
+            # self._constitutive_model = model
+            self._constitutive_model = model(u=self.u, flux_dt=self.DFDt, DuDt=self.DuDt)
         
         self._constitutive_model._solver_is_setup = False
 
@@ -453,16 +455,15 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         ### only setup if a constitutive model is given
         if constitutive_model is not None:
-            self._constitutive_model = constitutive_model(velocityField)
+            # self._constitutive_model = constitutive_model(velocityField)
+            self._constitutive_model = constitutive_model(u=velocityField, flux_dt=DFDt, DuDt=DuDt)
         else:
             ### else returns None
             self._constitutive_model = constitutive_model
 
         # Not clear what we should do for viscoelastic where a
         # history manager is required to be added later.
-
-        # if constitutive_model_class is not None:
-        #     self._constitutive_model = constitutive_model_class(self.u, self.DFDt)
+        #### Now trying to pass through the history manager to the CM class
 
         
 
@@ -495,7 +496,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @constitutive_model.setter
     def constitutive_model(self, model):
         if model is not None:
-            self._constitutive_model = model
+            self._constitutive_model = model(u=self._u, flux_dt=self.DFDt, DuDt=self.DuDt)
+            # self._constitutive_model = model
         
         self._constitutive_model._solver_is_setup = False
 
@@ -1630,7 +1632,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         
-        print(type(order))
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,

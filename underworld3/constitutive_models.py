@@ -53,7 +53,8 @@ class Constitutive_Model(uw_object):
     def __init__(
         self,
         u: MeshVariable,
-        flux_dt: uw.swarm.Lagrangian_Updater = None,
+        flux_dt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ] = None,
+        DuDt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ] = None
     ):
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
@@ -67,6 +68,7 @@ class Constitutive_Model(uw_object):
         self.dim = u.mesh.dim
         self.u_dim = u.num_components
         self._flux_dt = flux_dt
+        self._DuDt = DuDt
 
         self.Parameters = self._Parameters(self)
         self.Parameters._solver = None
@@ -114,12 +116,23 @@ class Constitutive_Model(uw_object):
         return self._u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
+    def DuDt(self):
+        return self._DuDt
+
+    ## This breaks the solver, but does it break the constitutive term ?
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+        return
+    
+    @property
     def flux_dt(self):
         return self._flux_dt
 
     ## This breaks the solver, but does it break the constitutive term ?
     @flux_dt.setter
-    def flux_dt(self, flux_dt_value: uw.swarm.Lagrangian_Updater):
+    def flux_dt(self, flux_dt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
         self._flux_dt = flux_dt_value
         self._solver_is_setup = False
         return
