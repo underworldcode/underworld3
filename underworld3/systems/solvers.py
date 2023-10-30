@@ -166,7 +166,7 @@ class SNES_Poisson(SNES_Scalar):
         return self._DFDt
 
     @DFDt.setter
-    def DFDt(self, DFDt):
+    def DFDt(self, DFDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
         self._DFDt = DFDt
 
     ### add property for DuDt to be updated by the user if they wish
@@ -175,7 +175,7 @@ class SNES_Poisson(SNES_Scalar):
         return self._DuDt
 
     @DuDt.setter
-    def DuDt(self, DuDt):
+    def DuDt(self, DuDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
         self._DuDt = DuDt
 
 
@@ -190,7 +190,7 @@ class SNES_Poisson(SNES_Scalar):
             self._constitutive_model = model
         ### checking if it's a class
         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u, self.DuDt, self.DFDt)
+            self._constitutive_model = model(self.u, flux_dt=self._DFDt, DuDt=self._DuDt)
         ### Raise an error if it's neither
         else:
             raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
@@ -598,8 +598,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DFDt
 
     @DFDt.setter
-    def DFDt(self, value):
-        self._DFDt = value
+    def DFDt(self, DFDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
+        self._DFDt = DFDt
 
     ### add property for DuDt to be updated by the user if they wish
     @property
@@ -607,8 +607,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DuDt
 
     @DuDt.setter
-    def DuDt(self, value):
-        self._DuDt = value
+    def DuDt(self, DuDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
+        self._DuDt = DuDt
 
 
     @property
@@ -622,7 +622,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             self._constitutive_model = model
         ### checking if it's a class
         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u, self._DuDt, self._DFDt)
+            self._constitutive_model = model(self.u, flux_dt=self._DFDt, DuDt=self._DuDt)
         ### Raise an error if it's neither
         else:
             raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
