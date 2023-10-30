@@ -53,8 +53,8 @@ class Constitutive_Model(uw_object):
     def __init__(
         self,
         u: MeshVariable,
-        flux_dt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ],
-        DuDt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]
+        flux_dt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]= None,
+        DuDt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]= None
     ):
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
@@ -119,23 +119,21 @@ class Constitutive_Model(uw_object):
     def DuDt(self):
         return self._DuDt
 
-    # ## Shouldn't be able to set it in here, only in the solver
-    # @DuDt.setter
-    # def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
-    #     self._DuDt = DuDt_value
-    #     self._solver_is_setup = False
-    #     return
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+        return
     
     @property
     def flux_dt(self):
         return self._flux_dt
 
-    # ## Shouldn't be able to set it in here, only in the solver
-    # @flux_dt.setter
-    # def flux_dt(self, flux_dt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
-    #     self._flux_dt = flux_dt_value
-    #     self._solver_is_setup = False
-    #     return
+    @flux_dt.setter
+    def flux_dt(self, flux_dt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._flux_dt = flux_dt_value
+        self._solver_is_setup = False
+        return
 
     ## Properties on all sub-classes
 

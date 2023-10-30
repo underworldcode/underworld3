@@ -92,6 +92,10 @@ class SNES_Poisson(SNES_Scalar):
 
         self._constitutive_model = None
 
+        self._DuDt = None
+
+        self._DFDt = None
+
         #### Only setup if V_fn is given
         #### Not given in the Poisson problem, used in AdvDiff solvers
         if V_fn is not None:
@@ -188,9 +192,15 @@ class SNES_Poisson(SNES_Scalar):
         ### checking if it's an instance
         if isinstance(model, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
         ### checking if it's a class
         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u, flux_dt=self._DFDt, DuDt=self._DuDt)
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
         ### Raise an error if it's neither
         else:
             raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
@@ -620,9 +630,15 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         ### checking if it's an instance
         if isinstance(model, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
         ### checking if it's a class
         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u, flux_dt=self._DFDt, DuDt=self._DuDt)
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
         ### Raise an error if it's neither
         else:
             raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
