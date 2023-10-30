@@ -56,14 +56,16 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
-        DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
-        DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        V_fn: uw.discretisation.MeshVariable = None,
+        # DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        # DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
         solver_name: str = "",
         verbose=False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        order=1,
+        # constitutive_model_class: Optional[
+        #     uw.constitutive_models.Constitutive_Model
+        # ] = None,
+        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Keep track
 
@@ -76,8 +78,8 @@ class SNES_Poisson(SNES_Scalar):
         super().__init__(
             mesh,
             u_Field,
-            DuDt,
-            DFDt,
+            None,
+            None,
             solver_name,
             verbose,
         )
@@ -88,17 +90,52 @@ class SNES_Poisson(SNES_Scalar):
         # default values for properties
         self.f = sympy.Matrix.zeros(1, 1)
 
+        self._constitutive_model = None
+
+        #### Only setup if V_fn is given
+        #### Not given in the Poisson problem, used in AdvDiff solvers
+        if V_fn is not None:
+            self._DuDt = uw.swarm.SemiLagrange_Updater(
+                self.mesh,
+                u_Field.sym,
+                V_fn,
+                vtype=uw.VarType.SCALAR,
+                degree=u_Field.degree,
+                continuous=u_Field.continuous,
+                varsymbol=u_Field.symbol,
+                verbose=verbose,
+                bcs=self.essential_bcs,
+                order=order,
+                smoothing=0.0,
+            )
+
+            self._DFDt = uw.swarm.SemiLagrange_Updater(
+                self.mesh,
+                sympy.Matrix(
+                    [[0] * self.mesh.dim]
+                ),  # Actual function is not defined at this point
+                V_fn,
+                vtype=uw.VarType.VECTOR,
+                degree=u_Field.degree - 1,
+                continuous=True,
+                varsymbol=rf"{{F[ {self._u.symbol} ] }}",
+                verbose=verbose,
+                bcs=None,
+                order=order,
+                smoothing=0.0,
+            )
+
         ### only setup if a constitutive model is given
         ### consider if we really want to have the first option
-        if constitutive_model is not None:
-            self._constitutive_model = constitutive_model
-        elif constitutive_model_class is not None:
-            self._constitutive_model = constitutive_model_class(
-                u=velocityField, flux_dt=DFDt, DuDt=DuDt
-            )
-        else:
-            self._constitutive_model = None  # Set this later
-            ### else returns None
+        # if constitutive_model is not None:
+        #     self._constitutive_model = constitutive_model
+        # elif constitutive_model_class is not None:
+        #     self._constitutive_model = constitutive_model_class(
+        #         u=u_Field, flux_dt=DFDt, DuDt=DuDt
+        #     )
+        # else:
+        #     self._constitutive_model = None  # Set this later
+        #     ### else returns None
 
     ## This function is the one we will typically over-ride to build specific solvers.
     ## This example is a poisson-like problem with isotropic coefficients
@@ -123,16 +160,40 @@ class SNES_Poisson(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
+    ### add property for DFDt to be updated by the user if they wish
+    @property
+    def DFDt(self):
+        return self._DFDt
+
+    @DFDt.setter
+    def DFDt(self, DFDt):
+        self._DFDt = DFDt
+
+    ### add property for DuDt to be updated by the user if they wish
+    @property
+    def DuDt(self):
+        return self._DuDt
+
+    @DuDt.setter
+    def DuDt(self, DuDt):
+        self._DuDt = DuDt
+
+
     @property
     def constitutive_model(self):
         return self._constitutive_model
 
     @constitutive_model.setter
     def constitutive_model(self, model):
-        if model is not None:
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model
-
-        self._constitutive_model._solver_is_setup = False
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u, self.DuDt, self.DFDt)
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
 
     @property
     def CM_is_setup(self):
@@ -417,23 +478,23 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         mesh: uw.discretisation.Mesh,
         velocityField: Optional[uw.discretisation.MeshVariable] = None,
         pressureField: Optional[uw.discretisation.MeshVariable] = None,
-        DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
-        DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        # DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
+        # DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        # constitutive_model_class: Optional[
+        #     uw.constitutive_models.Constitutive_Model
+        # ] = None,
+        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            DuDt,
-            DFDt,
+            None,
+            None,
             order,
             p_continuous,
             solver_name,
@@ -463,17 +524,47 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
-        ### only setup if a constitutive model is given
-        ### consider if we really want to have the first option
-        if constitutive_model is not None:
-            self._constitutive_model = constitutive_model
-        elif constitutive_model_class is not None:
-            self._constitutive_model = constitutive_model_class(
-                u=self._u, flux_dt=DFDt, DuDt=DuDt
-            )
-        else:
-            self._constitutive_model = None  # Set this later
-            ### else returns None
+        self._constitutive_model = None
+
+        self._DuDt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            self._u.sym,
+            self._u.sym,
+            vtype=uw.VarType.VECTOR,
+            degree=self._u.degree,
+            continuous=self._u.continuous,
+            varsymbol=self._u.symbol,
+            verbose=verbose,
+            bcs=self.essential_bcs,
+            order=order,
+            smoothing=0.0,
+        )
+
+        self._DFDt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self._u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self._u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
+            verbose=verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0,
+        )
+
+        # ### only setup if a constitutive model is given
+        # ### consider if we really want to have the first option
+        # if constitutive_model is not None:
+        #     self._constitutive_model = constitutive_model
+        # elif constitutive_model_class is not None:
+        #     self._constitutive_model = constitutive_model_class(
+        #         u=self._u, flux_dt=DFDt, DuDt=DuDt
+        #     )
+        # else:
+        #     self._constitutive_model = None  # Set this later
+        #     ### else returns None
 
         # Not clear what we should do for viscoelastic where a
         # history manager is required to be added later.
@@ -501,19 +592,41 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
+    ### add property for DFDt to be updated by the user if they wish
+    @property
+    def DFDt(self):
+        return self._DFDt
+
+    @DFDt.setter
+    def DFDt(self, value):
+        self._DFDt = value
+
+    ### add property for DuDt to be updated by the user if they wish
+    @property
+    def DuDt(self):
+        return self._DuDt
+
+    @DuDt.setter
+    def DuDt(self, value):
+        self._DuDt = value
+
+
     @property
     def constitutive_model(self):
         return self._constitutive_model
 
     @constitutive_model.setter
     def constitutive_model(self, model):
-        if model is not None:
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u, self._DuDt, self._DFDt)
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
 
-        self._constitutive_model._solver_is_setup = False
-
-    # Perhaps we can switch this name to reflect the fact that
-    # the consititutive model is flagging the solver now needs to be setup
     @property
     def CM_is_setup(self):
         return self._constitutive_model._solver_is_setup
@@ -683,7 +796,7 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
+        # self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
 
         return
 
@@ -793,7 +906,7 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
+        # self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
 
         return
 
@@ -1063,10 +1176,10 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        # constitutive_model_class: Optional[
+        #     uw.constitutive_models.Constitutive_Model
+        # ] = None,
+        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         if solver_name == "":
             solver_name = "AdvDiff_slcn_{}_".format(self.instances)
@@ -1076,12 +1189,14 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         super().__init__(
             mesh,
             u_Field,
-            None,  # DuDt
-            None,  # DFDt
+            V_fn,
+            # None,  # DuDt
+            # None,  # DFDt
             solver_name,
             verbose,
-            constitutive_model_class,
-            constitutive_model,
+            order,
+            # constitutive_model_class,
+            # constitutive_model,
         )
 
         if isinstance(V_fn, uw.discretisation._MeshVariable):
@@ -1093,36 +1208,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self.delta_t = 0.0
         self.theta = theta
         self.is_setup = False
-
-        self._DuDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            self._u.sym,
-            self._V_fn,
-            vtype=uw.VarType.SCALAR,
-            degree=self._u.degree,
-            continuous=self._u.continuous,
-            varsymbol=self._u.symbol,
-            verbose=verbose,
-            bcs=self.essential_bcs,
-            order=order,
-            smoothing=0.0,
-        )
-
-        self._DFDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            sympy.Matrix(
-                [[0] * self.mesh.dim]
-            ),  # Actual function is not defined at this point
-            self._V_fn,
-            vtype=uw.VarType.VECTOR,
-            degree=self._u.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
-            verbose=verbose,
-            bcs=None,
-            order=order,
-            smoothing=0.0,
-        )
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_slcn_problem_description
@@ -1155,13 +1240,13 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self.is_setup = False
         self._delta_t = sympify(value)
 
-    @property
-    def DuDt(self):
-        return self._DuDt
+    # @property
+    # def DuDt(self):
+    #     return self._DuDt
 
-    @property
-    def DFDt(self):
-        return self._DFDt
+    # @property
+    # def DFDt(self):
+    #     return self._DFDt
 
     # @property
     # def theta(self):
@@ -1260,7 +1345,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
             self._setup_solver(verbose)
 
         # Update SemiLagrange Flux terms
-
         self.DuDt.update(timestep, verbose=verbose)
         self.DFDt.update(timestep, verbose=verbose)
 
@@ -1340,18 +1424,15 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
-        u_Field: uw.discretisation.MeshVariable = None,
-        V_Field: uw.discretisation.MeshVariable = None,
+        u_Field: uw.discretisation.MeshVariable,
+        V_fn: Union[ uw.discretisation.MeshVariable, sympy.Basic],  # Should be a sympy function
         u_Star_fn=None,
         theta: float = 0.5,
+        order: int = 1,
         solver_name: str = "",
         restore_points_func: Callable = None,
         projection: bool = True,
         verbose: bool = False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         self.instance = SNES_AdvectionDiffusion_Swarm.instances
         SNES_AdvectionDiffusion_Swarm.instances += 1
@@ -1363,12 +1444,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         super().__init__(
             mesh,
             u_Field,
-            None,  # DuDt
-            None,  # DFDt
+            V_fn,
+            # None,  # DuDt
+            # None,  # DFDt
             solver_name,
             verbose,
-            constitutive_model_class,
-            constitutive_model,
+            order,
+            # constitutive_model_class,
+            # constitutive_model,
         )
 
         self.delta_t = 1.0
@@ -1376,13 +1459,17 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         self.projection = projection
         self._u_star_raw_fn = u_Star_fn
 
-        self._V = V_Field
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_swarm_problem_description
 
         self.is_setup = False
         self.u_star_is_valid = False
+
+        if isinstance(V_fn, uw.discretisation._MeshVariable):
+            self._V_fn = V_fn.sym
+        else:
+            self._V_fn = V_fn
 
         ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
         # self.k = uw.discretisation.MeshVariable(
@@ -1426,6 +1513,10 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         )
 
         return
+
+    @property
+    def V_fn(self):
+        return self._V_fn
 
     @property
     def u(self):
@@ -1651,24 +1742,24 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        # constitutive_model_class: Optional[
+        #     uw.constitutive_models.Constitutive_Model
+        # ] = None,
+        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            None,  # DuDt - add later
-            None,  # DFDt - add later
+            # None,  # DuDt - add later
+            # None,  # DFDt - add later
             order,
             p_continuous,
             solver_name,
             verbose,
-            constitutive_model_class,
-            constitutive_model,
+            # constitutive_model_class,
+            # constitutive_model,
         )
 
         # These are unique to the advection solver
@@ -1676,34 +1767,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         self.is_setup = False
         self.rho = rho
         self._first_solve = True
-
-        self._DuDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            self._u.sym,
-            self._u.sym,
-            vtype=uw.VarType.VECTOR,
-            degree=self._u.degree,
-            continuous=self._u.continuous,
-            varsymbol=self._u.symbol,
-            verbose=verbose,
-            bcs=self.essential_bcs,
-            order=order,
-            smoothing=0.0,
-        )
-
-        self._DFDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self._u.sym,
-            vtype=uw.VarType.SYM_TENSOR,
-            degree=self._u.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
-            verbose=verbose,
-            bcs=None,
-            order=order,
-            smoothing=0.0,
-        )
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_slcn_problem_description
@@ -1916,32 +1979,32 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         mesh: uw.discretisation.Mesh,
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
-        DuDt: uw.swarm.Lagrangian_Updater = None,
-        DFDt: uw.swarm.Lagrangian_Updater = None,
+        # DuDt: uw.swarm.Lagrangian_Updater = None,
+        # DFDt: uw.swarm.Lagrangian_Updater = None,
         rho: Optional[float] = 0.0,
         restore_points_func: Callable = None,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        # constitutive_model_class: Optional[
+        #     uw.constitutive_models.Constitutive_Model
+        # ] = None,
+        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            None,  # DuDt - add later
-            None,  # DFDt - add later
+            # None,  # DuDt - add later
+            # None,  # DFDt - add later
             order,
             p_continuous,
             solver_name,
             verbose,
-            constitutive_model_class,
-            constitutive_model,
+            # constitutive_model_class,
+            # constitutive_model,
         )
 
         # These are unique to the advection solver
