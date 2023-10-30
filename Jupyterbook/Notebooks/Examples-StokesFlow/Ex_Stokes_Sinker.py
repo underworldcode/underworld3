@@ -194,8 +194,6 @@ def plot_T_mesh(filename):
     import pyvista as pv
     import underworld3.visualisation
 
-    
-
     pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     point_cloud = underworld3.visualisation.swarm_to_pv_cloud(swarm)
 
@@ -218,6 +216,7 @@ def plot_T_mesh(filename):
     pl.screenshot(
         filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False
     )
+
 
 # +
 # stokes.petsc_options.view()

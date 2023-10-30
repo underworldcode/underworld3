@@ -60,7 +60,7 @@ mesh = mesh1
 
 mesh.dm.view()
 
-stokes = uw.systems.Stokes(mesh, constitutive_model_class=uw.constitutive_models.ViscoElasticPlasticFlowModel)
+stokes = uw.systems.Stokes(mesh, constitutive_model_class=uw.constitutive_models.ViscoElasticPlasticFlowModel, verbose=True)
 v = stokes._u
 p = stokes._p
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
@@ -178,62 +178,43 @@ stokes.solve()
 
 stokes._uu_G0
 
-
+0/0
 
 # ### Visualise it !
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
+if uw.mpi.size == 1:
     
-    try:
-        pv.start_xvfb()
-    except OSError:
-        pass
+    import pyvista as pv
+    import underworld3 as uw
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [250, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
-    pvmesh.point_data["delta"] = uw.function.evalf(surface_fn, mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
-
-    pl = pv.Plotter(window_size=[1000, 1000])
-    pl.add_axes()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="V",
+        scalars="Vmag",
         use_transparency=False,
         opacity=1.0,
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=1)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
+
+
 # -
 # ## SolCx from the same setup
 
@@ -267,58 +248,43 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
+# -
+
+0/0
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
+if uw.mpi.size == 1:
+    
     import pyvista as pv
-    import vtk
+    import underworld3 as uw
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evalf(v.sym.dot(v.sym), mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evalf(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evalf(stokes.u.sym[1], stokes.u.coords)
-
-    pl = pv.Plotter(window_size=[1000, 1000])
-    pl.add_axes()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="V",
+        scalars="Vmag",
         use_transparency=False,
         opacity=1.0,
     )
 
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-    #               use_transparency=False, opacity=1.0)
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=50)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
 
-
+# +
 # %%
 try:
     import underworld as uw2
