@@ -172,17 +172,17 @@ class Solver(uw_object):
     def DFDt(self):
         return self._DFDt
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
 
-        # is the model appropriate for SNES_Scalar solvers ?
-        self.is_setup = False
-        self._constitutive_model = model
-        self._constitutive_model._solver_is_setup = False
+    #     # is the model appropriate for SNES_Scalar solvers ?
+    #     self.is_setup = False
+    #     self._constitutive_model = model
+    #     self._constitutive_model._solver_is_setup = False
 
 
     def validate_solver(self):
@@ -196,9 +196,9 @@ class Solver(uw_object):
             print(f"Vector of unknowns required")
             print(f"{name}.u = uw.discretisation.MeshVariable(...)")
 
-        if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
-            print(f"Constitutive model required")
-            print(f"{name}.constitutive_model = uw.constitutive_models...")
+        # if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
+        #     print(f"Constitutive model required")
+        #     print(f"{name}.constitutive_model = uw.constitutive_models...")
 
         return
 
@@ -303,7 +303,7 @@ class SNES_Scalar(Solver):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        self._constitutive_model = None
+        # self._constitutive_model = None
 
         self.verbose = verbose
 
@@ -643,7 +643,7 @@ class SNES_Scalar(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
+        # self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
     def solve(self,
@@ -665,7 +665,7 @@ class SNES_Scalar(Solver):
         import petsc4py
 
 
-        if _force_setup or not self.constitutive_model._solver_is_setup:
+        if _force_setup: #or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
@@ -826,7 +826,7 @@ class SNES_Vector(Solver):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        self._constitutive_model = None
+        # self._constitutive_model = None
 
         self.is_setup = False
         self.verbose = verbose
@@ -1168,7 +1168,7 @@ class SNES_Vector(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
+        # self.constitutive_model._solver_is_setup = True
 
 
     @timing.routine_timer_decorator
@@ -1189,7 +1189,7 @@ class SNES_Vector(Solver):
             and `self.p` will be used.
         """
 
-        if _force_setup or not self.constitutive_model._solver_is_setup:
+        if _force_setup: #or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
@@ -1306,6 +1306,7 @@ class SNES_Stokes_SaddlePt(Solver):
         self._p = pressureField
         self._DuDt = DuDt
         self._DFDt = DFDt
+        self._order = order
 
         ## Any problem with U,P, just define our own
         if velocityField == None or pressureField == None:
@@ -1396,7 +1397,7 @@ class SNES_Stokes_SaddlePt(Solver):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        self._constitutive_model = None
+        # self._constitutive_model = None
         self._saddle_preconditioner = None
 
         # Construct strainrate tensor for future usage.
@@ -1411,7 +1412,35 @@ class SNES_Stokes_SaddlePt(Solver):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    @property
+    def _setup_history_terms(self):
+        self._DuDt = uw.swarm.SemiLagrange_Updater(
+                    self.mesh,
+                    self._u.sym,
+                    self._u.sym,
+                    vtype=uw.VarType.VECTOR,
+                    degree=self._u.degree,
+                    continuous=self._u.continuous,
+                    varsymbol=self._u.symbol,
+                    verbose=self.verbose,
+                    bcs=self.essential_bcs,
+                    order=self._order,
+                    smoothing=0.0,
+                )
 
+        self._DFDt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self._u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self._u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=self._order,
+            smoothing=0.0,
+        )
 
     @property
     def tolerance(self):
@@ -2006,7 +2035,7 @@ class SNES_Stokes_SaddlePt(Solver):
             self._subdict[name] = (isets[index],dms[index])
 
         self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
+        # self.constitutive_model._solver_is_setup = True
 
 
 
@@ -2029,7 +2058,7 @@ class SNES_Stokes_SaddlePt(Solver):
             and `self.p` will be used.
         """
 
-        if _force_setup or not self.constitutive_model._solver_is_setup:
+        if _force_setup: #or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
@@ -2136,3 +2165,31 @@ class SNES_Stokes_SaddlePt(Solver):
         self.dm.restoreGlobalVec(gvec)
 
         return self.snes.getConvergedReason() 
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        """
+        Calculates an appropriate advective timestep for the given
+        mesh and velocity configuration.
+        """
+        # we'll want to do this on an element by element basis
+        # for more general mesh
+
+        # first let's extract a max global velocity magnitude
+        import math
+
+        with self.mesh.access():
+            vel = self.u.data
+            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+            if self.mesh.dim == 3:
+                magvel_squared += vel[:, 2] ** 2
+
+            max_magvel = math.sqrt(magvel_squared.max())
+
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        min_dx = self.mesh.get_min_radius()
+        return min_dx / max_magvel_glob

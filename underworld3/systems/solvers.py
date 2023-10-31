@@ -56,16 +56,9 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
-        V_fn: uw.discretisation.MeshVariable = None,
-        # DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
-        # DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
         solver_name: str = "",
         verbose=False,
         order=1,
-        # constitutive_model_class: Optional[
-        #     uw.constitutive_models.Constitutive_Model
-        # ] = None,
-        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Keep track
 
@@ -92,58 +85,6 @@ class SNES_Poisson(SNES_Scalar):
 
         self._constitutive_model = None
 
-        self._DuDt = None
-
-        self._DFDt = None
-
-        #### Only setup if V_fn is given
-        #### Not given in the Poisson problem, used in AdvDiff solvers
-        if V_fn is not None:
-            self._DuDt = uw.swarm.SemiLagrange_Updater(
-                self.mesh,
-                u_Field.sym,
-                V_fn,
-                vtype=uw.VarType.SCALAR,
-                degree=u_Field.degree,
-                continuous=u_Field.continuous,
-                varsymbol=u_Field.symbol,
-                verbose=verbose,
-                bcs=self.essential_bcs,
-                order=order,
-                smoothing=0.0,
-            )
-
-            self._DFDt = uw.swarm.SemiLagrange_Updater(
-                self.mesh,
-                sympy.Matrix(
-                    [[0] * self.mesh.dim]
-                ),  # Actual function is not defined at this point
-                V_fn,
-                vtype=uw.VarType.VECTOR,
-                degree=u_Field.degree - 1,
-                continuous=True,
-                varsymbol=rf"{{F[ {self._u.symbol} ] }}",
-                verbose=verbose,
-                bcs=None,
-                order=order,
-                smoothing=0.0,
-            )
-
-        ### only setup if a constitutive model is given
-        ### consider if we really want to have the first option
-        # if constitutive_model is not None:
-        #     self._constitutive_model = constitutive_model
-        # elif constitutive_model_class is not None:
-        #     self._constitutive_model = constitutive_model_class(
-        #         u=u_Field, flux_dt=DFDt, DuDt=DuDt
-        #     )
-        # else:
-        #     self._constitutive_model = None  # Set this later
-        #     ### else returns None
-
-    ## This function is the one we will typically over-ride to build specific solvers.
-    ## This example is a poisson-like problem with isotropic coefficients
-
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
         # f1 residual term (weighted integration) - scalar function
@@ -163,24 +104,6 @@ class SNES_Poisson(SNES_Scalar):
     def f(self, value):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
-
-    ### add property for DFDt to be updated by the user if they wish
-    @property
-    def DFDt(self):
-        return self._DFDt
-
-    @DFDt.setter
-    def DFDt(self, DFDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
-        self._DFDt = DFDt
-
-    ### add property for DuDt to be updated by the user if they wish
-    @property
-    def DuDt(self):
-        return self._DuDt
-
-    @DuDt.setter
-    def DuDt(self, DuDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]):
-        self._DuDt = DuDt
 
 
     @property
@@ -262,10 +185,6 @@ class SNES_Darcy(SNES_Scalar):
         v_Field: uw.discretisation.MeshVariable,
         solver_name: str = "",
         verbose=False,
-        constitutive_model_class: Optional[
-            uw.constitutive_models.Constitutive_Model
-        ] = None,
-        constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Keep track
 
@@ -282,8 +201,6 @@ class SNES_Darcy(SNES_Scalar):
             None,  # DFDt
             solver_name,
             verbose,
-            constitutive_model_class,
-            constitutive_model,
         )
 
         # Register the problem setup function
@@ -297,6 +214,8 @@ class SNES_Darcy(SNES_Scalar):
         self._s[1] = -1.0
 
         self._v = v_Field
+
+        self._constitutive_model = None
 
         ## Set up the projection operator that
         ## solves the flow rate
@@ -321,7 +240,7 @@ class SNES_Darcy(SNES_Scalar):
         self._v_projector.uw_function = -self.darcy_flux
 
         return
-
+    
     @property
     def f(self):
         return self._f
@@ -331,14 +250,15 @@ class SNES_Darcy(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
+    ### W term not set up ???
     @property
     def W(self):
-        return self._f
+        return self._W
 
-    @f.setter
+    @W.setter
     def W(self, value):
         self.is_setup = False
-        self._f = sympy.Matrix((value,))
+        self._W = sympy.Matrix((value,))
 
     @property
     def s(self):
@@ -363,6 +283,28 @@ class SNES_Darcy(SNES_Scalar):
     def v(self, value):
         self._v_projector.is_setup = False
         self._v = sympify(value)
+
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
+    
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
 
     @timing.routine_timer_decorator
     def solve(
@@ -488,16 +430,10 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         mesh: uw.discretisation.Mesh,
         velocityField: Optional[uw.discretisation.MeshVariable] = None,
         pressureField: Optional[uw.discretisation.MeshVariable] = None,
-        # DuDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
-        # DFDt: Union[uw.swarm.Lagrangian_Updater, uw.swarm.SemiLagrange_Updater] = None,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        # constitutive_model_class: Optional[
-        #     uw.constitutive_models.Constitutive_Model
-        # ] = None,
-        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         super().__init__(
             mesh,
@@ -515,6 +451,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         if solver_name == "":
             self.name = "Stokes_{}_".format(self.instance_number)
 
+        self._order = order
         # User-facing operations are matrices / vectors by preference
 
         self._E = self.mesh.vector.strain_tensor(self._u.sym)
@@ -526,7 +463,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._constraints = sympy.Matrix(
             (self.div_u,)
         )  # by default, incompressibility constraint
-
+        
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
 
         self._setup_problem_description = self.stokes_problem_description
@@ -535,50 +472,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self.is_setup = False
 
         self._constitutive_model = None
-
-        self._DuDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            self._u.sym,
-            self._u.sym,
-            vtype=uw.VarType.VECTOR,
-            degree=self._u.degree,
-            continuous=self._u.continuous,
-            varsymbol=self._u.symbol,
-            verbose=verbose,
-            bcs=self.essential_bcs,
-            order=order,
-            smoothing=0.0,
-        )
-
-        self._DFDt = uw.swarm.SemiLagrange_Updater(
-            self.mesh,
-            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self._u.sym,
-            vtype=uw.VarType.SYM_TENSOR,
-            degree=self._u.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
-            verbose=verbose,
-            bcs=None,
-            order=order,
-            smoothing=0.0,
-        )
-
-        # ### only setup if a constitutive model is given
-        # ### consider if we really want to have the first option
-        # if constitutive_model is not None:
-        #     self._constitutive_model = constitutive_model
-        # elif constitutive_model_class is not None:
-        #     self._constitutive_model = constitutive_model_class(
-        #         u=self._u, flux_dt=DFDt, DuDt=DuDt
-        #     )
-        # else:
-        #     self._constitutive_model = None  # Set this later
-        #     ### else returns None
-
-        # Not clear what we should do for viscoelastic where a
-        # history manager is required to be added later.
-        #### Now trying to pass through the history manager to the CM class
 
         return
 
@@ -602,7 +495,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
-    ### add property for DFDt to be updated by the user if they wish
     @property
     def DFDt(self):
         return self._DFDt
@@ -627,6 +519,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @constitutive_model.setter
     def constitutive_model(self, model):
+        ### only setup history terms in it's a VEP model
+        ### Need a better flag for this
+        if (model == uw.constitutive_models.ViscoElasticPlasticFlowModel):
+            self._setup_history_terms
+
         ### checking if it's an instance
         if isinstance(model, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model
@@ -732,40 +629,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self.is_setup = False
         symval = sympify(value)
         self._penalty = symval
-
-    @timing.routine_timer_decorator
-    def estimate_dt(self):
-        """
-        Calculates an appropriate advective timestep for the given
-        mesh and velocity configuration.
-        """
-        # we'll want to do this on an element by element basis
-        # for more general mesh
-
-        # first let's extract a max global velocity magnitude
-        import math
-
-        with self.mesh.access():
-            vel = self.u.data
-            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
-            if self.mesh.dim == 3:
-                magvel_squared += vel[:, 2] ** 2
-
-            max_magvel = math.sqrt(magvel_squared.max())
-
-        from mpi4py import MPI
-
-        comm = MPI.COMM_WORLD
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
-
-        min_dx = self.mesh.get_min_radius()
-        return min_dx / max_magvel_glob
-
-
-## --------------------------------
-## Project from pointwise functions
-## nodal point unknowns
-## --------------------------------
 
 
 class SNES_Projection(SNES_Scalar):
@@ -1119,7 +982,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 #################################################
 
 
-class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
+class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
     r"""
     This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
     which is described in Spiegelman & Katz, (2006).
@@ -1192,33 +1055,29 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
-        # constitutive_model_class: Optional[
-        #     uw.constitutive_models.Constitutive_Model
-        # ] = None,
-        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         if solver_name == "":
             solver_name = "AdvDiff_slcn_{}_".format(self.instances)
 
-        ## Parent class will set up default values and load u_Field into the solver
-        ## Add the Lagrangian manager terms once they are defined
+        ## Parent class will set up default values etc
         super().__init__(
             mesh,
             u_Field,
-            V_fn,
-            # None,  # DuDt
-            # None,  # DFDt
+            None,
+            None,
             solver_name,
             verbose,
-            order,
-            # constitutive_model_class,
-            # constitutive_model,
         )
 
         if isinstance(V_fn, uw.discretisation._MeshVariable):
             self._V_fn = V_fn.sym
         else:
             self._V_fn = V_fn
+
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
 
         # These are unique to the advection solver
         self.delta_t = 0.0
@@ -1227,6 +1086,37 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_slcn_problem_description
+
+        ### Setup the history terms
+        self._DuDt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            u_Field.sym,
+            self._V_fn,
+            vtype=uw.VarType.SCALAR,
+            degree=u_Field.degree,
+            continuous=u_Field.continuous,
+            varsymbol=u_Field.symbol,
+            verbose=verbose,
+            bcs=self.essential_bcs,
+            order=order,
+            smoothing=0.0,
+        )
+
+        self._DFDt = uw.swarm.SemiLagrange_Updater(
+            self.mesh,
+            sympy.Matrix(
+                [[0] * self.mesh.dim]
+            ),  # Actual function is not defined at this point
+            self._V_fn,
+            vtype=uw.VarType.VECTOR,
+            degree=u_Field.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
+            verbose=verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0,
+        )
 
         return
 
@@ -1238,6 +1128,15 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
 
         return
+    
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
 
     @property
     def u(self):
@@ -1256,22 +1155,54 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         self.is_setup = False
         self._delta_t = sympify(value)
 
-    # @property
-    # def DuDt(self):
-    #     return self._DuDt
+    @property
+    def DuDt(self):
+        return self._DuDt
+    
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+    
+    @property
+    def DFDt(self):
+        return self._DFDt
+    
+    @DFDt.setter
+    def DFDt(self, DFDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DFDt = DFDt_value
+        self._solver_is_setup = False
 
-    # @property
-    # def DFDt(self):
-    #     return self._DFDt
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
 
-    # @property
-    # def theta(self):
-    #     return self._theta
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
 
-    # @theta.setter
-    # def theta(self, value):
-    #     self.is_setup = False
-    #     self._theta = sympify(value)
+    @property
+    def theta(self):
+        return self._theta
+
+    @theta.setter
+    def theta(self, value):
+        self.is_setup = False
+        self._theta = sympify(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -1294,16 +1225,16 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
         ### required modules
         from mpi4py import MPI
 
-        # with self.mesh.access(self.k):
-        #     ## get local max diff value
-        #     max_diffusivity = self.k.data[:, 0].max()
-        ### get the velocity values
-        with self.mesh.access(self._V):
-            vel = self._V.data
-
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ### get the velocity values
+        vel = uw.function.evaluate(
+                                self.V_fn,
+                                self.mesh._centroids,
+                                self.mesh.N,
+                                )
 
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()
@@ -1380,7 +1311,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Poisson):
 #################################################
 
 
-class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
+class SNES_AdvectionDiffusion_Swarm(SNES_Scalar):
     r"""
     This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
@@ -1460,14 +1391,10 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         super().__init__(
             mesh,
             u_Field,
-            V_fn,
-            # None,  # DuDt
-            # None,  # DFDt
+            None,
+            None,
             solver_name,
             verbose,
-            order,
-            # constitutive_model_class,
-            # constitutive_model,
         )
 
         self.delta_t = 1.0
@@ -1487,10 +1414,10 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         else:
             self._V_fn = V_fn
 
-        ### add a mesh variable to project diffusivity values to, may want to modify name and degree (?)
-        # self.k = uw.discretisation.MeshVariable(
-        #     f"k{self.instances}", self.mesh, num_components=1, degree=1
-        # )
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
 
         if projection:
             # set up a projection solver
@@ -1571,6 +1498,55 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
     def theta(self, value):
         self.is_setup = False
         self._theta = sympify(value)
+    
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def DuDt(self):
+        return self._DuDt
+    
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+    
+    @property
+    def DFDt(self):
+        return self._DFDt
+    
+    @DFDt.setter
+    def DFDt(self, DFDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DFDt = DFDt_value
+        self._solver_is_setup = False
+
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
+
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -1601,13 +1577,17 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
         # with self.mesh.access(self.k):
         #     ## get local max diff value
         #     max_diffusivity = self.k.data[:, 0].max()
-        ### get the velocity values
-        with self.mesh.access(self._V):
-            vel = self._V.data
 
         ## get global max dif value
         comm = MPI.COMM_WORLD
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ### get the velocity values
+        vel = uw.function.evaluate(
+                                self.V_fn,
+                                self.mesh._centroids,
+                                self.mesh.N,
+                                )
 
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()
@@ -1680,9 +1660,8 @@ class SNES_AdvectionDiffusion_Swarm(SNES_Poisson):
 
         super()._setup_pointwise_functions()  # ._setup_terms()
 
-
 ## This one is already updated to work with the Semi-Lagrange updater
-class SNES_NavierStokes_SLCN(SNES_Stokes):
+class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
@@ -1753,29 +1732,23 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
         rho: Optional[float] = 0.0,
-        restore_points_func: Callable = None,
-        order: Optional[int] = 2,
-        p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
+        p_continuous: Optional[bool] = True,
+        restore_points_func: Callable = None,
         verbose: Optional[bool] = False,
-        # constitutive_model_class: Optional[
-        #     uw.constitutive_models.Constitutive_Model
-        # ] = None,
-        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
+        order: Optional[int] = 1,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            # None,  # DuDt - add later
-            # None,  # DFDt - add later
+            None,
+            None,
             order,
             p_continuous,
             solver_name,
             verbose,
-            # constitutive_model_class,
-            # constitutive_model,
         )
 
         # These are unique to the advection solver
@@ -1783,6 +1756,23 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         self.is_setup = False
         self.rho = rho
         self._first_solve = True
+
+        self._order = order
+
+        self._constitutive_model = None
+
+        self._penalty = 0.0
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+
+        self._E = self.mesh.vector.strain_tensor(self._u.sym)
+        self._Estar = None
+
+        self._constraints = sympy.Matrix(
+            (self.div_u,)
+        )  
+
+        ### sets up DuDt and DFDt
+        self._setup_history_terms
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_slcn_problem_description
@@ -1819,60 +1809,104 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         self.is_setup = False
         self._delta_t = sympify(value)
 
-    # @timing.routine_timer_decorator
-    # def estimate_dt(self):
-    #     """
-    #     Calculates an appropriate advective timestep for the given
-    #     mesh and diffusivity configuration.
-    #     """
+    @property
+    def f(self):
+        return self._f
 
-    #     if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-    #         k = uw.function.evaluate(
-    #             sympy.sympify(self.constitutive_model.Parameters.diffusivity),
-    #             self.mesh._centroids,
-    #             self.mesh.N,
-    #         )
-    #         max_diffusivity = k.max()
-    #     else:
-    #         k = self.constitutive_model.Parameters.diffusivity
-    #         max_diffusivity = k
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
 
-    #     ### required modules
-    #     import math
-    #     from mpi4py import MPI
+    @property
+    def div_u(self):
+        E = self.strainrate
+        divergence = E.trace()
+        return divergence
+    
+    @property
+    def strainrate(self):
+        return sympy.Matrix(self._E)
 
-    #     # with self.mesh.access(self.k):
-    #     #     ## get local max diff value
-    #     #     max_diffusivity = self.k.data[:, 0].max()
-    #     ### get the velocity values
-    #     with self.mesh.access(self._V):
-    #         vel = self._V.data
+    @property
+    def DuDt(self):
+        return self._DuDt
+    
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+    
+    @property
+    def DFDt(self):
+        return self._DFDt
+    
+    @DFDt.setter
+    def DFDt(self, DFDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DFDt = DFDt_value
+        self._solver_is_setup = False
 
-    #     ## get global max dif value
-    #     comm = MPI.COMM_WORLD
-    #     diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
 
-    #     ### get global velocity from velocity field
-    #     max_magvel = np.linalg.norm(vel, axis=1).max()
-    #     max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
+        
+    @property
+    def constraints(self):
+        return self._constraints
 
-    #     ## get radius
-    #     min_dx = self.mesh.get_min_radius()
+    @constraints.setter
+    def constraints(self, constraints_matrix):
+        self._is_setup = False
+        symval = sympify(constraints_matrix)
+        self._constraints = symval
 
-    #     ## estimate dt of adv and diff components
+    @property
+    def bodyforce(self):
+        return self._bodyforce
 
-    #     if max_magvel_glob == 0.0:
-    #         dt_diff = (min_dx**2) / diffusivity_glob
-    #         dt_estimate = dt_diff
-    #     elif diffusivity_glob == 0.0:
-    #         dt_adv = min_dx / max_magvel_glob
-    #         dt_estimate = dt_adv
-    #     else:
-    #         dt_diff = (min_dx**2) / diffusivity_glob
-    #         dt_adv = min_dx / max_magvel_glob
-    #         dt_estimate = min(dt_diff, dt_adv)
+    @bodyforce.setter
+    def bodyforce(self, value):
+        self.is_setup = False
+        self._bodyforce = self.mesh.vector.to_matrix(value)
 
-    #     return dt_estimate
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._saddle_preconditioner = symval
+
+    @property
+    def penalty(self):
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._penalty = symval
+
 
     @timing.routine_timer_decorator
     def solve(
@@ -1924,8 +1958,8 @@ class SNES_NavierStokes_SLCN(SNES_Stokes):
         return
 
 
-## This one is already updated to work with the Lagrange updater
-class SNES_NavierStokes_Swarm(SNES_Stokes):
+# This one is already updated to work with the Lagrange updater
+class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
@@ -1995,32 +2029,24 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         mesh: uw.discretisation.Mesh,
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
-        # DuDt: uw.swarm.Lagrangian_Updater = None,
-        # DFDt: uw.swarm.Lagrangian_Updater = None,
         rho: Optional[float] = 0.0,
         restore_points_func: Callable = None,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        # constitutive_model_class: Optional[
-        #     uw.constitutive_models.Constitutive_Model
-        # ] = None,
-        # constitutive_model: Optional[uw.constitutive_models.Constitutive_Model] = None,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            # None,  # DuDt - add later
-            # None,  # DFDt - add later
+            None,
+            None,
             order,
             p_continuous,
             solver_name,
             verbose,
-            # constitutive_model_class,
-            # constitutive_model,
         )
 
         # These are unique to the advection solver
@@ -2031,6 +2057,23 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_slcn_problem_description
+
+        self._order = order
+
+        self._penalty = 0.0
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+
+        self._constitutive_model = None
+
+        self._E = self.mesh.vector.strain_tensor(self._u.sym)
+        self._Estar = None
+
+        self._constraints = sympy.Matrix(
+            (self.div_u,)
+        )  
+
+        ### sets up DuDt and DFDt
+        self._setup_history_terms
 
         return
 
@@ -2059,60 +2102,104 @@ class SNES_NavierStokes_Swarm(SNES_Stokes):
         self.is_setup = False
         self._delta_t = sympify(value)
 
-    # @timing.routine_timer_decorator
-    # def estimate_dt(self):
-    #     """
-    #     Calculates an appropriate advective timestep for the given
-    #     mesh and diffusivity configuration.
-    #     """
+    @property
+    def f(self):
+        return self._f
 
-    #     if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-    #         k = uw.function.evaluate(
-    #             sympy.sympify(self.constitutive_model.Parameters.diffusivity),
-    #             self.mesh._centroids,
-    #             self.mesh.N,
-    #         )
-    #         max_diffusivity = k.max()
-    #     else:
-    #         k = self.constitutive_model.Parameters.diffusivity
-    #         max_diffusivity = k
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
 
-    #     ### required modules
-    #     import math
-    #     from mpi4py import MPI
+    @property
+    def div_u(self):
+        E = self.strainrate
+        divergence = E.trace()
+        return divergence
+    
+    @property
+    def strainrate(self):
+        return sympy.Matrix(self._E)
 
-    #     # with self.mesh.access(self.k):
-    #     #     ## get local max diff value
-    #     #     max_diffusivity = self.k.data[:, 0].max()
-    #     ### get the velocity values
-    #     with self.mesh.access(self._V):
-    #         vel = self._V.data
+    @property
+    def DuDt(self):
+        return self._DuDt
+    
+    @DuDt.setter
+    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DuDt = DuDt_value
+        self._solver_is_setup = False
+    
+    @property
+    def DFDt(self):
+        return self._DFDt
+    
+    @DFDt.setter
+    def DFDt(self, DFDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+        self._DFDt = DFDt_value
+        self._solver_is_setup = False
 
-    #     ## get global max dif value
-    #     comm = MPI.COMM_WORLD
-    #     diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
 
-    #     ### get global velocity from velocity field
-    #     max_magvel = np.linalg.norm(vel, axis=1).max()
-    #     max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+    @constitutive_model.setter
+    def constitutive_model(self, model):
+        ### checking if it's an instance
+        if isinstance(model, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### checking if it's a class
+        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model(self.u)
+            ### update history terms using setters
+            self._constitutive_model.flux_dt = self.DFDt
+            self._constitutive_model.DuDt = self.DuDt
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError('constitutive_model must be a valid class or instance of a valid class')
+        
+    @property
+    def constraints(self):
+        return self._constraints
 
-    #     ## get radius
-    #     min_dx = self.mesh.get_min_radius()
+    @constraints.setter
+    def constraints(self, constraints_matrix):
+        self._is_setup = False
+        symval = sympify(constraints_matrix)
+        self._constraints = symval
 
-    #     ## estimate dt of adv and diff components
+    @property
+    def bodyforce(self):
+        return self._bodyforce
 
-    #     if max_magvel_glob == 0.0:
-    #         dt_diff = (min_dx**2) / diffusivity_glob
-    #         dt_estimate = dt_diff
-    #     elif diffusivity_glob == 0.0:
-    #         dt_adv = min_dx / max_magvel_glob
-    #         dt_estimate = dt_adv
-    #     else:
-    #         dt_diff = (min_dx**2) / diffusivity_glob
-    #         dt_adv = min_dx / max_magvel_glob
-    #         dt_estimate = min(dt_diff, dt_adv)
+    @bodyforce.setter
+    def bodyforce(self, value):
+        self.is_setup = False
+        self._bodyforce = self.mesh.vector.to_matrix(value)
 
-    #     return dt_estimate
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._saddle_preconditioner = symval
+
+    @property
+    def penalty(self):
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._penalty = symval
+
 
     @timing.routine_timer_decorator
     def solve(
