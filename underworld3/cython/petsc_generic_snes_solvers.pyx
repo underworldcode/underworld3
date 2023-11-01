@@ -15,12 +15,6 @@ from underworld3.utilities._api_tools import class_or_instance_method
 
 include "petsc_extras.pxi"
 
-## Note, a generic base class could be introduced here
-## which would have the validation, essential properties,
-## boundary condition routines,
-## methods for the petsc_options ...
-
-
 class Solver(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -36,11 +30,57 @@ class Solver(uw_object):
 
         super().__init__()
 
-        self._u = None
-        self._DuDt = None
-        self._DFDt = None
+        self.Unknowns = self._Unknowns(self)
+
+        self._u = self.Unknowns.u
+        self._DuDt = self.Unknowns.DuDt
+        self._DFDt = self.Unknowns.DFDt
 
         return
+
+    class _Unknowns:
+        """We introduce a class to manage the unknown vectors and history managers for each solver
+        """
+
+        def __init__(inner_self, _owning_solver):
+            inner_self._owning_solver = _owning_solver
+            inner_self._u = None
+            inner_self._DuDt = None
+            inner_self._DFDt = None
+            return
+
+        ## properties
+
+        @property
+        def u(inner_self):
+            return inner_self._u
+
+        @u.setter
+        def u(inner_self, new_u):
+            inner_self._u = new_u
+            inner_self._owning_solver._is_setup = False
+            return
+
+        @property
+        def DuDt(inner_self):
+            return inner_self._DuDt
+
+        @DuDt.setter
+        def DuDt(inner_self, new_DuDt):
+            inner_self._DuDt = new_DuDt
+            inner_self._owning_solver._is_setup = False
+            return
+
+        @property
+        def DFDt(inner_self):
+            return inner_self._DuDt
+
+        @DuDt.setter
+        def DFDt(inner_self, new_DFDt):
+            inner_self._DFDt = new_DFDt
+            inner_self._owning_solver._is_setup = False
+            return
+
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
@@ -1281,6 +1321,30 @@ class SNES_Stokes_SaddlePt(Solver):
     physical conservation laws into this general mathematical form.
     """
 
+    class _Unknowns(Solver._Unknowns):
+        '''Extend the unknowns with the constraint parameter'''
+
+        def __init__(inner_self, owning_solver):
+
+            super().__init__(owning_solver)
+
+            inner_self._p = None
+            inner_self._DpDt = None
+            inner_self._DFpDt = None
+
+            return
+
+        @property
+        def p(inner_self):
+            return inner_self._p
+
+        @p.setter
+        def p(inner_self, new_p):
+            inner_self._p = new_p
+            inner_self._owning_solver._is_setup = False
+            return
+        
+
     @timing.routine_timer_decorator
     def __init__(self,
                  mesh          : underworld3.discretisation.Mesh,
@@ -1296,6 +1360,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
         super().__init__()
+
 
         self.name = solver_name
         self.mesh = mesh
