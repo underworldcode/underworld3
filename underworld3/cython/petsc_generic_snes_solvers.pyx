@@ -104,10 +104,10 @@ class Solver(uw_object):
         # the form of the input. See the projector class for an example
 
         # f0 residual term (weighted integration) - scalar RHS function
-        self._f0 = self.F0 # some_expression_F0(self._u.sym, self._L)
+        self._f0 = self.F0 # some_expression_F0(self.u.sym, self._L)
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.F1 # some_expresion_F1(self._u.sym, self._L)
+        self._f1 = self.F1 # some_expresion_F1(self.u.sym, self._L)
 
         return
 
@@ -180,6 +180,8 @@ class Solver(uw_object):
 
     ## Properties that are common to all solvers
 
+    ## We should probably get rid of the F0, F1 properties
+
     @property
     def F0(self):
         return self._F0
@@ -198,19 +200,32 @@ class Solver(uw_object):
 
     @property
     def u(self):
-        return self._u
+        return self.Unknowns.u
 
-    @property
-    def u(self):
-        return self._u
+    @u.setter
+    def u(self, new_u):
+        self.Unknowns.u = new_u
+        return
 
     @property
     def DuDt(self):
-        return self._DuDt
+        return self.Unknowns.DuDt
+
+    @DuDt.setter
+    def DuDt(self, new_du):
+        self.Unknowns.DuDt = new_du
+        return
+
 
     @property
     def DFDt(self):
-        return self._DFDt
+        return self.Unknowns.DFDt
+
+    @DFDt.setter
+    def DFDt(self, new_dF):
+        self.Unknowns.DFDt = new_dF
+        return
+
 
     # @property
     # def constitutive_model(self):
@@ -278,9 +293,9 @@ class SNES_Scalar(Solver):
 
         ## Keep track
 
-        self._u = u_Field
-        self._DuDt = DuDt
-        self._DFDt = DFDt
+        self.Unknowns.u = u_Field
+        self.Unknowns.DuDt = DuDt
+        self.Unknowns.DFDt = DFDt
 
         self.name = solver_name
         self.verbose = verbose
@@ -328,14 +343,14 @@ class SNES_Scalar(Solver):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-        self._u = u_Field
-        self._DuDt = DuDt
-        self._DFDt = DFDt
+        self.u = u_Field
+        self.DuDt = DuDt
+        self.DFDt = DFDt
         
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
-        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N)
         self.dm = None
 
 
@@ -374,7 +389,7 @@ class SNES_Scalar(Solver):
         if self.dm is not None:
             return
 
-        degree = self._u.degree
+        degree = self.u.degree
         mesh = self.mesh
 
         if self.verbose:
@@ -543,7 +558,7 @@ class SNES_Scalar(Solver):
         self._u_f0 = f0
         self._u_F1 = F1
 
-        U = sympy.Array(self._u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
+        U = sympy.Array(self.u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
         L = sympy.Array(self._L).reshape(cdim).as_immutable() # unpack one index here too
 
         fns_residual = [self._u_f0, self._u_F1]
@@ -794,9 +809,9 @@ class SNES_Vector(Solver):
 
         super().__init__()
 
-        self._u = u_Field
-        self._DuDt = DuDt
-        self._DFDt = DFDt
+        self.Unknowns.u = u_Field
+        self.Unknowns.DuDt = DuDt
+        self.Unknowns.DFDt = DFDt
 
         ## Keep track
 
@@ -857,10 +872,10 @@ class SNES_Vector(Solver):
 
         ## sympy.Matrix
 
-        self._U = self._u.sym
+        self._U = self.u.sym
 
         ## sympy.Matrix - gradient tensor
-        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N) # This works for vector / vector inputs
+        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N) # This works for vector / vector inputs
 
         self.essential_bcs = []
         self.natural_bcs = []
@@ -1065,7 +1080,7 @@ class SNES_Vector(Solver):
         fns_residual = [self._u_f0, self._u_F1]
 
         # This is needed to eliminate extra dims in the tensor
-        U = sympy.Array(self._u.sym).reshape(dim)
+        U = sympy.Array(self.u.sym).reshape(dim)
 
         G0 = sympy.derive_by_array(F0, U)
         G1 = sympy.derive_by_array(F0, self._L)
@@ -1367,10 +1382,11 @@ class SNES_Stokes_SaddlePt(Solver):
         self.verbose = verbose
         self.dm = None
 
-        self._u = velocityField
-        self._p = pressureField
-        self._DuDt = DuDt
-        self._DFDt = DFDt
+        self.Unknowns.u = velocityField
+        self.Unknowns.p = pressureField
+        self.Unknowns.DuDt = DuDt
+        self.Unknowns.DFDt = DFDt
+
         self._order = order
 
         ## Any problem with U,P, just define our own
@@ -1471,8 +1487,8 @@ class SNES_Stokes_SaddlePt(Solver):
         N = mesh.N
 
         ## sympy.Matrix - gradient tensors
-        self._G = self._p.sym.jacobian(self.mesh.CoordinateSystem.N)
-        self._L = self._u.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._G = self.p.sym.jacobian(self.mesh.CoordinateSystem.N)
+        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N)
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -1481,12 +1497,12 @@ class SNES_Stokes_SaddlePt(Solver):
     def _setup_history_terms(self):
         self._DuDt = uw.swarm.SemiLagrange_Updater(
                     self.mesh,
-                    self._u.sym,
-                    self._u.sym,
+                    self.u.sym,
+                    self.u.sym,
                     vtype=uw.VarType.VECTOR,
-                    degree=self._u.degree,
-                    continuous=self._u.continuous,
-                    varsymbol=self._u.symbol,
+                    degree=self.u.degree,
+                    continuous=self.u.continuous,
+                    varsymbol=self.u.symbol,
                     verbose=self.verbose,
                     bcs=self.essential_bcs,
                     order=self._order,
@@ -1496,11 +1512,11 @@ class SNES_Stokes_SaddlePt(Solver):
         self._DFDt = uw.swarm.SemiLagrange_Updater(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self._u.sym,
+            self.u.sym,
             vtype=uw.VarType.SYM_TENSOR,
-            degree=self._u.degree - 1,
+            degree=self.u.degree - 1,
             continuous=True,
-            varsymbol=rf"{{F[ {self._u.symbol} ] }}",
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=self.verbose,
             bcs=None,
             order=self._order,
@@ -1604,7 +1620,12 @@ class SNES_Stokes_SaddlePt(Solver):
 
     @property
     def p(self):
-        return self._p
+        return self.Unknowns.p
+
+    @p.setter
+    def p(self, new_p):
+        self.Unknowns.p = new_p
+        return
 
     @property
     def saddle_preconditioner(self):
@@ -1700,12 +1721,12 @@ class SNES_Stokes_SaddlePt(Solver):
         ## It's a bit easier for Stokes where P is a scalar field
 
         # This is needed to eliminate extra dims in the tensor
-        U = sympy.Array(self._u.sym).reshape(dim)
-        P = sympy.Array(self._p.sym).reshape(1)
+        U = sympy.Array(self.u.sym).reshape(dim)
+        P = sympy.Array(self.p.sym).reshape(1)
 
-        G0 = sympy.derive_by_array(F0, self._u.sym)
+        G0 = sympy.derive_by_array(F0, self.u.sym)
         G1 = sympy.derive_by_array(F0, self._L)
-        G2 = sympy.derive_by_array(F1, self._u.sym)
+        G2 = sympy.derive_by_array(F1, self.u.sym)
         G3 = sympy.derive_by_array(F1, self._L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
@@ -1730,9 +1751,9 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # U/P block (check permutations - hard to validate without a full collection of examples)
 
-        G0 = sympy.derive_by_array(F0, self._p.sym)
+        G0 = sympy.derive_by_array(F0, self.p.sym)
         G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1, self._p.sym)
+        G2 = sympy.derive_by_array(F1, self.p.sym)
         G3 = sympy.derive_by_array(F1, self._G)
 
         self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
@@ -1744,14 +1765,14 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(FP0, self._u.sym)
+        G0 = sympy.derive_by_array(FP0, self.u.sym)
         G1 = sympy.derive_by_array(FP0, self._L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
         # G3 = sympy.derive_by_array(FP1, self._L)
 
         self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
         self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
-        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._p.sym).reshape(dim,dim))
+        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self.p.sym).reshape(dim,dim))
         # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
 
         # fns_jacobian += [self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
