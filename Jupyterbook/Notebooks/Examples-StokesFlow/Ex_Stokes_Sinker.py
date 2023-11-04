@@ -122,7 +122,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 # ## Create Stokes object
 
 # +
-stokes = uw.systems.Stokes(mesh, constitutive_model_class=uw.constitutive_models.ViscoElasticPlasticFlowModel)
+stokes = uw.systems.Stokes(mesh)
 
 v = stokes._u
 p = stokes._p
@@ -137,8 +137,29 @@ stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 
 
+# +
+# class _Unknowns(stokes._Unknowns):
+
+#     def __init__(inner_self):
+
+#         super().__init__(inner_self)
+
+#         inner_self._p = None
+
+#         return
+
+#     @property
+#     def p(inner_self):
+#         return inner_self._p
+        
+        
 # -
 
+stokes.Unknowns.p
+
+unk.p
+
+0/0
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable(

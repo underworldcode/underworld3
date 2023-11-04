@@ -82,21 +82,22 @@ t_o = 1.0
 r_i = 0.5
 r_o = 1.0
 delta_t = 1.0
+# -
 
 
-# +
 adv_diff = uw.systems.AdvDiffusion(
     meshball,
     u_Field=t_soln,
     V_fn=v_soln,
     solver_name="adv_diff",
-    order=1,
+    order=2,
 )
+
+
+adv_diff.Unknowns.DuDt.bdf(1)
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 adv_diff.constitutive_model.Parameters.diffusivity = k
-
-# -
 
 
 # +
@@ -133,65 +134,7 @@ with meshball.access(t_0, t_soln):
 
 # # delta_t will be baked in when this is defined ... so re-define it
 # adv_diff.solve(timestep=delta_t) # , coords=coords)
-# +
-# check the mesh if in a notebook / serial
-
-
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
-
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    with meshball.access():
-        point_cloud.point_data["T"] = t_0.data.copy()
-
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=True,
-        point_size=7,
-        opacity=0.66,
-    )
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
-
-    # pl.remove_scalar_bar("T")
-    pl.remove_scalar_bar("mag")
-
-    pl.show()
-
-
 # -
-
-
 def plot_T_mesh(filename):
     if uw.mpi.size == 1:
         import numpy as np
@@ -201,7 +144,7 @@ def plot_T_mesh(filename):
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.anti_aliasing = "msaa"
-        pv.global_theme.jupyter_backend = "pythreejs"
+        pv.global_theme.jupyter_backend = "client"
         pv.global_theme.smooth_shading = True
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
         pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
@@ -257,6 +200,9 @@ t_soln2 = uw.discretisation.MeshVariable(
     "U2", meshball, vtype=uw.VarType.SCALAR, degree=2
 )
 
+adv_diff.estimate_dt()
+
+
 # +
 timing.reset()
 timing.start()
@@ -264,6 +210,9 @@ timing.start()
 delta_t = 0.025
 
 adv_diff.solve(timestep=delta_t, verbose=False, _force_setup=False)
+# -
+
+adv_diff._f0
 
 # +
 # check the mesh if in a notebook / serial
@@ -277,7 +226,7 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "client"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
@@ -325,7 +274,7 @@ if uw.mpi.size == 1:
 
 expt_name = "rotation_test_slcn"
 
-delta_t = 0.05
+delta_t = 0.025
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
@@ -348,6 +297,11 @@ for step in range(0, 19):
     # v_soln.save(savefile)
     # t_soln.save(savefile)
     # meshball.generate_xdmf(savefile)
+# -
+
+
+t_soln.stats()
+
 
 
 # +
@@ -361,7 +315,7 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "client"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
@@ -419,5 +373,3 @@ uw.timing.print_table()
 
 
 #
-
-adv_diff._f0

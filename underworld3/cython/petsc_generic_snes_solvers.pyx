@@ -73,9 +73,9 @@ class Solver(uw_object):
 
         @property
         def DFDt(inner_self):
-            return inner_self._DuDt
+            return inner_self._DFDt
 
-        @DuDt.setter
+        @DFDt.setter
         def DFDt(inner_self, new_DFDt):
             inner_self._DFDt = new_DFDt
             inner_self._owning_solver._is_setup = False
@@ -216,7 +216,6 @@ class Solver(uw_object):
         self.Unknowns.DuDt = new_du
         return
 
-
     @property
     def DFDt(self):
         return self.Unknowns.DFDt
@@ -297,6 +296,10 @@ class SNES_Scalar(Solver):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
+        # self.u = u_Field
+        # self.DuDt = DuDt
+        # self.DFDt = DFDt
+
         self.name = solver_name
         self.verbose = verbose
         self._tolerance = 1.0e-4
@@ -343,9 +346,7 @@ class SNES_Scalar(Solver):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-        self.u = u_Field
-        self.DuDt = DuDt
-        self.DFDt = DFDt
+
         
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
@@ -813,6 +814,10 @@ class SNES_Vector(Solver):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
+        # self.u = u_Field
+        # self.DuDt = DuDt
+        # self.DFDt = DFDt
+
         ## Keep track
 
         self.name = solver_name
@@ -861,9 +866,7 @@ class SNES_Vector(Solver):
         ##                                     vtype=uw.VarType.SCALAR, degree=degree )
         ## else:
 
-        self._u = u_Field
-        self._DuDt = DuDt
-        self._DFDt = DFDt
+
         
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
@@ -1493,9 +1496,10 @@ class SNES_Stokes_SaddlePt(Solver):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    # Why is this a property ?
     @property
     def _setup_history_terms(self):
-        self._DuDt = uw.swarm.SemiLagrange_Updater(
+        self.DuDt = uw.swarm.SemiLagrange_Updater(
                     self.mesh,
                     self.u.sym,
                     self.u.sym,
@@ -1509,7 +1513,7 @@ class SNES_Stokes_SaddlePt(Solver):
                     smoothing=0.0,
                 )
 
-        self._DFDt = uw.swarm.SemiLagrange_Updater(
+        self.DFDt = uw.swarm.SemiLagrange_Updater(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,

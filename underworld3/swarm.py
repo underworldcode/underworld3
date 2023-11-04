@@ -44,6 +44,34 @@ class SwarmPICLayout(Enum):
 
 
 class SwarmVariable(Stateful, uw_object):
+    """
+    The SwarmVariable class generates a variable supported by a point cloud or 'swarm' and the
+    underlying meshVariable representation that makes it possible to construct expressions that
+    depend on the values of the swarmVariable.
+
+    To set / read nodal values, use the numpy interface via the 'data' property.
+
+    Parameters
+    ----------
+    varname :
+        A textual name for this variable.
+    swarm :
+        The supporting underworld swarm.
+    size :
+        The shape of a Matrix variable type.
+    vtype :
+        Semi-Optional. The underworld variable type for this variable.
+    proxy_degree :
+        The polynomial degree for this variable.
+     proxy_continuous :
+        The polynomial degree for this variable.
+    varsymbol:
+        A symbolic form for printing etc (sympy / latex)
+    rebuild_on_cycle:
+        For cyclic swarm variables — True is the best choice for continuous fields
+
+    """
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1878,6 +1906,7 @@ class SemiLagrange_Updater(uw_object):
         self.mesh = mesh
         self.bcs = bcs
         self.verbose = verbose
+        self.degree = degree
 
         # meshVariables are required for:
         #
@@ -1892,11 +1921,6 @@ class SemiLagrange_Updater(uw_object):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
-
-        # if psi_fn.shape[0] != 1:
-        #     raise RuntimeError(
-        #         f"u_fn should be a (flattened) 1d object (e.g. tau.sym_1d in place of tau.sym)"
-        #     )
 
         psi_star = []
         self.psi_star = psi_star
@@ -1979,9 +2003,25 @@ class SemiLagrange_Updater(uw_object):
     def update(
         self,
         dt: float,
-        verbose=False,
-        # evalf: Optional[bool] = False,
-        # average_over_dt: Optional[bool] = True,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(dt, evalf, verbose)
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
     ):
         # if average_over_dt:
         #     phi = min(1.0, dt / self.dt_physical)
@@ -2116,25 +2156,38 @@ class Lagrangian_Updater(uw_object):
         self,
         swarm: Swarm,
         psi_fn: sympy.Function,
-        psi_star: Union[SwarmVariable, list],
-        # psi_t0: sympy.Function,
-        dt_physical: float,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
         verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
     ):
+        super().__init__()
+
         self.mesh = swarm.mesh
         self.swarm = swarm
         self.psi_fn = psi_fn
-        self.psi_star = psi_star
-        self.dt_physical = dt_physical
         self.verbose = verbose
+        self.order = order
 
-        # psi and psi_star must have the same shape
+        psi_star = []
+        self.psi_star = psi_star
 
-        if isinstance(psi_star, SwarmVariable):
-            self.order = 1
-            self.psi_star = list(psi_star)
-        else:
-            self.order = len(psi_star)
+        for i in range(order):
+            print(f"Creating psi_star[{i}]")
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f"psi_star_sw_{self.instance_number}_{i}",
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
 
         return
 
@@ -2157,35 +2210,44 @@ class Lagrangian_Updater(uw_object):
         self,
         dt: float,
         evalf: Optional[bool] = False,
-        average_over_dt: Optional[bool] = True,
+        verbose: Optional[bool] = False,
     ):
-        if average_over_dt:
-            phi = min(1.0, dt / self.dt_physical)
-        else:
-            phi = 1.0
+        self.update_post_solve(dt, evalf, verbose)
+        return
 
-        # print(f"PHI -> {phi}", flush=True)
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
 
-        for h in range(self.order):
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
             i = self.order - (h + 1)
 
             # copy the information down the chain
+            print(f"Lagrange order = {self.order}")
+            print(f"Lagrange copying {i-1} to {i}")
+
             with self.swarm.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = (
-                    phi * self.psi_star[i - 1].data[...]
-                    + (1 - phi) * self.psi_star[i].data[...]
-                )
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
         if evalf:
             psi_star_0 = self.psi_star[0]
             with self.swarm.access(psi_star_0):
                 for i in range(psi_star_0.shape[0]):
                     for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evalf(self.psi[i, j], self.swarm.data)
-
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
                         )
+                        psi_star_0[i, j].data[:] = updated_psi
 
         else:
             psi_star_0 = self.psi_star[0]
@@ -2193,12 +2255,9 @@ class Lagrangian_Updater(uw_object):
                 for i in range(psi_star_0.shape[0]):
                     for j in range(psi_star_0.shape[1]):
                         updated_psi = uw.function.evaluate(
-                            self.psi_fn[i, j] - psi_star_0[i, j].sym, self.swarm.data
+                            self.psi_fn[i, j], self.swarm.data
                         )
-
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                        )
+                        psi_star_0[i, j].data[:] = updated_psi
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
@@ -2210,7 +2269,7 @@ class Lagrangian_Updater(uw_object):
             order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order == 1:
+            if order <= 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
@@ -2254,63 +2313,3 @@ class Lagrangian_Updater(uw_object):
                 ) / 24
 
         return am
-
-
-class Lagrangian_Derivative(Lagrangian_Updater):
-    r"""
-    Sets up a specific type of Lagrangian update for managing time derivatives
-
-    $$\frac{D \mathbf{s}}{Dt} \sim \frac{\mathbf{s} - \mathbf{s}^*}{\Delta t}$$
-
-    and higher order equivalents using the backward differentiation formulae
-    """
-
-    def __call__(self, delta_t, order=None):
-        return self._bdf(delta_t, order)
-
-    def _bdf(self, delta_t, order=None):
-        if order is None:
-            order = self.order
-        else:
-            order = max(1, min(self.order, order))
-
-        # By hand for now ... and this should have some error checks / default behaviour
-
-        # This is the python 3.10+ version ... can't assume 3.10 yet
-        # match order:
-        #     case 1:
-        #         return sympy.UnevaluatedExpr(
-        #             self.psi - self.psi_star[0].sym
-        #         ) / sympy.UnevaluatedExpr(delta_t)
-        #     case 2:
-        #         return sympy.UnevaluatedExpr(
-        #             3 * self.psi / 2
-        #             - 2 * self.psi_star[0].sym
-        #             + self.psi_star[1].sym / 2
-        #         ) / sympy.UnevaluatedExpr(delta_t)
-        #     case 3:
-        #         return sympy.UnevaluatedExpr(
-        #             11 * self.psi / 6
-        #             - 3 * self.psi_star[0].sym
-        #             + 3 * self.psi_star[1].sym / 2
-        #             - self.psi_star[2].sym / 3
-        #         ) / sympy.UnevaluatedExpr(delta_t)
-
-        # This will have to do for now
-        if order == 1:
-            return sympy.UnevaluatedExpr(
-                self.psi - self.psi_star[0].sym
-            ) / sympy.UnevaluatedExpr(delta_t)
-
-        if order == 2:
-            return sympy.UnevaluatedExpr(
-                3 * self.psi / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
-            ) / sympy.UnevaluatedExpr(delta_t)
-
-        if order == 3:
-            return sympy.UnevaluatedExpr(
-                11 * self.psi / 6
-                - 3 * self.psi_star[0].sym
-                + 3 * self.psi_star[1].sym / 2
-                - self.psi_star[2].sym / 3
-            ) / sympy.UnevaluatedExpr(delta_t)
