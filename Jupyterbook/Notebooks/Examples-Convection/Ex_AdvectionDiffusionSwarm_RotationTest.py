@@ -62,12 +62,8 @@ DTdt = uw.swarm.Lagrangian_Updater(
 
 swarm.populate(fill_param=4)
 
-
 # -
 
-
-with swarm.access():
-    print(swarm.particle_coordinates.data.shape)
 
 # check that the swarm variable works  as a continuous field as well
 T1.sym.jacobian(meshball.X)
@@ -149,8 +145,8 @@ with swarm.access(T1):
 # +
 # Validation - small timestep
 
-delta_t = 0.01
-adv_diff.solve(timestep=delta_t)
+# delta_t = 0.01
+# adv_diff.solve(timestep=delta_t)
 
 
 # +
@@ -206,10 +202,18 @@ with meshball.access(t_0, t_soln, T1):
 
 with swarm.access(T1):
     T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
-# -
 
 
+# +
 adv_diff.DuDt.update(dt=0.05)
+
+# Update the swarm locations
+swarm.advection(
+    v_soln.sym,
+    delta_t=0.05,
+    corrector=False,
+    restore_points_to_domain_func=meshball.return_coords_to_bounds,
+)  
 
 # +
 # Advection/diffusion model / update in time
@@ -219,13 +223,10 @@ expt_name = "output/rotation_test_k_001"
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(0, 5):
+for step in range(0, 20):
 
     import underworld3 as uw
 
-
-    ## Doesn't seem to be moving ... 
-    
     adv_diff.solve(timestep=delta_t, verbose=False)
 
     # Update the swarm locations
@@ -234,9 +235,8 @@ for step in range(0, 5):
         delta_t=delta_t,
         corrector=False,
         restore_points_to_domain_func=meshball.return_coords_to_bounds,
-    )
-
-
+    )  
+ 
     # stats then loop
 
     tstats = t_soln.stats()
@@ -255,6 +255,8 @@ for step in range(0, 5):
     # meshball.generate_xdmf(savefile)
 # -
 
+
+adv_diff.DFDt.order
 
 0/0
 
@@ -276,6 +278,7 @@ if uw.mpi.size == 1:
     swarm_points.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points, adv_diff.DuDt.psi_star[0].sym[0] )
 
     pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
+    pvmesh.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,adv_diff.DuDt.psi_star[0].sym[0])
     pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
 
     pl = pv.Plotter()
@@ -286,7 +289,7 @@ if uw.mpi.size == 1:
     #     swarm_points,
     #     cmap="coolwarm",
     #     render_points_as_spheres=False,
-    #     scalars="T",
+    #     scalars="Ts",
     #     point_size=3,
     #     opacity=0.66,
     # )

@@ -2206,6 +2206,13 @@ class Lagrangian_Updater(uw_object):
         )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
     def update(
         self,
         dt: float,
@@ -2215,7 +2222,7 @@ class Lagrangian_Updater(uw_object):
         self.update_post_solve(dt, evalf, verbose)
         return
 
-    def update_post_solve(
+    def update_pre_solve(
         self,
         dt: float,
         evalf: Optional[bool] = False,
@@ -2223,7 +2230,7 @@ class Lagrangian_Updater(uw_object):
     ):
         return
 
-    def update_pre_solve(
+    def update_post_solve(
         self,
         dt: float,
         evalf: Optional[bool] = False,
@@ -2238,6 +2245,8 @@ class Lagrangian_Updater(uw_object):
 
             with self.swarm.access(self.psi_star[i]):
                 self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Now update the swarm variable
 
         if evalf:
             psi_star_0 = self.psi_star[0]

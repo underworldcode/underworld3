@@ -1358,7 +1358,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
         DuDt: uw.swarm.Lagrangian_Updater = None,
-        order: int = 1,
+        order: int = None,
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
@@ -1396,6 +1396,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### Setup the history terms
 
         if DuDt is None:
+            if order is None:
+                order = 1  # default value
+
             self.Unknowns.DuDt = uw.swarm.SemiLagrange_Updater(
                 self.mesh,
                 u_Field.sym,
@@ -1411,10 +1414,15 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             )
         else:
             # validation
-            if DuDt.order < order:
-                raise RuntimeError(
-                    f"DuDt supplied is order {DuDt.order} but order required is {order}"
-                )
+            if order is None:
+                order = DuDt.order
+
+            else:
+                if DuDt.order < order:
+                    raise RuntimeError(
+                        f"DuDt supplied is order {DuDt.order} but order required is {order}"
+                    )
+
             self.Unknowns.DuDt = DuDt
 
         self.Unknowns.DFDt = uw.swarm.SemiLagrange_Updater(
@@ -1578,6 +1586,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self._setup_solver(verbose)
 
         # Update History / Flux History terms
+        # SemiLagrange and Lagrange may have different sequencing.
         self.DuDt.update_pre_solve(timestep, verbose=verbose)
         self.DFDt.update_pre_solve(timestep, verbose=verbose)
 
