@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,7 +23,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
-from underworld3.systems import NavierStokesSwarm
+from underworld3.systems import NavierStokesSLCN
 
 from underworld3 import function
 
@@ -39,14 +39,8 @@ options = PETSc.Options()
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(
-    dim=2,
-    radius_inner=0.5,
-    radius_outer=1.0,
-    cell_size=0.075,
-    cell_size_lower=0.05,
-    degree=1,
-    verbose=False,
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.05, qdegree=3
 )
 
 
@@ -82,70 +76,53 @@ swarm.populate(fill_param=3)
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
-vorticity = uw.discretisation.MeshVariable("\omega", meshball, 1, degree=1)
-
-
-# +
-# Mesh restore function for advection of points
-# Which probably should be a feature of the mesh type ...
-
-
-def points_in_disc(coords):
-    r = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2).reshape(-1, 1)
-    outside = np.where(r > 1.0)
-    coords[outside] *= 0.999 / r[outside]
-    return coords
-
-
-# -
-
-navier_stokes = NavierStokesSwarm(
-    meshball,
-    velocityField=v_soln,
-    pressureField=p_soln,
-    velocityStar=v_star,
-    u_degree=2,
-    p_degree=1,
-    rho=10.0,
-    theta=0.9,
-    solver_name="navier_stokes",
-    projection=True,
-    restore_points_func=points_in_disc,
+vorticity = uw.discretisation.MeshVariable(
+    "\omega", meshball, 1, degree=1, continuous=False
 )
 
 
-navier_stokes.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-3
+navier_stokes = NavierStokesSLCN(
+    meshball,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    rho=10.0,
+    solver_name="navier_stokes",
+)
+
 
 nodal_vorticity_from_v = uw.systems.Projection(meshball, vorticity)
-nodal_vorticity_from_v.uw_function = sympy.vector.curl(v_soln.fn).dot(meshball.N.k)
-nodal_vorticity_from_v.smoothing = 1.0e-3
+nodal_vorticity_from_v.uw_function = meshball.vector.curl(v_soln.sym)
+nodal_vorticity_from_v.smoothing = 0.0
+
 
 # +
 # Constant visc
 
-expt_name = "Cylinder_NS_rho10"
 
-navier_stokes.viscosity = 1.0
-navier_stokes.penalty = 0.0
-navier_stokes.rho = 1.0
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
 
-navier_stokes.bodyforce = unit_rvec * 1.0e-16
+navier_stokes.constitutive_model.Parameters.viscosity = 1.0
+
+
+# Constant visc
+
+navier_stokes.rho = 250
+navier_stokes.penalty = 0.1
+navier_stokes.bodyforce = sympy.Matrix([0, 0])
+# navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
 # Velocity boundary conditions
 navier_stokes.add_dirichlet_bc((v_x, v_y), "Upper", (0, 1))
-navier_stokes.add_dirichlet_bc((-v_x, -v_y), "Lower", (0, 1))
+navier_stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 
-# +
+expt_name = f"Cylinder_NS_rho_{navier_stokes.rho}"
+
+# -
+
 with meshball.access(v_soln):
     v_soln.data[...] = 0.0
 
-with swarm.access(v_star):
-    v_star.data[...] = 0.0
-# -
-
-navier_stokes.solve(timestep=0.01)
+navier_stokes.solve(timestep=0.1)
 navier_stokes.estimate_dt()
 
 nodal_vorticity_from_v.solve()
@@ -156,20 +133,20 @@ nodal_vorticity_from_v.solve()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
 
     pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.window_size = [1250, 1250]
+    pv.global_theme.anti_aliasing = "msaa"
+    pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+    meshball.vtk("tmp_ball.vtk")
+    pvmesh = pv.read("tmp_ball.vtk")
 
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
@@ -186,10 +163,11 @@ if uw.mpi.size == 1:
     centroid_cloud = pv.PolyData(points)
 
     with meshball.access():
-        pvmesh.point_data["Omega"] = uw.function.evaluate(vorticity.fn, meshball.data)
+        pvmesh.point_data["Omega"] = uw.function.evalf(vorticity.sym[0], meshball.data)
 
     v_vectors = np.zeros((meshball.data.shape[0], 3))
-    v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, meshball.data)
+    v_vectors[:, 0] = uw.function.evalf(v_soln.sym[0], meshball.data)
+    v_vectors[:, 1] = uw.function.evalf(v_soln.sym[1], meshball.data)
     pvmesh.point_data["V"] = v_vectors
 
     pvstream = pvmesh.streamlines_from_source(
@@ -211,41 +189,44 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0, 20.0])
-    pl.add_mesh(pvstream)
+    pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1)
+    pl.add_mesh(pvstream, opacity=0.33)
     pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-2, opacity=0.75)
-    pl.add_points(
-        point_cloud,
-        color="Black",
-        render_points_as_spheres=True,
-        point_size=0.5,
-        opacity=0.33,
-    )
+    # pl.add_points(
+    #     point_cloud,
+    #     color="Black",
+    #     render_points_as_spheres=True,
+    #     point_size=0.5,
+    #     opacity=0.33,
+    # )
+
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     # pl.remove_scalar_bar("T")
-    pl.remove_scalar_bar("mag")
+    # pl.remove_scalar_bar("mag")
 
     pl.show()
 
 
 # -
+
+
 def plot_V_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
 
         pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
+        pv.global_theme.window_size = [1250, 1250]
+        pv.global_theme.anti_aliasing = "msaa"
+        pv.global_theme.jupyter_backend = "panel"
         pv.global_theme.smooth_shading = True
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+        pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-        pvmesh = meshball.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
+        meshball.vtk("tmp_ball.vtk")
+        pvmesh = pv.read("tmp_ball.vtk")
 
         with swarm.access():
             points = np.zeros((swarm.data.shape[0], 3))
@@ -262,9 +243,9 @@ def plot_V_mesh(filename):
         centroid_cloud = pv.PolyData(points)
 
         with meshball.access():
-            pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
-            pvmesh.point_data["Omega"] = uw.function.evaluate(
-                vorticity.fn, meshball.data
+            pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], meshball.data)
+            pvmesh.point_data["Omega"] = uw.function.evalf(
+                vorticity.sym[0], meshball.data
             )
 
         with meshball.access():
@@ -292,13 +273,13 @@ def plot_V_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
 
-        pl.add_points(
-            point_cloud,
-            color="Black",
-            render_points_as_spheres=True,
-            point_size=2,
-            opacity=0.66,
-        )
+        # pl.add_points(
+        #     point_cloud,
+        #     color="Black",
+        #     render_points_as_spheres=True,
+        #     point_size=2,
+        #     opacity=0.66,
+        # )
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
         pl.add_mesh(
@@ -312,8 +293,13 @@ def plot_V_mesh(filename):
         )
 
         pl.add_mesh(
-            pvmesh, cmap="RdBu", scalars="Omega", opacity=0.75, clim=[0.0, 20.0]
+            pvmesh,
+            cmap="RdBu",
+            scalars="Omega",
+            opacity=0.1,  # clim=[0.0, 20.0]
         )
+
+        pl.add_mesh(pvstream, opacity=0.33)
 
         scale_bar_items = list(pl.scalar_bars.keys())
 
@@ -322,7 +308,7 @@ def plot_V_mesh(filename):
 
         pl.screenshot(
             filename="{}.png".format(filename),
-            window_size=(1280, 1280),
+            window_size=(2560, 2560),
             return_img=False,
         )
 
@@ -335,8 +321,7 @@ ts = 0
 # Time evolution model / update in time
 
 
-for step in range(0, 20):
-
+for step in range(0, 250):
     delta_t = 5.0 * navier_stokes.estimate_dt()
     navier_stokes.solve(timestep=delta_t)
 
@@ -355,3 +340,4 @@ for step in range(0, 20):
         plot_V_mesh(filename="output/{}_step_{}".format(expt_name, ts))
 
     ts += 1
+# -

@@ -22,7 +22,11 @@ import sympy
 # -
 
 meshbox = uw.meshes.Unstructured_Simplex_Box(
-    dim=2, minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cell_size=1.0 / 32.0, regular=True
+    dim=2,
+    minCoords=(0.0, 0.0, 0.0),
+    maxCoords=(1.0, 1.0, 1.0),
+    cell_size=1.0 / 32.0,
+    regular=True,
 )
 meshbox.dm.view()
 
@@ -90,7 +94,9 @@ with meshbox.access(t_0, t_soln):
     t_soln.data[...] = t_0.data[...]
 
 with swarm.access(T1):
-    T1.data[...] = uw.function.evaluate(init_t, swarm.particle_coordinates.data).reshape(-1, 1)
+    T1.data[...] = uw.function.evaluate(
+        init_t, swarm.particle_coordinates.data
+    ).reshape(-1, 1)
 
 # +
 # Create Stokes object
@@ -110,8 +116,8 @@ stokes = Stokes(
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
@@ -133,7 +139,6 @@ stokes.solve()
 
 
 if uw.mpi.size == 1 and ad.projection:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -151,9 +156,13 @@ if uw.mpi.size == 1 and ad.projection:
     with meshbox.access():
         usol = stokes.u.data.copy()
 
-    pvmesh.point_data["mT1"] = uw.function.evaluate(ad._u_star_projected.fn, meshbox.data)
+    pvmesh.point_data["mT1"] = uw.function.evaluate(
+        ad._u_star_projected.fn, meshbox.data
+    )
     pvmesh.point_data["T1"] = uw.function.evaluate(T1.fn, meshbox.data)
-    pvmesh.point_data["dT1"] = uw.function.evaluate(T1.fn - ad._u_star_projected.fn, meshbox.data)
+    pvmesh.point_data["dT1"] = uw.function.evaluate(
+        T1.fn - ad._u_star_projected.fn, meshbox.data
+    )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -166,7 +175,13 @@ if uw.mpi.size == 1 and ad.projection:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="dT1", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="dT1",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-4, opacity=0.5)
@@ -181,9 +196,7 @@ if uw.mpi.size == 1 and ad.projection:
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -258,7 +271,11 @@ def plot_T_mesh(filename):
         pl.remove_scalar_bar("T")
         # pl.remove_scalar_bar("T1")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1250, 1250), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1250, 1250),
+            return_img=False,
+        )
         # pl.show()
         pl.close()
 
@@ -271,7 +288,6 @@ expt_name = "output/Ra1e6_swarm_pnots"
 ad_delta_t = 0.000033  # target
 
 for step in range(0, 250):
-
     stokes.solve(zero_init_guess=False)
     stokes_delta_t = 5.0 * stokes.estimate_dt()
     delta_t = stokes_delta_t
@@ -316,7 +332,6 @@ for step in range(0, 250):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -372,7 +387,12 @@ if uw.mpi.size == 1:
     #             )
 
     pl.add_points(
-        swarm_point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=2.5, opacity=0.5, clim=[0.0, 1.0]
+        swarm_point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=2.5,
+        opacity=0.5,
+        clim=[0.0, 1.0],
     )
 
     pl.add_mesh(

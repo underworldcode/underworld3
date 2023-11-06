@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,9 +23,10 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+from IPython.display import display
+
 import os
 
-os.environ["SYMPY_USE_CACHE"] = "no"
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 
@@ -65,7 +66,11 @@ elif problem_size >= 4:
 
 
 meshball_xyz_tmp = uw.meshing.Annulus(
-    radiusOuter=r_o, radiusInner=r_i, cellSize=res, filename="./tmp_meshball.msh"
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSize=res,
+    refinement=0,
+    # filename="tmp_meshball.msh"
 )
 
 
@@ -84,13 +89,16 @@ del meshball_xyz_tmp
 meshball = uw.meshing.Mesh(
     dmplex,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+    qdegree=3,
 )
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
     meshball.dm, [0.0, 1.0], [0.0, 0.0], [0.0, 2 * np.pi]
 )
 meshball.dm.view()
 
-meshball_xyz = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=res)
+meshball_xyz = uw.meshing.Annulus(
+    radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=5
+)
 
 display(meshball_xyz.CoordinateSystem.type)
 display(meshball_xyz.CoordinateSystem.N)
@@ -114,7 +122,7 @@ r, t = meshball.CoordinateSystem.R
 # -
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
-p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=False)
+p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
 
 
@@ -147,44 +155,22 @@ stokes = uw.systems.Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-options = stokes.petsc_options
-options.setValue("snes_rtol", 1.0e-4)
-options.setValue("pc_gamg_type", "agg")
-options.setValue("pc_gamg_agg_nsmooths", 3)
-options.setValue("pc_gamg_threshold", 0.5)
+stokes.tolerance = 1.0e-5
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball.dim
-)
-stokes.constitutive_model.Parameters.viscosity = 1
-stokes.penalty = 0.0
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-stokes.petsc_options["snes_rtol"] = 1.0e-4
-
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes.add_dirichlet_bc(0.0, "Upper", 0)
+    stokes.add_dirichlet_bc(0.0, "Upper", 1)
+
 else:
-    stokes.add_dirichlet_bc((0.0), "Upper", (0,))
+    stokes.add_dirichlet_bc(0.0, "Upper", 0)
 
-stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-
-stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "gamg"
-
-stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
-
-
-stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
-
+stokes.add_dirichlet_bc(0.0, "Lower", 0)
+stokes.add_dirichlet_bc(0.0, "Lower", 1)
 # -
 
 
@@ -198,15 +184,13 @@ stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_max_it"] = 3
 
 stokes.strainrate
 
-stokes.stress
-
 # +
 # Create Stokes object (x,y)
 
 radius_fn = meshball_xyz.CoordinateSystem.xR[0]
 radius_fn = r_xy.sym[0]
 
-hw = 1000.0 / res
+hw = 20000.0 / res
 surface_fn = sympy.exp(-((radius_fn - r_o) ** 2) * hw)
 base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 
@@ -216,27 +200,23 @@ stokes_xy = uw.systems.Stokes(
     pressureField=p_soln_xy,
     solver_name="stokes_xy",
 )
-stokes_xy.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(
-    meshball_xyz.dim
-)
-stokes_xy.constitutive_model.Parameters.viscosity = 1
-stokes_xy.saddle_preconditioner = 1 / stokes_xy.constitutive_model.Parameters.viscosity
+stokes_xy.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln_xy)
+stokes_xy.constitutive_model.Parameters.shar_viscosity_0 = 1
 stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
 
 # Velocity boundary conditions
 
 if not free_slip_upper:
-    stokes_xy.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+    stokes_xy.add_dirichlet_bc(0.0, "Upper", 0)
+    stokes_xy.add_dirichlet_bc(0.0, "Upper", 1)
 
-stokes_xy.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
-# -
+stokes_xy.add_dirichlet_bc(0.0, "Lower", 0)
+stokes_xy.add_dirichlet_bc(0.0, "Lower", 1)
 
-
-
-
-pressure_solver = uw.systems.Projection(meshball, p_cont)
-pressure_solver.uw_function = p_soln.sym[0]
-pressure_solver.smoothing = 1.0e-3
+# +
+# pressure_solver = uw.systems.Projection(meshball, p_cont)
+# pressure_solver.uw_function = p_soln.sym[0]
+# pressure_solver.smoothing = 1.0e-3
 
 # +
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
@@ -253,25 +233,30 @@ stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_
 
 with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
-        meshball_xyz.CoordinateSystem.xR[0], coords=r_xy.coords, coord_sys=meshball_xyz.N )
+        meshball_xyz.CoordinateSystem.xR[0],
+        coords=r_xy.coords,
+        coord_sys=meshball_xyz.N,
+    )
 
+stokes._setup_pointwise_functions()
 
+stokes._p_f0
 
-stokes._setup_terms()
-
-# + tags=[]
+# +
 from underworld3 import timing
 
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-pressure_solver.solve()
+# pressure_solver.solve()
 # -
 
 
-stokes_xy.tolerance = 1.0e-8
+stokes_xy.tolerance = 1.0e-5
 
+
+stokes_xy
 
 from underworld3 import timing
 
@@ -282,6 +267,9 @@ timing.print_table()
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
 
+0/0
+
+#
 
 # +
 ## Periodic in theta - the nodes which have been "moved" to a
@@ -290,41 +278,40 @@ U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 ## the xyz mesh for Uxy, and use it for plotting.
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1000, 1000]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    # pv.global_theme.anti_aliasing = "fxaa"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     pvmesh = pv.read("./tmp_meshball.msh")
 
     with meshball.access():
-        pvmesh.point_data["V"] = uw.function.evaluate(
+        pvmesh.point_data["V"] = uw.function.evalf(
             v_soln.sym.dot(v_soln.sym), meshball.data
         )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evaluate(
+        pvmesh.point_data["P"] = uw.function.evalf(p_cont.sym[0], meshball.data)
+        pvmesh.point_data["T"] = uw.function.evalf(
             t_init_xy, meshball_xyz.data, coord_sys=meshball_xyz.N
         )
 
     usol = np.empty_like(v_soln.coords)
-    usol[:, 0] = uw.function.evaluate(U_xy[0], v_soln.coords)
-    usol[:, 1] = uw.function.evaluate(U_xy[1], v_soln.coords)
+    usol[:, 0] = uw.function.evalf(U_xy[0], v_soln.coords)
+    usol[:, 1] = uw.function.evalf(U_xy[1], v_soln.coords)
 
     usol_xy = np.empty_like(v_soln_xy.coords)
-    usol_xy[:, 0] = uw.function.evaluate(v_soln_xy.sym[0], v_soln_xy.coords)
-    usol_xy[:, 1] = uw.function.evaluate(v_soln_xy.sym[1], v_soln_xy.coords)
+    usol_xy[:, 0] = uw.function.evalf(v_soln_xy.sym[0], v_soln_xy.coords)
+    usol_xy[:, 1] = uw.function.evalf(v_soln_xy.sym[1], v_soln_xy.coords)
 
     xy = np.empty_like(v_soln.coords)
-    xy[:, 0] = uw.function.evaluate(
+    xy[:, 0] = uw.function.evalf(
         meshball.CoordinateSystem.X[0], v_soln.coords, coord_sys=meshball.N
     )
-    xy[:, 1] = uw.function.evaluate(
+    xy[:, 1] = uw.function.evalf(
         meshball.CoordinateSystem.X[1], v_soln.coords, coord_sys=meshball.N
     )
 
@@ -334,17 +321,17 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length[:, 0:2] = usol[...]
 
-    arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
+    arrow_length_xy = np.zeros((stokes_xy.u.coords.shape[0], 3))
     arrow_length_xy[:, 0:2] = usol_xy[...]
 
-    pl = pv.Plotter(window_size=(750, 750))
+    pl = pv.Plotter()
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Grey",
-        scalars="P",
+        scalars="T",
         show_edges=True,
         use_transparency=False,
         opacity=0.75,
@@ -354,6 +341,9 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc + (0.0, 0.0, 0.0), arrow_length, mag=0.00005, color="Red")
 
     pl.show(cpos="xy")
+# -
+0/0
+
 # +
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_xy_rms = np.sqrt(usol_xy[:, 0] ** 2 + usol_xy[:, 1] ** 2).mean()
@@ -378,13 +368,8 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 stokes
 
 
-
 sympy.oo
 
 T = sympy.oo
 
 sympy.S.Infinity
-
-
-
-

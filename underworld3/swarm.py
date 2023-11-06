@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import contextlib
 
 import numpy as np
@@ -7,7 +7,9 @@ import petsc4py.PETSc as PETSc
 from mpi4py import MPI
 
 import underworld3 as uw
-from underworld3.utilities import _api_tools
+from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities._api_tools import uw_object
+
 import underworld3.timing as timing
 
 import h5py
@@ -41,13 +43,41 @@ class SwarmPICLayout(Enum):
 # and the duplication should be removed.
 
 
-class SwarmVariable(_api_tools.Stateful):
+class SwarmVariable(Stateful, uw_object):
+    """
+    The SwarmVariable class generates a variable supported by a point cloud or 'swarm' and the
+    underlying meshVariable representation that makes it possible to construct expressions that
+    depend on the values of the swarmVariable.
+
+    To set / read nodal values, use the numpy interface via the 'data' property.
+
+    Parameters
+    ----------
+    varname :
+        A textual name for this variable.
+    swarm :
+        The supporting underworld swarm.
+    size :
+        The shape of a Matrix variable type.
+    vtype :
+        Semi-Optional. The underworld variable type for this variable.
+    proxy_degree :
+        The polynomial degree for this variable.
+     proxy_continuous :
+        The polynomial degree for this variable.
+    varsymbol:
+        A symbolic form for printing etc (sympy / latex)
+    rebuild_on_cycle:
+        For cyclic swarm variables — True is the best choice for continuous fields
+
+    """
+
     @timing.routine_timer_decorator
     def __init__(
         self,
         name,
         swarm,
-        size,  # only needed if MATRIX type
+        size=None,  # only needed if MATRIX type
         vtype=None,
         dtype=float,
         proxy_degree=1,
@@ -58,7 +88,6 @@ class SwarmVariable(_api_tools.Stateful):
         varsymbol=None,
         rebuild_on_cycle=True,
     ):
-
         if name in swarm.vars.keys():
             raise ValueError(
                 "Variable with name {} already exists on swarm.".format(name)
@@ -95,6 +124,8 @@ class SwarmVariable(_api_tools.Stateful):
                     "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
                 )
 
+        self.vtype = vtype
+
         if not isinstance(vtype, uw.VarType):
             raise ValueError(
                 "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
@@ -102,11 +133,11 @@ class SwarmVariable(_api_tools.Stateful):
 
         if vtype == uw.VarType.SCALAR:
             self.num_components = 1
-            self.shape = 1
+            self.shape = (1, 1)
             self.cpt_map = 0
         elif vtype == uw.VarType.VECTOR:
             self.num_components = mesh.dim
-            self.shape = mesh.dim
+            self.shape = (1, mesh.dim)
             self.cpt_map = tuple(range(0, mesh.dim))
         elif vtype == uw.VarType.TENSOR:
             self.num_components = mesh.dim * mesh.dim
@@ -116,6 +147,8 @@ class SwarmVariable(_api_tools.Stateful):
             self.shape = (mesh.dim, mesh.dim)
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
+
+        self._data_container = np.empty(self.shape, dtype=object)
 
         if (dtype == float) or (dtype == "float") or (dtype == np.float64):
             self.dtype = float
@@ -154,15 +187,69 @@ class SwarmVariable(_api_tools.Stateful):
 
         # recycle swarm
         self._rebuild_on_cycle = rebuild_on_cycle
-
         self._register = _register
+
+        from collections import namedtuple
+
+        SwarmVariable_ij = namedtuple("SwarmVariable_ij", ["data", "sym"])
+
+        if self._proxy:
+            for i in range(0, self.shape[0]):
+                for j in range(0, self.shape[1]):
+                    self._data_container[i, j] = SwarmVariable_ij(
+                        data=f"SwarmVariable[...].data is only available within mesh.access() context",
+                        sym=self.sym[i, j],
+                    )
 
         super().__init__()
 
         return
 
-    def _create_proxy_variable(self):
+    def __getitem__(self, indices):
+        if not isinstance(indices, tuple):
+            if isinstance(indices, int) and self.shape[0] == 1:
+                i = 0
+                j = indices
+            else:
+                raise IndexError(
+                    "SwarmVariable[i,j] access requires one or two indices "
+                )
+        else:
+            i, j = indices
 
+        return self._data_container[i, j]
+
+    ## Should be a single master copy
+    def _data_layout(self, i, j=None):
+        # mapping
+
+        if self.vtype == uw.VarType.SCALAR:
+            return 0
+        if self.vtype == uw.VarType.VECTOR:
+            if j is None:
+                return i
+            elif i == 0:
+                return j
+            else:
+                raise IndexError(
+                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                )
+        if self.vtype == uw.VarType.TENSOR:
+            if self.swarm.mesh.dim == 2:
+                return ((0, 1), (2, 3))[i][j]
+            else:
+                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            if self.swarm.mesh.dim == 2:
+                return ((0, 2), (2, 1))[i][j]
+            else:
+                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+
+        if self.vtype == uw.VarType.MATRIX:
+            return i + j * self.shape[0]
+
+    def _create_proxy_variable(self):
         # release if defined
         self._meshVar = None
 
@@ -219,8 +306,60 @@ class SwarmVariable(_api_tools.Stateful):
 
         return
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+    def _rbf_reduce_to_meshVar(self, meshVar, verbose=False):
+        """
+        This method updates a mesh variable for the current
+        swarm & particle variable state by reducing the swarm to
+        the nearest point for each particle
 
+        Here is how it works:
+
+            1) for each particle, create a distance-weighted average on the node data
+            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
+
+        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
+        Todo: some form of global fall-back for when there are no particles on a processor
+
+        """
+
+        # if not proxied, nothing to do. return.
+        if not self._meshVar:
+            return
+
+        # 1 - Average particles to nodes with distance weighted average
+
+        kd = uw.kdtree.KDTree(meshVar.coords)
+        kd.build_index()
+
+        with self.swarm.access():
+            n, d, b = kd.find_closest_point(self.swarm.data)
+
+            node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
+            w = np.zeros(meshVar.coords.shape[0])
+
+            if not self._nn_proxy:
+                for i in range(self.data.shape[0]):
+                    if b[i]:
+                        node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
+                        w[n[i]] += 1.0 / (1.0e-24 + d[i])
+
+                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(
+                    -1, 1
+                )
+
+        # 2 - set NN vals on mesh var where w == 0.0
+
+        p_nnmap = self.swarm._get_map(self)
+
+        with self.swarm.mesh.access(meshVar), self.swarm.access():
+            meshVar.data[...] = node_values[...]
+            meshVar.data[np.where(w == 0.0), :] = self.data[
+                p_nnmap[np.where(w == 0.0)], :
+            ]
+
+        return
+
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
@@ -244,51 +383,11 @@ class SwarmVariable(_api_tools.Stateful):
 
             kdt.build_index()
 
-        return kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+            values = kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
 
-    # ToDo: I don't think this is used / up to date
-    @timing.routine_timer_decorator
-    def project_from(self, meshvar):
-        # use method found in
-        # /tmp/petsc-build/petsc/src/dm/impls/swarm/tests/ex2.c
-        # to project from fields to particles
+            del kdt
 
-        self.swarm.mesh.dm.clearDS()
-        self.swarm.mesh.dm.createDS()
-
-        meshdm = meshvar.mesh.dm
-        fields = meshvar.field_id
-        _, meshvardm = meshdm.createSubDM(fields)
-
-        ksp = PETSc.KSP().create()
-        ksp.setOptionsPrefix("swarm_project_from_")
-        options = PETSc.Options()
-        options.setValue("swarm_project_from_ksp_type", "lsqr")
-        options.setValue("swarm_project_from_ksp_rtol", 1e-17)
-        options.setValue("swarm_project_from_pc_type", "none")
-        ksp.setFromOptions()
-
-        rhs = meshvardm.getGlobalVec()
-
-        M_p = self.swarm.dm.createMassMatrix(meshvardm)
-
-        # make particle weight vector
-        f = self.swarm.createGlobalVectorFromField(self.clean_name)
-
-        # create matrix RHS vector, in this case the FEM field fhat with the coefficients vector #alpha
-        M = meshvardm.createMassMatrix(meshvardm)
-        with meshvar.mesh.access():
-            M.multTranspose(meshvar.vec_global, rhs)
-
-        ksp.setOperators(M_p, M_p)
-        ksp.solveTranspose(rhs, f)
-
-        self.swarm.dm.destroyGlobalVectorFromField(self.clean_name)
-        meshvardm.restoreGlobalVec(rhs)
-        meshvardm.destroy()
-        ksp.destroy()
-        M.destroy()
-        M_p.destroy()
+        return values
 
     @property
     def data(self):
@@ -327,6 +426,8 @@ class SwarmVariable(_api_tools.Stateful):
         compressionType :
             Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compression also needs to be set to 'True'.
 
+        force_sequential : activate the serial version of hdf5
+
         """
         if h5py.h5.get_config().mpi == False and comm.size > 1 and comm.rank == 0:
             warnings.warn(
@@ -352,7 +453,6 @@ class SwarmVariable(_api_tools.Stateful):
         else:
             with self.swarm.access(self):
                 if comm.rank == 0:
-                    # print(f'start {self.name} on {comm.rank}')
                     with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
                         if compression == True:
                             h5f.create_dataset(
@@ -369,41 +469,47 @@ class SwarmVariable(_api_tools.Stateful):
                                 chunks=True,
                                 maxshape=(None, self.data.shape[1]),
                             )
-                    # print(f'finish {self.name} on {comm.rank}')
                 comm.barrier()
                 for proc in range(1, comm.size):
                     if comm.rank == proc:
-                        # print(f'start {self.name} on {comm.rank}')
                         with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
                             h5f["data"].resize(
                                 (h5f["data"].shape[0] + self.data.shape[0]), axis=0
                             )
                             h5f["data"][-self.data.shape[0] :] = self.data[:]
-                        # print(f'finish {self.name} on {comm.rank}')
                     comm.barrier()
                 comm.barrier()
 
         return
 
     @timing.routine_timer_decorator
-    def simple_save(self, filename: str):
-
+    def write_proxy(self, filename: str):
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             if uw.mpi.rank == 0:
                 print("No proxy mesh variable that can be saved", flush=True)
             return
 
-        self._meshVar.simple_save(filename)
+        self._meshVar.write(filename)
 
         return
 
     @timing.routine_timer_decorator
-    def load(
+    def read_timestep(
         self,
-        filename: str,
-        swarmFilename: str,
+        data_filename: str,
+        swarmID: str,
+        data_name: str,
+        index: int,
+        outputPath="",
     ):
+        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
+        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
+
+        output_base_name = os.path.join(outputPath, data_filename)
+        swarmFilename = output_base_name + f".{swarmID}.{index:05}.h5"
+        filename = output_base_name + f".{swarmID}.{data_name}.{index:05}.h5"
+
         ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
         with h5py.File(f"{filename}", "r") as h5f_data, h5py.File(
             f"{swarmFilename}", "r"
@@ -439,34 +545,6 @@ class SwarmVariable(_api_tools.Stateful):
                     self.swarm.data, local_data, nnn=1
                 )
 
-                #### this produces a shape mismatch, would be quicker not to do it in a loop
-                # ind = np.isin(coordinates, self.swarm.data).all(axis=1)
-                # # self.data[:] = data[ind]
-
-                # print(f"Looping over coords for swarm load")
-                # i = 0
-
-                ### loops through the coords of the swarm to load the data
-                # for coord in self.swarm.data:
-                #     ind_data = np.isin(h5f_swarm["coordinates"][:], coord).all(axis=1)
-                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
-                #     self.data[ind_swarm] = h5f_data["data"][:][ind_data]
-                #     i += 1
-                #     if i % 1000 == 0:
-                #         print(
-                #             f"Looping over coords for swarm load ... {i}/{self.swarm.data.shape[0]}"
-                #         )
-
-                # print(f"Looping over coords for swarm load ... done")
-
-                ### loops through the coords in the file
-                # for i in range(0, file_length):
-                #     coord = h5f_swarm["coordinates"][i]
-                #     data = h5f_data["data"][i]
-                #     ind_swarm = np.isin(self.swarm.data, coord).all(axis=1)
-
-                #     self.data[ind_swarm] = data
-
         return
 
 
@@ -486,7 +564,6 @@ class IndexSwarmVariable(SwarmVariable):
         proxy_degree=1,
         proxy_continuous=True,
     ):
-
         self.indices = indices
 
         # These are the things we require of the generic swarm variable type
@@ -532,6 +609,60 @@ class IndexSwarmVariable(SwarmVariable):
     @property
     def sym(self):
         return self._MaskArray
+
+    @property
+    def sym_1d(self):
+        return self._MaskArray
+
+    # We could also add a __getitem__ call to access each mask
+
+    def __getitem__(self, index):
+        return self.sym[index]
+
+    def createMask(self, funcsList):
+        """
+        This creates a masked sympy function of swarm variables required for Underworld's solvers
+        """
+
+        if not isinstance(funcsList, (tuple, list)):
+            raise RuntimeError("Error input for createMask() - wrong type of input")
+
+        if len(funcsList) != self.indices:
+            raise RuntimeError("Error input for createMask() - wrong length of input")
+
+        symo = sympy.simplify(0)
+        for i in range(self.indices):
+            symo += funcsList[i] * self._MaskArray[i]
+
+        return symo
+
+    def viewMask(self, sympy):
+        """
+        Takes a previously masked sympy function and returns individual sympy objects corresponding to each material
+        """
+
+        """ TODO
+        output = []
+        for i in range( self.indices ):
+            tmp = {}
+            for j in range( self.indices ):
+                if i == j : pass
+                tmp
+
+        return output
+        """
+        pass
+
+    def visMask(self):
+        return self.createMask(list(range(self.indices)))
+
+    def view(self):
+        """
+        Show information on IndexSwarmVariable
+        """
+        if uw.mpi.rank == 0:
+            print(f"IndexSwarmVariable {self}")
+            print(f"Numer of indices {self.indices}")
 
     def _update(self):
         """
@@ -589,14 +720,14 @@ class IndexSwarmVariable(SwarmVariable):
 
 
 # @typechecked
-class Swarm(_api_tools.Stateful):
-
+class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0):
-
         Swarm.instances += 1
+
+        self.celldm = mesh.dm.clone()
 
         self._mesh = mesh
         self.dim = mesh.dim
@@ -604,7 +735,7 @@ class Swarm(_api_tools.Stateful):
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_PIC.value)
-        self.dm.setCellDM(mesh.dm)
+        self.dm.setCellDM(self.celldm)
         self._data = None
 
         # Is the swarm a streak-swarm ?
@@ -722,57 +853,74 @@ class Swarm(_api_tools.Stateful):
     def particle_cellid(self):
         return self._cellid_var
 
-    # @timing.routine_timer_decorator
-    # def populate(
-    #     self,
-    #     fill_param: Optional[int] = 3,
-    #     layout: Optional[SwarmPICLayout] = None,
-    # ):
-    #     (
-    #         """
-    #     Populate the swarm with particles throughout the domain.
+    @timing.routine_timer_decorator
+    def populate_petsc(
+        self,
+        fill_param: Optional[int] = 3,
+        layout: Optional[SwarmPICLayout] = None,
+    ):
+        """
+        Populate the swarm with particles throughout the domain.
 
-    #     """
-    #         + SwarmPICLayout.__doc__
-    #         + """
+        When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
+        When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
+        When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
 
-    #     When using SwarmPICLayout.REGULAR,     `fill_param` defines the number of points in each spatial direction.
-    #     When using SwarmPICLayout.GAUSS,       `fill_param` defines the number of quadrature points in each spatial direction.
-    #     When using SwarmPICLayout.SUBDIVISION, `fill_param` defines the number times the reference cell is sub-divided.
+        Parameters
+        ----------
+        fill_param:
+            Parameter determining the particle count per cell for the given layout.
+        layout:
+            Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
+            type cells, and `SwarmPICLayout.GAUSS` otherwise.
 
-    #     Parameters
-    #     ----------
-    #     fill_param:
-    #         Parameter determining the particle count per cell for the given layout.
-    #     layout:
-    #         Type of layout to use. Defaults to `SwarmPICLayout.REGULAR` for mesh objects with simplex
-    #         type cells, and `SwarmPICLayout.GAUSS` otherwise.
+        """
 
-    #     """
-    #     )
+        self.fill_param = fill_param
 
-    #     self.fill_param = fill_param
+        """
+        Currently (2021.11.15) supported by PETSc release 3.16.x
 
-    #     """
-    #     Currently (2021.11.15) supported by PETSc release 3.16.x
+        When using a DMPLEX the following case are supported:
+              (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
+             (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
+            (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
 
-    #     When using a DMPLEX the following case are supported:
-    #           (i) DMSWARMPIC_LAYOUT_REGULAR: 2D (triangle),
-    #          (ii) DMSWARMPIC_LAYOUT_GAUSS: 2D and 3D provided the cell is a tri/tet or a quad/hex,
-    #         (iii) DMSWARMPIC_LAYOUT_SUBDIVISION: 2D and 3D for quad/hex and 2D tri.
+        So this means, simplex mesh in 3D only supports GAUSS - This is based
+        on the tensor product locations so it is not even in the cells.
+        """
 
-    #     So this means, simplex mesh in 3D only supports GAUSS - This is based
-    #     on the tensor product locations so it is not even in the cells.
+        if layout == None:
+            if self.mesh.isSimplex == True and self.dim == 2 and fill_param > 1:
+                layout = SwarmPICLayout.REGULAR
+            else:
+                layout = SwarmPICLayout.GAUSS
 
-    #     """
+        if not isinstance(layout, SwarmPICLayout):
+            raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
+
+        self.layout = layout
+        self.dm.finalizeFieldRegister()
+
+        ## Commenting this out for now.
+        ## Code seems to operate fine without it, and the
+        ## existing values are wrong. It should be something like
+        ## `(elend-elstart)*fill_param^dim` for quads, and around
+        ## half that for simplices, depending on layout.
+        # elstart,elend = self.mesh.dm.getHeightStratum(0)
+        # self.dm.setLocalSizes((elend-elstart) * fill_param, 0)
+
+        self.dm.insertPointUsingCellDM(self.layout.value, fill_param)
+        return  # self # LM: Is there any reason to return self ?
+
+    #
 
     @timing.routine_timer_decorator
     def populate(
         self,
         fill_param: Optional[int] = 1,
     ):
-        (
-            """
+        """
         Populate the swarm with particles throughout the domain.
 
         Parameters
@@ -785,7 +933,6 @@ class Swarm(_api_tools.Stateful):
             Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)
 
         """
-        )
 
         self.fill_param = fill_param
 
@@ -844,6 +991,7 @@ class Swarm(_api_tools.Stateful):
                 all_local_coords[...]
                 + (0.33 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
+                * 2.0
                 * self.mesh._search_lengths[all_local_cells]  # typical cell size
             )
             cellid[:] = all_local_cells[:, 0]
@@ -970,7 +1118,6 @@ class Swarm(_api_tools.Stateful):
             warnings.warn("Compression may slow down write times", stacklevel=2)
 
         if h5py.h5.get_config().mpi == True and not force_sequential:
-
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
             # when there are many active cores. This is probably why the parallel
@@ -990,8 +1137,10 @@ class Swarm(_api_tools.Stateful):
                     )
                 else:
                     h5f.create_dataset("coordinates", data=data_copy[:])
-        else:
 
+            del data_copy
+
+        else:
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
             # when there are many active cores
@@ -1031,15 +1180,23 @@ class Swarm(_api_tools.Stateful):
                 comm.barrier()
             comm.barrier()
 
+            del data_copy
+
         return
 
     @timing.routine_timer_decorator
-    def load(
+    def read_timestep(
         self,
-        filename: str,
+        base_filename: str,
+        swarm_id: str,
+        index: int,
+        outputPath: Optional[str] = "",
     ):
+        output_base_name = os.path.join(outputPath, base_filename)
+        swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
+
         ### open up file with coords on all procs
-        with h5py.File(f"{filename}", "r") as h5f:
+        with h5py.File(f"{swarm_file}", "r") as h5f:
             coordinates = h5f["coordinates"][:]
 
         #### utilises the UW function for adding a swarm by an array
@@ -1056,7 +1213,6 @@ class Swarm(_api_tools.Stateful):
         proxy_degree=2,
         _nn_proxy=False,
     ):
-
         return SwarmVariable(
             name,
             self,
@@ -1073,7 +1229,6 @@ class Swarm(_api_tools.Stateful):
         index: int,
         outputPath: Optional[str] = "",
     ):
-
         """
 
         Use PETSc to save the swarm and attached data to a .pbin and xdmf file.
@@ -1088,22 +1243,22 @@ class Swarm(_api_tools.Stateful):
             Path to save the data. If left empty it will save the data in the current working directory.
         """
 
-        x_swarm_fname = f"{outputPath}{swarmName}_{index:04d}.xmf"
+        x_swarm_fname = f"{outputPath}{swarmName}_{index:05d}.xmf"
         self.dm.viewXDMF(x_swarm_fname)
 
     @timing.routine_timer_decorator
-    def save_checkpoint(
+    def write_timestep(
         self,
-        swarmName: str,
-        swarmVars: list,
+        filename: str,
+        swarmname: str,
         index: int,
+        swarmVars: Optional[list] = None,
         outputPath: Optional[str] = "",
         time: Optional[int] = None,
         compression: Optional[bool] = False,
         compressionType: Optional[str] = "gzip",
         force_sequential: Optional[bool] = False,
     ):
-
         """
 
         Save data to h5 and a corresponding xdmf for visualisation using h5py.
@@ -1126,13 +1281,23 @@ class Swarm(_api_tools.Stateful):
             The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.
         """
 
-        if swarmVars != None and not isinstance(swarmVars, list):
+        # This will eliminate the issue of whether or not to put path separators in the
+        # outputPath. Also does the right thing if outputPath is ""
+
+        import os
+
+        output_base_name = os.path.join(outputPath, filename) + "." + swarmname
+
+        # could also try to coerce this to be a list and raise if it fails (tuple, singleton ... )
+        # also ... why the typechecking if this can still happen
+
+        if swarmVars is not None and not isinstance(swarmVars, list):
             raise RuntimeError("`swarmVars` does not appear to be a list.")
 
         else:
             ### save the swarm particle location
             self.save(
-                filename=f"{outputPath}{swarmName}-{index:04d}.h5",
+                filename=f"{output_base_name}.{index:05d}.h5",
                 compression=compression,
                 compressionType=compressionType,
                 force_sequential=force_sequential,
@@ -1142,7 +1307,7 @@ class Swarm(_api_tools.Stateful):
         if swarmVars != None:
             for field in swarmVars:
                 field.save(
-                    filename=f"{outputPath}{field.name}-{index:04d}.h5",
+                    filename=f"{output_base_name}.{field.name}.{index:05d}.h5",
                     compression=compression,
                     compressionType=compressionType,
                     force_sequential=force_sequential,
@@ -1150,7 +1315,7 @@ class Swarm(_api_tools.Stateful):
 
         if uw.mpi.rank == 0:
             ### only need to combine the h5 files to a single xdmf on one proc
-            with open(f"{outputPath}{swarmName}-{index:04d}.xmf", "w") as xdmf:
+            with open(f"{output_base_name}.{index:05d}.xdmf", "w") as xdmf:
                 # Write the XDMF header
                 xdmf.write('<?xml version="1.0" ?>\n')
                 xdmf.write(
@@ -1158,14 +1323,14 @@ class Swarm(_api_tools.Stateful):
                 )
                 xdmf.write("<Domain>\n")
                 xdmf.write(
-                    f'<Grid Name="{swarmName}-{index:04d}" GridType="Uniform">\n'
+                    f'<Grid Name="{output_base_name}.{index:05d}" GridType="Uniform">\n'
                 )
 
                 if time != None:
                     xdmf.write(f'	<Time Value="{time}" />\n')
 
                 # Write the grid element for the HDF5 dataset
-                with h5py.File(f"{outputPath}{swarmName}-{index:04}.h5", "r") as h5f:
+                with h5py.File(f"{output_base_name}.{index:05}.h5", "r") as h5f:
                     xdmf.write(
                         f'	<Topology Type="POLYVERTEX" NodesPerElement="{h5f["coordinates"].shape[0]}"> </Topology>\n'
                     )
@@ -1182,7 +1347,7 @@ class Swarm(_api_tools.Stateful):
                 if swarmVars != None:
                     for field in swarmVars:
                         with h5py.File(
-                            f"{outputPath}{field.name}-{index:04d}.h5", "r"
+                            f"{output_base_name}.{field.name}.{index:05d}.h5", "r"
                         ) as h5f:
                             if h5f["data"].dtype == np.int32:
                                 xdmf.write(
@@ -1272,12 +1437,22 @@ class Swarm(_api_tools.Stateful):
             var._data = self.dm.getField(var.clean_name).reshape(
                 (-1, var.num_components)
             )
+            assert var._data is not None
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
                 var._data.flags.writeable = False
             else:
                 # increment variable state
                 var._increment()
+
+            # make view for each var component
+            if var._proxy:
+                for i in range(0, var.shape[0]):
+                    for j in range(0, var.shape[1]):
+                        var._data_container[i, j] = var._data_container[i, j]._replace(
+                            data=var.data[:, var._data_layout(i, j)],
+                        )
+
         # if particles moving, update swarm state
         if self.particle_coordinates in writeable_vars:
             self._increment()
@@ -1303,24 +1478,31 @@ class Swarm(_api_tools.Stateful):
                     self.em_swarm.dm.restoreField(var.clean_name)
                     var._is_accessed = False
                 # do particle migration if coords changes
+
                 if self.em_swarm.particle_coordinates in writeable_vars:
                     # let's use the mesh index to update the particles owning cells.
                     # note that the `petsc4py` interface is more convenient here as the
                     # `SwarmVariable.data` interface is controlled by the context manager
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
+
                     cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
                     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
                         (-1, self.em_swarm.dim)
                     )
+
                     cellid[:] = self.em_swarm.mesh.get_closest_cells(coords).reshape(-1)
+
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
                     # now migrate.
+
                     self.em_swarm.dm.migrate(remove_sent_points=True)
+
                     # void these things too
                     self.em_swarm._index = None
                     self.em_swarm._nnmapdict = {}
+
                 # do var updates
                 for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all.
@@ -1330,10 +1512,52 @@ class Swarm(_api_tools.Stateful):
                     ):
                         var._update()
 
+                    if var._proxy:
+                        for i in range(0, var.shape[0]):
+                            for j in range(0, var.shape[1]):
+                                # var._data_ij[i, j] = None
+                                var._data_container[i, j] = var._data_container[
+                                    i, j
+                                ]._replace(
+                                    data=f"SwarmVariable[...].data is only available within mesh.access() context",
+                                )
+
                 uw.timing._decrementDepth()
                 uw.timing.log_result(time.time() - stime, "Swarm.access", 1)
 
         return exit_manager(self)
+
+    ## Better to have one master copy - this one is cut'n'pasted from
+    ## the MeshVariable class
+
+    def _data_layout(self, i, j=None):
+        # mapping
+
+        if self.vtype == uw.VarType.SCALAR:
+            return 0
+        if self.vtype == uw.VarType.VECTOR:
+            if j is None:
+                return i
+            elif i == 0:
+                return j
+            else:
+                raise IndexError(
+                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                )
+        if self.vtype == uw.VarType.TENSOR:
+            if self.mesh.dim == 2:
+                return ((0, 1), (2, 3))[i][j]
+            else:
+                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            if self.mesh.dim == 2:
+                return ((0, 2), (2, 1))[i][j]
+            else:
+                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+
+        if self.vtype == uw.VarType.MATRIX:
+            return i + j * self.shape[0]
 
     @timing.routine_timer_decorator
     def _get_map(self, var):
@@ -1365,8 +1589,8 @@ class Swarm(_api_tools.Stateful):
         order=2,
         corrector=False,
         restore_points_to_domain_func=None,
+        evalf=False,
     ):
-
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping.
@@ -1384,18 +1608,24 @@ class Swarm(_api_tools.Stateful):
             with self.access(self.particle_coordinates):
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
-                corrected_position = X0.data + delta_t * v_at_Vpts
+                corrected_position = X0.data.copy() + delta_t * v_at_Vpts
                 if restore_points_to_domain_func is not None:
                     corrected_position = restore_points_to_domain_func(
                         corrected_position
                     )
 
-                updated_current_coords = 0.5 * (corrected_position + self.data)
+                updated_current_coords = 0.5 * (corrected_position + self.data.copy())
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
@@ -1406,6 +1636,9 @@ class Swarm(_api_tools.Stateful):
 
                 self.data[...] = updated_current_coords[...]
 
+                del updated_current_coords
+                del v_at_Vpts
+
         with self.access(X0):
             X0.data[...] = self.data[...]
             self._X0_uninitialised = False
@@ -1413,15 +1646,20 @@ class Swarm(_api_tools.Stateful):
         # Mid point algorithm (2nd order)
         if order == 2:
             with self.access(self.particle_coordinates):
-
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
-                mid_pt_coords = self.data[...] + 0.5 * delta_t * v_at_Vpts
+                mid_pt_coords = self.data[...].copy() + 0.5 * delta_t * v_at_Vpts
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
@@ -1430,27 +1668,37 @@ class Swarm(_api_tools.Stateful):
 
                 self.data[...] = mid_pt_coords[...]
 
+                del mid_pt_coords
+
                 ## Let the swarm be updated, and then move the rest of the way
 
             with self.access(self.particle_coordinates):
-
                 v_at_Vpts = np.zeros_like(self.data)
 
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(
-                        V_fn_matrix[d], self.data
-                    ).reshape(-1)
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
 
-                new_coords = X0.data[...] + delta_t * v_at_Vpts
+                new_coords = X0.data[...].copy() + delta_t * v_at_Vpts
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
                 self.data[...] = new_coords[...]
+
+                del new_coords
+                del v_at_Vpts
 
         # Previous position algorithm (cf above) - we use the previous step as the
         # launch point using the current velocity field. This gives a correction to the previous
@@ -1461,10 +1709,18 @@ class Swarm(_api_tools.Stateful):
         # forward Euler (1st order)
         else:
             with self.access(self.particle_coordinates):
-                for d in range(self.dim):
-                    v_at_Vpts[:, d] = uw.function.evaluate(V_fn[d], self.data).reshape(
-                        -1
-                    )
+                v_at_Vpts = np.zeros_like(self.data)
+
+                if evalf:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evalf(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
+                else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d], self.data
+                        ).reshape(-1)
 
                 new_coords = self.data + delta_t * v_at_Vpts
 
@@ -1473,7 +1729,7 @@ class Swarm(_api_tools.Stateful):
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
-                self.data[...] = new_coords
+                self.data[...] = new_coords[...].copy()
 
         ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
         ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
@@ -1527,7 +1783,6 @@ class Swarm(_api_tools.Stateful):
             for swarmVar in self.vars.values():
                 if swarmVar._rebuild_on_cycle:
                     with self.access(swarmVar):
-
                         if swarmVar.dtype is int:
                             nnn = 1
                         else:
@@ -1535,7 +1790,8 @@ class Swarm(_api_tools.Stateful):
 
                         interpolated_values = (
                             swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            # uw.function.evaluate(swarmVar._meshVar.fn, remeshed_coords)
+                            #     swarmVar._meshVar.fn, self.mesh.particle_X_orig
+                            # )
                         ).astype(swarmVar.dtype)
 
                         swarmVar.data[swarm_size::] = interpolated_values
@@ -1550,3 +1806,722 @@ class Swarm(_api_tools.Stateful):
             self.cycle += 1
 
         return
+
+
+class NodalPointSwarm(Swarm):
+    r"""Swarm with particles located at the coordinate points of a meshVariable
+
+    The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
+    after they have been moved.
+
+    The purpose of this Swarm is to manage sample points for advection schemes based on upstream sampling
+    (method of characteristics etc)"""
+
+    def __init__(
+        self,
+        trackedVariable: uw.discretisation.MeshVariable,
+    ):
+        self.trackedVariable = trackedVariable
+        self.swarmVariable = None
+        mesh = trackedVariable.mesh
+
+        # Set up a standard swarm
+        super().__init__(mesh)
+
+        nswarm = self
+
+        meshVar_name = trackedVariable.clean_name
+        meshVar_symbol = trackedVariable.symbol
+
+        ks = str(self.instance_number)
+        name = f"{meshVar_name}_star"
+        symbol = rf"{{ {meshVar_symbol} }}^{{ <*> }}"
+
+        self.swarmVariable = uw.swarm.SwarmVariable(
+            name,
+            nswarm,
+            vtype=trackedVariable.vtype,
+            proxy_degree=trackedVariable.degree,
+            proxy_continuous=trackedVariable.continuous,
+            varsymbol=symbol,
+        )
+
+        name = f"ns_X0_{ks}"
+        symbol = r"X0^{*^{{[" + ks + "]}}}"
+        nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
+
+        nswarm.dm.finalizeFieldRegister()
+        nswarm.dm.addNPoints(
+            trackedVariable.coords.shape[0] + 1
+        )  # why + 1 ? That's the number of spots actually allocated
+
+        cellid = nswarm.dm.getField("DMSwarm_cellid")
+        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
+        coords[...] = trackedVariable.coords[...]
+        cellid[:] = self.mesh.get_closest_cells(coords)
+
+        # Move slightly within the chosen cell to avoid edge effects
+        centroid_coords = self.mesh._centroids[cellid]
+        shift = 1.0e-1 * self.mesh.get_min_radius()
+        coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
+
+        nswarm.dm.restoreField("DMSwarmPIC_coor")
+        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.migrate(remove_sent_points=True)
+
+        with nswarm.access(nX0):
+            nX0.data[...] = coords
+
+        self._nswarm = nswarm
+        self._X0 = nX0
+
+        return
+
+
+class SemiLagrange_Updater(uw_object):
+    r"""Nodal-Swarm  Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.bcs = bcs
+        self.verbose = verbose
+        self.degree = degree
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can't
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
+
+        self._psi_fn = psi_fn
+        self.V_fn = V_fn
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            self.psi_star.append(
+                uw.discretisation.MeshVariable(
+                    f"psi_star_sl_{self.instance_number}_{i}",
+                    self.mesh,
+                    vtype=vtype,
+                    degree=degree,
+                    continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        # We just need one swarm since this is inherently a sequential operation
+        nswarm = uw.swarm.NodalPointSwarm(self.psi_star[0])
+        self._nswarm_psi = nswarm
+
+        # The projection operator for mapping swarm values to the mesh - needs to be different for
+        # each variable type, unfortunately ...
+
+        if vtype == uw.VarType.SCALAR:
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.psi_star[0], verbose=False
+            )
+        elif vtype == uw.VarType.VECTOR:
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self.psi_star[0], verbose=False
+                )
+            )
+        elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            self._WorkVar = uw.discretisation.MeshVariable(
+                f"W_star_slcn_{self.instance_number}",
+                self.mesh,
+                vtype=uw.VarType.SCALAR,
+                degree=degree,
+                continuous=continuous,
+                varsymbol=r"W^{*}",
+            )
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Tensor_Projection(
+                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+                )
+            )
+
+        self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.bcs = bcs
+        self._psi_star_projection_solver.smoothing = smoothing
+
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn
+        self._psi_star_projection_solver.uw_function = self._psi_fn
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        # display(
+        #     Latex(
+        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
+        #         + sympy.sympify(self.dt_physical)._repr_latex_()
+        #     )
+        # )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(dt, evalf, verbose)
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # if average_over_dt:
+        #     phi = min(1.0, dt / self.dt_physical)
+        # else:
+        #     phi = 1.0
+
+        if verbose and uw.mpi.rank == 0:
+            print(f"Update {self.psi_fn}", flush=True)
+
+        ## Progress from the oldest part of the history
+        # 1. Copy the stored values down the chain
+
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # 2. Compute the upstream values
+
+        # We use the u_star variable as a working value here so we have to work backwards
+        for i in range(self.order - 1, -1, -1):
+            with self._nswarm_psi.access(self._nswarm_psi._X0):
+                self._nswarm_psi._X0.data[...] = self._nswarm_psi.data[...]
+
+            # march nodes backwards along characteristics
+            self._nswarm_psi.advection(
+                self.V_fn,
+                -dt,
+                order=2,
+                corrector=False,
+                restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+            )
+
+            if i == 0:
+                # Recalculate u_star from u_fn
+                self._psi_star_projection_solver.uw_function = self.psi_fn
+                self._psi_star_projection_solver.solve()
+
+            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
+                        self.psi_star[i].sym[d], self._nswarm_psi.data
+                    )
+
+            # restore coords (will call dm.migrate after context manager releases)
+            with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
+                self._nswarm_psi.data[...] = self._nswarm_psi._X0.data[...]
+
+            # Now project to the mesh using bc's to obtain u_star
+            self._psi_star_projection_solver.uw_function = (
+                self._nswarm_psi.swarmVariable.sym
+            )
+            self._psi_star_projection_solver.solve()
+
+            # Copy data from the projection operator if required
+            if i != 0:
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+        return
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am
+
+
+class Lagrangian_Updater(uw_object):
+    r"""Swarm-based Lagrangian History Manager:
+
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+    """
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+        fill_param=3,
+    ):
+        super().__init__()
+
+        # create a new swarm to manage here
+        dudt_swarm = uw.swarm.Swarm(mesh)
+
+        self.mesh = mesh
+        self.swarm = dudt_swarm
+        self.psi_fn = psi_fn
+        self.V_fn = V_fn
+        self.verbose = verbose
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            print(f"Creating psi_star[{i}]")
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f"psi_star_sw_{self.instance_number}_{i}",
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        dudt_swarm.populate(fill_param)
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r"$\quad\Delta t_{\textrm{phys}} = $ "
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_post_solve(dt, evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+
+            # copy the information down the chain
+            print(f"Lagrange order = {self.order}")
+            print(f"Lagrange copying {i-1} to {i}")
+
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Now update the swarm variable
+
+        if evalf:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        else:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        # Now update the swarm locations
+
+        self.swarm.advection(
+            self.V_fn,
+            delta_t=dt,
+            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+        )
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order <= 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am
+
+
+class Lagrangian_Swarm_Updater(uw_object):
+    r"""Swarm-based Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+    """
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        swarm: Swarm,
+        psi_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = swarm.mesh
+        self.swarm = swarm
+        self.psi_fn = psi_fn
+        self.verbose = verbose
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            print(f"Creating psi_star[{i}]")
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f"psi_star_sw_{self.instance_number}_{i}",
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r"$\quad\Delta t_{\textrm{phys}} = $ "
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_post_solve(dt, evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+
+            # copy the information down the chain
+            print(f"Lagrange order = {self.order}")
+            print(f"Lagrange copying {i-1} to {i}")
+
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Now update the swarm variable
+
+        if evalf:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        else:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order <= 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am

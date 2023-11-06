@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -27,7 +27,9 @@ options = PETSc.Options()
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=3)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=3
+)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -44,7 +46,6 @@ y = mesh.N.y
 # +
 
 if uw.mpi.size == 1:
-
     # plot the mesh
     import numpy as np
     import pyvista as pv
@@ -61,7 +62,13 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+    )
 
     pl.show(cpos="xy")
 # -
@@ -69,9 +76,11 @@ if uw.mpi.size == 1:
 # Create Darcy Solver
 darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
-darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
-darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.Parameters.diffusivity=1
+darcy.petsc_options[
+    "snes_rtol"
+] = 1.0e-6  # Needs to be smaller than the contrast in properties
+darcy.constitutive_model = uw.constitutive_models.DiffusionModel(mesh.dim)
+darcy.constitutive_model.Parameters.diffusivity = 1
 
 
 # +
@@ -96,7 +105,7 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 # A smooth version
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
-darcy.constitutive_model.Parameters.diffusivity=kFunc
+darcy.constitutive_model.Parameters.diffusivity = kFunc
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
 
@@ -118,7 +127,6 @@ darcy.solve()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -170,7 +178,13 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="P", use_transparency=False, opacity=1.0
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="P",
+        use_transparency=False,
+        opacity=1.0,
     )
 
     pl.add_mesh(pvstream, line_width=10.0)
@@ -199,7 +213,10 @@ Pa = (dP / Lb - S + k1 / k2 * S) / (1.0 / Lb + k1 / k2 / La)
 pressure_analytic = np.piecewise(
     ycoords,
     [ycoords >= -La, ycoords < -La],
-    [lambda ycoords: -Pa * ycoords / La, lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb],
+    [
+        lambda ycoords: -Pa * ycoords / La,
+        lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb,
+    ],
 )
 
 S = 0
@@ -207,7 +224,10 @@ Pa = (dP / Lb - S + k1 / k2 * S) / (1.0 / Lb + k1 / k2 / La)
 pressure_analytic_noG = np.piecewise(
     ycoords,
     [ycoords >= -La, ycoords < -La],
-    [lambda ycoords: -Pa * ycoords / La, lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb],
+    [
+        lambda ycoords: -Pa * ycoords / La,
+        lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb,
+    ],
 )
 
 # +
@@ -218,10 +238,16 @@ import matplotlib.pyplot as plt
 fig = plt.figure()
 ax1 = fig.add_subplot(111, xlabel="Pressure", ylabel="Depth")
 ax1.plot(pressure_interp, ycoords, linewidth=3, label="Numerical solution")
-ax1.plot(pressure_analytic, ycoords, linewidth=3, linestyle="--", label="Analytic solution")
-ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle="--", label="Analytic (no gravity)")
+ax1.plot(
+    pressure_analytic, ycoords, linewidth=3, linestyle="--", label="Analytic solution"
+)
+ax1.plot(
+    pressure_analytic_noG,
+    ycoords,
+    linewidth=3,
+    linestyle="--",
+    label="Analytic (no gravity)",
+)
 ax1.grid("on")
 ax1.legend()
 # -
-
-

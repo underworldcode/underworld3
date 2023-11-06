@@ -14,7 +14,7 @@
 
 # # Compression / Extension with no mesh deformation
 #
-# This is a rigid inclusion model so it looks a lot like Ex_Shear_Band_Plasticity_PS.py but the geometry is closer to 
+# This is a rigid inclusion model so it looks a lot like Ex_Shear_Band_Plasticity_PS.py but the geometry is closer to
 # what we have seen before in various papers.
 #
 # The yield stress is Drucker-Prager / Von Mises ($\mu$ = 0).
@@ -39,11 +39,8 @@ import underworld3 as uw
 import numpy as np
 
 
-
-
 options = petsc4py.PETSc.Options()
-options["dm_adaptor"]= "pragmatic"
-
+options["dm_adaptor"] = "pragmatic"
 
 
 # +
@@ -60,25 +57,23 @@ height = 1.0
 radius = 0.25
 
 if uw.mpi.rank == 0:
-
     # Generate local mesh on boss process
 
     gmsh.initialize()
     gmsh.model.add("Notch")
     gmsh.model.geo.characteristic_length_max = csize
-             
-    c0  = gmsh.model.geo.add_point(0.0, 0.0, 0.0, csize_inclusion) 
-    cr1 = gmsh.model.geo.add_point(-radius, 0.0, 0.0, csize_inclusion) 
-    cr2 = gmsh.model.geo.add_point(0.0, radius, 0.0, csize_inclusion) 
-    cr3 = gmsh.model.geo.add_point(+radius, 0.0, 0.0, csize_inclusion) 
-    cr4 = gmsh.model.geo.add_point(-radius, radius, 0.0, csize_inclusion) 
-    cr5 = gmsh.model.geo.add_point(+radius, radius, 0.0, csize_inclusion) 
 
-    cp1 = gmsh.model.geo.add_point(-width, 0.0, 0.0, csize) 
-    cp2 = gmsh.model.geo.add_point(+width, 0.0, 0.0, csize) 
-    cp3 = gmsh.model.geo.add_point(+width, height, 0.0, csize) 
-    cp4 = gmsh.model.geo.add_point(-width, height, 0.0, csize) 
+    c0 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, csize_inclusion)
+    cr1 = gmsh.model.geo.add_point(-radius, 0.0, 0.0, csize_inclusion)
+    cr2 = gmsh.model.geo.add_point(0.0, radius, 0.0, csize_inclusion)
+    cr3 = gmsh.model.geo.add_point(+radius, 0.0, 0.0, csize_inclusion)
+    cr4 = gmsh.model.geo.add_point(-radius, radius, 0.0, csize_inclusion)
+    cr5 = gmsh.model.geo.add_point(+radius, radius, 0.0, csize_inclusion)
 
+    cp1 = gmsh.model.geo.add_point(-width, 0.0, 0.0, csize)
+    cp2 = gmsh.model.geo.add_point(+width, 0.0, 0.0, csize)
+    cp3 = gmsh.model.geo.add_point(+width, height, 0.0, csize)
+    cp4 = gmsh.model.geo.add_point(-width, height, 0.0, csize)
 
     l1 = gmsh.model.geo.add_line(cr3, cp2)
     l2 = gmsh.model.geo.add_line(cp2, cp3)
@@ -91,20 +86,21 @@ if uw.mpi.rank == 0:
     # l6 = gmsh.model.geo.add_line(cr1, cr4)
     # l7 = gmsh.model.geo.add_line(cr4, cr5)
     # l8 = gmsh.model.geo.add_line(cr5, cr3)
-    
 
-    cl1 = gmsh.model.geo.add_curve_loop([l1,l2,l3,l4,l5,l6,l7])
-    surf1 = gmsh.model.geo.add_plane_surface([cl1], )
-    
+    cl1 = gmsh.model.geo.add_curve_loop([l1, l2, l3, l4, l5, l6, l7])
+    surf1 = gmsh.model.geo.add_plane_surface(
+        [cl1],
+    )
+
     gmsh.model.geo.synchronize()
 
     gmsh.model.add_physical_group(1, [l4], -1, name="Left")
     gmsh.model.add_physical_group(1, [l2], -1, name="Right")
     gmsh.model.add_physical_group(1, [l3], -1, name="Top")
-    gmsh.model.add_physical_group(1, [l1,l5], -1, name="FlatBottom")
-    gmsh.model.add_physical_group(1, [l6,l7], -1, name="Hump")
+    gmsh.model.add_physical_group(1, [l1, l5], -1, name="FlatBottom")
+    gmsh.model.add_physical_group(1, [l6, l7], -1, name="Hump")
     gmsh.model.add_physical_group(2, [surf1], -1, name="Elements")
-    
+
     gmsh.model.mesh.generate(2)
 
     gmsh.write(f"tmp_hump.msh")
@@ -112,9 +108,7 @@ if uw.mpi.rank == 0:
 # -
 
 
-mesh1 = uw.discretisation.Mesh("tmp_hump.msh", 
-                               useRegions=True,
-                               simplex=True)
+mesh1 = uw.discretisation.Mesh("tmp_hump.msh", useRegions=True, simplex=True)
 mesh1.dm.view()
 
 # +
@@ -206,20 +200,20 @@ stokes = uw.systems.Stokes(
     solver_name="stokes",
 )
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-stokes.penalty=0.1
+stokes.penalty = 0.1
 
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_atol"] = 1.0e-4
 
 
 stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_velocity_pc_type"]  = "mg"
+stokes.petsc_options["fieldsplit_velocity_pc_type"] = "mg"
 
 stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres"
-stokes.petsc_options["fieldsplit_pressure_pc_type"] = "mg" 
+stokes.petsc_options["fieldsplit_pressure_pc_type"] = "mg"
 
 
 # +
@@ -263,20 +257,20 @@ stokes.bodyforce -= (
     1.0e6 * hump_surface_fn * v_soln.sym.dot(inclusion_unit_rvec) * inclusion_unit_rvec
 )
 
-# stokes.bodyforce 
+# stokes.bodyforce
 p_penalty = 0.0
-stokes.PF0 = p_penalty * upper_surface_fn * p_soln.sym 
-stokes.saddle_preconditioner = (1 / stokes.constitutive_model.Parameters.viscosity
-                                + p_penalty * upper_surface_fn)
-    
+stokes.PF0 = p_penalty * upper_surface_fn * p_soln.sym
+stokes.saddle_preconditioner = (
+    1 / stokes.constitutive_model.Parameters.viscosity + p_penalty * upper_surface_fn
+)
+
 # Velocity boundary conditions
 
 # stokes.add_dirichlet_bc((0.0, 0.0), "Hump", (0, 1))
 # stokes.add_dirichlet_bc((vx_ps, vy_ps), ["top", "bottom", "left", "right"], (0, 1))
-stokes.add_dirichlet_bc((1.0,0.0), "Left", (0,1))
-stokes.add_dirichlet_bc((-1.0,0.0), "Right", (0,1))
+stokes.add_dirichlet_bc((1.0, 0.0), "Left", (0, 1))
+stokes.add_dirichlet_bc((-1.0, 0.0), "Right", (0, 1))
 stokes.add_dirichlet_bc((0.0,), "FlatBottom", (1,))
-
 
 
 # +
@@ -286,10 +280,10 @@ stokes.solve(zero_init_guess=False)
 # +
 # Calculate surface pressure
 
-_,_,_,_,ps_sum,_,_ = mesh1.stats(p_soln.sym[0] * upper_surface_fn)
-_,_,_,_,p_sum,_,_ = mesh1.stats(p_soln.sym[0])
-_,_,_,_,ps_norm,_,_ = mesh1.stats(upper_surface_fn)
-_,_,_,_,p_norm,_,_ = mesh1.stats(1+0.00001 * p_soln.sym[0])
+_, _, _, _, ps_sum, _, _ = mesh1.stats(p_soln.sym[0] * upper_surface_fn)
+_, _, _, _, p_sum, _, _ = mesh1.stats(p_soln.sym[0])
+_, _, _, _, ps_norm, _, _ = mesh1.stats(upper_surface_fn)
+_, _, _, _, p_norm, _, _ = mesh1.stats(1 + 0.00001 * p_soln.sym[0])
 
 print(f"Mean Surface P - {ps_sum/p_sum}")
 print(f"Mean P - {p_sum/p_norm}")
@@ -315,14 +309,19 @@ print(f"Mean P - {p_sum/p_norm}")
 
 for i in range(1):
     mu = mu0
-    C = C0 # + (1 - i / 4) * 0.1
+    C = C0  # + (1 - i / 4) * 0.1
     print(f"Mu - {mu}, C = {C}")
-    tau_y = sympy.Max(C + mu * stokes.p.sym[0] + 1 * sympy.sin(x * sympy.pi / (2*width))**2, 0.0001)
+    tau_y = sympy.Max(
+        C + mu * stokes.p.sym[0] + 1 * sympy.sin(x * sympy.pi / (2 * width)) ** 2,
+        0.0001,
+    )
     viscosity = 1.0 / (2 * stokes._Einv2 / tau_y + 1.0)
-    
+
     stokes.constitutive_model.Parameters.viscosity = viscosity
-    stokes.saddle_preconditioner = (1 / stokes.constitutive_model.Parameters.viscosity
-                                + p_penalty * upper_surface_fn)
+    stokes.saddle_preconditioner = (
+        1 / stokes.constitutive_model.Parameters.viscosity
+        + p_penalty * upper_surface_fn
+    )
     stokes.solve(zero_init_guess=False)
 # -
 
@@ -348,7 +347,6 @@ mesh1.generate_xdmf(savefile)
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -369,7 +367,9 @@ if uw.mpi.size == 1:
         pvmesh.point_data["Vmag"] = uw.function.evaluate(
             sympy.sqrt(v_soln.sym.dot(v_soln.sym)), mesh1.data
         )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0]-0*(1-y), mesh1.data)
+        pvmesh.point_data["P"] = uw.function.evaluate(
+            p_soln.sym[0] - 0 * (1 - y), mesh1.data
+        )
         pvmesh.point_data["Edot"] = uw.function.evaluate(
             strain_rate_inv2.sym[0], mesh1.data
         )
@@ -405,7 +405,6 @@ if uw.mpi.size == 1:
 # -
 
 if uw.mpi.size == 1:
-
     pl = pv.Plotter(window_size=(1000, 500))
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)
@@ -418,10 +417,8 @@ if uw.mpi.size == 1:
         scalars="Edot",
         use_transparency=False,
         opacity=1.0,
-        clim=[0.0,4.0],
+        clim=[0.0, 4.0],
     )
-
-
 
     # pl.remove_scalar_bar("mag")
 
@@ -434,9 +431,4 @@ strain_rate_inv2.save(savefile)
 mesh1.generate_xdmf(savefile)
 
 if uw.mpi.size == 1:
-
     print(pvmesh.point_data["Visc"].min(), pvmesh.point_data["Visc"].max())
-
-
-
-

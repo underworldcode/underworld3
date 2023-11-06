@@ -11,6 +11,9 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities import _api_tools
+from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities._api_tools import uw_object
+
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
 
@@ -63,8 +66,6 @@ def _from_gmsh(
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
     if uw.mpi.rank == 0:
-        # print(f"Processing gmsh file {filename}")
-
         plex_0 = PETSc.DMPlex().createFromFile(filename, comm=PETSc.COMM_SELF)
 
         plex_0.setName("uw_mesh")
@@ -73,8 +74,6 @@ def _from_gmsh(
         viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0)
         viewer.destroy()
-
-        # print(f"Mesh saved to {filename}.h5")
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -114,8 +113,10 @@ def _from_plexh5(
         return sf0, h5plex
 
 
-class Mesh(_api_tools.Stateful):
-
+class Mesh(Stateful, uw_object):
+    r"""
+    Mesh class for uw - documentation needed
+    """
     mesh_instances = 0
 
     @timing.routine_timer_decorator
@@ -132,19 +133,16 @@ class Mesh(_api_tools.Stateful):
         filename=None,
         refinement=None,
         refinement_callback=None,
+        return_coords_to_bounds=None,
         boundaries=None,
-        distribute=True,
+        name=None,
         *args,
         **kwargs,
     ):
-
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
-        if distribute:
-            comm = PETSc.COMM_WORLD
-        else:
-            comm = PETSc.COMM_SELF
+        comm = PETSc.COMM_WORLD
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             name = "plexmesh"
@@ -175,39 +173,73 @@ class Mesh(_api_tools.Stateful):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        # Use grid hashing for point location
+        options = PETSc.Options()
+        options["dm_plex_hash_location"] = None
+        self.dm.setFromOptions()
+
         self.filename = filename
         self.boundaries = boundaries
+
         self.refinement_callback = refinement_callback
+        self.return_coords_to_bounds = return_coords_to_bounds
+        self.name = name
 
         self.dm0 = self.dm.clone()
         self.sf1 = None
 
-        if distribute:
-            self.sf1 = self.dm.distribute()
-        else:
-            print("Warning - not distributing mesh !!", flush=True)
+        ## This is where we can refine the dm if required, and rebuild / redistribute
 
-        ## This is where we can refine the dm if required, and rebuild
+        if not refinement is None and refinement > 0:
+            self.dm.setRefinementUniform()
+            self.dm.distribute()
 
-        if isinstance(refinement, int):
+            # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
+
+            # This is preferable to the refineHierarchy call
+            # because we can repair the refined mesh at each
+            # step along the way
+
+            self.dm_hierarchy = [self.dm]
             for i in range(refinement):
-                self.dm = self.dm.refine()
+                dm_refined = self.dm_hierarchy[i].refine()
+                dm_refined.setCoarseDM(self.dm_hierarchy[i])
+
+                if callable(refinement_callback):
+                    refinement_callback(dm_refined)
+
+                self.dm_hierarchy.append(dm_refined)
+
+            # self.dm_hierarchy = [self.dm] + self.dm_hierarchy
+
+            self.dm_h = self.dm_hierarchy[-1]
+            self.dm_h.setName("uw_hierarchical_dm")
+
+            if callable(refinement_callback):
+                for dm in self.dm_hierarchy:
+                    refinement_callback(dm)
+
+            # Single level equivalent dm
+            self.dm = self.dm_h.clone()
+
+        else:
+            self.dm.distribute()
+            self.dm_hierarchy = [self.dm]
+            self.dm_h = self.dm.clone()
 
         # This will be done anyway - the mesh maybe in a
         # partially adapted state
-
-        if callable(refinement_callback):
-            refinement_callback(self.dm)
-
-        ## Do we want to save the refined mesh or allow it to be reconstructed
-        ## from the coarse mesh ?
 
         if self.sf1 and self.sf0:
             self.sf = self.sf0.compose(self.sf1)
         else:
             self.sf = self.sf0  # could be None !
 
-        self.dm.setName("uw_mesh")
+        if self.name is None:
+            self.name = "mesh"
+            self.dm.setName("uw_mesh")
+        else:
+            self.dm.setName(f"uw_{self.name}")
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         from sympy.vector import CoordSys3D
@@ -234,12 +266,7 @@ class Mesh(_api_tools.Stateful):
         except:
             self.isSimplex = simplex
 
-        # Use grid hashing for point location
-        options = PETSc.Options()
-        options["dm_plex_hash_location"] = None
-        self.dm.setFromOptions()
-
-        # self._vars = weakref.WeakValueDictionary()
+        #self._vars = weakref.WeakValueDictionary()
         self._vars = {}
         self._block_vars = {}
 
@@ -248,6 +275,8 @@ class Mesh(_api_tools.Stateful):
 
         self._equation_systems_register = []
 
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
         self._accessed = False
         self._quadrature = False
         self._stale_lvec = True
@@ -307,7 +336,6 @@ class Mesh(_api_tools.Stateful):
 
     def view(self):
         if uw.mpi.rank == 0:
-
             print(f"Mesh {self.instance}")
 
             if len(self.vars) > 0:
@@ -316,7 +344,7 @@ class Mesh(_api_tools.Stateful):
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^9} |"
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^11} |"
                     )
 
                 print(
@@ -324,8 +352,23 @@ class Mesh(_api_tools.Stateful):
                     flush=True,
                 )
 
-    def nuke_coords_and_rebuild(self):
+    def clone_dm_hierarchy(self):
+        """
+        Clone the dm hierarchy on the mesh
+        """
 
+        dm_hierarchy = self.dm_hierarchy
+
+        new_dm_hierarchy = []
+        for dm in dm_hierarchy:
+            new_dm_hierarchy.append(dm.clone())
+
+        for i, dm in enumerate(new_dm_hierarchy[:-1]):
+            new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
+
+        return new_dm_hierarchy
+
+    def nuke_coords_and_rebuild(self):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
 
         self._coord_array = {}
@@ -351,19 +394,19 @@ class Mesh(_api_tools.Stateful):
             PETSc.COMM_WORLD,
         )
 
+        self.dm.projectCoordinates(self.petsc_fe)
+
         ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
-        if self.degree != 1:
+        # if self.degree == 1:
+        #     # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
+        #     # issues with petsc that we see in parallel - in which case there is a fallback, pass no
+        #     # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
+        #     # (but it should !)
 
-            # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
-            # issues with petsc that we see in parallel - in which case there is a fallback, pass no
-            # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
-            # (but it should !)
+        #     self.dm.projectCoordinates(self.petsc_fe)
 
-            self.dm.projectCoordinates(self.petsc_fe)
-
-        else:
-
-            uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
+        # else:
+        #     uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
 
@@ -392,12 +435,15 @@ class Mesh(_api_tools.Stateful):
 
         if self._stale_lvec:
             if not self._lvec:
-                # self.dm.clearDS()
-                # self.dm.createDS()
+                self.dm.clearDS()
+                self.dm.createDS()
                 # create the local vector (memory chunk) and attach to original dm
                 self._lvec = self.dm.createLocalVec()
+
             # push avar arrays into the parent dm array
             a_global = self.dm.getGlobalVec()
+
+            # The field decomposition seems to fail if coarse DMs are present
             names, isets, dms = self.dm.createFieldDecomposition()
 
             with self.access():
@@ -511,13 +557,6 @@ class Mesh(_api_tools.Stateful):
                         data=var.data[:, var._data_layout(i, j)],
                     )
 
-        # This is not needed if we can index into the block variables
-        # for block_var in self.block_vars.values():
-        #     size = block_var.shape
-        #     for i in range(0, size[0]):
-        #         for j in range(0, size[1]):
-        #             block_var._data[i, j] = block_var._vars[i, j].data
-
         class exit_manager:
             def __init__(self, mesh):
                 self.mesh = mesh
@@ -549,19 +588,13 @@ class Mesh(_api_tools.Stateful):
                     var._set_vec(available=False)
                     var._is_accessed = False
 
-                    # This is not needed if we can index into the block variables
-                    # for block_var in self.mesh.block_vars.values():
-                    #     size = block_var.shape
-                    #     for i in range(0, size[0]):
-                    #         for j in range(0, size[1]):
-                    #             block_var._data[i, j] = None
-
-                for i in range(0, var.shape[0]):
-                    for j in range(0, var.shape[1]):
-                        # var._data_ij[i, j] = None
-                        var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=f"MeshVariable[...].data is only available within mesh.access() context",
-                        )
+                    for i in range(0, var.shape[0]):
+                        for j in range(0, var.shape[1]):
+                            var._data_container[i, j] = var._data_container[
+                                i, j
+                            ]._replace(
+                                data=f"MeshVariable[...].data is only available within mesh.access() context",
+                            )
 
                 timing._decrementDepth()
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
@@ -616,51 +649,59 @@ class Mesh(_api_tools.Stateful):
         return arr.reshape(-1, self.cdim)
 
     @timing.routine_timer_decorator
-    def write_timestep_xdmf(
+    def write_timestep(
         self,
         filename: str,
-        meshUpdates: bool = True,
+        index: int,
+        outputPath: Optional[str] = "",
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
-        index: Optional[int] = 0,
+        meshUpdates: bool = True,
     ):
         """
         Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
         An xdmf file is generated and the overall package can then be read by paraview or pyvista.
-        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order"""
+        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order
+        """
 
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         # options.setValue("viewer_hdf5_collective", True)
+
+        import os
+
+        output_base_name = os.path.join(outputPath, filename)
 
         # Checkpoint the mesh file itself if required
 
         if not meshUpdates:
             from pathlib import Path
 
-            mesh_file = filename + ".mesh.0.h5"
+            mesh_file = output_base_name + ".mesh.00000.h5"
             path = Path(mesh_file)
             if not path.is_file():
-                self.save(mesh_file)
+                self.write(mesh_file)
 
         else:
-            if uw.mpi.rank == 0:
-                print("Saving mesh file")
-            self.save(filename + f".mesh.{index}.h5")
+            self.write(output_base_name + f".mesh.{index:05}.h5")
 
         if meshVars is not None:
             for var in meshVars:
-                save_location = filename + f".{var.clean_name}.{index}.h5"
-                var.simple_save(save_location)
+                save_location = (
+                    output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
+                )
+                var.write(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
-                save_location = filename + f".proxy.{svar.clean_name}.{index}.h5"
-                svar.simple_save(save_location)
+                save_location = (
+                    output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
+                )
+                svar.write(save_location)
 
         if uw.mpi.rank == 0:
             checkpoint_xdmf(
-                filename,
+                output_base_name,
                 meshUpdates,
                 meshVars,
                 swarmVars,
@@ -676,7 +717,6 @@ class Mesh(_api_tools.Stateful):
         meshVars: Optional[list] = [],
         outputPath: Optional[str] = "",
     ):
-
         """
 
         Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
@@ -697,8 +737,8 @@ class Mesh(_api_tools.Stateful):
         from underworld3.utilities import generateXdmf
 
         ### save mesh vars
-        fname = f"./{outputPath}{'step_'}{index:04d}.h5"
-        xfname = f"./{outputPath}{'step_'}{index:04d}.xdmf"
+        fname = f"./{outputPath}{'step_'}{index:05d}.h5"
+        xfname = f"./{outputPath}{'step_'}{index:05d}.xdmf"
         #### create petsc viewer
         viewer = PETSc.ViewerHDF5().createHDF5(
             fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
@@ -744,16 +784,14 @@ class Mesh(_api_tools.Stateful):
                 self.save(mesh_file)
 
         else:
-            if uw.mpi.rank == 0:
-                print("Saving mesh file")
-            self.save(filename + f".mesh.{index}.h5")
+            self.save(filename + f".mesh.{index:05}.h5")
 
         # Checkpoint file
 
         if unique_id:
-            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index}.h5"
+            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index:05}.h5"
         else:
-            checkpoint_file = filename + f".checkpoint.{index}.h5"
+            checkpoint_file = filename + f".checkpoint.{index:05}.h5"
 
         self.dm.setName("uw_mesh")
         viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
@@ -781,13 +819,10 @@ class Mesh(_api_tools.Stateful):
         viewer.destroy()
 
     @timing.routine_timer_decorator
-    def save(self, filename: str, index: Optional[int] = None):
+    def write(self, filename: str, index: Optional[int] = None):
         """
         Save mesh data to the specified hdf5 file.
 
-        Users will generally create this file, and then
-        append mesh variable data to it via the variable
-        `save` method.
 
         Parameters
         ----------
@@ -902,16 +937,21 @@ class Mesh(_api_tools.Stateful):
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
-        coordsNewG = matInterp * coordsOld
+        coordsNewG = dmnew.getGlobalVec()
+        matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
         arr = coordsNewL.array
         arrcopy = arr.reshape(-1, self.cdim).copy()
 
+        dmnew.restoreGlobalVec(coordsNewG)
+        dmnew.restoreLocalVec(coordsNewL)
+        dmnew.destroy()
+        dmfe.destroy()
+
         return arrcopy
 
     def _build_kd_tree_index(self):
-
         if hasattr(self, "_index") and self._index is not None:
             return
 
@@ -1059,7 +1099,7 @@ class Mesh(_api_tools.Stateful):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 2.5 * self._search_lengths[cells]
+            dist > 0.25 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
@@ -1087,14 +1127,13 @@ class Mesh(_api_tools.Stateful):
         cell_length = np.empty_like(sizes)
 
         for cell in range(cEnd - cStart):
-
             cell_num_points = self.dm.getConeSize(cell)
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
             _, distsq, _ = self._index.find_closest_point(cell_coords)
 
-            cell_length[cell] = distsq.max()
+            cell_length[cell] = np.sqrt(distsq.max())
 
         return sizes, centroids, cell_length
 
@@ -1197,7 +1236,6 @@ def MeshVariable(
     continuous: bool = True,
     varsymbol: Union[str, list] = None,
 ):
-
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
     underlying sympy representation that makes it possible to construct expressions that
@@ -1242,18 +1280,67 @@ def MeshVariable(
         return mesh.vars[clean_name]
 
     if mesh._accessed:
-        print(
-            "It is not possible to add new variables to a mesh after existing variables have been accessed"
-        )
-        print(f"Variable {name} has NOT been added to mesh {mesh.instance}")
-        return
+        ## Before adding a new variable, we first snapshot the data from the mesh.dm
+        ## (if not accessed, then this will not be necessary and may break)
 
-    return _MeshVariable(
+        mesh.update_lvec()
+        existing_data = mesh.lvec.copy()
+
+    new_meshVariable = _MeshVariable(
         varname, mesh, num_components, vtype, degree, continuous, varsymbol
     )
 
+    if mesh._accessed:
+        ## Recreate the mesh variable dm and restore the data
 
-class _MeshVariable(_api_tools.Stateful):
+        dm1 = mesh.dm.clone()
+        mesh.dm.copyFields(dm1)
+        mesh.dm = dm1
+        mesh.dm.clearDS()
+        mesh.dm.createDS()
+        # mesh.dm.setUp()
+
+        mdm_is, _ = mesh.dm.createSubDM(range(0, mesh.dm.getNumFields() - 1))
+
+        mesh._lvec = mesh.dm.createLocalVec()
+        vsub1 = mesh._lvec.getSubVector(mdm_is)
+        vsub1.array[...] = existing_data.array[...]
+        mesh._lvec.restoreSubVector(mdm_is, vsub1)
+
+        # mesh.dm = mesh.dm
+
+    return new_meshVariable
+
+
+class _MeshVariable(Stateful, uw_object):
+    """
+    The MeshVariable class generates a variable supported by a finite element mesh and the
+    underlying sympy representation that makes it possible to construct expressions that
+    depend on the values of the MeshVariable.
+
+    To set / read nodal values, use the numpy interface via the 'data' property.
+
+    Parameters
+    ----------
+    varname :
+        A textual name for this variable.
+    mesh :
+        The supporting underworld mesh.
+    num_components :
+        The number of components this variable has.
+        For example, scalars will have `num_components=1`,
+        while a 2d vector would have `num_components=2`.
+    vtype :
+        Optional. The underworld variable type for this variable.
+        If not defined it will be inferred from `num_components`
+        if possible.
+    degree :
+        The polynomial degree for this variable.
+    varsymbol:
+        A symbolic form for printing etc (sympy / latex)
+
+    """
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1349,16 +1436,6 @@ class _MeshVariable(_api_tools.Stateful):
         self.degree = degree
         self.continuous = continuous
 
-        options = PETSc.Options()
-        name0 = "VAR"  # self.clean_name ## Filling up the options database
-        options.setValue(f"{name0}_petscspace_degree", degree)
-        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", continuous)
-        options.setValue(
-            f"{name0}_petscdualspace_lagrange_node_endpoints", False
-        )  # only active if discontinuous
-
-        dim = self.mesh.dm.getDimension()
-
         # First create the petsc FE object of the
         # correct size / dimension to represent the
         # unknowns when used in computations (for tensors)
@@ -1381,22 +1458,7 @@ class _MeshVariable(_api_tools.Stateful):
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
 
-        # self._data_ij = numpy.empty(self.shape, dtype=object)
         self._data_container = numpy.empty(self.shape, dtype=object)
-
-        self.petsc_fe = PETSc.FE().createDefault(
-            dim,
-            self.num_components,
-            self.mesh.isSimplex,
-            self.mesh.qdegree,
-            name0 + "_",
-            PETSc.COMM_WORLD,
-        )
-
-        self.field_id = self.mesh.dm.getNumFields()
-        self.mesh.dm.setField(self.field_id, self.petsc_fe)
-        field, _ = self.mesh.dm.getField(self.field_id)
-        field.setName(self.clean_name)
 
         # create associated sympy function
         from underworld3.function import UnderworldFunction
@@ -1410,7 +1472,6 @@ class _MeshVariable(_api_tools.Stateful):
                 0,
                 0,
             )(*self.mesh.r)
-            self._sym[0].mesh = self.mesh
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
@@ -1423,18 +1484,15 @@ class _MeshVariable(_api_tools.Stateful):
                     comp,
                     comp,
                 )(*self.mesh.r)
-                self._sym[0, comp].mesh = self.mesh
 
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-
             self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
 
             # Matrix form (any number of components)
             for i in range(mesh.dim):
                 for j in range(mesh.dim):
-
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -1442,7 +1500,6 @@ class _MeshVariable(_api_tools.Stateful):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
-                    self._sym[i, j].mesh = self.mesh
 
         elif vtype == uw.VarType.SYM_TENSOR:
             self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
@@ -1462,15 +1519,12 @@ class _MeshVariable(_api_tools.Stateful):
                     else:
                         self._sym[i, j] = self._sym[j, i]
 
-                    self._sym[i, j].mesh = self.mesh
-
         elif vtype == uw.VarType.MATRIX:
             self._sym = sympy.Matrix.zeros(self.shape[0], self.shape[1])
 
             # Matrix form (any number of components)
             for i in range(self.shape[0]):
                 for j in range(self.shape[1]):
-
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -1478,37 +1532,6 @@ class _MeshVariable(_api_tools.Stateful):
                         (i, j),
                         self._data_layout(i, j),
                     )(*self.mesh.r)
-                    self._sym[i, j].mesh = self.mesh
-                    n += 1
-
-        # Suggest this should be deprecated - seems complicated
-        # and liable to produce errors in development as well as use
-
-        # elif (
-        #     vtype == uw.VarType.COMPOSITE
-        # ):  # This is just to allow full control over the names of the components
-        #     self._sym = sympy.Matrix.zeros(1, num_components)
-        #     if isinstance(varsymbol, list):
-        #         if len(varsymbol) == num_components:
-        #             for comp in range(num_components):
-        #                 self._sym[0, comp] = UnderworldFunction(
-        #                     varsymbol[comp],
-        #                     self,
-        #                     vtype,
-        #                     comp,
-        #                     comp,
-        #                 )(*self.mesh.r)
-        #                 self._sym[0, comp].mesh = self.mesh
-
-        #         else:
-        #             raise RuntimeError(
-        #                 "Please supply a list of names for all components of this vector"
-        #             )
-        #     else:
-        #         for comp in range(num_components):
-        #             self._sym[0, comp] = UnderworldFunction(
-        #                 self.symbol, self, vtype, comp, comp
-        #             )(*self.mesh.r)
 
         # This allows us to define a __getitem__ method
         # to return a view for a given component when
@@ -1528,13 +1551,11 @@ class _MeshVariable(_api_tools.Stateful):
         super().__init__()
 
         self.mesh.vars[self.clean_name] = self
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
+        self._setup_ds()
 
         return
 
     def __getitem__(self, indices):
-
         if not isinstance(indices, tuple):
             if isinstance(indices, int) and self.shape[0] == 1:
                 i = 0
@@ -1552,12 +1573,17 @@ class _MeshVariable(_api_tools.Stateful):
     # that is stable when used for EXTRAPOLATION but
     # not accurate.
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=10):
-
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
         import numpy as np
+
+        if nnn == None:
+            if self.mesh.dim == 3:
+                nnn = 4
+            else:
+                nnn = 3
 
         with self.mesh.access(self):
             D = self.data.copy()
@@ -1567,48 +1593,10 @@ class _MeshVariable(_api_tools.Stateful):
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
         mesh_kdt.build_index()
-        return mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        del mesh_kdt
 
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Building K-D tree ... done", flush=True)
-
-        # # ToDo: This value should be somewhat larger than the ratio of the new_mesh points to the
-        # # old mesh points if we have a near-uniform mesh spacing.
-
-        # num_neighbours = nnn
-
-        # closest_n, distance_n = mesh_kdt.find_closest_n_points(
-        #     num_neighbours, new_coords
-        # )
-
-        # num_local_vertices = new_coords.shape[0]
-        # data_size = D.shape[1]
-
-        # Values = np.zeros((num_local_vertices, data_size))
-        # Weights = np.zeros((num_local_vertices, 1))
-
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Mapping values to vertices ... start", flush=True)
-
-        # epsilon = 1.0e-24
-        # for j in range(num_neighbours):
-        #     j_distance = epsilon + distance_n[:, j]
-        #     j_nearest = closest_n[:, j]
-        #     Weights[:, 0] += 1.0 / j_distance[:]
-
-        # epsilon = 1.0e-24
-        # for d in range(data_size):
-        #     for j in range(num_neighbours):
-        #         j_distance = epsilon + distance_n[:, j]
-        #         j_nearest = closest_n[:, j]
-        #         Values[:, d] += D[j_nearest[:], d] / j_distance[:]
-
-        # Values[...] /= Weights[:]
-
-        # if verbose and uw.mpi.rank == 0:
-        #     print("Mapping values to vertices ... done", flush=True)
-
-        return Values
+        return values
 
     @timing.routine_timer_decorator
     def save(
@@ -1655,8 +1643,9 @@ class _MeshVariable(_api_tools.Stateful):
 
         lvec = self.mesh.dm.getCoordinates()
 
+    # ToDo: rename to vertex_checkpoint (or similar)
     @timing.routine_timer_decorator
-    def simple_save(
+    def write(
         self,
         filename: str,
     ):
@@ -1701,7 +1690,7 @@ class _MeshVariable(_api_tools.Stateful):
 
         lvec.array[...] = self.coords.reshape(-1)[...]
         dmnew.localToGlobal(lvec, gvec, addv=False)
-        gvec.setName("X")
+        gvec.setName("coordinates")
 
         # Check that this is also synchronised
         # self.mesh.dm.localToGlobal(self._lvec, self._gvec, addv=False)
@@ -1710,19 +1699,22 @@ class _MeshVariable(_api_tools.Stateful):
         viewer(self._gvec)
         viewer(gvec)
 
+        dmnew.restoreGlobalVec(gvec)
+        dmnew.restoreLocalVec(lvec)
+
         uw.mpi.barrier()
         viewer.destroy()
+        dmfe.destroy()
 
         return
 
     @timing.routine_timer_decorator
-    def read_from_vertex_checkpoint(
+    def read_timestep(
         self,
-        data_file,
+        data_filename,
         data_name,
-        vertex_mesh_file=None,
-        vertex_field=False,
-        vertex_field_degree=1,
+        index,
+        outputPath="",
         verbose=False,
     ):
         """
@@ -1731,10 +1723,15 @@ class _MeshVariable(_api_tools.Stateful):
         different and will be matched using a kd-tree / inverse-distance weighting
         to the new mesh.
 
-        Note: data_name, data_degree refer to the checkpointed data - this can be inferred from
-        the file if the checkpoints are one file per unknown, but that's not necessarily what
-        we will be using.
         """
+
+        # Fix this to match the write_timestep function
+
+        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
+        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
+
+        output_base_name = os.path.join(outputPath, data_filename)
+        data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
 
         import h5py
         import numpy as np
@@ -1750,36 +1747,8 @@ class _MeshVariable(_api_tools.Stateful):
 
             h5f = h5py.File(data_file)
             D = h5f["fields"][data_name][()]
-            X = h5f["fields"]["X"][()]
-            h5f.close()
+            X = h5f["fields"]["coordinates"][()]
 
-            if len(D.shape) == 1:
-                D = D.reshape(-1, 1)
-
-            return X, D
-
-        def field_from_vertex_checkpoint(
-            data_file=None,
-            data_name=None,
-            mesh_file=None,
-            data_degree=1,
-        ):
-            """Read the mesh data as a swarm-like value"""
-
-            # data_field_name = data_name + f"_P{data_degree}"
-
-            h5f = h5py.File(data_file)
-            data_fields = h5f["vertex_fields"].keys()
-            data_field_name = next(
-                (field for field in data_fields if data_name in field), None
-            )
-
-            h5f = h5py.File(data_file)
-            D = h5f["vertex_fields"][data_field_name][()]
-            h5f.close()
-
-            h5f = h5py.File(mesh_file)
-            X = h5f["geometry"]["vertices"][()]
             h5f.close()
 
             if len(D.shape) == 1:
@@ -1788,7 +1757,6 @@ class _MeshVariable(_api_tools.Stateful):
             return X, D
 
         def map_to_vertex_values(X, D, nnn=4, verbose=False):
-
             # Map from "swarm" of points to nodal points
             # This is a permutation if we building on the checkpointed
             # mesh file
@@ -1799,7 +1767,6 @@ class _MeshVariable(_api_tools.Stateful):
             return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
-
             mesh = mesh_variable.mesh
 
             # This should be trivial but there may be problems if
@@ -1811,18 +1778,10 @@ class _MeshVariable(_api_tools.Stateful):
 
             return
 
-        if not vertex_field:
-            X, D = field_from_checkpoint(
-                data_file,
-                data_name,
-            )
-        else:
-            X, D = field_from_vertex_checkpoint(
-                data_file,
-                data_name,
-                vertex_mesh_file,
-                vertex_field_degree,
-            )
+        X, D = field_from_checkpoint(
+            data_file,
+            data_name,
+        )
 
         remapped_D = map_to_vertex_values(X, D)
 
@@ -1837,12 +1796,10 @@ class _MeshVariable(_api_tools.Stateful):
         filename: str,
         data_name: Optional[str] = None,
     ):
-
         if data_name is None:
             data_name = self.clean_name
 
         with self.mesh.access(self):
-
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
             old_name = self._gvec.getName()
@@ -1924,7 +1881,7 @@ class _MeshVariable(_api_tools.Stateful):
                 raise IndexError(
                     f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
                 )
-        if self.vtype == uw.VarType.TENSOR or self.vtype == uw.VarType.MATRIX:
+        if self.vtype == uw.VarType.TENSOR:
             if self.mesh.dim == 2:
                 return ((0, 1), (2, 3))[i][j]
             else:
@@ -1936,11 +1893,39 @@ class _MeshVariable(_api_tools.Stateful):
             else:
                 return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
 
-    def _set_vec(self, available):
+        if self.vtype == uw.VarType.MATRIX:
+            return i + j * self.shape[0]
 
+    def _setup_ds(self):
+        options = PETSc.Options()
+        name0 = "VAR"  # self.clean_name ## Filling up the options database
+        options.setValue(f"{name0}_petscspace_degree", self.degree)
+        options.setValue(f"{name0}_petscdualspace_lagrange_continuity", self.continuous)
+        options.setValue(
+            f"{name0}_petscdualspace_lagrange_node_endpoints", False
+        )  # only active if discontinuous
+
+        dim = self.mesh.dm.getDimension()
+        petsc_fe = PETSc.FE().createDefault(
+            dim,
+            self.num_components,
+            self.mesh.isSimplex,
+            self.mesh.qdegree,
+            name0 + "_",
+            PETSc.COMM_WORLD,
+        )
+
+        self.field_id = self.mesh.dm.getNumFields()
+        self.mesh.dm.addField(petsc_fe)
+        field, _ = self.mesh.dm.getField(self.field_id)
+        field.setName(self.clean_name)
+        self.mesh.dm.createDS()
+
+        return
+
+    def _set_vec(self, available):
         if self._lvec == None:
             indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
-            # subdm = uw.cython.petsc_discretisation.petsc_fe_create_sub_dm(self.mesh.dm, self.field_id)
 
             self._lvec = subdm.createLocalVector()
             self._lvec.zeroEntries()  # not sure if required, but to be sure.
@@ -2152,7 +2137,6 @@ def checkpoint_xdmf(
     swarmVars: Optional[list] = [],
     index: Optional[int] = 0,
 ):
-
     import h5py
     import os
 
@@ -2162,9 +2146,9 @@ def checkpoint_xdmf(
     ## zeroth one if this option is turned off
 
     if not meshUpdates:
-        mesh_filename = filename + ".mesh.0.h5"
+        mesh_filename = filename + ".mesh.00000.h5"
     else:
-        mesh_filename = filename + f".mesh.{index}.h5"
+        mesh_filename = filename + f".mesh.{index:05}.h5"
 
     ## Obtain the mesh information
 
@@ -2214,12 +2198,12 @@ def checkpoint_xdmf(
 <!ENTITY MeshData "{os.path.basename(mesh_filename)}">
 """
     for var in meshVars:
-        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
         header += f"""
 <!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
 
     for var in swarmVars:
-        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        var_filename = filename + f".proxy.{var.clean_name}.{index:05}.h5"
         header += f"""
 <!ENTITY {var.clean_name}_Data "{os.path.basename(var_filename)}">"""
 
@@ -2261,7 +2245,7 @@ def checkpoint_xdmf(
 
     attributes = ""
     for var in meshVars:
-        var_filename = filename + f".{var.clean_name}.{index}.h5"
+        var_filename = filename + f"mesh.{var.clean_name}.{index:05}.h5"
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
@@ -2295,7 +2279,7 @@ def checkpoint_xdmf(
         attributes += var_attribute
 
     for var in swarmVars:
-        var_filename = filename + f".proxy.{var.clean_name}.{index}.h5"
+        var_filename = filename + f".proxy.{var.clean_name}.{index:05}.h5"
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
@@ -2334,7 +2318,7 @@ def checkpoint_xdmf(
 </Xdmf>
     """
 
-    xdmf_filename = filename + f".{index}.xdmf"
+    xdmf_filename = filename + f".mesh.{index:05}.xdmf"
     with open(xdmf_filename, "w") as fp:
         fp.write(header)
         fp.write(xdmf_start)
@@ -2342,3 +2326,17 @@ def checkpoint_xdmf(
         fp.write(xdmf_end)
 
     return
+
+
+def meshVariable_lookup_by_symbol(mesh, sympy_object):
+    """Given a sympy object, scan the mesh variables in `mesh` to find the
+    location (meshvariable, component in the data array) corresponding to the symbol
+    or return None if not found
+    """
+
+    for meshvar in mesh.vars.values():
+        for comp, subvar in enumerate(meshvar.sym_1d):
+            if subvar == sympy_object:
+                return meshvar, comp
+
+    return None

@@ -65,7 +65,9 @@ meshr = uw.discretisation.MeshVariable(r"r", meshdisc, 1, degree=1)
 
 
 # +
-radius_fn = sympy.sqrt(meshdisc.rvec.dot(meshdisc.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshdisc.rvec.dot(meshdisc.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshdisc.X / (radius_fn)
 gravity_fn = radius_fn
 
@@ -105,8 +107,8 @@ delta_eta = 10**log10_delta_eta
 stokes.petsc_options["snes_rtol"] = 1 / delta_eta
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshdisc.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshdisc.dim)
+stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.penalty = 0.0
 
 stokes.saddle_preconditioner = 1.0 / viscosity
@@ -136,8 +138,8 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshdisc.dim)
-adv_diff.constitutive_model.Parameters.diffusivity=k
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshdisc.dim)
+adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 
 
@@ -146,7 +148,9 @@ adv_diff.theta = 0.5
 
 import sympy
 
-init_t = 0.9 + 0.05 * (sympy.cos(sympy.pi * th / 2)) * sympy.cos(0.5 * np.pi * (ra - r_i) / (r_o - r_i))
+init_t = 0.9 + 0.05 * (sympy.cos(sympy.pi * th / 2)) * sympy.cos(
+    0.5 * np.pi * (ra - r_i) / (r_o - r_i)
+)
 
 adv_diff.add_dirichlet_bc(1.0, "Lower")
 adv_diff.add_dirichlet_bc(0.0, "Upper")
@@ -154,10 +158,14 @@ adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 # +
 with meshdisc.access(t_soln):
-    t_soln.data[...] = uw.function.evaluate(init_t, t_soln.coords, meshdisc.N).reshape(-1, 1)
+    t_soln.data[...] = uw.function.evaluate(init_t, t_soln.coords, meshdisc.N).reshape(
+        -1, 1
+    )
 
 with meshdisc.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshdisc.data, meshdisc.N)  # cf radius_fn which is 0->1
+    meshr.data[:, 0] = uw.function.evaluate(
+        sympy.sqrt(x**2 + y**2), meshdisc.data, meshdisc.N
+    )  # cf radius_fn which is 0->1
 # -
 
 # check the stokes solve is set up and that it converges
@@ -175,7 +183,6 @@ adv_diff
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -233,7 +240,13 @@ if uw.mpi.size == 1:
     #     show_edges=True, scalars="T", use_transparency=False, opacity=0.5,
     # )
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=3, opacity=0.33)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=3,
+        opacity=0.33,
+    )
 
     pl.add_mesh(pvstream, opacity=0.5)
     pl.add_arrows(velocity_0s, velocity, mag=1.0e-3)
@@ -257,9 +270,7 @@ meshdisc.vtk("tmp_box_mesh.vtk")
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -320,14 +331,24 @@ def plot_T_mesh(filename):
             opacity=0.5,
         )
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.5,
+        )
 
         pl.add_mesh(pvstream, opacity=0.4)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("V")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
         # pl.show()
         pl.close()
 
@@ -352,7 +373,6 @@ t_step = 0
 expt_name = f"output/Ra1e6_cyl_eta1e{log10_delta_eta}"
 
 for step in range(0, 1000):
-
     stokes.solve(zero_init_guess=True)
     delta_t = 2.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=True)
@@ -389,7 +409,6 @@ for step in range(0, 1000):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -428,7 +447,13 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=100, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7, opacity=0.25)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7,
+        opacity=0.25,
+    )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 

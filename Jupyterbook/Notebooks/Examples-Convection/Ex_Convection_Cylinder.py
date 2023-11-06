@@ -25,7 +25,9 @@ import numpy as np
 # options.getAll()
 # -
 
-meshball = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.1, degree=1, qdegree=3)
+meshball = uw.meshing.Annulus(
+    radiusInner=0.5, radiusOuter=1.0, cellSize=0.1, degree=1, qdegree=3
+)
 
 
 # +
@@ -51,7 +53,14 @@ if uw.mpi.size == 1:
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
 
     pl.show()
 # -
@@ -71,10 +80,14 @@ swarm.populate(fill_param=3)
 # +
 # Create Stokes object
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = Stokes(
+    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
+)
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(
+    viscosity=1
+)
 
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
@@ -94,7 +107,9 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.X.dot(meshball.X))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.X.dot(meshball.X)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.X / (1.0e-10 + radius_fn)
 gravity_fn = radius_fn
 
@@ -123,8 +138,10 @@ adv_diff = uw.systems.AdvDiffusion(
     verbose=False,
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=1)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshball.dim)
+adv_diff.constitutive_model.material_properties = (
+    adv_diff.constitutive_model.Parameters(diffusivity=1)
+)
 
 adv_diff.theta = 0.5
 # adv_diff.f = t_soln.fn / delta_t - t_star.fn / delta_t
@@ -136,7 +153,9 @@ adv_diff.theta = 0.5
 import sympy
 
 abs_r = sympy.sqrt(meshball.rvec.dot(meshball.rvec))
-init_t = 0.01 * sympy.sin(15.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i)) + (r_o - r) / (r_o - r_i)
+init_t = 0.01 * sympy.sin(15.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i)) + (
+    r_o - r
+) / (r_o - r_i)
 
 adv_diff.add_dirichlet_bc(1.0, "Lower")
 adv_diff.add_dirichlet_bc(0.0, "Upper")
@@ -162,7 +181,7 @@ adv_diff.solve(timestep=0.00001 * stokes.estimate_dt())
 # +
 # diff = uw.systems.Poisson(meshball, u_Field=t_soln, solver_name="diff_only")
 
-# diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
+# diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshball.dim)
 # diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=1)
 # diff.solve()
 
@@ -175,7 +194,6 @@ adv_diff.solve(timestep=0.00001 * stokes.estimate_dt())
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -195,8 +213,12 @@ if uw.mpi.size == 1:
         usol = stokes.u.data.copy()
 
     pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym[0], meshball.data)
-    pvmesh.point_data["Ts"] = uw.function.evaluate(adv_diff._u_star.sym[0], meshball.data)
-    pvmesh.point_data["dT"] = uw.function.evaluate(t_soln.sym[0] - adv_diff._u_star.sym[0], meshball.data)
+    pvmesh.point_data["Ts"] = uw.function.evaluate(
+        adv_diff._u_star.sym[0], meshball.data
+    )
+    pvmesh.point_data["dT"] = uw.function.evaluate(
+        t_soln.sym[0] - adv_diff._u_star.sym[0], meshball.data
+    )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -209,7 +231,13 @@ if uw.mpi.size == 1:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     pl.add_arrows(arrow_loc, arrow_length, mag=0.0005)
@@ -230,7 +258,6 @@ adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -241,7 +268,9 @@ if uw.mpi.size == 1:
     with meshball.access():
         usol = stokes.u.data.copy()
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym[0] - t_0.sym[0], meshball.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(
+        t_soln.sym[0] - t_0.sym[0], meshball.data
+    )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -254,7 +283,13 @@ if uw.mpi.size == 1:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.025)
@@ -268,9 +303,7 @@ if uw.mpi.size == 1:
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -309,14 +342,24 @@ def plot_T_mesh(filename):
 
         pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.66,
+        )
 
         pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
         # pl.show()
 
 
@@ -326,7 +369,6 @@ def plot_T_mesh(filename):
 expt_name = "output/Cylinder_Ra1e6i"
 
 for step in range(0, 25):
-
     stokes.solve()
     delta_t = 5.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t)
@@ -360,7 +402,6 @@ for step in range(0, 25):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -400,7 +441,13 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=7.5, opacity=0.25)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7.5,
+        opacity=0.25,
+    )
 
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 

@@ -12,7 +12,6 @@
 #     name: python3
 # ---
 
-
 # # Rayleigh Taylor - swarm materials
 #
 # We introduce the notion of an `IndexSwarmVariable` which automatically generates masks for a swarm
@@ -38,10 +37,9 @@ import sympy
 
 render = True
 
-cell_size = uw.options.getReal("mesh_cell_size", default=1.0/32)
+cell_size = uw.options.getReal("mesh_cell_size", default=1.0 / 32)
 particle_fill = uw.options.getInt("particle_fill", default=7)
 viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
-
 
 
 # +
@@ -103,6 +101,10 @@ with swarm.access(material):
     )
 
 material.sym
+
+
+# +
+# print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=True)
 # -
 
 
@@ -114,57 +116,6 @@ density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
 mat_viscosity = np.array([viscosityRatio, 1])
 viscosity = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
 
-if render and uw.mpi.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    meshbox.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        points[:, 2] = 0.0
-
-    point_cloud = pv.PolyData(points)
-
-    with meshbox.access():
-        pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.data)
-        pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
-        pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(
-            sympy.log(viscosity), meshbox.data
-        )
-
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-
-    pl = pv.Plotter(notebook=True)
-
-    # pl.add_points(point_cloud, color="Black",
-    #                   render_points_as_spheres=False,
-    #                   point_size=2.5, opacity=0.75)
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="rho",
-        use_transparency=False,
-        opacity=0.95,
-    )
-
-    pl.show(cpos="xy")
 # +
 # Create Stokes object
 
@@ -176,7 +127,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
@@ -190,28 +141,23 @@ stokes.add_dirichlet_bc(
 stokes.add_dirichlet_bc(
     (0.0, 0.0), ["Left", "Right"], 0
 )  # left/right: components, function, markers
-
-
-# +
-stokes.rtol = 1.0e-3
-
-# stokes.petsc_options["snes_rtol"] = 1.0e-3
-# stokes.petsc_options[
-#     "snes_atol"
-# ] = 1.0e-5  # Not sure why rtol does not do its job when guess is used
-
-# # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
-# # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-3
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-2
-
-
 # -
+
+
+stokes.rtol = 1.0e-3  # rough solution is all that's needed
+
+print("Stokes setup", flush=True)
 
 m_solver = uw.systems.Projection(meshbox, m_cont)
 m_solver.uw_function = material.sym[1]
 m_solver.smoothing = 1.0e-3
 m_solver.solve()
+
+print("Solve projection ... done", flush=True)
+
+stokes._setup_terms()
+
+print("Stokes terms ... done", flush=True)
 
 stokes.solve(zero_init_guess=True)
 
@@ -220,7 +166,6 @@ stokes.solve(zero_init_guess=True)
 
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -239,7 +184,6 @@ if uw.mpi.size == 1 and render:
     # check the solution
 
 if uw.mpi.size == 1 and render:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -324,23 +268,19 @@ import pyvista as pv
 import vtk
 
 if uw.mpi.size == 1:
-
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "pythreejs"
     pv.global_theme.smooth_shading = False
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-
     pl = pv.Plotter()
 
 
 def plot_mesh(filename):
-
     if uw.mpi.size == 1:
-
         meshbox.vtk("tmp_box.vtk")
         pvmesh = pv.read("tmp_box.vtk")
 
@@ -425,13 +365,14 @@ def plot_mesh(filename):
 
 t_step = 0
 
+# !mkdir output
+
 # +
 # Update in time
 
-expt_name = "output/swarm_rt"
+expt_name = "swarm_rt"
 
 for step in range(0, 200):
-
     stokes.solve(zero_init_guess=False)
     m_solver.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
@@ -448,11 +389,15 @@ for step in range(0, 200):
         plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
         # "Checkpoints"
-        savefile = f"output/swarm_rt_xy"    
-        meshbox.write_checkpoint(savefile, 
-                              meshUpdates=False, 
-                              meshVars=[p_soln,v_soln, m_cont], 
-                              index=step)
+        savefile = f"swarm_rt_xy"
 
+        meshbox.write_timestep(
+            expt_name,
+            meshUpdates=True,
+            meshVars=[p_soln, v_soln, m_cont],
+            outputPath="output",
+            index=t_step,
+        )
 
     t_step += 1
+# -

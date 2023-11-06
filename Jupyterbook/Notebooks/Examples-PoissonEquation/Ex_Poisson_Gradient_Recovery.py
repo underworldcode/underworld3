@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -25,7 +25,7 @@ import sympy
 
 # %%
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, qdegree=3
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 3.0, qdegree=2
 )
 
 mesh.dm.view()
@@ -62,7 +62,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 
 # Non-linear diffusivity
 
@@ -74,17 +74,24 @@ display(poisson.constitutive_model.c)
 
 # projector for diffusivity (though we can just switch the rhs for the gradient object
 
+# +
 diffusivity = uw.systems.Projection(mesh, kappa)
 diffusivity.uw_function = sympy.Matrix(
     [poisson.constitutive_model.Parameters.diffusivity]
 )
-diffusivity.add_dirichlet_bc(k, ["Top", "Bottom", "Left", "Right"], components=0)
-diffusivity.smoothing = 1.0e-3
+
+diffusivity.add_dirichlet_bc(k, "Bottom", components=0)
+diffusivity.add_dirichlet_bc(k, "Top", components=0)
+diffusivity.add_dirichlet_bc(k, "Right", components=0)
+diffusivity.add_dirichlet_bc(k, "Left", components=0)
+
+diffusivity.smoothing = 1.0e-6
+# -
 
 
 # %%
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-poisson.constitutive_model.Parameters.diffusivity = 1
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.constitutive_model.Parameters.diffusivity
 
 # %%
@@ -100,12 +107,18 @@ x, y = mesh.X
 
 abs_r2 = x**2 + y**2
 poisson.f = -16 * abs_r2
-poisson.add_dirichlet_bc(abs_r2, ["Bottom", "Top", "Right", "Left"])
+poisson.add_dirichlet_bc(abs_r2, "Bottom", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Top", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Right", components=0)
+poisson.add_dirichlet_bc(abs_r2, "Left", components=0)
 
+# +
 # %%
 # Linear model - starting guess
+
 poisson.constitutive_model.Parameters.diffusivity = 1
 poisson.solve(zero_init_guess=True)
+# -
 
 # %%
 # Solve time
@@ -130,8 +143,8 @@ diffusivity.solve()
 
 # non-linear smoothing term (probably not needed especially at the boundary)
 
-# gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y)
-# gradient.solve(_force_setup=True)
+gradient.uw_function = sympy.diff(t_soln.fn, mesh.N.y)
+gradient.solve(_force_setup=True)
 
 # %%
 gradT_projector.solve()
@@ -152,14 +165,13 @@ with mesh.access():
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 

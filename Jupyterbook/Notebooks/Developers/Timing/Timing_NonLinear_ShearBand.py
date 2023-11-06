@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,6 +23,7 @@
 
 # +
 import os
+
 os.environ["UW_TIMING_ENABLE"] = "1"
 
 
@@ -97,7 +98,6 @@ else:
 # Point2 caused a few problems with the mesh reader at one point.
 
 if uw.mpi.rank == 0:
-
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Notch")
@@ -280,7 +280,7 @@ stokes = uw.systems.Stokes(
 
 
 # +
-# Set solve options here to ensure consistent 
+# Set solve options here to ensure consistent
 # iteration pattern regardless of decomposition / problem size
 
 stokes.petsc_options["ksp_monitor"] = None
@@ -321,7 +321,7 @@ stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.1
@@ -353,7 +353,6 @@ edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.02
 
 
 def surface_integral(mesh, uw_function, mask_fn):
-
     calculator = uw.maths.Integral(mesh, uw_function * mask_fn)
     value = calculator.evaluate()
 
@@ -400,7 +399,6 @@ if uw.mpi.rank == 0:
 
 C0 = 150
 for i in range(5):
-
     mu = 0.75
     C = C0 + (1.0 - i / 4) * 15.0
     if uw.mpi.rank == 0:

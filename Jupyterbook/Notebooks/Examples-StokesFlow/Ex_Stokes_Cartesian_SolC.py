@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -14,35 +14,68 @@
 
 # # Stokes Benchmark SolCx
 #
-#
-# options = PETSc.Options()
-# options["help"] = None
 
 
+# +
 # %%
 import petsc4py
 from petsc4py import PETSc
 
+import nest_asyncio
+nest_asyncio.apply()
+
+# options = PETSc.Options()
+# options["help"] = None 
+
+import os
+os.environ["UW_TIMING_ENABLE"] = "1"
+
+
+# +
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
+from underworld3 import timing
+
 import numpy as np
 
+# +
 # %%
-n_els = 16
-mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20, qdegree=2
+n_els = 4
+refinement = 3
+
+mesh1 = uw.meshing.UnstructuredSimplexBox(regular=True,
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / n_els, 
+    qdegree=3, refinement=refinement
 )
 
+mesh2 = uw.meshing.StructuredQuadBox(
+    elementRes=(n_els, n_els),
+    minCoords=(0.0, 0.0), 
+    maxCoords=(1.0, 1.0), 
+    qdegree=3, 
+    refinement=refinement
+)
 
-# %%
-v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+mesh = mesh1
+# -
 
+
+mesh.dm.view()
+
+stokes = uw.systems.Stokes(mesh, verbose=True)
+
+# +
+v = stokes.Unknowns.u
+p = stokes.Unknowns.p
+
+stokes.constitutive_model=uw.constitutive_models.ViscoElasticPlasticFlowModel(v)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
-stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity = 1
+T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
+T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
+# -
+
 
 
 # %%
@@ -50,25 +83,27 @@ stokes.constitutive_model.Parameters.viscosity = 1
 import sympy
 from sympy import Piecewise
 
-mesh.dm.view()
-
 x,y = mesh.X
 
-res = 1 / n_els
-hw = 1000 / res
-surface_fn = sympy.exp(-((y - 1.0) ** 2) * hw)
-base_fn = sympy.exp(-(y**2) * hw)
-right_fn = sympy.exp(-((x - 1.0) ** 2) * hw)
-left_fn = sympy.exp(-(x**2) * hw)
+mesh.get_min_radius()
 
+hw = 0.1 * mesh.get_min_radius()
+surface_fn = 2 * uw.maths.delta_function(y-1, hw) / uw.maths.delta_function(0.0, hw)
+base_fn = 2 * uw.maths.delta_function(y, hw)
+right_fn = 2 * uw.maths.delta_function(x-1, hw)
+left_fn = 2 * uw.maths.delta_function(x, hw)
 
+# +
+# options = PETSc.Options()
+# options.getAll()
+# -
 
 eta_0 = 1.0
 x_c = 0.5
 f_0 = 1.0
 
 
-stokes.penalty = 0.0
+stokes.penalty = 100.0
 stokes.bodyforce = sympy.Matrix(
     [
         0,
@@ -82,34 +117,70 @@ stokes.bodyforce = sympy.Matrix(
 # +
 # This is the other way to impose no vertical 
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
-# -
+# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+# stokes.add_natural_bc( -1.0e10 * v.sym[1], sympy.Matrix((0.0, 0.0)).T , "Top", components=[1])
+
 
 # +
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Top", "Bottom"], 1
-)  # top/bottom: components, function, markers
 
-stokes.add_dirichlet_bc(
-    (0.0,), ["Left", "Right"], 0
-)  # left/right: components, function, markers
+stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
 
 
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
-stokes.petsc_options["snes_rtol"] = 1.0e-6
-stokes.petsc_options["ksp_rtol"] = 1.0e-6
-stokes.petsc_options["snes_max_it"] = 10
+# +
+# stokes.petsc_options["snes_rtol"] = 1.0e-6
+# stokes.petsc_options["ksp_rtol"] = 1.0e-6
+# stokes.petsc_options["snes_max_it"] = 10
+# -
+
+stokes.tolerance = 1.0e-3
 
 stokes.petsc_options["snes_monitor"]= None
 stokes.petsc_options["ksp_monitor"] = None
 
+
+# +
+stokes.petsc_options["snes_type"] = "newtonls"
+stokes.petsc_options["ksp_type"] = "fgmres"
+
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+
+# gasm is super-fast ... but mg seems to be bulletproof
+# gamg is toughest wrt viscosity
+
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+
+# # # mg, multiplicative - very robust ... similar to gamg, additive
+
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+
+
+# +
+# stokes._setup_pointwise_functions(verbose=True)
+# stokes._setup_discretisation(verbose=True)
+# stokes.dm.ds.view()
+# -
 
 # %%
 # Solve time
@@ -120,132 +191,106 @@ stokes.solve()
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
+if uw.mpi.size == 1:
     
-    pv.start_xvfb()
+    import pyvista as pv
+    import underworld3 as uw
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, stokes.bodyforce[1])
+    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    pvmesh.point_data["P"] = uw.function.evaluate(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evaluate(v.sym.dot(v.sym), mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evaluate(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evaluate(stokes.u.sym[1], stokes.u.coords)
-
-    pl = pv.Plotter(window_size=[1000, 1000])
-    pl.add_axes()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="V",
+        scalars="Vmag",
         use_transparency=False,
         opacity=1.0,
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=3)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
+
+
+# -
+# ## SolCx from the same setup
+
+0/0
+
+# +
+stokes.bodyforce = sympy.Matrix(
+    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
+)
+
+stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
+stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
+
+viscosity_fn = sympy.Piecewise(
+    (1.0e8, x > x_c),
+    (1.0, True),
+)
+
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 # -
 
 
-# ## SolCx from the same setup
+stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
+
+stokes._setup_pointwise_functions()
+stokes._setup_discretisation()
+stokes._u_f1
 
 # +
-# %%
-stokes.bodyforce = sympy.Matrix(
-    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)]
-)
+timing.reset()
+timing.start()
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e6 * v.sym[1] * (surface_fn + base_fn)
+stokes.solve(zero_init_guess=True)
 
-viscosity_fn = sympy.Piecewise(
-    (
-        1.0e6,
-        x > x_c,
-    ),
-    (1.0, True),
-)
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
-# %%
-
-stokes.constitutive_model.Parameters.viscosity
-stokes.solve()
-
+timing.print_table(display_fraction=0.999)
 
 # +
 # check the mesh if in a notebook / serial
 
-import mpi4py
-
-if mpi4py.MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
+if uw.mpi.size == 1:
+    
     import pyvista as pv
-    import vtk
+    import underworld3 as uw
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    pvmesh.point_data["P"] = uw.function.evaluate(p.sym[0], mesh.data)
-    pvmesh.point_data["V"] = uw.function.evaluate(v.sym.dot(v.sym), mesh.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0] = uw.function.evaluate(stokes.u.sym[0], stokes.u.coords)
-    arrow_length[:, 1] = uw.function.evaluate(stokes.u.sym[1], stokes.u.coords)
-
-    pl = pv.Plotter(window_size=[1000, 1000])
-    pl.add_axes()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="V",
+        scalars="Vmag",
         use_transparency=False,
         opacity=1.0,
     )
 
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-    #               use_transparency=False, opacity=1.0)
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=50)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
 
-
+# +
 # %%
 try:
     import underworld as uw2
@@ -271,6 +316,8 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
+# -
 
-# +
-# 
+
+
+

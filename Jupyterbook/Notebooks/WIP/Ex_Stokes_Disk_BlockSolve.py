@@ -25,7 +25,12 @@ meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2)
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
 p_soln = uw.discretisation.MeshVariable(
-    ["P", "h"], meshball, num_components=2, continuous=True, degree=1, vtype=uw.VarType.COMPOSITE
+    ["P", "h"],
+    meshball,
+    num_components=2,
+    continuous=True,
+    degree=1,
+    vtype=uw.VarType.COMPOSITE,
 )
 t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
 maskr = uw.discretisation.MeshVariable("M", meshball, 1, degree=1)
@@ -37,7 +42,9 @@ maskr = uw.discretisation.MeshVariable("M", meshball, 1, degree=1)
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.vector.to_matrix(meshball.rvec / (1.0e-10 + radius_fn))
 gravity_fn = radius_fn
 
@@ -61,10 +68,14 @@ surface_fn = maskr.sym[0]
 # +
 # Surface-driven flow, use this bc
 
-stokes_f = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes_fixed")
+stokes_f = Stokes(
+    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes_fixed"
+)
 
-stokes_f.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes_f.constitutive_model.material_properties = stokes_f.constitutive_model.Parameters(viscosity=1)
+stokes_f.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes_f.constitutive_model.material_properties = (
+    stokes_f.constitutive_model.Parameters(viscosity=1)
+)
 
 # Velocity boundary conditions
 
@@ -79,10 +90,14 @@ stokes_f.constraints = sympy.sympify(sympy.Matrix([stokes_f.div_u, 0]).T)
 # +
 # Create Stokes object
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = Stokes(
+    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
+)
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(
+    viscosity=1
+)
 
 # Velocity boundary conditions
 
@@ -92,7 +107,9 @@ stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 # velocity constraints
 
 # stokes.constraints = sympy.sympify(sympy.Matrix([ v_soln.sym.dot(unit_rvec) * mask.sym[0]]).T)
-stokes.constraints = sympy.sympify(sympy.Matrix([stokes.div_u, v_soln.sym.dot(unit_rvec) * surface_fn_r]).T)
+stokes.constraints = sympy.sympify(
+    sympy.Matrix([stokes.div_u, v_soln.sym.dot(unit_rvec) * surface_fn_r]).T
+)
 # stokes.constraints = sympy.sympify(sympy.Matrix([stokes.div_u]).T)
 
 stokes.UF0 = -p_soln.sym[1] * unit_rvec * surface_fn_r
@@ -156,7 +173,6 @@ stokes.snes.view()
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -171,7 +187,9 @@ if uw.mpi.size == 1:
     pvmesh = pv.read("tmp_ball.vtk")
 
     with meshball.access():
-        pvmesh.point_data["T"] = uw.function.evaluate(p_soln.sym[0] * surface_fn, meshball.data)
+        pvmesh.point_data["T"] = uw.function.evaluate(
+            p_soln.sym[0] * surface_fn, meshball.data
+        )
 
     with meshball.access():
         usol = stokes.u.data
@@ -186,7 +204,14 @@ if uw.mpi.size == 1:
     pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.3)
     pl.show(cpos="xy")
 

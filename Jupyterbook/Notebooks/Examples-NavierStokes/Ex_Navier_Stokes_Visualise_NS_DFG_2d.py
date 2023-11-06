@@ -37,12 +37,12 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-# ls ~/+Simulations/NS_benchmarks/Re250_res001
+# ls -trl ~/+Simulations/NS_benchmarks/Re100_dt0.01_proj0_tau2_pr2_rbf | tail
 
 # +
 ## Reading the checkpoints back in ... 
 
-step = 300
+step = 230
 basename = f"/Users/lmoresi/+Simulations/NS_benchmarks/Re250_res001/NS_test_Re_250_0.01"
 mesh_filename = f"{basename}.mesh.50.h5"
 mesh_filename

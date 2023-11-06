@@ -53,11 +53,10 @@ width = 3.0
 height = 1.0
 radius = 0.1
 
-eta1 = 1.
-eta2 = 10.
+eta1 = 1.0
+eta2 = 10.0
 
 if uw.mpi.rank == 0:
-
     import gmsh
 
     gmsh.initialize()
@@ -127,19 +126,17 @@ if uw.mpi.rank == 0:
     gmsh.finalize()
 
 
-
 # +
-mesh1 = uw.discretisation.Mesh("tmp_shear_inclusion.msh", 
-                               simplex=True, markVertices=True, 
-                               useRegions=True
-                              )
+mesh1 = uw.discretisation.Mesh(
+    "tmp_shear_inclusion.msh", simplex=True, markVertices=True, useRegions=True
+)
 mesh1.dm.view()
 mesh1.vtk("tmp_shear_inclusion.vtk")
 
 
 # uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
 #     mesh1.dm, [1.0, 0.0], [-1.5, 0.0], [3.0, 0.0])
-    
+
 # mesh1.dm.view()
 
 
@@ -147,19 +144,26 @@ mesh1.vtk("tmp_shear_inclusion.vtk")
 swarm = uw.swarm.Swarm(mesh=mesh1, recycle_rate=10)
 
 material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, 
-    proxy_continuous=False, proxy_degree=1, dtype=int,
+    "M",
+    swarm,
+    num_components=1,
+    proxy_continuous=False,
+    proxy_degree=1,
+    dtype=int,
 )
 
 strain = uw.swarm.SwarmVariable(
-    "Strain", swarm, num_components=1, 
-    proxy_continuous=False, 
-    proxy_degree=1, varsymbol=r"\varepsilon", dtype=float,
+    "Strain",
+    swarm,
+    num_components=1,
+    proxy_continuous=False,
+    proxy_degree=1,
+    varsymbol=r"\varepsilon",
+    dtype=float,
 )
 
 swarm.populate(fill_param=3)
 # -
-
 
 
 # +
@@ -199,7 +203,7 @@ r_inc = uw.discretisation.MeshVariable("R", mesh1, 1, degree=1)
 
 with swarm.access(material, strain):
     material.data[:, 0] = 0.5 + 0.5 * np.sign(swarm.particle_coordinates.data[:, 1])
-    strain.data[:,0] = 0.0
+    strain.data[:, 0] = 0.0
 
 
 # +
@@ -219,7 +223,7 @@ viscosity_L = sympy.Piecewise(
 )
 
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 1.0
@@ -295,25 +299,23 @@ stokes.solve()
 nodal_strain_rate_inv2.solve()
 
 
-
 # +
 # A function to make sure points don't drop out of the mesh
 # This is 100% specific to the mesh definition, so be careful !
 
+
 def return_points_to_domain(coords):
     new_coords = coords.copy()
-    new_coords[:,0] = (coords[:,0] + 1.5)%3 - 1.5
+    new_coords[:, 0] = (coords[:, 0] + 1.5) % 3 - 1.5
     return new_coords
-
 
 
 # +
 # check the mesh if in a notebook / serial
 
+
 def swarm_viz(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -344,7 +346,6 @@ def swarm_viz(filename):
             pvmesh.point_data["Visc"] = node_viscosity.rbf_interpolate(pvpoints)
             pvmesh.point_data["Ystr"] = yield_stress.rbf_interpolate(pvpoints)
 
-
         v_vectors = np.zeros_like(pvmesh.points)
         v_vectors[:, 0:2] = v_soln.rbf_interpolate(pvpoints)
         pvmesh.point_data["V"] = v_vectors / v_vectors.max()
@@ -359,19 +360,20 @@ def swarm_viz(filename):
 
         with swarm.access():
             points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:,0]
-            points[:, 1] = swarm.data[:,1]
+            points[:, 0] = swarm.data[:, 0]
+            points[:, 1] = swarm.data[:, 1]
             point_cloud = pv.PolyData(points)
-            point_cloud.point_data["deltaX"] = np.fabs(return_points_to_domain(swarm.data[:,:] - swarm._Xorig.data[:,:])[:,0])
-            point_cloud.point_data["strain"] = strain.data[:,0]
-
+            point_cloud.point_data["deltaX"] = np.fabs(
+                return_points_to_domain(swarm.data[:, :] - swarm._Xorig.data[:, :])[
+                    :, 0
+                ]
+            )
+            point_cloud.point_data["strain"] = strain.data[:, 0]
 
             points0 = np.zeros((swarm._Xorig.data.shape[0], 3))
-            points0[:, 0] = swarm._Xorig.data[:,0]
-            points0[:, 1] = swarm._Xorig.data[:,1]
+            points0[:, 0] = swarm._Xorig.data[:, 0]
+            points0[:, 1] = swarm._Xorig.data[:, 1]
             point_cloud0 = pv.PolyData(points0)
-
-
 
         pl = pv.Plotter(window_size=(500, 500))
 
@@ -392,8 +394,12 @@ def swarm_viz(filename):
         pl.add_points(point_cloud, colormap="coolwarm", point_size=3.0)
         pl.add_points(point_cloud0, color="green", point_size=0.5)
 
-        pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        pl.screenshot(filename="{}.png".format(filename), window_size=(2560, 1280), return_img=False)
+        pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(2560, 1280),
+            return_img=False,
+        )
 
         return
 
@@ -405,18 +411,23 @@ delta_t = stokes.estimate_dt()
 
 expt_name = "output/shear_test_resetting"
 
-for step in range(0,101):
-        
+for step in range(0, 101):
     with swarm.access(strain), mesh1.access():
-        strain.data[:,0] += delta_t * strain_rate_inv2.rbf_interpolate(swarm.data)[:,0]
-     
+        strain.data[:, 0] += (
+            delta_t * strain_rate_inv2.rbf_interpolate(swarm.data)[:, 0]
+        )
+
     # Update the swarm locations
-    swarm.advection(v_soln.sym, delta_t=delta_t, restore_points_to_domain_func=return_points_to_domain) 
-    
+    swarm.advection(
+        v_soln.sym,
+        delta_t=delta_t,
+        restore_points_to_domain_func=return_points_to_domain,
+    )
+
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))
-        
-    if step%5 == 0:
+
+    if step % 5 == 0:
         swarm_viz(f"swarm_shear_recycle_{step}")
 
 
@@ -456,13 +467,10 @@ nodal_strain_rate_inv2.solve()
 # -
 
 
-
-
 # +
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -485,14 +493,13 @@ if uw.mpi.size == 1:
     # with mesh1.access():
     #     pvmesh.point_data["Vmag"] = uw.function.evaluate(
     #         sympy.sqrt(v_soln.fn.dot(v_soln.fn)), points
-            
+
     with mesh1.access():
         pvmesh.point_data["P"] = p_soln.rbf_interpolate(pvpoints)
         pvmesh.point_data["Edot"] = strain_rate_inv2.rbf_interpolate(pvpoints)
         pvmesh.point_data["Str"] = dev_stress_inv2.rbf_interpolate(pvpoints)
         pvmesh.point_data["Visc"] = node_viscosity.rbf_interpolate(pvpoints)
         pvmesh.point_data["Tauy"] = yield_stress.rbf_interpolate(pvpoints)
-        
 
     v_vectors = np.zeros_like(pvmesh.points)
     v_vectors[:, 0:2] = v_soln.rbf_interpolate(pvpoints)
@@ -525,23 +532,29 @@ if uw.mpi.size == 1:
 
     with swarm.access():
         points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:,0]
-        points[:, 1] = swarm.data[:,1]
+        points[:, 0] = swarm.data[:, 0]
+        points[:, 1] = swarm.data[:, 1]
         point_cloud = pv.PolyData(points)
-        point_cloud.point_data["deltaX"] = np.fabs(return_points_to_domain(swarm.data[:,:] - swarm._Xorig.data[:,:])[:,0])
-        point_cloud.point_data["strain"] = strain.data[:,0]
+        point_cloud.point_data["deltaX"] = np.fabs(
+            return_points_to_domain(swarm.data[:, :] - swarm._Xorig.data[:, :])[:, 0]
+        )
+        point_cloud.point_data["strain"] = strain.data[:, 0]
 
         points0 = np.zeros((swarm._Xorig.data.shape[0], 3))
-        points0[:, 0] = swarm._Xorig.data[:,0]
-        points0[:, 1] = swarm._Xorig.data[:,1]
+        points0[:, 0] = swarm._Xorig.data[:, 0]
+        points0[:, 1] = swarm._Xorig.data[:, 1]
         point_cloud0 = pv.PolyData(points0)
 
-
-    pl.add_points(point_cloud, colormap="coolwarm", scalars="strain", point_size=10.0, clim=[0.1,0.75])
+    pl.add_points(
+        point_cloud,
+        colormap="coolwarm",
+        scalars="strain",
+        point_size=10.0,
+        clim=[0.1, 0.75],
+    )
     pl.add_points(point_cloud0, color="green", point_size=1.0)
 
-
-    pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
     # pl.add_mesh(pvstream)
 
     # pl.remove_scalar_bar("mag")
@@ -549,6 +562,3 @@ if uw.mpi.size == 1:
     pl.show()
 # -
 stokes.constitutive_model.Parameters.viscosity
-
-
-

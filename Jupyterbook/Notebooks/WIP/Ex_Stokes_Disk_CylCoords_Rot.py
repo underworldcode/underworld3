@@ -13,7 +13,9 @@ import sympy
 # -
 
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, centre=True)
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, centre=True
+)
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
@@ -27,7 +29,6 @@ v_soln.sym[0]
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -50,7 +51,9 @@ if uw.mpi.size == 1:
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 gravity_fn = radius_fn
 
@@ -72,7 +75,12 @@ Rayleigh = 1.0e2
 # +
 symtheta = sympy.symbols(r"\vartheta")
 
-Rotate = sympy.Matrix([[sympy.cos(symtheta), -sympy.sin(symtheta)], [sympy.sin(symtheta), sympy.cos(symtheta)]])
+Rotate = sympy.Matrix(
+    [
+        [sympy.cos(symtheta), -sympy.sin(symtheta)],
+        [sympy.sin(symtheta), sympy.cos(symtheta)],
+    ]
+)
 
 meshball.Rot = Rotate
 meshball.theta = theta
@@ -152,10 +160,14 @@ theta.sym[0]
 # +
 # Create Stokes object
 
-stokes = uw.systems.Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = uw.systems.Stokes(
+    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
+)
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
-stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(viscosity=1)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(
+    viscosity=1
+)
 
 # Velocity boundary conditions
 
@@ -177,7 +189,9 @@ stokes.constitutive_model.flux(stokes.strainrate).subs(theta.sym[0], sympy.pi / 
 flux = stokes.constitutive_model.flux(stokes.strainrate)
 G3 = flux.diff(stokes._L)
 dim = meshball.dim
-sympy.Matrix(sympy.permutedims(G3, (1, 3, 0, 2)).reshape(dim * dim, dim * dim)).subs(theta.sym[0], sympy.pi / 2)
+sympy.Matrix(sympy.permutedims(G3, (1, 3, 0, 2)).reshape(dim * dim, dim * dim)).subs(
+    theta.sym[0], sympy.pi / 2
+)
 
 
 stokes.bodyforce = sympy.Matrix([t_init * Rayleigh, 0.0])
@@ -196,7 +210,9 @@ stokes.petsc_options["pc_fieldsplit_type"] = "schur"
 stokes.petsc_options["pc_fieldsplit_schur_fact_type"] = "diag"
 stokes.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"
 stokes.petsc_options["pc_fieldsplit_detect_saddle_point"] = None
-stokes.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None  # These two seem to be needed in petsc 3.17
+stokes.petsc_options[
+    "pc_fieldsplit_off_diag_use_amat"
+] = None  # These two seem to be needed in petsc 3.17
 stokes.petsc_options["pc_use_amat"] = None  # These two seem to be needed in petsc 3.17
 stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fgmres"
 stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-4
@@ -231,7 +247,6 @@ U_xy
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -262,7 +277,14 @@ if uw.mpi.size == 1:
     pl = pv.Plotter(window_size=[750, 750])
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
     pl.add_arrows(arrow_loc, arrow_length, mag=0.1)
     pl.show(cpos="xy")
 

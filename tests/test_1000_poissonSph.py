@@ -23,12 +23,12 @@ def test_poisson_sphere(mesh):
     )
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
-    poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel(u)
     poisson.constitutive_model.Parameters.diffusivity = 1
 
     poisson.f = 0.0
-    poisson.add_dirichlet_bc(1.0, "Lower")
-    poisson.add_dirichlet_bc(0.0, "Upper")
+    poisson.add_dirichlet_bc(1.0, "Lower", 0)
+    poisson.add_dirichlet_bc(0.0, "Upper", 0)
     poisson.solve()
 
     assert poisson.snes.getConvergedReason() > 0

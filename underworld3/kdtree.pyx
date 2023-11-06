@@ -95,7 +95,7 @@ cdef class KDTree:
             An integer array of indices into the `points` array (passed into the constructor) corresponding to
             the nearest neighbour for the search coordinates. It will be of size (n_coords).
         dist_sqr:
-            A float array of squred distances between the provided coords and the nearest neighbouring
+            A float array of squared distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
         found:
             A bool array of flags which signals whether a nearest neighbour has been found for a given
@@ -106,10 +106,12 @@ cdef class KDTree:
         """
         if coords.shape[1] != self.points.shape[1]:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
+        
         count = coords.shape[0]
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
         found    = np.empty(count, dtype=np.bool_,   order='C')
+
         cdef long unsigned int[::1]  c_indices = indices 
         cdef            double[::1] c_dist_sqr = dist_sqr
         cdef              bool[::1]    c_found = found
@@ -233,4 +235,11 @@ cdef class KDTree:
         if verbose and uw.mpi.rank == 0:
             print("Mapping values ... done", flush=True)
 
+        del coords_contiguous
+        del closest_n 
+        del distance_n
+        del Weights
+
         return Values
+
+

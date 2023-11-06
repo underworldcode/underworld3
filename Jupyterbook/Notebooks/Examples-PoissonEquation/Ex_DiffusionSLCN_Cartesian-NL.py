@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -53,9 +53,8 @@ time_scale = l0**2 / k0  ### s
 time_scale_Myr = time_scale / (60 * 60 * 24 * 365.25 * 1e6)
 
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(xmin, ymin), 
-    maxCoords=(xmax, ymax), 
-    cellSize=1.0 / res, regular=True)
+    minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=True
+)
 
 # +
 # mesh = uw.meshing.StructuredQuadBox(
@@ -74,7 +73,6 @@ tmax = 1.0
 
 # Create an adv
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 k = uw.discretisation.MeshVariable("k", mesh, 1, degree=1)
 
@@ -90,7 +88,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(T)
 
 
 # %%
@@ -115,8 +113,8 @@ def updateFields():
 
 
 ### fix temp of top and bottom walls
-adv_diff.add_dirichlet_bc(0.5, "Bottom")
-adv_diff.add_dirichlet_bc(0.5, "Top")
+adv_diff.add_dirichlet_bc(0.5, "Bottom", 0)
+adv_diff.add_dirichlet_bc(0.5, "Top", 0)
 
 
 maxY = mesh.data[:, 1].max()
@@ -137,7 +135,6 @@ def plot_fig():
     updateFields()
 
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk

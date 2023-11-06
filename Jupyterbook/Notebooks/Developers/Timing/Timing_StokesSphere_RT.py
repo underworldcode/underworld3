@@ -53,7 +53,7 @@ viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 viscosityRatio = viscosity_ratio
 # -
 
-problem_size=1
+problem_size = 1
 
 # +
 # Define the problem size
@@ -187,7 +187,7 @@ stokes.tolerance = 1.0e-4
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 # buoyancy (magnitude)
@@ -219,7 +219,6 @@ t_step = 0
 # Update in time
 
 for step in range(0, 10):
-
     stokes.solve(zero_init_guess=False)
     delta_t = stokes.estimate_dt()
 
@@ -230,14 +229,16 @@ for step in range(0, 10):
 
     # advect swarm
     swarm.advection(v_soln.sym, delta_t, corrector=True)
-    
+
     if t_step % 1 == 0:
         savefile = f"output/{expt_name}"
-        mesh.write_checkpoint(savefile, 
-                              meshUpdates=False, 
-                              meshVars=[p_soln,v_soln], 
-                              swarmVars=[material],
-                              index=t_step)
+        mesh.write_checkpoint(
+            savefile,
+            meshUpdates=False,
+            meshVars=[p_soln, v_soln],
+            swarmVars=[material],
+            index=t_step,
+        )
 
     savefile = f"output/{expt_name}.ts{t_step}.h5"
     mesh.save(savefile)
@@ -245,7 +246,7 @@ for step in range(0, 10):
     p_soln.save(savefile)
 
     mesh.generate_xdmf(savefile)
-    
+
     t_step += 1
 
 # -
@@ -256,10 +257,12 @@ for step in range(0, 10):
 # mesh.generate_xdmf(savefile)
 
 
-mesh.write_checkpoint(savefile, 
-                      meshUpdates=False, 
-                      meshVars=[p_soln,v_soln], 
-                      swarmVars=[material],
-                      index=t_step)
+mesh.write_checkpoint(
+    savefile,
+    meshUpdates=False,
+    meshVars=[p_soln, v_soln],
+    swarmVars=[material],
+    index=t_step,
+)
 
 timing.print_table(display_fraction=0.999)

@@ -1,4 +1,4 @@
-# # Cookbook: examples for uw.discretisation.vector
+# # Tests: examples for uw.discretisation.vector
 #
 # ## Vector calculus module
 #

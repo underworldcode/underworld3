@@ -1,10 +1,13 @@
-# # Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
+# # Swarm Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc
 #
 # This example uses the Swarm advection approach rather than SLCN
 
 # +
 import petsc4py
 from petsc4py import PETSc
+
+import nest_asyncio
+nest_asyncio.apply()
 
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -21,38 +24,48 @@ options = PETSc.Options()
 # os.environ["SYMPY_USE_CACHE"]="no"
 
 # options.getAll()
+# -
+
+
 
 
 # +
 import meshio
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
-x,y = meshball.X
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1, qdegree=3
+)
+x, y = meshball.X
 # -
 
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
+t_soln_dt = uw.discretisation.MeshVariable("Tdt", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-swarm = uw.swarm.Swarm(mesh=meshball)
-T1 = uw.swarm.SwarmVariable(r"T^{(-\Delta t)}", swarm, 1)
-X1 = uw.swarm.SwarmVariable(r"X^{(-\Delta t)}", swarm, 2)
-swarm.populate(fill_param=3)
+DTdt = uw.swarm.Lagrangian_Updater(
+        meshball,
+        psi_fn = t_soln.sym,
+        V_fn = v_soln.sym,
+        vtype = uw.VarType.SCALAR,
+        degree = 1,
+        order = 1,
+        continuous=True,
+        varsymbol=r'T_s',
+        fill_param=3,
+)
 
 
-with swarm.access():
-    print(swarm.particle_coordinates.data.shape)
-
-# check that the swarm variable works  as a continuous field as well 
-T1.sym.jacobian(meshball.X)
+# check that the swarm variable works  as a continuous field as well
+DTdt.psi_star[0].sym.jacobian(meshball.X)
 
 # +
 # Create adv_diff object
 
 # Set some things
-k = 1.0e-6
+k = 0.01
 h = 0.1
 t_i = 2.0
 t_o = 1.0
@@ -62,26 +75,29 @@ delta_t = 1.0
 
 
 # +
-adv_diff = uw.systems.AdvDiffusionSwarm(
-    meshball, u_Field=t_soln, u_Star_fn=T1.sym, 
-    solver_name="adv_diff_swarms"  # not needed if coords is provided
+adv_diff = uw.systems.AdvDiffusion(
+    meshball,
+    u_Field=t_soln,
+    V_fn = v_soln,
+    DuDt = DTdt,
+    solver_name="adv_diff_swarms",  # not needed if coords is provided
+    order=1,
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.Parameters.diffusivity=k
-# -
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model.Parameters.diffusivity = k
 
-
-adv_diff._u_star_projector.uw_function
 
 # +
-# Create a density structure / buoyancy force
+# Create a density structure / bu()oyancy force
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
 
 import sympy
 
-radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
+radius_fn = sympy.sqrt(
+    meshball.rvec.dot(meshball.rvec)
+)  # normalise by outer radius if not 1.0
 unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
 
 # Some useful coordinate stuff
@@ -114,159 +130,104 @@ adv_diff.add_dirichlet_bc(0.0, "Upper")
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
-    
+
 with swarm.access(T1):
-    T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
 
 
 # +
 # Validation - small timestep
 
-delta_t = 0.0001
-adv_diff.solve(timestep=delta_t)
-# -
+# delta_t = 0.01
+# adv_diff.solve(timestep=delta_t)
 
-
-adv_diff.F1
-adv_diff.constitutive_model.flux(adv_diff._L).T
 
 # +
-# check the mesh if in a notebook / serial
-
-
-if uw.mpi.size == 1:
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
-
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    with meshball.access():
-        point_cloud.point_data["T"] = t_0.data.copy()
-
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
-
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
-
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
-
-    pl.remove_scalar_bar("T")
-    pl.remove_scalar_bar("mag")
-
-    pl.show()
-
-
-# -
+import underworld3 as uw
 
 
 def plot_T_mesh(filename):
 
+    import underworld3 as uw
+
     if uw.mpi.size == 1:
+
 
         import numpy as np
         import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-        meshball.vtk("tmp_ball.vtk")
-        pvmesh = pv.read("tmp_ball.vtk")
-
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
-        point_cloud = pv.PolyData(points)
-
-        with meshball.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
-        with meshball.access():
-            usol = v_soln.data.copy()
-
-        arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v_soln.coords[...]
-
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
+        import underworld3.visualisation
+        
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
+        swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+        tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
+            
+        swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,T1.sym)
+        
+        pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
+        pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
 
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+        pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=0.0001, opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.66)
-
-        pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
-
-        pl.remove_scalar_bar("T")
-        pl.remove_scalar_bar("mag")
-
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        # pl.add_points(
+        #     swarm_points,
+        #     cmap="coolwarm",
+        #     render_points_as_spheres=False,
+        #     point_size=20,
+        #     opacity=0.66,
+        # )
+    
+        pl.add_mesh(pvmesh, cmap="coolwarm", opacity=0.75)
+    
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
     # pl.show()
+# -
 
+v_fe = v_soln.mesh.dm.getField(v_soln.field_id)[0]
+v_fe
 
-with meshball.access(t_0, t_soln):
+# +
+with meshball.access(t_0, t_soln, T1):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
+with swarm.access(T1):
+    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+
+
+# +
+adv_diff.DuDt.update(dt=0.05)
+
+# Update the swarm locations
+swarm.advection(
+    v_soln.sym,
+    delta_t=0.05,
+    corrector=False,
+    restore_points_to_domain_func=meshball.return_coords_to_bounds,
+)  
 
 # +
 # Advection/diffusion model / update in time
 
 delta_t = 0.05
-adv_diff.k = 0.01
 expt_name = "output/rotation_test_k_001"
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(1, 21):
+for step in range(0, 10):
 
-    adv_diff.solve(timestep=delta_t) 
-    
-    # Update the swarm vallues
-    with swarm.access(T1):
-        T1.data[:,0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
- 
-    # Update the swarm locations
-    swarm.advection(v_soln.sym, delta_t=delta_t) 
+    import underworld3 as uw
 
-    # stats then loop
+    adv_diff.solve(timestep=delta_t, verbose=False)
 
     tstats = t_soln.stats()
+    print("psi*", adv_diff.DuDt.psi_star[0]._meshVar.stats())
 
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(step, delta_t))
@@ -286,53 +247,39 @@ for step in range(1, 21):
 
 
 if uw.mpi.size == 1:
-
+    
     import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
+    swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+    tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
+        
+    swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,T1.sym)
+    swarm_points.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points, adv_diff.DuDt.psi_star[0].sym[0] )
 
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    with meshball.access():
-        point_cloud.point_data["T"] = t_soln.data
-        point_cloud.point_data["dT"] = t_soln.data - t_0.data
-
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
+    pvmesh.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,adv_diff.DuDt.psi_star[0].sym[0])
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
 
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+    pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=0.02, opacity=0.75)
 
-    pl.add_points(
-        point_cloud, cmap="coolwarm", scalars="T", render_points_as_spheres=False, point_size=10, opacity=0.66
-    )
+    # pl.add_points(
+    #     swarm_points,
+    #     cmap="coolwarm",
+    #     render_points_as_spheres=False,
+    #     scalars="Ts",
+    #     point_size=3,
+    #     opacity=0.66,
+    # )
 
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+    pl.add_mesh(pvmesh, cmap="coolwarm", opacity=0.75, scalars="T")
 
     # pl.remove_scalar_bar("T")
-    pl.remove_scalar_bar("mag")
+    # pl.remove_scalar_bar("mag")
 
     pl.show()
 
@@ -343,4 +290,7 @@ if uw.mpi.size == 1:
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
 # -
-adv_diff._f0
+
+DTdt.psi_fn
+
+

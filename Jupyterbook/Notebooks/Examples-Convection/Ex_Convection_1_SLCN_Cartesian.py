@@ -22,7 +22,11 @@ import sympy
 # -
 
 meshbox = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=False, qdegree=3
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    cellSize=1.0 / 32.0,
+    regular=False,
+    qdegree=3,
 )
 
 
@@ -34,7 +38,7 @@ if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
     import vtk
-    
+
     # pv.start_xvfb()
 
     pv.global_theme.background = "white"
@@ -76,17 +80,17 @@ stokes = Stokes(
 # Constant viscosity
 
 viscosity = 1
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=viscosity
-stokes.saddle_preconditioner = 1.0 / viscosity
-
-stokes.tolerance=1.0e-3
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes.u)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+stokes.tolerance = 1.0e-3
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
 stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
+# -
+
 
 # +
 # Create a density structure / buoyancy force
@@ -114,7 +118,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 
@@ -148,7 +152,6 @@ adv_diff.solve(timestep=0.1 * stokes.estimate_dt(), zero_init_guess=True)
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -206,7 +209,13 @@ if uw.mpi.size == 1:
     #     show_edges=True, scalars="T", use_transparency=False, opacity=0.5,
     # )
 
-    pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=10, opacity=0.33)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=10,
+        opacity=0.33,
+    )
 
     pl.add_mesh(pvstream, opacity=0.5)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
@@ -225,9 +234,7 @@ pvmesh.clear_point_data()
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -288,14 +295,24 @@ def plot_T_mesh(filename):
             opacity=0.5,
         )
 
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.5,
+        )
 
         pl.add_mesh(pvstream, opacity=0.4)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("V")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
         # pl.show()
         pl.close()
 
@@ -318,7 +335,6 @@ t_step = 0
 expt_name = "output/Ra1e6"
 
 for step in range(0, 50):
-
     stokes.solve(zero_init_guess=True)
     delta_t = 5.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
@@ -349,7 +365,6 @@ for step in range(0, 50):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -364,7 +379,6 @@ if uw.mpi.size == 1:
 
     meshbox.vtk("tmp_box_mesh.vtk")
     pvmesh = pv.read("tmp_box_mesh.vtk")
-
 
     with meshbox.access():
         usol = stokes.u.data.copy()
@@ -388,5 +402,3 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 # -
-
-

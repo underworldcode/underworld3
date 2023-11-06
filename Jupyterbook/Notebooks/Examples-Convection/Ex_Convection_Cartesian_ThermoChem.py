@@ -22,7 +22,11 @@ import numpy as np
 # -
 
 meshbox = uw.meshes.Unstructured_Simplex_Box(
-    dim=2, minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cell_size=1.0 / 24.0, regular=False
+    dim=2,
+    minCoords=(0.0, 0.0, 0.0),
+    maxCoords=(1.0, 1.0, 1.0),
+    cell_size=1.0 / 24.0,
+    regular=False,
 )
 meshbox.dm.view()
 
@@ -83,8 +87,8 @@ stokes = Stokes(
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity=1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model.Parameters.viscosity = 1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))
@@ -122,7 +126,12 @@ r_i = 0.5
 r_o = 1.0
 
 adv_diff = uw.systems.AdvDiffusion(
-    meshbox, u_Field=t_soln, V_Field=v_soln, solver_name="adv_diff", degree=3, verbose=False
+    meshbox,
+    u_Field=t_soln,
+    V_Field=v_soln,
+    solver_name="adv_diff",
+    degree=3,
+    verbose=False,
 )
 
 adv_diff.k = k
@@ -177,7 +186,6 @@ adv_diff.solve(timestep=0.01 * stokes.estimate_dt())
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -208,7 +216,13 @@ if uw.mpi.size == 1:
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-4, opacity=0.5)
@@ -223,9 +237,7 @@ if uw.mpi.size == 1:
 
 
 def plot_T_mesh(filename):
-
     if uw.mpi.size == 1:
-
         import numpy as np
         import pyvista as pv
         import vtk
@@ -280,16 +292,32 @@ def plot_T_mesh(filename):
         #               point_size=10, opacity=0.5
         #             )
 
-        pl.add_points(swarm_point_cloud, cmap="RdYlBu", render_points_as_spheres=True, point_size=7.5, opacity=1.0)
+        pl.add_points(
+            swarm_point_cloud,
+            cmap="RdYlBu",
+            render_points_as_spheres=True,
+            point_size=7.5,
+            opacity=1.0,
+        )
 
         pl.add_mesh(
-            pvmesh, cmap="gray", edge_color="Black", show_edges=True, scalars="M", use_transparency=False, opacity=0.5
+            pvmesh,
+            cmap="gray",
+            edge_color="Black",
+            show_edges=True,
+            scalars="M",
+            use_transparency=False,
+            opacity=0.5,
         )
 
         pl.remove_scalar_bar("M")
         pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
         # pl.show()
 
 
@@ -298,7 +326,6 @@ def plot_T_mesh(filename):
 
 
 for step in range(0, 50):
-
     stokes.solve(zero_init_guess=False)
     delta_t = 3.0e-5  # 5.0*stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
@@ -328,7 +355,6 @@ for step in range(0, 50):
 
 
 if uw.mpi.size == 1:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -386,10 +412,22 @@ if uw.mpi.size == 1:
     #               point_size=7.5, opacity=0.25
     #             )
 
-    pl.add_points(swarm_point_cloud, cmap="RdYlBu", render_points_as_spheres=True, point_size=3.0, opacity=1.0)
+    pl.add_points(
+        swarm_point_cloud,
+        cmap="RdYlBu",
+        render_points_as_spheres=True,
+        point_size=3.0,
+        opacity=1.0,
+    )
 
     pl.add_mesh(
-        pvmesh, cmap="gray", edge_color="Black", show_edges=True, scalars="M", use_transparency=False, opacity=0.5
+        pvmesh,
+        cmap="gray",
+        edge_color="Black",
+        show_edges=True,
+        scalars="M",
+        use_transparency=False,
+        opacity=0.5,
     )
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)

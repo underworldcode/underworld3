@@ -24,7 +24,6 @@ import sympy
 
 
 def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
-
     if boundaries is None:
         return
 
@@ -80,8 +79,10 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
     return
 
 
-def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
+# dmAdaptLabel - but first you need to call dmplex set default distribute False
 
+
+def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
     # Create / use a field on the old mesh to hold the metric
     # Perhaps that should be a user-definition
 
