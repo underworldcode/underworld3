@@ -36,6 +36,10 @@ class Solver(uw_object):
         self._DuDt = self.Unknowns.DuDt
         self._DFDt = self.Unknowns.DFDt
 
+        self._L = self.Unknowns.L # grad(u)
+        self._E = self.Unknowns.E # sym part
+        self._W = self.Unknowns.W # asym part
+
         return
 
     class _Unknowns:
@@ -47,6 +51,11 @@ class Solver(uw_object):
             inner_self._u = None
             inner_self._DuDt = None
             inner_self._DFDt = None
+
+            inner_self._L = None
+            inner_self._E = None
+            inner_self._W = None
+            inner_self._Einv2 = None
             return
 
         ## properties
@@ -58,6 +67,15 @@ class Solver(uw_object):
         @u.setter
         def u(inner_self, new_u):
             inner_self._u = new_u
+            inner_self._L = new_u.sym.jacobian(new_u.mesh.CoordinateSystem.N)
+
+            # can build suitable E and W operators of the unknowns
+            if inner_self._L.is_square:
+                inner_self._E = (inner_self._L + inner_self._L.T) / 2
+                inner_self._W = (inner_self._L - inner_self._L.T) / 2
+
+                inner_self._Einv2 = sympy.sqrt((sympy.Matrix(inner_self._E) ** 2).trace() / 2)
+
             inner_self._owning_solver._is_setup = False
             return
 
@@ -80,7 +98,22 @@ class Solver(uw_object):
             inner_self._DFDt = new_DFDt
             inner_self._owning_solver._is_setup = False
             return
+        
+        @property
+        def E(inner_self):
+            return inner_self._E
 
+        @property
+        def L(inner_self):
+            return inner_self._L
+
+        @property
+        def W(inner_self):
+            return inner_self._W
+
+        @property
+        def Einv2(inner_self):
+            return inner_self._Einv2
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
@@ -104,10 +137,10 @@ class Solver(uw_object):
         # the form of the input. See the projector class for an example
 
         # f0 residual term (weighted integration) - scalar RHS function
-        self._f0 = self.F0 # some_expression_F0(self.u.sym, self._L)
+        self._f0 = self.F0 # some_expression_F0(self.u.sym, self.Unknowns.L)
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.F1 # some_expresion_F1(self.u.sym, self._L)
+        self._f1 = self.F1 # some_expresion_F1(self.u.sym, self.Unknowns.L)
 
         return
 
@@ -351,7 +384,6 @@ class SNES_Scalar(Solver):
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
-        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N)
         self.dm = None
 
 
@@ -560,7 +592,7 @@ class SNES_Scalar(Solver):
         self._u_F1 = F1
 
         U = sympy.Array(self.u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
-        L = sympy.Array(self._L).reshape(cdim).as_immutable() # unpack one index here too
+        L = sympy.Array(self.Unknowns.L).reshape(cdim).as_immutable() # unpack one index here too
 
         fns_residual = [self._u_f0, self._u_F1]
 
@@ -597,7 +629,7 @@ class SNES_Scalar(Solver):
                 self._bd_f0 = sympy.ImmutableDenseMatrix(bd_F0)
 
                 G0 = sympy.derive_by_array(self._bd_f0, U)
-                G1 = sympy.derive_by_array(self._bd_f0, self._L)
+                G1 = sympy.derive_by_array(self._bd_f0, self.Unknowns.L)
 
                 self._bd_G0 = sympy.ImmutableMatrix(G0) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
                 self._bd_G1 = sympy.ImmutableMatrix(G1.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -612,7 +644,7 @@ class SNES_Scalar(Solver):
                 self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
 
                 G2 = sympy.derive_by_array(self._bd_f1, U)
-                G3 = sympy.derive_by_array(self._bd_f1, self._L)
+                G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
 
                 self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
                 self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
@@ -875,10 +907,9 @@ class SNES_Vector(Solver):
 
         ## sympy.Matrix
 
-        self._U = self.u.sym
+        self._U = self.Unknowns.u.sym
 
         ## sympy.Matrix - gradient tensor
-        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N) # This works for vector / vector inputs
 
         self.essential_bcs = []
         self.natural_bcs = []
@@ -1086,9 +1117,9 @@ class SNES_Vector(Solver):
         U = sympy.Array(self.u.sym).reshape(dim)
 
         G0 = sympy.derive_by_array(F0, U)
-        G1 = sympy.derive_by_array(F0, self._L)
+        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
         G2 = sympy.derive_by_array(F1, U)
-        G3 = sympy.derive_by_array(F1, self._L)
+        G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
         # reorganise indices from sympy to petsc ordering
         # reshape to Matrix form
@@ -1122,7 +1153,7 @@ class SNES_Vector(Solver):
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
 
                 G0 = sympy.derive_by_array(bd_F0, U)
-                G1 = sympy.derive_by_array(bd_F0, self._L)
+                G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim*dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -1139,7 +1170,7 @@ class SNES_Vector(Solver):
 
 
             #     G2 = sympy.derive_by_array(self._bd_f1, U)
-            #     G3 = sympy.derive_by_array(self._bd_f1, self._L)
+            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
 
             #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
             #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
@@ -1386,6 +1417,7 @@ class SNES_Stokes_SaddlePt(Solver):
         self.dm = None
 
         self.Unknowns.u = velocityField
+
         self.Unknowns.p = pressureField
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
@@ -1491,7 +1523,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
         ## sympy.Matrix - gradient tensors
         self._G = self.p.sym.jacobian(self.mesh.CoordinateSystem.N)
-        self._L = self.u.sym.jacobian(self.mesh.CoordinateSystem.N)
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -1647,13 +1678,13 @@ class SNES_Stokes_SaddlePt(Solver):
         # writing your own version of this method
 
         # terms that become part of the weighted integral
-        self._u_f0 = self.F0  # some_expression_u_f0(_V,_P. _L, _G)
+        self._u_f0 = self.F0  # some_expression_u_f0(_V,_P. L, _G)
 
         # Integration by parts into the stiffness matrix
-        self._u_f1 = self.F1  # some_expression_u_f1(_V,_P, _L, _G)
+        self._u_f1 = self.F1  # some_expression_u_f1(_V,_P, L, _G)
 
         # rhs in the constraint (pressure) equations
-        self._p_f0 = self.PF0  # some_expression_p_f0(_V,_P, _L, _G)
+        self._p_f0 = self.PF0  # some_expression_p_f0(_V,_P, L, _G)
 
         return
 
@@ -1729,9 +1760,9 @@ class SNES_Stokes_SaddlePt(Solver):
         P = sympy.Array(self.p.sym).reshape(1)
 
         G0 = sympy.derive_by_array(F0, self.u.sym)
-        G1 = sympy.derive_by_array(F0, self._L)
+        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
         G2 = sympy.derive_by_array(F1, self.u.sym)
-        G3 = sympy.derive_by_array(F1, self._L)
+        G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
         # reorganise indices from sympy to petsc ordering / reshape to Matrix form
         # ijkl -> LJKI (hence 3120)
@@ -1770,9 +1801,9 @@ class SNES_Stokes_SaddlePt(Solver):
         # P/U block (check permutations)
 
         G0 = sympy.derive_by_array(FP0, self.u.sym)
-        G1 = sympy.derive_by_array(FP0, self._L)
+        G1 = sympy.derive_by_array(FP0, self.Unknowns.L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
-        # G3 = sympy.derive_by_array(FP1, self._L)
+        # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
 
         self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
         self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
@@ -1805,7 +1836,7 @@ class SNES_Stokes_SaddlePt(Solver):
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
 
                 G0 = sympy.derive_by_array(bd_F0, U)
-                G1 = sympy.derive_by_array(bd_F0, self._L)
+                G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim*dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
@@ -1822,7 +1853,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
             #     G2 = sympy.derive_by_array(self._bd_f1, U)
-            #     G3 = sympy.derive_by_array(self._bd_f1, self._L)
+            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
 
             #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
             #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
