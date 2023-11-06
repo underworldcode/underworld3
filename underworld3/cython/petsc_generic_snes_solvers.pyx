@@ -1396,8 +1396,8 @@ class SNES_Stokes_SaddlePt(Solver):
         if velocityField == None or pressureField == None:
 
             i = self.instance_number
-            self._u = uw.discretisation.MeshVariable(f"U{i}", self.mesh, self.mesh.dim, degree=order, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
-            self._p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=order-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
+            self.Unknowns.u = uw.discretisation.MeshVariable(f"U{i}", self.mesh, self.mesh.dim, degree=order, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
+            self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=order-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
 
             if self.verbose and uw.mpi.rank == 0:
                 print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")

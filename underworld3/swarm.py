@@ -2140,6 +2140,200 @@ class SemiLagrange_Updater(uw_object):
 
 class Lagrangian_Updater(uw_object):
     r"""Swarm-based Lagrangian History Manager:
+
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+    """
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+        fill_param=3,
+    ):
+        super().__init__()
+
+        # create a new swarm to manage here
+        dudt_swarm = uw.swarm.Swarm(mesh)
+
+        self.mesh = mesh
+        self.swarm = dudt_swarm
+        self.psi_fn = psi_fn
+        self.verbose = verbose
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            print(f"Creating psi_star[{i}]")
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f"psi_star_sw_{self.instance_number}_{i}",
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        dudt_swarm.populate(fill_param)
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r"$\quad\Delta t_{\textrm{phys}} = $ "
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_post_solve(dt, evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+
+            # copy the information down the chain
+            print(f"Lagrange order = {self.order}")
+            print(f"Lagrange copying {i-1} to {i}")
+
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Now update the swarm variable
+
+        if evalf:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        else:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order <= 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am
+
+
+class Lagrangian_Updater_Swarm(uw_object):
+    r"""Swarm-based Lagrangian History Manager:
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
 
     $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$

@@ -8,6 +8,10 @@ def mesh_to_pv_mesh(mesh):
     import tempfile
     import pyvista as pv
     import vtk
+    import nest_asyncio
+
+    # Required in notebooks
+    nest_asyncio.apply()
 
     pv.global_theme.background = "white"
     pv.global_theme.antialiasing = True
