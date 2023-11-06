@@ -2276,6 +2276,8 @@ class Lagrangian_Updater(uw_object):
                         )
                         psi_star_0[i, j].data[:] = updated_psi
 
+        # Now update the swarm locations
+
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
         Note that you will need `bdf` / $\delta t$ in computing derivatives"""

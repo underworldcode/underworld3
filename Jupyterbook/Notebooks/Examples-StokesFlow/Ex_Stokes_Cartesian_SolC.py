@@ -21,6 +21,9 @@
 import petsc4py
 from petsc4py import PETSc
 
+import nest_asyncio
+nest_asyncio.apply()
+
 # options = PETSc.Options()
 # options["help"] = None 
 
@@ -60,13 +63,20 @@ mesh = mesh1
 
 mesh.dm.view()
 
-stokes = uw.systems.Stokes(mesh, constitutive_model_class=uw.constitutive_models.ViscoElasticPlasticFlowModel, verbose=True)
-v = stokes._u
-p = stokes._p
+stokes = uw.systems.Stokes(mesh, verbose=True)
+
+# +
+v = stokes.Unknowns.u
+p = stokes.Unknowns.p
+
+stokes.constitutive_model=uw.constitutive_models.ViscoElasticPlasticFlowModel(v)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
+# -
+
+
 
 # %%
 # Set some things
@@ -107,8 +117,8 @@ stokes.bodyforce = sympy.Matrix(
 # +
 # This is the other way to impose no vertical 
 
-stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
+# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
 # stokes.add_natural_bc( -1.0e10 * v.sym[1], sympy.Matrix((0.0, 0.0)).T , "Top", components=[1])
 
@@ -176,10 +186,6 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # Solve time
 stokes.solve()
 
-stokes._uu_G0
-
-0/0
-
 # ### Visualise it !
 
 # +
@@ -193,6 +199,7 @@ if uw.mpi.size == 1:
 
     pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, stokes.bodyforce[1])
     pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
     velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
@@ -217,6 +224,8 @@ if uw.mpi.size == 1:
 
 # -
 # ## SolCx from the same setup
+
+0/0
 
 # +
 stokes.bodyforce = sympy.Matrix(
@@ -248,9 +257,6 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
-# -
-
-0/0
 
 # +
 # check the mesh if in a notebook / serial
@@ -310,3 +316,8 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
+# -
+
+
+
+

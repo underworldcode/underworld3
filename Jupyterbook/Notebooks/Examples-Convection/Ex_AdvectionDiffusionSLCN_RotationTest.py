@@ -8,6 +8,8 @@ import petsc4py
 from petsc4py import PETSc
 
 import os
+import nest_asyncio
+nest_asyncio.apply()
 
 os.environ["UW_TIMING_ENABLE"] = "1"
 
@@ -94,7 +96,7 @@ adv_diff = uw.systems.AdvDiffusion(
 )
 
 
-adv_diff.Unknowns.DuDt.bdf(1)
+adv_diff.Unknowns.DuDt.bdf(2)
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
 adv_diff.constitutive_model.Parameters.diffusivity = k
@@ -144,7 +146,7 @@ def plot_T_mesh(filename):
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.anti_aliasing = "msaa"
-        pv.global_theme.jupyter_backend = "client"
+        pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = True
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
         pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
@@ -226,7 +228,7 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "client"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
@@ -278,7 +280,7 @@ delta_t = 0.025
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(0, 19):
+for step in range(0, 10):
     # delta_t will be baked in when this is defined ... so re-define it
     adv_diff.solve(timestep=delta_t, verbose=False)
 

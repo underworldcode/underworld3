@@ -151,8 +151,8 @@ stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 #     @property
 #     def p(inner_self):
 #         return inner_self._p
-        
-        
+
+
 # -
 
 stokes.Unknowns.p

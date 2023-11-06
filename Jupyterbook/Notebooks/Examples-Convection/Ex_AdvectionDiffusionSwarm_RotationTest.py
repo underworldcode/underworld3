@@ -6,6 +6,9 @@
 import petsc4py
 from petsc4py import PETSc
 
+import nest_asyncio
+nest_asyncio.apply()
+
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
@@ -51,13 +54,15 @@ T1 = uw.swarm.SwarmVariable(
 X1 = uw.swarm.SwarmVariable(r"X1", swarm, 2, varsymbol=r"X^{(-\Delta t)}")
 
 DTdt = uw.swarm.Lagrangian_Updater(
-        swarm,
+        meshball,
         psi_fn = t_soln.sym,
+        V_fn = v_soln.sym,
         vtype = uw.VarType.SCALAR,
         degree = 1,
         order = 1,
         continuous=True,
         varsymbol=r'T_s',
+        fill_param=3,
 )
 
 swarm.populate(fill_param=4)
@@ -223,7 +228,7 @@ expt_name = "output/rotation_test_k_001"
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
-for step in range(0, 20):
+for step in range(0, 10):
 
     import underworld3 as uw
 
@@ -236,6 +241,9 @@ for step in range(0, 20):
         corrector=False,
         restore_points_to_domain_func=meshball.return_coords_to_bounds,
     )  
+
+    adv_diff.DuDt.swarm.advection(v_soln.sym, delta_t=delta_t, 
+                                  restore_points_to_domain_func=meshball.return_coords_to_bounds)
  
     # stats then loop
 
@@ -253,12 +261,7 @@ for step in range(0, 20):
     # v_soln.save(savefile)
     # t_soln.save(savefile)
     # meshball.generate_xdmf(savefile)
-# -
 
-
-adv_diff.DFDt.order
-
-0/0
 
 # +
 # check the mesh if in a notebook / serial
