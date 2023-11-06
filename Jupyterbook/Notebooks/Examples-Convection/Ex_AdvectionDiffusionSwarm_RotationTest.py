@@ -45,14 +45,6 @@ t_soln_dt = uw.discretisation.MeshVariable("Tdt", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-# +
-swarm = uw.swarm.Swarm(mesh=meshball, recycle_rate=0)
-T1 = uw.swarm.SwarmVariable(
-    r"Tstar1", swarm, 1, proxy_degree=2, 
-    proxy_continuous=False, varsymbol=r"T^{(-\Delta t)}"
-)
-X1 = uw.swarm.SwarmVariable(r"X1", swarm, 2, varsymbol=r"X^{(-\Delta t)}")
-
 DTdt = uw.swarm.Lagrangian_Updater(
         meshball,
         psi_fn = t_soln.sym,
@@ -65,13 +57,9 @@ DTdt = uw.swarm.Lagrangian_Updater(
         fill_param=3,
 )
 
-swarm.populate(fill_param=4)
-
-# -
-
 
 # check that the swarm variable works  as a continuous field as well
-T1.sym.jacobian(meshball.X)
+DTdt.psi_star[0].sym.jacobian(meshball.X)
 
 # +
 # Create adv_diff object
@@ -199,6 +187,10 @@ def plot_T_mesh(filename):
         )
 
     # pl.show()
+# -
+
+v_fe = v_soln.mesh.dm.getField(v_soln.field_id)[0]
+v_fe
 
 # +
 with meshball.access(t_0, t_soln, T1):
@@ -233,19 +225,6 @@ for step in range(0, 10):
     import underworld3 as uw
 
     adv_diff.solve(timestep=delta_t, verbose=False)
-
-    # Update the swarm locations
-    swarm.advection(
-        v_soln.sym,
-        delta_t=delta_t,
-        corrector=False,
-        restore_points_to_domain_func=meshball.return_coords_to_bounds,
-    )  
-
-    adv_diff.DuDt.swarm.advection(v_soln.sym, delta_t=delta_t, 
-                                  restore_points_to_domain_func=meshball.return_coords_to_bounds)
- 
-    # stats then loop
 
     tstats = t_soln.stats()
     print("psi*", adv_diff.DuDt.psi_star[0]._meshVar.stats())

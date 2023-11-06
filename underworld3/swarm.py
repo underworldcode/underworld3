@@ -2176,6 +2176,7 @@ class Lagrangian_Updater(uw_object):
         self.mesh = mesh
         self.swarm = dudt_swarm
         self.psi_fn = psi_fn
+        self.V_fn = V_fn
         self.verbose = verbose
         self.order = order
 
@@ -2278,6 +2279,12 @@ class Lagrangian_Updater(uw_object):
 
         # Now update the swarm locations
 
+        self.swarm.advection(
+            self.V_fn,
+            delta_t=dt,
+            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+        )
+
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
         Note that you will need `bdf` / $\delta t$ in computing derivatives"""
@@ -2334,7 +2341,7 @@ class Lagrangian_Updater(uw_object):
         return am
 
 
-class Lagrangian_Updater_Swarm(uw_object):
+class Lagrangian_Swarm_Updater(uw_object):
     r"""Swarm-based Lagrangian History Manager:
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
 
