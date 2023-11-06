@@ -251,15 +251,15 @@ class SNES_Darcy(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
-    ### W term not set up ???
-    @property
-    def W(self):
-        return self._W
+  #  ### W term not set up ???
+  #  @property
+  #  def W(self):
+  #      return self._W
 
-    @W.setter
-    def W(self, value):
-        self.is_setup = False
-        self._W = sympy.Matrix((value,))
+  #  @W.setter
+  #  def W(self, value):
+  #      self.is_setup = False
+  #      self._W = sympy.Matrix((value,))
 
     @property
     def s(self):
@@ -272,7 +272,7 @@ class SNES_Darcy(SNES_Scalar):
 
     @property
     def darcy_flux(self):
-        # flux = self.constitutive_model.flux(self._L - self.s).T
+        # flux = self.constitutive_model.flux(self.Unknowns.L - self.s).T
         flux = self.constitutive_model.flux.T
         return flux
 
@@ -457,11 +457,10 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._order = order
         # User-facing operations are matrices / vectors by preference
 
-        self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        #self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
         self._Estar = None
 
         # scalar 2nd invariant (incompressible)
-        self._Einv2 = sympy.sqrt((sympy.Matrix(self._E) ** 2).trace() / 2)
         self._penalty = 0.0
         self._constraints = sympy.Matrix(
             (self.div_u,)
@@ -554,7 +553,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def strainrate(self):
-        return sympy.Matrix(self._E)
+        return sympy.Matrix(self.Unknowns.E)
 
     @property
     def strainrate_1d(self):
@@ -811,10 +810,9 @@ class SNES_Vector_Projection(SNES_Vector):
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        E = 0.5 * (sympy.Matrix(self._L) + sympy.Matrix(self._L).T)  # ??
         self._f1 = (
             self.F1
-            + self.smoothing * E
+            + self.smoothing * self.Unknowns.E
             + self.penalty
             * self.mesh.vector.divergence(self.u.sym)
             * sympy.eye(self.mesh.dim)
@@ -2020,7 +2018,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self._penalty = 0.0
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
 
-        self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        #self._E = self.mesh.vector.strain_tensor(self.u.sym)
         self._Estar = None
 
         self._constraints = sympy.Matrix((self.div_u,))
@@ -2080,7 +2078,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
     @property
     def strainrate(self):
-        return sympy.Matrix(self._E)
+        return sympy.Matrix(self.Unknowns.E)
 
     @property
     def DuDt(self):
@@ -2326,7 +2324,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
 
         self._constitutive_model = None
 
-        self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        #self._E = self.mesh.vector.strain_tensor(self.u.sym)
         self._Estar = None
 
         self._constraints = sympy.Matrix((self.div_u,))
@@ -2378,7 +2376,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
 
     @property
     def strainrate(self):
-        return sympy.Matrix(self._E)
+        return sympy.Matrix(self.Unknowns.E)
 
     @property
     def DuDt(self):
