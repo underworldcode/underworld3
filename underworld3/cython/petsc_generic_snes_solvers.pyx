@@ -1541,10 +1541,8 @@ class SNES_Stokes_SaddlePt(Solver):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
-    # Why is this a property ?
-    @property
     def _setup_history_terms(self):
-        self.DuDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DuDt = uw.swarm.SemiLagrange_Updater(
                     self.mesh,
                     self.u.sym,
                     self.u.sym,
@@ -1558,7 +1556,7 @@ class SNES_Stokes_SaddlePt(Solver):
                     smoothing=0.0,
                 )
 
-        self.DFDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DFDt = uw.swarm.SemiLagrange_Updater(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,

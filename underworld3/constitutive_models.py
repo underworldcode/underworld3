@@ -63,7 +63,7 @@ class Constitutive_Model(uw_object):
         self._Unknowns = unknowns
 
         u = self.Unknowns.u
-        self._flux_dt = self.Unknowns.DFDt
+        self._DFDt = self.Unknowns.DFDt
         self._DuDt = self.Unknowns.DuDt
 
         self.dim = u.mesh.dim
@@ -140,15 +140,15 @@ class Constitutive_Model(uw_object):
         return
 
     @property
-    def dFdt(self):
-        return self._flux_dt
+    def DFDt(self):
+        return self._DFDt
 
-    @dFdt.setter
-    def dFdt(
+    @DFDt.setter
+    def DFDt(
         self,
-        flux_dt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
     ):
-        self._dFdt = flux_dt_value
+        self._DFDt = DFDt_value
         self._solver_is_setup = False
         return
 
@@ -870,8 +870,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         ## Assume just the one history term
 
-        if self.flux_dt is not None:
-            stress_star = self.flux_dt.psi_star[0]
+        if self.Unknowns.DFDt is not None:
+            stress_star = self.self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
                 print("Adding stress history in plastic term", flush=True)
@@ -975,8 +975,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         stress = 2 * self.Parameters.ve_effective_viscosity * edot
 
-        if self.flux_dt is not None:
-            stress_star = self.flux_dt.psi_star[0]
+        if self.Unknowns.DFDt is not None:
+            stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
                 stress += (
@@ -998,8 +998,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         stress = 2 * self.viscosity * edot
 
-        if self.flux_dt is not None:
-            stress_star = self.flux_dt.psi_star[0]
+        if self.Unknowns.DFDt is not None:
+            stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
                 stress += (

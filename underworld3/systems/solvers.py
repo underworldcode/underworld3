@@ -626,10 +626,117 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._penalty = symval
 
 
-"""
 class SNES_VE_Stokes(SNES_Stokes):
+    r"""
+    This class provides functionality for a discrete representation
+    of the Stokes flow equations assuming an incompressibility
+    (or near-incompressibility) constraint.
 
-"""
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[
+                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+    $$
+
+    $$
+    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{f}_p} = 0
+    $$
+
+    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+
+    $$
+        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+    $$
+
+    The constraint equation, $\mathbf{f}_p = 0$ is incompressible flow by default but can be set
+    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+
+    ## Properties
+
+      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
+
+      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - $\mathbf f$ is a volumetric source term (i.e. body forces)
+      and is set by providing the `bodyforce` property.
+
+      - An Augmented Lagrangian approach to application of the incompressibility
+    constraint is to penalise incompressibility in the Stokes equation by adding
+    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
+    (this is in addition to the constraint equation, unlike in the classical penalty method).
+    This is activated by setting the `penalty` property to a non-zero floating point value which adds
+    the term in the `sympy` expression.
+
+      - A preconditioner is usually required for the saddle point system and this is provided
+    though the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+
+    ## Notes
+
+      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
+        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
+
+      - The interpolation order of the `pressureField` variable is used to determine the integration order of
+    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
+
+      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
+
+    """
+    instances = 0
+
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        order: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        solver_name: Optional[str] = "",
+        verbose: Optional[bool] = False,
+    ):
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            None,
+            None,
+            order,
+            p_continuous,
+            solver_name,
+            verbose,
+        )
+
+        # change this to be less generic
+        if solver_name == "":
+            self.name = "VE_Stokes_{}_".format(self.instance_number)
+
+        self._order = order
+        # User-facing operations are matrices / vectors by preference
+
+        # self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
+        self._Estar = None
+
+        # scalar 2nd invariant (incompressible)
+        self._penalty = 0.0
+        self._constraints = sympy.Matrix(
+            (self.div_u,)
+        )  # by default, incompressibility constraint
+
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+
+        self._setup_problem_description = self.stokes_problem_description
+
+        self._setup_history_terms
+
+        # this attrib records if we need to re-setup
+        self.is_setup = False
+        self._constitutive_model = None
+
+        return
 
 
 class SNES_Projection(SNES_Scalar):
