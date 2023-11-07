@@ -4,14 +4,14 @@
 def mesh_to_pv_mesh(mesh):
     """Initialise pyvista engine from existing mesh"""
 
+    # Required in notebooks
+    import nest_asyncio
+
+    nest_asyncio.apply()
+
     import os
     import tempfile
     import pyvista as pv
-    import vtk
-    import nest_asyncio
-
-    # Required in notebooks
-    nest_asyncio.apply()
 
     pv.global_theme.background = "white"
     pv.global_theme.antialiasing = True

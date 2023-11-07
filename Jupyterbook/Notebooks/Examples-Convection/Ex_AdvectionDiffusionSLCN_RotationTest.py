@@ -96,9 +96,9 @@ adv_diff = uw.systems.AdvDiffusion(
 )
 
 
-adv_diff.Unknowns.DuDt.bdf(2)
+type(adv_diff.Unknowns)
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(adv_diff.Unknowns)
 adv_diff.constitutive_model.Parameters.diffusivity = k
 
 
@@ -205,16 +205,15 @@ t_soln2 = uw.discretisation.MeshVariable(
 adv_diff.estimate_dt()
 
 
+adv_diff.DuDt._psi_star_projection_solver._constitutive_model
+
 # +
 timing.reset()
 timing.start()
 
-delta_t = 0.025
+delta_t = 0.001
 
 adv_diff.solve(timestep=delta_t, verbose=False, _force_setup=False)
-# -
-
-adv_diff._f0
 
 # +
 # check the mesh if in a notebook / serial
@@ -276,7 +275,7 @@ if uw.mpi.size == 1:
 
 expt_name = "rotation_test_slcn"
 
-delta_t = 0.025
+delta_t = 0.05
 
 plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 

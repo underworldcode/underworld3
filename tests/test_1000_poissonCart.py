@@ -31,7 +31,7 @@ def test_poisson_boxmesh(mesh):
     )
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
-    poisson.constitutive_model = uw.constitutive_models.DiffusionModel(u)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = 1
     poisson.f = 0.0
     poisson.add_dirichlet_bc(1.0, "Bottom", 0)

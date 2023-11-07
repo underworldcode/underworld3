@@ -45,7 +45,7 @@ t_soln_dt = uw.discretisation.MeshVariable("Tdt", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-DTdt = uw.swarm.Lagrangian_Updater(
+DTdt = uw.swarm.Lagrangian_D_Dt(
         meshball,
         psi_fn = t_soln.sym,
         V_fn = v_soln.sym,
@@ -84,7 +84,7 @@ adv_diff = uw.systems.AdvDiffusion(
     order=1,
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = k
 
 
@@ -131,8 +131,6 @@ with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
-with swarm.access(T1):
-    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
 
 
 # +
@@ -158,10 +156,10 @@ def plot_T_mesh(filename):
         import underworld3.visualisation
         
         pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
-        swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+        swarm_points = uw.visualisation.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
         tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
             
-        swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,T1.sym)
+        swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,adv_diff.DuDt.psi_fn)
         
         pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
         pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
@@ -187,30 +185,25 @@ def plot_T_mesh(filename):
         )
 
     # pl.show()
-# -
-
-v_fe = v_soln.mesh.dm.getField(v_soln.field_id)[0]
-v_fe
 
 # +
-with meshball.access(t_0, t_soln, T1):
+with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
-with swarm.access(T1):
-    T1.data[:, 0] = uw.function.evaluate(t_soln.sym[0], swarm.particle_coordinates.data)
+
 
 
 # +
 adv_diff.DuDt.update(dt=0.05)
 
-# Update the swarm locations
-swarm.advection(
-    v_soln.sym,
-    delta_t=0.05,
-    corrector=False,
-    restore_points_to_domain_func=meshball.return_coords_to_bounds,
-)  
+# # Update the swarm locations
+# swarm.advection(
+#     v_soln.sym,
+#     delta_t=0.05,
+#     corrector=False,
+#     restore_points_to_domain_func=meshball.return_coords_to_bounds,
+# )  
 
 # +
 # Advection/diffusion model / update in time
@@ -253,10 +246,9 @@ if uw.mpi.size == 1:
     import underworld3.visualisation
 
     pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
-    swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+    swarm_points = uw.visualisation.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
     tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
         
-    swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,T1.sym)
     swarm_points.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points, adv_diff.DuDt.psi_star[0].sym[0] )
 
     pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
@@ -267,16 +259,16 @@ if uw.mpi.size == 1:
 
     pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=0.02, opacity=0.75)
 
-    # pl.add_points(
-    #     swarm_points,
-    #     cmap="coolwarm",
-    #     render_points_as_spheres=False,
-    #     scalars="Ts",
-    #     point_size=3,
-    #     opacity=0.66,
-    # )
+    pl.add_points(
+        swarm_points,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        scalars="Ts",
+        point_size=3,
+        opacity=0.66,
+    )
 
-    pl.add_mesh(pvmesh, cmap="coolwarm", opacity=0.75, scalars="T")
+    # pl.add_mesh(pvmesh, cmap="coolwarm", opacity=0.75, scalars="T")
 
     # pl.remove_scalar_bar("T")
     # pl.remove_scalar_bar("mag")

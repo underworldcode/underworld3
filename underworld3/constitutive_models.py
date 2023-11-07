@@ -13,6 +13,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 import underworld3.timing as timing
+import underworld3.cython
 from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
@@ -50,12 +51,7 @@ class Constitutive_Model(uw_object):
     """
 
     @timing.routine_timer_decorator
-    def __init__(
-        self,
-        u: MeshVariable,
-        flux_dt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]= None,
-        DuDt: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]= None
-    ):
+    def __init__(self, unknowns):
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
         # defined as a template here, but should be instantiated via class
@@ -64,11 +60,14 @@ class Constitutive_Model(uw_object):
         # We provide a function that converts gradients / gradient history terms
         # into the relevant flux term.
 
-        self._u = u
+        self._Unknowns = unknowns
+
+        u = self.Unknowns.u
+        self._flux_dt = self.Unknowns.DFDt
+        self._DuDt = self.Unknowns.DuDt
+
         self.dim = u.mesh.dim
         self.u_dim = u.num_components
-        self._flux_dt = flux_dt
-        self._DuDt = DuDt
 
         self.Parameters = self._Parameters(self)
         self.Parameters._solver = None
@@ -100,6 +99,18 @@ class Constitutive_Model(uw_object):
             return
 
     @property
+    def Unknowns(self):
+        return self._Unknowns
+
+    # We probably should not be changing this ever ... does this setter even belong here ?
+    @Unknowns.setter
+    def Unknowns(self, unknowns):
+        # : uw.cython.generic_solvers.Solver._Unknowns
+        self._Unknowns = unknowns
+        self._solver_is_setup = False
+        return
+
+    @property
     def K(self):
         """The constitutive property for this flow law"""
         return self._K
@@ -107,31 +118,37 @@ class Constitutive_Model(uw_object):
     ## Not sure about setters for these, I suppose it would be a good idea
     @property
     def u(self):
-        return self._u
+        return self.Unknowns.u
 
     @property
     def grad_u(self):
-        mesh = self._u.mesh
+        mesh = self.Unknowns.u.mesh
 
-        return self._u.sym.jacobian(mesh.CoordinateSystem.N)
+        return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
     def DuDt(self):
         return self._DuDt
 
     @DuDt.setter
-    def DuDt(self, DuDt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
+    def DuDt(
+        self,
+        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+    ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
         return
-    
+
     @property
-    def flux_dt(self):
+    def dFdt(self):
         return self._flux_dt
 
-    @flux_dt.setter
-    def flux_dt(self, flux_dt_value: Union[ uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater ]):
-        self._flux_dt = flux_dt_value
+    @dFdt.setter
+    def dFdt(
+        self,
+        flux_dt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+    ):
+        self._dFdt = flux_dt_value
         self._solver_is_setup = False
         return
 
@@ -348,8 +365,8 @@ class ViscousFlowModel(Constitutive_Model):
 
     @property
     def grad_u(self):
-        mesh = self._u.mesh
-        ddu = self._u.sym.jacobian(mesh.CoordinateSystem.N)
+        mesh = self.Unknowns.u.mesh
+        ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
         edot = (ddu + ddu.T) / 2
 
         return edot

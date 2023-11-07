@@ -1878,7 +1878,7 @@ class NodalPointSwarm(Swarm):
         return
 
 
-class SemiLagrange_Updater(uw_object):
+class SemiLagrange_D_Dt(uw_object):
     r"""Nodal-Swarm  Lagrangian History Manager:
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
     $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
@@ -2138,7 +2138,7 @@ class SemiLagrange_Updater(uw_object):
         return am
 
 
-class Lagrangian_Updater(uw_object):
+class Lagrangian_D_Dt(uw_object):
     r"""Swarm-based Lagrangian History Manager:
 
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
@@ -2341,7 +2341,7 @@ class Lagrangian_Updater(uw_object):
         return am
 
 
-class Lagrangian_Swarm_Updater(uw_object):
+class Lagrangian_Swarm_D_Dt(uw_object):
     r"""Swarm-based Lagrangian History Manager:
     This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
 

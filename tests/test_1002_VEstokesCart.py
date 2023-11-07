@@ -49,7 +49,7 @@ def test_stokes_boxmesh(mesh):
     )
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
     stokes.petsc_options["snes_type"] = "newtonls"
@@ -133,7 +133,7 @@ def test_stokes_boxmesh_bc_failure():
     )
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
     stokes.petsc_options["snes_type"] = "newtonls"

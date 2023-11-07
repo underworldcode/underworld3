@@ -40,6 +40,8 @@ class Solver(uw_object):
         self._E = self.Unknowns.E # sym part
         self._W = self.Unknowns.W # asym part
 
+        self._constitutive_model = None
+
         return
 
     class _Unknowns:
@@ -66,17 +68,19 @@ class Solver(uw_object):
 
         @u.setter
         def u(inner_self, new_u):
-            inner_self._u = new_u
-            inner_self._L = new_u.sym.jacobian(new_u.mesh.CoordinateSystem.N)
 
-            # can build suitable E and W operators of the unknowns
-            if inner_self._L.is_square:
-                inner_self._E = (inner_self._L + inner_self._L.T) / 2
-                inner_self._W = (inner_self._L - inner_self._L.T) / 2
+            if new_u is not None:
+                inner_self._u = new_u
+                inner_self._L = new_u.sym.jacobian(new_u.mesh.CoordinateSystem.N)
 
-                inner_self._Einv2 = sympy.sqrt((sympy.Matrix(inner_self._E) ** 2).trace() / 2)
+                # can build suitable E and W operators of the unknowns
+                if inner_self._L.is_square:
+                    inner_self._E = (inner_self._L + inner_self._L.T) / 2
+                    inner_self._W = (inner_self._L - inner_self._L.T) / 2
 
-            inner_self._owning_solver._is_setup = False
+                    inner_self._Einv2 = sympy.sqrt((sympy.Matrix(inner_self._E) ** 2).trace() / 2)
+
+                inner_self._owning_solver._is_setup = False
             return
 
         @property
@@ -259,17 +263,28 @@ class Solver(uw_object):
         return
 
 
-    # @property
-    # def constitutive_model(self):
-    #     return self._constitutive_model
+    @property
+    def constitutive_model(self):
+        return self._constitutive_model
 
-    # @constitutive_model.setter
-    # def constitutive_model(self, model):
+    @constitutive_model.setter
+    def constitutive_model(self, model_or_class):
 
-    #     # is the model appropriate for SNES_Scalar solvers ?
-    #     self.is_setup = False
-    #     self._constitutive_model = model
-    #     self._constitutive_model._solver_is_setup = False
+        ### checking if it's an instance - it will need to be reset
+        if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model_or_class
+            self._constitutive_model.Unknowns = self.Unknowns
+            self._constitutive_model._solver_is_setup = False
+
+        ### checking if it's a class
+        elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
+            self._constitutive_model = model_or_class(self.Unknowns)
+
+        ### Raise an error if it's neither
+        else:
+            raise RuntimeError(
+                "constitutive_model must be a valid class or instance of a valid class"
+            )
 
 
     def validate_solver(self):
@@ -731,7 +746,7 @@ class SNES_Scalar(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
-        # self.constitutive_model._solver_is_setup = True
+        self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
     def solve(self,
@@ -753,7 +768,7 @@ class SNES_Scalar(Solver):
         import petsc4py
 
 
-        if _force_setup: #or not self.constitutive_model._solver_is_setup:
+        if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
@@ -1257,7 +1272,7 @@ class SNES_Vector(Solver):
         DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
 
         self.is_setup = True
-        # self.constitutive_model._solver_is_setup = True
+        self.constitutive_model._solver_is_setup = True
 
 
     @timing.routine_timer_decorator
@@ -1278,7 +1293,7 @@ class SNES_Vector(Solver):
             and `self.p` will be used.
         """
 
-        if _force_setup: #or not self.constitutive_model._solver_is_setup:
+        if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
@@ -1417,7 +1432,6 @@ class SNES_Stokes_SaddlePt(Solver):
         self.dm = None
 
         self.Unknowns.u = velocityField
-
         self.Unknowns.p = pressureField
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
@@ -2156,7 +2170,7 @@ class SNES_Stokes_SaddlePt(Solver):
             self._subdict[name] = (isets[index],dms[index])
 
         self.is_setup = True
-        # self.constitutive_model._solver_is_setup = True
+        self.constitutive_model._solver_is_setup = True
 
 
 
@@ -2179,7 +2193,7 @@ class SNES_Stokes_SaddlePt(Solver):
             and `self.p` will be used.
         """
 
-        if _force_setup: #or not self.constitutive_model._solver_is_setup:
+        if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):

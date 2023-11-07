@@ -80,7 +80,7 @@ def test_stokes_sphere(mesh):
     )
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p, verbose=False)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(u)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
     stokes.tolerance = 1.0e-2

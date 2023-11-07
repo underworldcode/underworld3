@@ -69,7 +69,7 @@ stokes = uw.systems.Stokes(mesh, verbose=True)
 v = stokes.Unknowns.u
 p = stokes.Unknowns.p
 
-stokes.constitutive_model=uw.constitutive_models.ViscoElasticPlasticFlowModel(v)
+stokes.constitutive_model=uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
@@ -225,8 +225,6 @@ if uw.mpi.size == 1:
 # -
 # ## SolCx from the same setup
 
-0/0
-
 # +
 stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
@@ -286,7 +284,7 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3.0, opacity=1, show_scalar_bar=False)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=30.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
 

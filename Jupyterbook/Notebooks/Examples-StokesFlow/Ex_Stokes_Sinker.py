@@ -45,7 +45,10 @@ if uw.mpi.size == 1:
     os.makedirs("output", exist_ok=True)
 else:
     os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
+# -
 
+
+uw
 
 # +
 # Define the problem size
@@ -124,8 +127,8 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 # +
 stokes = uw.systems.Stokes(mesh)
 
-v = stokes._u
-p = stokes._p
+v = stokes.Unknowns.u
+p = stokes.Unknowns.p
 
 # Set some options
 stokes.penalty = 1.0
@@ -135,31 +138,8 @@ stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
 stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
-
-
-# +
-# class _Unknowns(stokes._Unknowns):
-
-#     def __init__(inner_self):
-
-#         super().__init__(inner_self)
-
-#         inner_self._p = None
-
-#         return
-
-#     @property
-#     def p(inner_self):
-#         return inner_self._p
-
-
 # -
 
-stokes.Unknowns.p
-
-unk.p
-
-0/0
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable(
@@ -189,6 +169,7 @@ viscosity = viscBG * material.sym[0] + viscSphere * material.sym[1]
 # +
 # viscosity = sympy.Max( sympy.Min(viscosityMat, eta_max), eta_min)
 
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
 stokes.bodyforce = sympy.Matrix([0, -1 * density])
 
@@ -328,12 +309,6 @@ if uw.mpi.rank == 0:
     ax.set_xlabel("Time")
     ax.set_ylabel("Sinker position")
 
-
-
-
-
-
-
 # +
 import numpy as np
 import pyvista as pv
@@ -351,9 +326,6 @@ velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
 velocity_points.point_data["X"] = uw.visualisation.coords_to_pv_coords(v.coords)
 velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
 # -
-0/0
-
-
 # ## check if that worked
 
 if uw.mpi.size == 1:

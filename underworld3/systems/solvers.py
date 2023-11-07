@@ -105,29 +105,29 @@ class SNES_Poisson(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
+    #     ### checking if it's an instance
+    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### checking if it's a class
+    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model(self.u)
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### Raise an error if it's neither
+    #     else:
+    #         raise RuntimeError(
+    #             "constitutive_model must be a valid class or instance of a valid class"
+    #         )
 
     @property
     def CM_is_setup(self):
@@ -251,15 +251,15 @@ class SNES_Darcy(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
-  #  ### W term not set up ???
-  #  @property
-  #  def W(self):
-  #      return self._W
+    #  ### W term not set up ???
+    #  @property
+    #  def W(self):
+    #      return self._W
 
-  #  @W.setter
-  #  def W(self, value):
-  #      self.is_setup = False
-  #      self._W = sympy.Matrix((value,))
+    #  @W.setter
+    #  def W(self, value):
+    #      self.is_setup = False
+    #      self._W = sympy.Matrix((value,))
 
     @property
     def s(self):
@@ -285,29 +285,29 @@ class SNES_Darcy(SNES_Scalar):
         self._v_projector.is_setup = False
         self._v = sympify(value)
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
+    #     ### checking if it's an instance
+    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### checking if it's a class
+    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model(self.u)
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### Raise an error if it's neither
+    #     else:
+    #         raise RuntimeError(
+    #             "constitutive_model must be a valid class or instance of a valid class"
+    #         )
 
     @timing.routine_timer_decorator
     def solve(
@@ -457,7 +457,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._order = order
         # User-facing operations are matrices / vectors by preference
 
-        #self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
+        # self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
         self._Estar = None
 
         # scalar 2nd invariant (incompressible)
@@ -502,9 +502,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DFDt
 
     @DFDt.setter
-    def DFDt(
-        self, DFDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]
-    ):
+    def DFDt(self, DFDt: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt]):
         self._DFDt = DFDt
 
     ### add property for DuDt to be updated by the user if they wish
@@ -513,39 +511,41 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DuDt
 
     @DuDt.setter
-    def DuDt(
-        self, DuDt: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater]
-    ):
+    def DuDt(self, DuDt: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt]):
         self._DuDt = DuDt
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### only setup history terms in it's a VEP model
-        ### Need a better flag for this
-        if model == uw.constitutive_models.ViscoElasticPlasticFlowModel:
-            self._setup_history_terms
+    ## Not keen on this - we ought to do this sort of thing
+    ## on the generic classes - otherwise generic models do not
+    ## have this property
 
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
+    #     ### only setup history terms in it's a VEP model
+    #     ### Need a better flag for this
+    #     if model == uw.constitutive_models.ViscoElasticPlasticFlowModel:
+    #         self._setup_history_terms
+
+    #     ### checking if it's an instance
+    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### checking if it's a class
+    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model(self.Unknowns)
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### Raise an error if it's neither
+    #     else:
+    #         raise RuntimeError(
+    #             "constitutive_model must be a valid class or instance of a valid class"
+    #         )
 
     @property
     def CM_is_setup(self):
@@ -558,18 +558,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @property
     def strainrate_1d(self):
         return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)
-
-    # Over-ride this one as required
-    @property
-    def strainrate_star(self):
-        return None
-
-    # provide the strain-rate history in symbolic form
-    @strainrate_star.setter
-    def strainrate_star(self, strain_rate_fn):
-        self._is_setup = False
-        symval = sympify(strain_rate_fn)
-        self._Estar = symval
 
     @property
     def strainrate_star_1d(self):
@@ -638,6 +626,12 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._penalty = symval
 
 
+"""
+class SNES_VE_Stokes(SNES_Stokes):
+
+"""
+
+
 class SNES_Projection(SNES_Scalar):
     r"""
     Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
@@ -682,7 +676,9 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
-        # self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
+            self.Unknowns
+        )
 
         return
 
@@ -792,7 +788,9 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
-        # self._constitutive_model = uw.constitutive_models.Constitutive_Model(u_Field)
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
+            self.Unknowns
+        )
 
         return
 
@@ -1093,7 +1091,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
 
         ### Setup the history terms
 
-        self.Unknowns.DuDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
             self.mesh,
             u_Field.sym,
             self._V_fn,
@@ -1107,7 +1105,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             smoothing=0.0,
         )
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
             self.mesh,
             sympy.Matrix(
                 [[0] * self.mesh.dim]
@@ -1155,30 +1153,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
-
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -1355,7 +1329,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         V_fn: Union[
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
-        DuDt: uw.swarm.Lagrangian_Updater = None,
+        DuDt: uw.swarm.Lagrangian_D_Dt = None,
         order: int = None,
         solver_name: str = "",
         restore_points_func: Callable = None,
@@ -1397,7 +1371,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             if order is None:
                 order = 1  # default value
 
-            self.Unknowns.DuDt = uw.swarm.SemiLagrange_Updater(
+            self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
                 self.mesh,
                 u_Field.sym,
                 self._V_fn,
@@ -1423,7 +1397,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             self.Unknowns.DuDt = DuDt
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
             self.mesh,
             sympy.Matrix(
                 [[0] * self.mesh.dim]
@@ -1471,30 +1445,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
-
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -1674,7 +1624,7 @@ class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
         V_fn: Union[
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
-        DuDt: uw.swarm.Lagrangian_Updater,
+        DuDt: uw.swarm.Lagrangian_D_Dt,
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
@@ -1781,17 +1731,15 @@ class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
             self._constitutive_model = model
 
             ### update history terms using setters
-            self.DFDt.psi_fn = model._q(self.u)
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
+            self.DFDt.psi_fn = model._q(self.Unknowns.u)
+
         ### checking if it's a class
         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
+            self._constitutive_model = model(self.Unknowns)
 
             ### update history terms using setters
             self.DFDt.psi_fn = model._q(self.u)
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
+
         ### Raise an error if it's neither
         else:
             raise RuntimeError(
@@ -1914,7 +1862,7 @@ class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
         super()._setup_pointwise_functions()  # ._setup_terms()
 
 
-## This one is already updated to work with the Semi-Lagrange updater
+## This one is already updated to work with the Semi-Lagrange D_Dt
 class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
@@ -2018,7 +1966,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self._penalty = 0.0
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
 
-        #self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        # self._E = self.mesh.vector.strain_tensor(self.u.sym)
         self._Estar = None
 
         self._constraints = sympy.Matrix((self.div_u,))
@@ -2087,7 +2035,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater],
+        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
     ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
@@ -2099,34 +2047,34 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater],
+        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
+    #     ### checking if it's an instance
+    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### checking if it's a class
+    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model(self.u)
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### Raise an error if it's neither
+    #     else:
+    #         raise RuntimeError(
+    #             "constitutive_model must be a valid class or instance of a valid class"
+    #         )
 
     @property
     def constraints(self):
@@ -2217,7 +2165,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         return
 
 
-# This one is already updated to work with the Lagrange updater
+# This one is already updated to work with the Lagrange D_Dt
 class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
@@ -2324,7 +2272,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
 
         self._constitutive_model = None
 
-        #self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        # self._E = self.mesh.vector.strain_tensor(self.u.sym)
         self._Estar = None
 
         self._constraints = sympy.Matrix((self.div_u,))
@@ -2385,7 +2333,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater],
+        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
     ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
@@ -2397,7 +2345,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[uw.swarm.SemiLagrange_Updater, uw.swarm.Lagrangian_Updater],
+        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False
