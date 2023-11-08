@@ -169,7 +169,7 @@ r_o = 1.0
 adv_diff = uw.systems.AdvDiffusion(
     meshball,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
     degree=3,
     restore_points_func=points_in_disc,

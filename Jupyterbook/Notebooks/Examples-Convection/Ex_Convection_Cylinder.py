@@ -84,7 +84,7 @@ stokes = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.material_properties = stokes.constitutive_model.Parameters(
     viscosity=1
 )
@@ -133,12 +133,12 @@ r_o = 1.0
 adv_diff = uw.systems.AdvDiffusion(
     meshball,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
     verbose=False,
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshball.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.material_properties = (
     adv_diff.constitutive_model.Parameters(diffusivity=1)
 )

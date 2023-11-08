@@ -194,8 +194,8 @@ def plot_T_mesh(filename):
             window_size=(1280, 1280),
             return_img=False,
         )
-
-    # pl.show()
+    
+    pl.show()
 
 
 t_soln2 = uw.discretisation.MeshVariable(

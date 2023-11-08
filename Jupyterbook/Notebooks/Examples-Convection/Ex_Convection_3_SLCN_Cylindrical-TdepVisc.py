@@ -107,7 +107,7 @@ delta_eta = 10**log10_delta_eta
 stokes.petsc_options["snes_rtol"] = 1 / delta_eta
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshdisc.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.penalty = 0.0
 
@@ -134,11 +134,11 @@ h = 0.0
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshdisc,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshdisc.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 

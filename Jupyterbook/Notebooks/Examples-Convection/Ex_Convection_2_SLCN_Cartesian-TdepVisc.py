@@ -56,7 +56,7 @@ stokes.petsc_options["snes_rtol"] = 1 / delta_eta
 stokes.petsc_options["snes_atol"] = 0.01  # Based on how the scaling works
 
 viscosity = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.penalty = 0.0
 
@@ -91,11 +91,11 @@ h = 0.0
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.material_properties = (
     adv_diff.constitutive_model.Parameters(diffusivity=k)
 )

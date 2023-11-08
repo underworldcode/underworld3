@@ -50,7 +50,7 @@ stokes.petsc_options["ksp_monitor"] = None
 delta_eta = 1.0e6
 
 viscosity_L = delta_eta * sympy.exp(-sympy.log(delta_eta) * t_soln.sym[0])
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.0
@@ -84,11 +84,11 @@ h = 0.0
 adv_diff = uw.systems.AdvDiffusion(
     meshbox,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = k
 
 adv_diff.theta = 0.5

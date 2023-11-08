@@ -80,7 +80,7 @@ stokes = Stokes(
 # Constant viscosity
 
 viscosity = 1
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes.u)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.tolerance = 1.0e-3
 
@@ -89,7 +89,6 @@ stokes.add_dirichlet_bc((0.0,), "Left", (0,))
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))
 stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-# -
 
 
 # +
@@ -114,11 +113,11 @@ h = 0.0
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 
@@ -401,4 +400,3 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, cmap="coolwarm", scalars="T", opacity=0.75)
 
     pl.show(cpos="xy")
-# -
