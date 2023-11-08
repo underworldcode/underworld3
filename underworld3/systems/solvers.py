@@ -730,7 +730,7 @@ class SNES_VE_Stokes(SNES_Stokes):
 
         self._setup_problem_description = self.stokes_problem_description
 
-        self._setup_history_terms
+        self._setup_history_terms()
 
         # this attrib records if we need to re-setup
         self.is_setup = False
@@ -2048,6 +2048,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         order: Optional[int] = 1,
     ):
         ## Parent class will set up default values and load u_Field into the solver
+
         super().__init__(
             mesh,
             velocityField,
@@ -2078,8 +2079,8 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
         self._constraints = sympy.Matrix((self.div_u,))
 
-        ### sets up DuDt and DFDt
-        self._setup_history_terms
+        ### sets up DuDt and DFDt ... got to call it ... not a property any more !!
+        self._setup_history_terms()
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_slcn_problem_description
@@ -2094,13 +2095,15 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
         # f0 residual term
         self._u_f0 = (
-            self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
+            self.F0
+            - self.bodyforce
+            + self.rho * self.Unknowns.DuDt.bdf() / self.delta_t
         )
 
         # f1 residual term
         self._u_f1 = (
             self.F1
-            + self.DFDt.adams_moulton_flux()
+            + self.Unknowns.DFDt.adams_moulton_flux()
             - sympy.eye(self.mesh.dim) * (self.p.sym[0])
         )
         self._p_f0 = sympy.simplify(self.PF0 + sympy.Matrix((self.constraints)))
@@ -2158,30 +2161,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False
-
-    # @property
-    # def constitutive_model(self):
-    #     return self._constitutive_model
-
-    # @constitutive_model.setter
-    # def constitutive_model(self, model):
-    #     ### checking if it's an instance
-    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### checking if it's a class
-    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model(self.u)
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### Raise an error if it's neither
-    #     else:
-    #         raise RuntimeError(
-    #             "constitutive_model must be a valid class or instance of a valid class"
-    #         )
 
     @property
     def constraints(self):
@@ -2248,7 +2227,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self.is_setup = False
-            self._DFDt.psi_fn = self.constitutive_model.flux.T
+            self.Unknowns.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -2256,8 +2235,8 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
             self._setup_solver(verbose)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update(timestep, verbose=verbose)
-        self.DFDt.update(timestep, verbose=verbose)
+        self.Unknowns.DuDt.update(timestep, verbose=verbose)
+        self.Unknowns.DFDt.update(timestep, verbose=verbose)
 
         super().solve(
             zero_init_guess,
@@ -2385,7 +2364,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
         self._constraints = sympy.Matrix((self.div_u,))
 
         ### sets up DuDt and DFDt
-        self._setup_history_terms
+        self._setup_history_terms()
 
         return
 
