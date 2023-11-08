@@ -60,7 +60,7 @@ class Constitutive_Model(uw_object):
         # We provide a function that converts gradients / gradient history terms
         # into the relevant flux term.
 
-        self._Unknowns = unknowns
+        self.Unknowns = unknowns
 
         u = self.Unknowns.u
         self._DFDt = self.Unknowns.DFDt

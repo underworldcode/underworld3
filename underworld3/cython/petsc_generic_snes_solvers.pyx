@@ -294,13 +294,13 @@ class Solver(uw_object):
 
         name = self.__class__.__name__
 
-        if not isinstance(self.u, uw.discretisation.MeshVariable):
+        if not isinstance(self.u, uw.discretisation._MeshVariable):
             print(f"Vector of unknowns required")
             print(f"{name}.u = uw.discretisation.MeshVariable(...)")
 
-        # if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
-        #     print(f"Constitutive model required")
-        #     print(f"{name}.constitutive_model = uw.constitutive_models...")
+        if not isinstance(self.constitutive_model, uw.constitutive_models.Constitutive_Model):
+            print(f"Constitutive model required")
+            print(f"{name}.constitutive_model = uw.constitutive_models...")
 
         return
 
@@ -1705,12 +1705,12 @@ class SNES_Stokes_SaddlePt(Solver):
 
         name = self.__class__.__name__
 
-        if not isinstance(self.u, uw.discretisation.MeshVariable):
+        if not isinstance(self.u, uw.discretisation._MeshVariable):
             print(f"Vector of unknowns required")
             print(f"{name}.u = uw.discretisation.MeshVariable(...)")
             raise RuntimeError("Unknowns: MeshVariable is required")
 
-        if not isinstance(self.p, uw.discretisation.MeshVariable):
+        if not isinstance(self.p, uw.discretisation._MeshVariable):
             print(f"Vector of constraint unknowns required")
             print(f"{name}.p = uw.discretisation.MeshVariable(...)")
             raise RuntimeError("Constraint (Pressure): MeshVariable is required")
