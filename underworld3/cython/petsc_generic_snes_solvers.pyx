@@ -1542,7 +1542,7 @@ class SNES_Stokes_SaddlePt(Solver):
         self.is_setup = False
 
     def _setup_history_terms(self):
-        self.Unknowns.DuDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
                     self.mesh,
                     self.u.sym,
                     self.u.sym,
@@ -1556,7 +1556,7 @@ class SNES_Stokes_SaddlePt(Solver):
                     smoothing=0.0,
                 )
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_Updater(
+        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
