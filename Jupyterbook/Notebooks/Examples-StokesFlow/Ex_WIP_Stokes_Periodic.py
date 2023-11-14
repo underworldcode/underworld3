@@ -5,14 +5,16 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 # + [markdown] magic_args="[markdown]"
 # # Periodic Mesh Example (WIP)
 #
@@ -137,12 +139,12 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1
 
 # No slip boundary conditions
-stokes.add_dirichlet_bc((0.5, 0.0), ["Top"], (0, 1))
-stokes.add_dirichlet_bc((-0.5, 0.0), ["Bottom"], (0, 1))
+stokes.add_dirichlet_bc((0.5, 0.0), "Top", (0, 1))
+stokes.add_dirichlet_bc((-0.5, 0.0), "Bottom", (0, 1))
 
 # %%
 # Write density into a variable for saving
@@ -166,54 +168,47 @@ stokes.bodyforce = 0 * mesh.X  # -mesh.X / sympy.sqrt(x**2 + y**2)
 # Solve time
 stokes.solve()
 
-# %%
-import os
-
-os.makedirs("output", exist_ok=True)
-savefile = "output/stokes_periodic_2d.h5"
-mesh.save(savefile)
-stokes.u.save(savefile)
-stokes.p.save(savefile)
-densvar.save(savefile)
-mesh.generate_xdmf(savefile)
+mesh.petsc_save_checkpoint(index=0, meshVars=[stokes.u, stokes.p, densvar], outputPath='./output/')
+swarm.petsc_save_checkpoint(swarmName='swarm', index=0, outputPath='./output/')
 
 # check if that works
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh("tmp_periodicx.msh")
+    # pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
 
-    # mesh.vtk("ignore_periodic_mesh.vtk")
-    pvmesh = pv.read("tmp_periodicx.msh")
-
-    # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
-
-    with mesh.access():
-        vsol = v.data.copy()
-
-    arrow_loc = np.zeros((v.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v.coords[...]
-
-    arrow_length = np.zeros((v.coords.shape[0], 3))
-    arrow_length[:, 0:2] = vsol[...]
-
-    pl = pv.Plotter()
+    velocity_points = vis.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
+    
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
-
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S",
-    #               use_transparency=False, opacity=0.5)
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=5.0e-1, opacity=0.5)
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-
-    # pl.add_points(pdata)
-
+    # pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=5.0e-1, opacity=0.5)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=5.0e-1, opacity=0.5)
+    
     pl.show(cpos="xy")
+
+if uw.mpi.size == 1:
+    
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh("tmp_periodicx.msh")
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
+
+    # velocity_points = vis.meshVariable_to_pv_cloud(v)
+    # velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
+    
+    pl = pv.Plotter(window_size=(1000, 750))
+
+    pl.add_mesh(pvmesh, "Black", "wireframe")
+    pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=5.0e-1, opacity=0.5)
+    # pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=5.0e-1, opacity=0.5)
+    
+    pl.show(cpos="xy")
+
+

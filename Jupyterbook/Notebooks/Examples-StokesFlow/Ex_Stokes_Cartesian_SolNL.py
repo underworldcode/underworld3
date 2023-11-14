@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -88,15 +88,17 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
-stokes.add_dirichlet_bc(
-    sol_vel, ["Top", "Bottom"], [0, 1]
-)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(
-    sol_vel, ["Left", "Right"], [0, 1]
-)  # left/right: components, function, markers
+# +
+# BC
+
+stokes.add_dirichlet_bc(sol_vel, "Top", [0, 1])  
+stokes.add_dirichlet_bc(sol_vel, "Bottom", [0, 1])
+stokes.add_dirichlet_bc(sol_vel, "Left", [0, 1])
+stokes.add_dirichlet_bc(sol_vel, "Right", [0, 1])
+# -
 
 stokes.petsc_options["snes_converged_reason"] = None
 stokes.petsc_options["snes_monitor"] = None
@@ -125,9 +127,6 @@ inv2 = 1 / 2 * inv2
 inv2 = sympy.sqrt(inv2)
 alpha_by_two = 2 / r0 - 2
 # -
-
-
-
 viscosity = 2 * eta0 * inv2**alpha_by_two
 
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
@@ -150,4 +149,6 @@ if rank == 0:
 
 if not np.allclose(rel_rms_diff, 0.00109, rtol=1.0e-2):
     raise RuntimeError("Solve did not produce expected result.")
+
+
 

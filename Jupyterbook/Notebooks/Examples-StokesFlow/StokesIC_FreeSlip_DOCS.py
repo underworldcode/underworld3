@@ -100,6 +100,10 @@
 
 # ## Computational script in python
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 
 import underworld3 as uw
@@ -301,7 +305,7 @@ stokes.petsc_options[
 ] = 1  # for timing cases only - force 1 snes iteration for all examples
 stokes.penalty = 0.1
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = sympy.sympify(1)
 
 # thermal buoyancy force
@@ -318,9 +322,10 @@ stokes.saddle_preconditioner = 1.0
 # stokes.add_dirichlet_bc( (0.0, 0.0, 0.0), "Upper", (0,1,2))
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Centre", (0, 1, 2))
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Lower", (0, 1, 2))
-# -
 
-stokes._setup_terms()
+# +
+# stokes._setup_terms()
+# -
 
 print(f"Stokes solve ", flush=True)
 
@@ -354,13 +359,8 @@ if uw.mpi.rank == 0:
 
 ts = 0
 
-# +
 ## Save velocity / pressure data (step zero only)
-
-savefile = "{}/free_slip_sphere.h5".format(output_dir)
-meshball.write_timestep_xdmf(
-    savefile, meshUpdates=True, meshVars=[p_soln, v_soln], index=0
-)
+meshball.petsc_save_checkpoint(index=0, meshVars=[p_soln, v_soln], outputPath='./output/')
 
 
 # +
@@ -376,43 +376,22 @@ for step in range(5):
     ts += 1
 
 # +
-# OR
-
-# # +
-# check the mesh if in a notebook / serial
-
-import mpi4py
-
 if mpi4py.MPI.COMM_WORLD.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.anti_aliasing = "fxaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn))
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    meshball.vtk("tmp_meshball.vtk")
-    pvmesh = pv.read("tmp_meshball.vtk")
-
-    pvmesh.point_data["T"] = t_soln.rbf_interpolate(meshball.data)
-    pvmesh.point_data["P"] = p_soln.rbf_interpolate(meshball.data)
-    pvmesh.point_data["S"] = uw.function.evaluate(
-        v_soln.sym.dot(unit_rvec) * (base_fn + surface_fn), meshball.data
-    )
-
-    with passive_swarm.access():
-        points = passive_swarm.data.copy()
-        point_cloud = pv.PolyData(points)
-        # point_cloud.point_data["strain"] = strain.data[:,0]
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[...] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[...] = stokes.u.rbf_interpolate(stokes.u.coords)
+    
+    points = vis.swarm_to_pv_cloud(passive_swarm)
+    point_cloud = pv.PolyData(points)
+    
 
     sphere = pv.Sphere(radius=0.9, center=(0.0, 0.0, 0.0))
     clipped = pvmesh.clip_surface(sphere)
@@ -438,9 +417,12 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     pl.add_points(point_cloud, color="Black", point_size=10.0, opacity=0.5)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=50 / Rayleigh)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50 / Rayleigh)
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
 
-# ls -trl output | tail
+# !ls -trl output | tail
+# -
+
+

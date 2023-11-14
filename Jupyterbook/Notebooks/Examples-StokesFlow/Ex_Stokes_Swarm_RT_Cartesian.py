@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -23,6 +23,10 @@
 #
 # The masks are implemented as continuous mesh variables (the user can specify the interpolation order) and so they are also differentiable (once).
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -127,7 +131,7 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
 stokes.bodyforce = sympy.Matrix([0, -density])
@@ -135,12 +139,11 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Bottom", "Top"], 1
-)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Left", "Right"], 0
-)  # left/right: components, function, markers
+
+stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
 
 
@@ -155,7 +158,9 @@ m_solver.solve()
 
 print("Solve projection ... done", flush=True)
 
-stokes._setup_terms()
+# +
+# stokes._setup_terms()
+# -
 
 print("Stokes terms ... done", flush=True)
 
@@ -164,53 +169,19 @@ stokes.solve(zero_init_guess=True)
 # +
 # check the solution
 
-
 if uw.mpi.size == 1 and render:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
+    pvmesh.point_data["visc"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(viscosity))
+    pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, m_cont.sym)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-    # pv.start_xvfb()
-
-    meshbox.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    # check the solution
-
-if uw.mpi.size == 1 and render:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    # pv.start_xvfb()
-
-    meshbox.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-    pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
-    pvmesh.point_data["M"] = uw.function.evaluate(m_cont.sym[0], meshbox.data)
-
-    velocity = np.zeros((meshbox.data.shape[0], 3))
-    velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-    velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-
-    pvmesh.point_data["V"] = velocity
 
     # point sources at cell centres
-
     cpoints = np.zeros((meshbox._centroids[::4].shape[0], 3))
     cpoints[:, 0] = meshbox._centroids[::4, 0]
     cpoints[:, 1] = meshbox._centroids[::4, 1]
@@ -226,18 +197,14 @@ if uw.mpi.size == 1 and render:
         surface_streamlines=True,
     )
 
-    with swarm.access():
-        spoints = np.zeros((swarm.data.shape[0], 3))
-        spoints[:, 0] = swarm.data[:, 0]
-        spoints[:, 1] = swarm.data[:, 1]
-        spoints[:, 2] = 0.0
-
+    spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
 
-    pl = pv.Plotter(window_size=(500, 500))
+    
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvstream, opacity=1.0)
     pl.add_mesh(
@@ -263,38 +230,17 @@ if uw.mpi.size == 1 and render:
 
 
 # +
-import numpy as np
-import pyvista as pv
-import vtk
-
-if uw.mpi.size == 1:
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "pythreejs"
-    pv.global_theme.smooth_shading = False
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-    pl = pv.Plotter()
-
 
 def plot_mesh(filename):
     if uw.mpi.size == 1:
-        meshbox.vtk("tmp_box.vtk")
-        pvmesh = pv.read("tmp_box.vtk")
-
-        pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-        pvmesh.point_data["visc"] = uw.function.evaluate(
-            sympy.log(viscosity), meshbox.data
-        )
-        pvmesh.point_data["M"] = uw.function.evaluate(m_cont.sym[0], meshbox.data)
-
-        velocity = np.zeros((meshbox.data.shape[0], 3))
-        velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-
-        pvmesh.point_data["V"] = velocity
+        import pyvista as pv
+        import underworld3.visualisation as vis
+    
+        pvmesh = vis.mesh_to_pv_mesh(meshbox)
+        pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
+        pvmesh.point_data["visc"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(viscosity))
+        pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, m_cont.sym)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
         # point sources at cell centres
         subsample = 3
@@ -313,12 +259,7 @@ def plot_mesh(filename):
             surface_streamlines=True,
         )
 
-        with swarm.access():
-            spoints = np.zeros((swarm.data.shape[0], 3))
-            spoints[:, 0] = swarm.data[:, 0]
-            spoints[:, 1] = swarm.data[:, 1]
-            spoints[:, 2] = 0.0
-
+        spoints = vis.swarm_to_pv_cloud(swarm)
         spoint_cloud = pv.PolyData(spoints)
 
         with swarm.access():
@@ -372,7 +313,7 @@ t_step = 0
 
 expt_name = "swarm_rt"
 
-for step in range(0, 200):
+for step in range(0, 250):
     stokes.solve(zero_init_guess=False)
     m_solver.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
@@ -401,3 +342,5 @@ for step in range(0, 200):
 
     t_step += 1
 # -
+
+
