@@ -394,7 +394,10 @@ class Mesh(Stateful, uw_object):
             PETSc.COMM_WORLD,
         )
 
-        self.dm.projectCoordinates(self.petsc_fe)
+        if PETSc.Sys.getVersion() < (3,20,1): 
+            self.dm.projectCoordinates(self.petsc_fe)
+        else:
+            self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
         ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
         # if self.degree == 1:

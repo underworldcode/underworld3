@@ -80,26 +80,6 @@ def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundar
         return 
 
         
-def petsc_dm_project_coordinates(incoming_dm, incoming_petsc_fe=None):
-        """
-        Something hangs in petsc4py version of this in parallel
-        """
-
-        cdef DM c_dm = incoming_dm
-        cdef FE c_fe = incoming_petsc_fe
-
-        if incoming_petsc_fe is None:
-                ierr = DMProjectCoordinates( c_dm.dm, NULL ); CHKERRQ(ierr)
-
-        else:
-                ierr = DMProjectCoordinates( c_dm.dm, c_fe.fe ); CHKERRQ(ierr)
-
-
-        # DM should be updated, no value returned
-
-        return 
-
-
 def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbose=False):
         '''Identify local points associated with "Label" 
         
