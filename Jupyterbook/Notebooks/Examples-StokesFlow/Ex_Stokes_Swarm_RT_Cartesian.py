@@ -313,7 +313,7 @@ t_step = 0
 
 expt_name = "swarm_rt"
 
-for step in range(0, 250):
+for step in range(0, 2): #250
     stokes.solve(zero_init_guess=False)
     m_solver.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())

@@ -1,17 +1,19 @@
 #!/usr/bin/env python
 # coding: utf-8
 # %%
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # %%
 import petsc4py
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.swarm import SwarmPICLayout
+import numpy as np
 
 
 # %%
-
-
 n_els = 2
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
@@ -37,20 +39,10 @@ swarm.populate_petsc(
 
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
-
-    mesh.vtk("tmpmesh.vtk")
-    pvmesh = pv.read("tmpmesh.vtk")
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
     
     # with mesh.access():
@@ -75,19 +67,15 @@ if uw.mpi.size == 1:
     # arrow_length[:, 0:2] = usol[...]
 
     # point sources at cell centres
-
     points = np.zeros((mesh._centroids.shape[0], 3))
     points[:, 0] = mesh._centroids[:, 0]
     points[:, 1] = mesh._centroids[:, 1]
     point_cloud = pv.PolyData(points)
-    
-    with swarm.access():
-        spoints = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        spoints[:, 0] = swarm.particle_coordinates.data[:, 0]
-        spoints[:, 1] = swarm.particle_coordinates.data[:, 1]
-        spoint_cloud = pv.PolyData(spoints)
 
-    pl = pv.Plotter()
+    spoints = vis.swarm_to_pv_cloud(swarm)
+    spoint_cloud = pv.PolyData(spoints)
+
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.025 / U0, opacity=0.75)
 
@@ -105,7 +93,3 @@ if uw.mpi.size == 1:
 
 
 # %%
-
-
-
-

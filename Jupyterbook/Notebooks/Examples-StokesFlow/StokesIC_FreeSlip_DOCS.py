@@ -371,7 +371,7 @@ dt = 1.0 * stokes.estimate_dt()
 for step in range(5):
     print(f"Step {ts}", flush=True)
     passive_swarm.advection(v_soln.sym, dt)
-    passive_swarm.save(filename=f"{savefile}.passive_swarm.{ts}.h5")
+    passive_swarm.save(filename=f"{'./output/'}.passive_swarm.{ts}.h5")
 
     ts += 1
 

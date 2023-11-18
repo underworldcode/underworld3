@@ -45,7 +45,7 @@ render = True
 meshbox = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0),
     maxCoords=(1.0, 1.0),
-    cellSize=1.0 / 32.0,
+    cellSize=1.0 / 24.0,
     regular=True,
     qdegree=2,
 )
@@ -358,7 +358,7 @@ t_step = 0
 
 expt_name = "output/blobs"
 
-for step in range(0, 250):
+for step in range(0, 2): # 250
     stokes.solve(zero_init_guess=False)
     delta_t = min(10.0, stokes.estimate_dt())
 

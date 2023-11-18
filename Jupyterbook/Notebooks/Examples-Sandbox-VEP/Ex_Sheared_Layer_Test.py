@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -17,6 +17,10 @@
 # Simple shear with material defined by particle swarm (based on inclusion model), position, pressure, strain rate etc. 
 # Check the implementation of the Jacobians using various non-linear terms.
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import os
@@ -36,17 +40,6 @@ from underworld3 import timing
 resolution = uw.options.getReal("model_resolution", default=0.033)
 mu = uw.options.getInt("mu", default=0.5)
 maxsteps = uw.options.getInt("max_steps", default=500)
-# -
-
-
-if uw.mpi.size == 1:
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "ssaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 
 
 # +
@@ -218,7 +211,7 @@ with mesh1.access(): #strain_rate_inv2_p):
     YY = v_soln.coords[:,1]
     mask = (1.0 - (YY * 2)**8) * (1 -  (2*XX/3)**6)
     # strain_rate_inv2_p.data[:,0] = 2.0 * np.floor(0.033+np.random.random(strain_rate_inv2_p.coords.shape[0])) * mask
- 
+
 # +
    
 with swarm.access(material, strain), mesh1.access():
@@ -236,7 +229,7 @@ with swarm.access(strain, material), mesh1.access():
 
 
 
-# + tags=[]
+# +
 # Create Solver object
 
 stokes = uw.systems.Stokes(
@@ -255,14 +248,13 @@ viscosity_L = sympy.Piecewise(
     (eta1, True),
 )
 
+# -
 
 
-# + tags=[]
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
 stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
 stokes.constitutive_model.Parameters.sigma_star_fn = 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-# -
 
 stokes.constitutive_model.Parameters.sigma_star_fn
 
@@ -270,7 +262,6 @@ stokes.constitutive_model
 
 stokes.stress_deviator_1d
 
-# + tags=[]
 sigma_projector = uw.systems.Tensor_Projection(mesh1, tensor_Field=Stress, scalar_Field=work  )
 sigma_projector.uw_function = stokes.stress_1d
 
@@ -344,7 +335,7 @@ with mesh1.access():
     print(Stress[0,0].data.max())
     print(Stress[1,1].data.max())
     print(Stress[0,1].data.max())
-    
+
 
 # +
 # Now add yield without pressure dependence
@@ -414,14 +405,16 @@ mesh0 = uw.meshing.UnstructuredSimplexBox(
 )
 
 
-# + tags=[]
+# +
 # check it - NOTE - for the periodic mesh, points which have crossed the coordinate sheet are plotted somewhere
 # unexpected. This is a limitation we are stuck with for the moment.
 
 if uw.mpi.size == 1:
     
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
     pvpoints = pvmesh.points[:, 0:2]
     usol = v_soln.rbf_interpolate(pvpoints)
@@ -473,10 +466,6 @@ if uw.mpi.size == 1:
     pl.camera.SetClippingRange(1.0, 8.0)
         
     pl.show()
-# -
-0/0
-
-
 # +
 # Now add elasticity
 # -
@@ -506,7 +495,7 @@ def return_points_to_domain(coords):
 
 ts = 0
 
-# + tags=[]
+# +
 delta_t = stokes.estimate_dt()
 
 expt_name = f"output/shear_band_sw_nonp_{mu}"
@@ -572,8 +561,10 @@ nodal_tau_inv2.solve()
 
 if uw.mpi.size == 1:
     
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
     pvpoints = pvmesh.points[:, 0:2]
     usol = v_soln.rbf_interpolate(pvpoints)

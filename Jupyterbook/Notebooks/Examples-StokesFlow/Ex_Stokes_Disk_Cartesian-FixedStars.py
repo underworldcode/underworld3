@@ -33,7 +33,7 @@ from underworld3 import function
 import numpy as np
 import sympy
 
-res = 0.05
+res = 0.1 # 0.05
 r_s = 1.25
 r_o = 1.0
 r_i = 0.5

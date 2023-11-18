@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -21,6 +21,10 @@
 # This approach also allows us to include boundary conditions, smoothing, and constraint terms (e.g. remove a null space) in cases (like piecewise continuous swarm variables) where this is difficult in the original form.
 #
 # We'll demonstrate this using a swarm variable (scalar / vector), but the same approach is useful for gradient recovery.
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 import underworld3 as uw
 import numpy as np
@@ -91,9 +95,7 @@ with swarm.access(s_values, v_values):
 
 scalar_projection.solve()
 
-# + tags=[]
 vector_projection.solve()
-# -
 
 scalar_projection.uw_function = meshbox.vector.divergence(v_soln.sym)
 scalar_projection.solve()
@@ -106,33 +108,16 @@ s_soln.stats()
 
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, s_soln.sym)
 
-    # pv.start_xvfb()
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    meshbox.vtk("mesh_tmp.vtk")
-    pvmesh = pv.read("mesh_tmp.vtk")
-
-    with meshbox.access():
-        vsol = v_soln.data.copy()
-
-    pvmesh.point_data["S"] = uw.function.evaluate(s_soln.fn, meshbox.data)
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = vsol[...]
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
@@ -140,7 +125,7 @@ if uw.mpi.size == 1:
         pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S", use_transparency=False, opacity=0.5
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-1, opacity=0.5)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1.0e-1, opacity=0.5)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)

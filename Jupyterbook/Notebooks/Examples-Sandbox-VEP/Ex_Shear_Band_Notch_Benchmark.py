@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -20,6 +20,10 @@
 # how to read that into a `uw.discretisation.Mesh` object. The `.geo` file has header parameters to control the mesh refinement, and we provide a coarse version and the original version.
 #
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -236,22 +240,13 @@ mesh1 = uw.discretisation.Mesh(
 )
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
-    mesh1.vtk("tmp_notch_msh.vtk")
-    pvmesh = pv.read("tmp_notch_msh.vtk")
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -301,39 +296,25 @@ with swarm.access(material):
 # check the mesh if in a notebook / serial
 
 if True and uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(f"./meshes/notch_mesh{problem_size}.msh")
+    pvmesh.point_data["eta"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
 
-    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh")
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # points = np.zeros((mesh1._centroids.shape[0], 3))
     # points[:, 0] = mesh1._centroids[:, 0]
     # points[:, 1] = mesh1._centroids[:, 1]
 
-    with swarm.access():
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-
+    points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-    pvmesh.point_data["eta"] = uw.function.evaluate(
-        material.sym[0], mesh1.data, mesh1.N
-    )
 
     # pl.add_mesh(
     #     pvmesh,
@@ -396,7 +377,7 @@ stokes.constitutive_model
 
 viscosity_L = 999.0 * material.sym[0] + 1.0
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
 stokes.penalty = 0.1
@@ -443,7 +424,7 @@ def surface_integral(mesh, uw_function, mask_fn):
 
 # %%
 strain_rate_calc = uw.systems.Projection(mesh1, edot)
-strain_rate_calc.uw_function = stokes._Einv2
+strain_rate_calc.uw_function = stokes.Unknowns.Einv2
 strain_rate_calc.smoothing = 1.0e-3
 
 viscosity_calc = uw.systems.Projection(mesh1, visc)
@@ -457,9 +438,11 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
-stokes._setup_terms()
+# +
+# stokes._setup_terms()
 
-stokes._uu_G3
+# +
+# stokes._uu_G3
 
 # +
 # First, we solve the linear problem
@@ -481,7 +464,7 @@ if uw.mpi.rank == 0:
 # +
 
 C0 = 150
-for i in range(10):
+for i in range(1): #10
     mu = 0.75
     C = C0 + (1.0 - i / 9) * 15.0
     if uw.mpi.rank == 0:
@@ -489,7 +472,7 @@ for i in range(10):
 
     tau_y = C + mu * p_soln.sym[0]
     viscosity_L = 999.0 * material.sym[0] + 1.0
-    viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0 / 1000)
+    viscosity_Y = tau_y / (2 * stokes.Unknowns.Einv2 + 1.0 / 1000)
     viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
     stokes.constitutive_model.Parameters.viscosity = viscosity
@@ -518,7 +501,7 @@ stokes._uu_G3
 # %%
 viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 stress_calc.uw_function = (
-    2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+    2 * stokes.constitutive_model.Parameters.viscosity * stokes.Unknowns.Einv2
 )
 
 # %%
@@ -526,59 +509,36 @@ strain_rate_calc.solve()
 viscosity_calc.solve()
 stress_calc.solve()
 
-# +
 ## Save data ...
-
 savefile = f"output/notched_beam_mesh_{problem_size}"
-mesh1.write_checkpoint(savefile, meshUpdates=False, meshVars=[p_soln, v_soln, edot])
-# -
+mesh1.petsc_save_checkpoint(index=0, meshVars=[p_soln, v_soln, edot], outputPath=savefile)
 
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
+    pvmesh.point_data["sfn"] = vis.scalar_fn_to_pv_points(pvmesh, surface_defn_fn)
+    pvmesh.point_data["pres"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    pvmesh.point_data["edot"] = vis.scalar_fn_to_pv_points(pvmesh, edot.sym)
+    pvmesh.point_data["eta"] = vis.scalar_fn_to_pv_points(pvmesh, visc.sym)
+    pvmesh.point_data["str"] = vis.scalar_fn_to_pv_points(pvmesh, stress.sym)
 
-    mesh1.vtk("tmp_notch.vtk")
-    pvmesh = pv.read("tmp_notch.vtk")
-
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    
     points = np.zeros((mesh1._centroids.shape[0], 3))
     points[:, 0] = mesh1._centroids[:, 0]
     points[:, 1] = mesh1._centroids[:, 1]
-
-    pvmesh.point_data["sfn"] = uw.function.evaluate(
-        surface_defn_fn, mesh1.data, mesh1.N
-    )
-    pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
-    pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
-    # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.data, mesh1.N)
-    pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], mesh1.data)
-    pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh1.data)
-
-    with mesh1.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
     point_cloud = pv.PolyData(points)
 
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
 
@@ -624,4 +584,6 @@ if uw.mpi.size == 1:
 
 
 if uw.mpi.size == 1:
-    pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
+    print(pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max())
+
+

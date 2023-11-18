@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -30,6 +30,10 @@
 # Model 4 is not one of the benchmarks, but just turns up the Re parameter to see if the mesh can resolve higher values than 100
 #
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 import os
 import petsc4py
@@ -67,49 +71,18 @@ vorticity_ckpt.read_from_vertex_checkpoint(f"{basename}.omega.{step}.h5", "omega
 # +
 # check the mesh if in a notebook / serial
 
-import pyvista as pv
-
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [1250, 1250]
-pv.global_theme.anti_aliasing = "msaa"
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = True
-pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-pv.global_theme.camera['position'] = [0.0, 0.0, 1.0]
-
-
 if uw.mpi.size == 1:
     
-    import numpy as np
-    import vtk
+    import pyvista as pv
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln_ckpt.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln_ckpt.sym)
+    pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity_ckpt.sym)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    with mesh.access():
-        usol = v_soln_ckpt.data.copy()
-
-    with mesh.access():
-        # pvmesh.point_data["Vmag"] = v_soln_ckpt.rbf_interpolate(mesh.data)
-            
-        pvmesh.point_data["P"] = p_soln_ckpt.rbf_interpolate(mesh.data)
-        pvmesh.point_data["Omega"] = vorticity_ckpt.rbf_interpolate(mesh.data)
-
-    v_vectors = np.zeros((mesh.data.shape[0], 3))
-    v_vectors[:, 0:2] = v_soln_ckpt.rbf_interpolate(mesh.data)
-    pvmesh.point_data["V"] = v_vectors
-
-    arrow_loc = np.zeros((v_soln_ckpt.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln_ckpt.coords[...]
-
-    arrow_length = np.zeros((v_soln_ckpt.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln_ckpt)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym)
 
     # swarm points
 
@@ -135,8 +108,8 @@ if uw.mpi.size == 1:
         max_time=0.5,
     )
 
-    pl = pv.Plotter()
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.001, opacity=0.75)
+    pl = pv.Plotter(window_size=(1000, 750))
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.001, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,

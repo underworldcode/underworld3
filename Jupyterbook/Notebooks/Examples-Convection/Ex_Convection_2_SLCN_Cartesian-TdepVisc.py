@@ -8,6 +8,10 @@
 #
 # (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
@@ -96,10 +100,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
-adv_diff.constitutive_model.material_properties = (
-    adv_diff.constitutive_model.Parameters(diffusivity=k)
-)
-
+adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.theta = 0.5
 
 
@@ -130,38 +131,19 @@ stokes.solve(zero_init_guess=True)
 # Check the diffusion part of the solve converges
 adv_diff.solve(timestep=0.1 * stokes.estimate_dt())
 
-# +
-
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = True
-pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-pl = pv.Plotter()
-
 
 def plot_T_mesh(filename):
     if uw.mpi.size == 1:
-        import numpy as np
+        
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
 
-        meshbox.vtk("tmp_box_mesh.vtk")
-        pvmesh = pv.read("tmp_box_mesh.vtk")
-
-        velocity = np.zeros((meshbox.data.shape[0], 3))
-        velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-
-        pvmesh.point_data["V"] = velocity / 333
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+        pvmesh =  vis.mesh_to_pv_mesh(meshbox)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)/333
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
 
         # point sources at cell centres
-
-        cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
+        cpoints = np.zeros((meshbox._centroids[::4, 0].shape[0], 3))
         cpoints[:, 0] = meshbox._centroids[::4, 0]
         cpoints[:, 1] = meshbox._centroids[::4, 1]
         cpoint_cloud = pv.PolyData(cpoints)
@@ -176,19 +158,13 @@ def plot_T_mesh(filename):
             surface_streamlines=True,
         )
 
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
+        points = vis.meshVariable_to_pv_cloud(t_soln)
+        points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
         point_cloud = pv.PolyData(points)
 
-        with meshbox.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
         ## PLOTTING
-
-        pl.clear()
-
+        pl = pv.Plotter(window_size=(1000, 750))
+        
         pl.add_mesh(
             pvmesh,
             cmap="coolwarm",
@@ -222,8 +198,6 @@ def plot_T_mesh(filename):
         pvmesh.clear_data()
         pvmesh.clear_point_data()
 
-
-# -
 
 t_step = 0
 
@@ -271,46 +245,24 @@ pass
 # meshbox.generate_xdmf(savefile)
 
 
-# +
-
-
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh =  vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
 
-    meshbox.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
 
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
+    points = vis.meshVariable_to_pv_cloud(t_soln)
+    points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
     point_cloud = pv.PolyData(points)
 
-    with meshbox.access():
-        point_cloud.point_data["T"] = t_soln.data.copy()
+    pl = pv.Plotter(window_size=(1000, 750))
 
-    with meshbox.access():
-        usol = stokes.u.data.copy()
-
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=100, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00001, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     pl.add_points(
@@ -324,3 +276,5 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
     pl.show(cpos="xy")
+
+

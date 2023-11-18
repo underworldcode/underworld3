@@ -24,11 +24,6 @@ options = PETSc.Options()
 # os.environ["SYMPY_USE_CACHE"]="no"
 
 # options.getAll()
-# -
-
-
-
-
 # +
 import meshio
 
@@ -138,33 +133,27 @@ with meshball.access(t_0, t_soln):
 
 # delta_t = 0.01
 # adv_diff.solve(timestep=delta_t)
-
-
-# +
-import underworld3 as uw
+# -
 
 
 def plot_T_mesh(filename):
 
-    import underworld3 as uw
-
     if uw.mpi.size == 1:
-
 
         import numpy as np
         import pyvista as pv
-        import underworld3.visualisation
+        import underworld3.visualisation as vis
         
-        pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
-        swarm_points = uw.visualisation.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
-        tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
+        pvmesh = vis.mesh_to_pv_mesh(meshball)
+        swarm_points = vis.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
+        tsoln_points = vis.meshVariable_to_pv_cloud(t_soln)
             
-        swarm_points.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points,adv_diff.DuDt.psi_fn)
+        swarm_points.point_data["T"] = vis.scalar_fn_to_pv_points(swarm_points,adv_diff.DuDt.psi_fn)
         
-        pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
-        pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh,v_soln.sym)
 
-        pl = pv.Plotter()
+        pl = pv.Plotter(window_size=(1000, 750))
 
         pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=0.0001, opacity=0.75)
 
@@ -185,6 +174,7 @@ def plot_T_mesh(filename):
         )
 
     # pl.show()
+
 
 # +
 with meshball.access(t_0, t_soln):
@@ -215,8 +205,6 @@ plot_T_mesh(filename="{}_step_{}".format(expt_name, 0))
 
 for step in range(0, 10):
 
-    import underworld3 as uw
-
     adv_diff.solve(timestep=delta_t, verbose=False)
 
     tstats = t_soln.stats()
@@ -241,21 +229,20 @@ for step in range(0, 10):
 
 if uw.mpi.size == 1:
     
-    import numpy as np
     import pyvista as pv
-    import underworld3.visualisation
+    import underworld3.visualisation as vis
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
-    swarm_points = uw.visualisation.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
-    tsoln_points = uw.visualisation.meshVariable_to_pv_cloud(t_soln)
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    swarm_points = vis.swarm_to_pv_cloud(adv_diff.DuDt.swarm)
+    tsoln_points = vis.meshVariable_to_pv_cloud(t_soln)
         
-    swarm_points.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(swarm_points, adv_diff.DuDt.psi_star[0].sym[0] )
+    swarm_points.point_data["Ts"] = vis.scalar_fn_to_pv_points(swarm_points, adv_diff.DuDt.psi_star[0].sym[0] )
 
-    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
-    pvmesh.point_data["Ts"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh,adv_diff.DuDt.psi_star[0].sym[0])
-    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh,v_soln.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh,t_soln.sym)
+    pvmesh.point_data["Ts"] = vis.scalar_fn_to_pv_points(pvmesh,adv_diff.DuDt.psi_star[0].sym[0])
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh,v_soln.sym)
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=0.02, opacity=0.75)
 

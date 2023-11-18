@@ -1,21 +1,12 @@
 # ## Visualise spherical stokes model (velocity, particles etc)
 
-# +
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 import petsc4py
 import underworld3 as uw
 import numpy as np
-
-import pyvista as pv
-import vtk
-
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [1250, 1250]
-pv.global_theme.anti_aliasing = "ssaa"
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = True
-pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
-# -
 
 # ls -tr /Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr
 
@@ -65,25 +56,17 @@ import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.anti_aliasing = "fxaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-    meshball.vtk("tmp_meshball.vtk")
-    pvmesh = pv.read("tmp_meshball.vtk")
-
-    pvmesh.point_data["T"] = t_soln.rbf_interpolate(meshball.data)
-    pvmesh.point_data["V"] = v_soln.rbf_interpolate(meshball.data)
-    
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
     
     # point sources at cell centres
-
     skip = 250
     points = np.zeros((meshball._centroids[::skip].shape[0], 3))
     points[:, 0] = meshball._centroids[::skip, 0]
@@ -104,19 +87,12 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         point_cloud = pv.PolyData(points[r2<0.98**2])
         # point_cloud.point_data["strain"] = strain.data[:,0]
 
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[...] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[...] = v_soln.rbf_interpolate(v_soln.coords)
-
     sphere = pv.Sphere(radius=0.85, center=(0.0, 0.0, 0.0))
     clipped = pvmesh.clip_surface(sphere)
     
     # clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
-# -
 
-    pl = pv.Plotter(window_size=[1000, 1000])
+        pl = pv.Plotter(window_size=[1000, 1000])
     # pl.add_axes()
     
     pl.camera_position = [(2.1,-4.0,0.0), (0.0,0.0,0.0), (0.0,0.0,1.0)]
@@ -124,9 +100,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
     # pl.camera.azimuth = -65
     # pl.camera.distance = 10.0
     
- #    pl.camera_position = [(0.00036144256591796875, -0.00045242905616760254, 6.692800318757354),
- # (0.00036144256591796875, -0.00045242905616760254, 0.00010478496551513672),
- # (0.0, 1.0, 0.0)]
+    #    pl.camera_position = [(0.00036144256591796875, -0.00045242905616760254, 6.692800318757354),
+    # (0.00036144256591796875, -0.00045242905616760254, 0.00010478496551513672),
+    # (0.0, 1.0, 0.0)]
 
     pl.add_mesh(
         clipped,

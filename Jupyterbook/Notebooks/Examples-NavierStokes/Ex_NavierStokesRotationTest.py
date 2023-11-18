@@ -5,17 +5,20 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Navier Stokes test: boundary driven ring with step change in boundary conditions
 #
 # This should develop a boundary layer with sqrt(t) growth rate
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -99,7 +102,7 @@ nodal_vorticity_from_v.smoothing = 0.0
 # Constant visc
 
 
-navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 navier_stokes.constitutive_model.Parameters.viscosity = 1.0
 
@@ -128,70 +131,42 @@ navier_stokes.estimate_dt()
 nodal_vorticity_from_v.solve()
 
 
-# +
 # check the mesh if in a notebook / serial
-
-
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    
+    points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
     # point sources at cell centres
-
     points = np.zeros((meshball._centroids.shape[0], 3))
     points[:, 0] = meshball._centroids[:, 0]
     points[:, 1] = meshball._centroids[:, 1]
     centroid_cloud = pv.PolyData(points)
 
-    with meshball.access():
-        pvmesh.point_data["Omega"] = uw.function.evalf(vorticity.sym[0], meshball.data)
-
-    v_vectors = np.zeros((meshball.data.shape[0], 3))
-    v_vectors[:, 0] = uw.function.evalf(v_soln.sym[0], meshball.data)
-    v_vectors[:, 1] = uw.function.evalf(v_soln.sym[1], meshball.data)
-    pvmesh.point_data["V"] = v_vectors
-
     pvstream = pvmesh.streamlines_from_source(
-        centroid_cloud,
-        vectors="V",
-        integration_direction="both",
-        surface_streamlines=True,
-        max_time=0.25,
-    )
+                                                centroid_cloud,
+                                                vectors="V",
+                                                integration_direction="both",
+                                                surface_streamlines=True,
+                                                max_time=0.25,
+                                            )
 
-    with meshball.access():
-        usol = v_soln.data.copy()
 
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1)
     pl.add_mesh(pvstream, opacity=0.33)
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-2, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1.0e-2, opacity=0.75)
     # pl.add_points(
     #     point_cloud,
     #     color="Black",
@@ -208,58 +183,28 @@ if uw.mpi.size == 1:
     pl.show()
 
 
-# -
-
-
 def plot_V_mesh(filename):
     if uw.mpi.size == 1:
-        import numpy as np
+        
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [1250, 1250]
-        pv.global_theme.anti_aliasing = "msaa"
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+        pvmesh = vis.mesh_to_pv_mesh(meshball)
+        pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+        pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-        meshball.vtk("tmp_ball.vtk")
-        pvmesh = pv.read("tmp_ball.vtk")
-
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
-
+        velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+        
+        points = vis.swarm_to_pv_cloud(swarm)
         point_cloud = pv.PolyData(points)
 
         # point sources at cell centres
-
         points = np.zeros((meshball._centroids.shape[0], 3))
         points[:, 0] = meshball._centroids[:, 0]
         points[:, 1] = meshball._centroids[:, 1]
         centroid_cloud = pv.PolyData(points)
-
-        with meshball.access():
-            pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], meshball.data)
-            pvmesh.point_data["Omega"] = uw.function.evalf(
-                vorticity.sym[0], meshball.data
-            )
-
-        with meshball.access():
-            usol = v_soln.data.copy()
-
-        arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v_soln.coords[...]
-
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        v_vectors = np.zeros((meshball.data.shape[0], 3))
-        v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, meshball.data)
-        pvmesh.point_data["V"] = v_vectors
 
         pvstream = pvmesh.streamlines_from_source(
             centroid_cloud,
@@ -271,7 +216,7 @@ def plot_V_mesh(filename):
 
         pl = pv.Plotter()
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01, opacity=0.75)
 
         # pl.add_points(
         #     point_cloud,
@@ -321,7 +266,7 @@ ts = 0
 # Time evolution model / update in time
 
 
-for step in range(0, 250):
+for step in range(0, 2): #250
     delta_t = 5.0 * navier_stokes.estimate_dt()
     navier_stokes.solve(timestep=delta_t)
 
@@ -341,3 +286,5 @@ for step in range(0, 250):
 
     ts += 1
 # -
+
+

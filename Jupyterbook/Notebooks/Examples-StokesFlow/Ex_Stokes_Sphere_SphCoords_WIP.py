@@ -71,7 +71,7 @@ if uw.mpi.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
 
-    pvmesh = vis.msh_to_pv_mesh("tmpWedgeX.msh")
+    pvmesh = vis.mesh_to_pv_mesh("tmpWedgeX.msh")
 
     pl = pv.Plotter()
 

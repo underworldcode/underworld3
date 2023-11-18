@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.11.5
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -22,6 +22,7 @@ import sympy
 
 # +
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=True)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -29,11 +30,11 @@ z = mesh.N.z
 
 I = uw.maths.Integral(mesh, x * y)
 print(I.evaluate())  # 0.25
-# -
 
 
 # +
 mesh = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), elementRes=(32, 32))
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -44,6 +45,7 @@ print(I2.evaluate())  # 0.25
 
 # +
 mesh = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), elementRes=(8, 8, 8))
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -56,6 +58,7 @@ print(I3.evaluate())  # 0.125
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=1.0 / 8.0, regular=True
 )
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -66,6 +69,7 @@ print(I4.evaluate())  # 0.125
 
 # +
 mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.05)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -76,6 +80,7 @@ print(I5.evaluate())  # 3 * pi / 4 = 2.35
 
 # +
 mesh = uw.meshing.Annulus(radiusInner=0.0, radiusOuter=1.0, cellSize=0.05)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -86,6 +91,7 @@ print(I6.evaluate())  # pi
 
 # +
 mesh = uw.meshing.SphericalShell(radiusInner=0.5, radiusOuter=1.0, cellSize=0.2)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -96,6 +102,7 @@ print(I7.evaluate())  # 4/3 * 7/8 * pi
 
 # +
 mesh = uw.meshing.SphericalShell(radiusInner=0.0, radiusOuter=1.0, cellSize=0.2)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -105,18 +112,20 @@ I8 = uw.maths.Integral(mesh, 1)
 print(I8.evaluate())  # 4/3 * pi
 
 # +
-mesh = uw.meshing.CubicSphere(radiusInner=0.5, radiusOuter=1.0, numElements=30)
+# mesh = uw.meshing.CubicSphere(radiusInner=0.5, radiusOuter=1.0, numElements=30)
+# s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
-x = mesh.N.x
-y = mesh.N.y
-z = mesh.N.z
+# x = mesh.N.x
+# y = mesh.N.y
+# z = mesh.N.z
 
-I9 = uw.maths.Integral(mesh, 1)
-print(I9.evaluate())  # 4/3 * 7/8 * pi (3.634)
+# I9 = uw.maths.Integral(mesh, 1)
+# print(I9.evaluate())  # 4/3 * 7/8 * pi (3.634)
 
 # +
 mesh = uw.meshing.SphericalShell(radiusInner=0.0, radiusOuter=1.0, cellSize=0.5)
 # mesh = uw.meshing.Annulus(radiusInner = 0.0, radiusOuter=1.0, cellSize=0.05)
+s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2) # add this line to avoid petsc error for time being
 
 x = mesh.N.x
 y = mesh.N.y
@@ -146,11 +155,13 @@ stokes = uw.systems.Stokes(
     mesh,
     velocityField=v_soln,
     pressureField=p_soln,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
+    # u_degree=v_soln.degree,
+    # p_degree=p_soln.degree,
     verbose=False,
     solver_name="stokes",
 )
+
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
 
@@ -193,3 +204,5 @@ with mesh.access(meshvar):
 I.fn = meshvar.fn
 print(I.evaluate())  # should be zero
 # -
+
+
