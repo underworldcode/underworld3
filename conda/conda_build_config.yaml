@@ -1,9 +1,2 @@
- mpi:
-    - mpich
-    - openmpi
-
  numpy:
-    - 1.17
-
- petsc4py:
-    - 3.14
+    - 1.22
