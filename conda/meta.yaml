@@ -19,13 +19,14 @@ requirements:
     - {{ compiler('cxx') }}
 
   host: 
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
     - pkg-config
     - python
     - setuptools
     - cython
     - mpi4py
     - petsc4py >=3.20.0
-    - gxx_linux-64
 
   run:
     - {{ compiler('c') }}
