@@ -6,7 +6,10 @@ package:
   version: "{{ version }}"
 
 source:
-  path: ..
+  git_url: https://github.com/underworldcode/underworld3
+  git_tag: development
+  git_depth: 1
+#  path: ..
 
 build:
   number: 0
