@@ -16,6 +16,7 @@ requirements:
 
   build:
     - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
 
   host: 
     - pkg-config
@@ -24,17 +25,18 @@ requirements:
     - cython
     - mpi4py
     - petsc4py >=3.20.0
+    - gxx_linux-64
 
   run:
     - {{ compiler('c') }}
     - cython
     - python
     - petsc
+    - petsc4py >=3.20.0
     - mpi4py
     - h5py
-    - petsc
-    - petsc4py >=3.20.0
     - pint
+    - pytest
     - typing_extensions
     - sympy
     - python-xxhash
