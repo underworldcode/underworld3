@@ -151,7 +151,7 @@ setup(
     name="underworld3",
     packages=find_packages(),
     package_data={
-        "underworld3": ["*.pxd", "*.h", "function/*.h", "petsc/*.pxd", "petsc/*.h"]
+        "underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]
     },
     ext_modules=cythonize(
         extensions,
