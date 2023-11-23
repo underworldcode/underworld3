@@ -5,13 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
 
 # # Navier Stokes test: flow around a circular inclusion (2D)
 #
@@ -30,6 +29,10 @@
 # Model 4 is not one of the benchmarks, but just turns up the Re parameter to see if the mesh can resolve higher values than 100
 #
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import os
@@ -322,40 +325,17 @@ with swarm.access(stress_star_p), pipemesh.access():
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(pipemesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    pvmesh = pv.read(f".meshes/ns_pipe_flow_{resolution}.msh")
-
-    with pipemesh.access():
-        # usol = navier_stokes._u_star_projector.u.data.copy()
-        usol = v_soln.data.copy()
-
-    with pipemesh.access():
-        pvmesh.point_data["Vmag"] = uw.function.evalf(
-            sympy.sqrt(v_soln.sym.dot(v_soln.sym)), pipemesh.data
-        )
-        pvmesh.point_data["P"] = uw.function.evalf(p_soln.fn, pipemesh.data)
-
-    v_vectors = np.zeros((pipemesh.data.shape[0], 3))
-    v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, pipemesh.data)
-    v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, pipemesh.data)
-    pvmesh.point_data["V"] = v_vectors
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
     # point sources at cell centres
 
@@ -374,9 +354,9 @@ if uw.mpi.size == 1:
         point_cloud, vectors="V", integration_direction="forward", max_steps=10
     )
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.025 / U0, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
 
     pl.add_points(
         spoint_cloud,
@@ -403,69 +383,38 @@ if uw.mpi.size == 1:
 
     pl.show()
 # +
-if uw.mpi.size == 1:
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1000]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    # pv.global_theme.camera['viewup'] = [0.0, 1.0, 0.0]
-    # pv.global_theme.camera['position'] = [0.0, 0.0, 2.0]
-
-    pl = pv.Plotter()
-
 
 def plot_V_mesh(filename):
     if uw.mpi.size == 1:
-        import numpy as np
+        
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
+
+        pvmesh = vis.mesh_to_pv_mesh(pipemesh)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+        pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
+        pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
+        pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    
+        velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
         ## Plotting into existing pl (memory leak in pyvista)
-        pl.clear()
+        pl = pv.Plotter(window_size=(1000, 750))
+        
 
-        pvmesh = pv.read(f".meshes/ns_pipe_flow_{resolution}.msh")
-
-        with passive_swarm.access():
-            points = np.zeros((passive_swarm.data.shape[0], 3))
-            points[:, 0] = passive_swarm.data[:, 0]
-            points[:, 1] = passive_swarm.data[:, 1]
-
+        points = vis.swarm(passive_swarm)
         point_cloud = pv.PolyData(points)
 
         points = np.zeros((pipemesh._centroids.shape[0], 3))
         points[:, 0] = pipemesh._centroids[:, 0]
         points[:, 1] = pipemesh._centroids[:, 1]
-
         c_point_cloud = pv.PolyData(points)
 
-        with swarm.access():
-            spoints = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-            spoints[:, 0] = swarm.particle_coordinates.data[:, 0]
-            spoints[:, 1] = swarm.particle_coordinates.data[:, 1]
-            spoint_cloud = pv.PolyData(spoints)
+        spoints = vis.swarm_to_pv_cloud(swarm)
+        spoint_cloud = pv.PolyData(spoints)
 
-        with pipemesh.access():
-            pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], pipemesh.data)
-            pvmesh.point_data["Omega"] = uw.function.evalf(
-                vorticity.sym[0], pipemesh.data
-            )
-
-        with pipemesh.access():
-            usol = v_soln.data.copy()
-
-        v_vectors = np.zeros((pipemesh.data.shape[0], 3))
-        v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, pipemesh.data)
-        v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, pipemesh.data)
-        pvmesh.point_data["V"] = v_vectors
-
-        arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v_soln.coords[...]
-
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.033 / U0, opacity=0.5)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.033 / U0, opacity=0.5)
 
         pvstream = pvmesh.streamlines_from_source(
             c_point_cloud, vectors="V", integration_direction="both", max_time=0.25
@@ -515,7 +464,6 @@ def plot_V_mesh(filename):
             window_size=(2560, 1280),
             return_img=False,
         )
-
 
 # +
 ts = 0

@@ -11,6 +11,11 @@
 # UW2 example ported to UW3
 
 # %%
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
+# %%
 import numpy as np
 import os
 import math
@@ -78,7 +83,7 @@ node_viscosity = uw.discretisation.MeshVariable("Viscosity", mesh, 1, degree=1)
 # materialField    = uw.discretisation.MeshVariable("Material", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 
 # %% [markdown]
@@ -126,13 +131,16 @@ with swarm.access(swarm.particle_coordinates):
 # phi_2 = material.piecewise([m1_rho, m2_rho, m3_rho])
 
 # %%
+stokes.constitutive_model.Parameters.shear_viscosity_0
+
+# %%
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh, strain_rate_inv2)
-nodal_strain_rate_inv2.uw_function = stokes._Einv2
+nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
 # nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_visc_calc = uw.systems.Projection(mesh, node_viscosity)
-nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
 # nodal_visc_calc.smoothing = 1.0e-3
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
@@ -144,11 +152,11 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 def updateFields():
     ### update strain rate
-    nodal_strain_rate_inv2.uw_function = stokes._Einv2
+    nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
     nodal_strain_rate_inv2.solve()
 
     ### update viscosity
-    nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+    nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
     nodal_visc_calc.solve(_force_setup=True)
 
     # ### update material field from swarm
@@ -233,31 +241,18 @@ with swarm.access(swarm.particle_coordinates, material):
 
 # %%
 def plot_mat():
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        points[:, 2] = 0.0
-
+    points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
-
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-    pl = pv.Plotter(notebook=True)
+    pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
@@ -343,10 +338,11 @@ stokes.tolerance = 1e-6
 
 # %%
 ### initial linear solve
-stokes.constitutive_model.Parameters.viscosity = 1.0
+# stokes.constitutive_model.Parameters.viscosity = 1.0
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.shear_viscosity_0
 stokes.solve(zero_init_guess=True)
 
 
@@ -363,7 +359,7 @@ slabViscosity = 500.0
 coreViscosity = 500.0
 
 
-strainRate_2ndInvariant = stokes._Einv2
+strainRate_2ndInvariant = stokes.Unknowns.Einv2
 
 
 # %%
@@ -382,27 +378,27 @@ shear_viscosity_0 = [
 yield_stress = [0, 0, 0.06, 0.06, 0]
 
 # %%
-stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel(mesh.dim)
+# stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
 
 # %%
-stokes.constitutive_model.Parameters.shear_viscosity_0 = shear_viscosity_0
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.shear_viscosity_0 = shear_viscosity_0
+# # stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.materialIndex = material
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.materialIndex = material
+# # stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.yield_stress = np.array(yield_stress)
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.yield_stress = np.array(yield_stress)
+# # stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.strainrate_inv_II = stokes.Unknowns.Einv2
+# # stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
+# # stokes.constitutive_model.Parameters.viscosity
 
 # %%
 # stokes.constitutive_model.Parameters.yield_stress_min = np.array(yield_stress)*0.001
@@ -414,7 +410,7 @@ stokes.constitutive_model.Parameters.viscosity
 
 # %%
 stokes.constitutive_model.Parameters.averaging_method = "min"
-stokes.constitutive_model.Parameters.viscosity
+# stokes.constitutive_model.Parameters.viscosity
 
 # %% [markdown]
 # ### Main loop
@@ -422,7 +418,7 @@ stokes.constitutive_model.Parameters.viscosity
 
 # %%
 step = 0
-max_steps = 50
+max_steps = 1 #50
 time = 0
 
 
@@ -459,3 +455,5 @@ while step < max_steps:
     step += 1
 
     time += dt
+
+# %%

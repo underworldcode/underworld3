@@ -5,13 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
 
 # # Cylindrical Stokes with Coriolis term (out of plane)
 #
@@ -27,6 +26,10 @@
 #
 # This works best if we spin-up the rotation gradually.
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -44,9 +47,11 @@ expt_name = "SS_NS_flow_coriolis_10"
 # +
 import meshio
 
-meshball = uw.meshes.SphericalShell(
-    dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
-)
+# meshball = uw.meshes.SphericalShell(
+#     dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
+# )
+
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, verbosity=True)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
@@ -186,29 +191,15 @@ def plot_V_mesh(filename):
     if uw.mpi.size == 1:
 
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [1250, 1250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
+        pvmesh = vis.mesh_to_pv_mesh(meshball)
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+        
+        velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
 
-        pvmesh = meshball.mesh2pyvista()
-
-        with meshball.access():
-            pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
-
-        with meshball.access():
-            usol = navier_stokes.u.data  # - v_inertial.data
-
-        arrow_loc = np.zeros((navier_stokes.u.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = navier_stokes.u.coords[...]
-
-        arrow_length = np.zeros((navier_stokes.u.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        pl = pv.Plotter()
+        pl = pv.Plotter(window_size=(1000, 750))
         pl.camera.SetPosition(0.0001, 0.0001, 4.0)
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe')
@@ -220,7 +211,7 @@ def plot_V_mesh(filename):
             use_transparency=False,
             opacity=0.5,
         )
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.05)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.05)
 
         pl.screenshot(
             filename="{}.png".format(filename),
@@ -310,32 +301,17 @@ for step in range(0, 50):
 
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1280, 640]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    pvmesh = meshball.mesh2pyvista()
+    velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
 
-    with meshball.access():
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
-        pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, meshball.data)
-
-    with meshball.access():
-        usol = navier_stokes.u.data  # - v_inertial.data
-
-    arrow_loc = np.zeros((navier_stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = navier_stokes.u.coords[...]
-
-    arrow_length = np.zeros((navier_stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
@@ -347,7 +323,7 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.5,
     )
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.033)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.033)
 
     pl.show(cpos="xy")
 # -

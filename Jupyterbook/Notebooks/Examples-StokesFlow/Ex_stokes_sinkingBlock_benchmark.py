@@ -12,6 +12,11 @@
 # - Includes a passive tracer that is handled by UW swarm routines (and should be parallel safe).
 
 # %%
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
+# %%
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
@@ -143,7 +148,7 @@ v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 # %%
 #### No slip
@@ -151,13 +156,9 @@ sol_vel = sympy.Matrix([0.0, 0.0])
 
 ### free slip
 stokes.add_dirichlet_bc(sol_vel, "Left", 0)  # left/right: components, function, markers
-stokes.add_dirichlet_bc(
-    sol_vel, "Right", 0
-)  # left/right: components, function, markers
+stokes.add_dirichlet_bc(sol_vel, "Right", 0)  # left/right: components, function, markers
 stokes.add_dirichlet_bc(sol_vel, "Top", 1)  # left/right: components, function, markers
-stokes.add_dirichlet_bc(
-    sol_vel, "Bottom", 1
-)  # left/right: components, function, markers
+stokes.add_dirichlet_bc(sol_vel, "Bottom", 1)  # left/right: components, function, markers
 
 
 # %%
@@ -233,36 +234,20 @@ viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.
 
 # %%
 def plot_mat():
-    import numpy as np
+    
     import pyvista as pv
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        points[:, 2] = 0.0
+    import underworld3.visualisation as vis
+    
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    points = vis.swarm_to_pv_cloud(swarm)
 
     point_cloud = pv.PolyData(points)
-
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(notebook=True)
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
-
-    # pl.add_points(point_cloud, color="Black",
-    #                   render_points_as_spheres=False,
-    #                   point_size=2.5, opacity=0.75)
 
     pl.add_mesh(
         point_cloud,
@@ -442,3 +427,5 @@ def test_sinkBlock():
 # %%
 if render and uw.mpi.size == 1:
     plot_mat()
+
+# %%

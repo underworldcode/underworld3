@@ -1,3 +1,7 @@
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
@@ -21,18 +25,11 @@ bubblemesh = uw.meshing.SegmentedSphericalSurface2D(cellSize=0.05,numSegments=3,
 bubblemesh.dm.view()
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
+    # pvmesh = vis.mesh_to_pv_mesh(bubblemesh)
     pvmesh = pv.read("tmpManifold.msh")
     pvmesh.point_data["lon"] = bubblemesh.data[:,0]
     pvmesh.point_data["lat"] = bubblemesh.data[:,1]
@@ -112,6 +109,20 @@ projector.solve()
 # -
 
 
+
+
+# +
+# if uw.mpi.size == 1:
+    
+#     import pyvista as pv
+#     import underworld3.visualisation as vis
+ 
+#     # pvmesh = pv.read("tmpManifold.msh")
+#     pvmesh = vis.mesh_to_pv_mesh("tmpManifold.msh")
+#     pvmesh.point_data["nT"] = vis.scalar_fn_to_pv_points(pvmesh, Tnode.sym)
+#     pvmesh.point_data["dT"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiff.sym)
+#     pvmesh.point_data["dTc"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiffc.sym)
+
 if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
@@ -120,22 +131,20 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
  
-    pvmesh = pv.read("testManifold.msh")
+    pvmesh = pv.read("tmpManifold.msh")
    
     with bubblemesh.access():
         pvmesh.point_data["nT"] = Tnode.data[:,0]
         pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.data)
         pvmesh.point_data["dTc"] = Tdiffc.data[:,0]
 
-
-
 # +
-pl = pv.Plotter()
+pl = pv.Plotter(window_size=(750, 750))
 
 pl.add_mesh(
     pvmesh,

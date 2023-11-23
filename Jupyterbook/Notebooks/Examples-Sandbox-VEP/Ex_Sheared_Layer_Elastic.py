@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -18,6 +18,10 @@
 #
 # Check elastic stress terms
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import os
@@ -41,19 +45,6 @@ maxsteps = uw.options.getInt("max_steps", default=500)
 ## Define units here and physical timestep numbers etc.
 
 observation_timescale = 0.01
-
-
-# -
-
-
-if uw.mpi.size == 1:
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "ssaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 
 
 # +
@@ -277,8 +268,10 @@ stokes.constitutive_model.flux_dt
 # unexpected. This is a limitation we are stuck with for the moment.
 
 if uw.mpi.size == 1:
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
     pvpoints = pvmesh.points[:, 0:2]
     usol = v_soln.rbf_interpolate(pvpoints)
@@ -340,7 +333,7 @@ ts = 0
 
 stress_star_update_dt.view()
 
-# + tags=[]
+# +
 expt_name = f"shear_band_sw_nonp_{mu}"
 
 for step in range(0, 75):
@@ -422,8 +415,10 @@ stokes.stress[0, 0]
 # unexpected. This is a limitation we are stuck with for the moment.
 
 if uw.mpi.size == 1:
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
     pvpoints = pvmesh.points[:, 0:2]
     usol = v_soln.rbf_interpolate(pvpoints)
@@ -599,7 +594,6 @@ for step in range(0, 10):
 
     ts += 1
 
-# -
 
 
 # +
@@ -619,8 +613,10 @@ nodal_tau_inv2.solve()
 # unexpected. This is a limitation we are stuck with for the moment.
 
 if uw.mpi.size == 1:
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
     pvpoints = pvmesh.points[:, 0:2]
     usol = v_soln.rbf_interpolate(pvpoints)

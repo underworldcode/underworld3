@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -15,11 +15,17 @@
 # # Cylindrical Stokes
 # (In cylindrical coordinates)
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3 import timing
+
 import numpy as np
 import sympy
 
@@ -29,7 +35,7 @@ import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
 
-
+# +
 # Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
@@ -70,7 +76,7 @@ meshball_xyz_tmp = uw.meshing.Annulus(
     radiusInner=r_i,
     cellSize=res,
     refinement=0,
-    # filename="tmp_meshball.msh"
+    filename="tmp_meshball.msh"
 )
 
 
@@ -83,7 +89,7 @@ rtheta[:, 1] = np.arctan2(xy[:, 1] + 1.0e-16, xy[:, 0] + 1.0e-16)
 rtheta_vec = xy_vec.copy()
 rtheta_vec.array[...] = rtheta.reshape(-1)[...]
 dmplex.setCoordinates(rtheta_vec)
-del meshball_xyz_tmp
+# del meshball_xyz_tmp
 
 
 meshball = uw.meshing.Mesh(
@@ -151,13 +157,9 @@ Rayleigh = 1.0e5
 # +
 # Create Stokes object (r, theta)
 
-stokes = uw.systems.Stokes(
-    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
-)
-
+stokes = uw.systems.Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
 stokes.tolerance = 1.0e-5
-
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
@@ -200,7 +202,7 @@ stokes_xy = uw.systems.Stokes(
     pressureField=p_soln_xy,
     solver_name="stokes_xy",
 )
-stokes_xy.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln_xy)
+stokes_xy.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes_xy.constitutive_model.Parameters.shar_viscosity_0 = 1
 stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
 
@@ -243,8 +245,6 @@ stokes._setup_pointwise_functions()
 stokes._p_f0
 
 # +
-from underworld3 import timing
-
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
@@ -258,18 +258,12 @@ stokes_xy.tolerance = 1.0e-5
 
 stokes_xy
 
-from underworld3 import timing
-
 timing.start()
 stokes_xy.solve(zero_init_guess=True)
 timing.print_table()
 
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
-
-0/0
-
-#
 
 # +
 ## Periodic in theta - the nodes which have been "moved" to a
@@ -278,7 +272,7 @@ U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 ## the xyz mesh for Uxy, and use it for plotting.
 
 if uw.mpi.size == 1:
-    import numpy as np
+    import underworld3.visualisation as vis # use this module for plotting
     import pyvista as pv
     import vtk
 
@@ -341,9 +335,6 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc + (0.0, 0.0, 0.0), arrow_length, mag=0.00005, color="Red")
 
     pl.show(cpos="xy")
-# -
-0/0
-
 # +
 usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
 usol_xy_rms = np.sqrt(usol_xy[:, 0] ** 2 + usol_xy[:, 1] ** 2).mean()
@@ -373,3 +364,5 @@ sympy.oo
 T = sympy.oo
 
 sympy.S.Infinity
+
+

@@ -5,16 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
-
-
-#
 
 #
 # # Anisotropic Constitutive relationships in Underworld (pt 1)
@@ -361,7 +357,7 @@ display(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW, 3))
 C_ijkl_HW_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, C_ijkl_HW))
 sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW_R, 3)) + C_IJm
 
-display(C_IJm_HW_R)
+# display(C_IJm_HW_R)
 
 ## Maybe this can be simplified if we use the unit vector relationships among n0,n1,n2
 

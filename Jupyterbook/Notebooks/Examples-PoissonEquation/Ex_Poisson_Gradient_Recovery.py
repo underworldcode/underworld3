@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -16,6 +16,10 @@
 #
 #
 # ## Generic scalar solver class
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 from petsc4py import PETSc
 import underworld3 as uw
@@ -62,7 +66,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
 
 
 # %%
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 
 # Non-linear diffusivity
 
@@ -90,7 +94,7 @@ diffusivity.smoothing = 1.0e-6
 
 
 # %%
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = k
 poisson.constitutive_model.Parameters.diffusivity
 
@@ -165,30 +169,19 @@ with mesh.access():
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["T"] = mesh_numerical_soln
+    pvmesh.point_data["dTdY"] = vis.scalar_fn_to_pv_points(pvmesh, dTdY.sym)
+    pvmesh.point_data["dTdY1"] = vis.scalar_fn_to_pv_points(pvmesh, gradT.sym[1])
+    pvmesh.point_data["dTdX1"] = vis.scalar_fn_to_pv_points(pvmesh, gradT.sym[0])
+    pvmesh.point_data["kappa"] = vis.scalar_fn_to_pv_points(pvmesh, kappa.sym)
+    pvmesh.point_data["kappa1"] = vis.scalar_fn_to_pv_points(pvmesh, 5 + gradT.sym[0] ** 2 + gradT.sym[1] ** 2)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    with mesh.access():
-        pvmesh.point_data["T"] = mesh_numerical_soln
-        pvmesh.point_data["dTdY"] = uw.function.evaluate(dTdY.sym[0], mesh.data)
-        pvmesh.point_data["dTdY1"] = uw.function.evaluate(gradT.sym[1], mesh.data)
-        pvmesh.point_data["dTdX1"] = uw.function.evaluate(gradT.sym[0], mesh.data)
-        pvmesh.point_data["kappa"] = uw.function.evaluate(kappa.sym[0], mesh.data)
-        pvmesh.point_data["kappa1"] = uw.function.evaluate(
-            5 + gradT.sym[0] ** 2 + gradT.sym[1] ** 2, mesh.data
-        )
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -204,3 +197,5 @@ if MPI.COMM_WORLD.size == 1:
 
     pl.show(cpos="xy")
     # pl.screenshot(filename="test.png")
+
+

@@ -5,15 +5,18 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Steady state diffusion in a hollow sphere
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 import pygmsh, meshio
 
@@ -74,7 +77,7 @@ t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
 # Create Poisson object
 poisson = Poisson(mesh, u_Field=t_soln)
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 poisson.f = f
@@ -125,25 +128,16 @@ poisson.solve(zero_init_guess=False)
 # Validate
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["T"] = mesh_analytic_soln
+    pvmesh.point_data["T2"] = mesh_numerical_soln
+    pvmesh.point_data["DT"] = mesh_analytic_soln - mesh_numerical_soln
 
-    mesh.vtk("mesh_tmp.vtk")
-    pvmesh = pv.read("mesh_tmp.vtk")
-
-    with mesh.access():
-        pvmesh.point_data["T"] = mesh_analytic_soln
-        pvmesh.point_data["T2"] = mesh_numerical_soln
-        pvmesh.point_data["DT"] = mesh_analytic_soln - mesh_numerical_soln
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -218,7 +212,7 @@ mesh_3d.dm.view()
 
 # Create Poisson object
 poisson = Poisson(mesh_3d, u_Field=t_soln_3d)
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(t_soln_3d)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = k
 poisson.f = f
 
@@ -253,24 +247,16 @@ if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.1):
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh_3d.vtk("mesh_tmp.vtk")
-    pvmesh = pv.read("mesh_tmp.vtk")
-
-    with mesh_3d.access():
-        pvmesh.point_data["T"] = mesh_analytic_soln
-        pvmesh.point_data["T2"] = mesh_numerical_soln
-        pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
-
+    
+    pvmesh = vis.mesh_to_pv_mesh(mesh_3d)
+    pvmesh.point_data["T"] = mesh_analytic_soln
+    pvmesh.point_data["T2"] = mesh_numerical_soln
+    pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
+    
     clipped = pvmesh.clip(origin=(0.001, 0.0, 0.0), normal=(1, 0, 0), invert=True)
 
     pl = pv.Plotter()
@@ -301,3 +287,5 @@ mesh_3d.write_timestep(
 )
 
 # -
+
+

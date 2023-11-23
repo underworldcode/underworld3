@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -27,6 +27,10 @@
 # The masks are orthogonal in the sense that $M^i * M^j = 0$ if $i \ne j$, and they are complete in the sense that $\sum_i M^i = 1$ at all points.
 #
 # The masks are implemented as continuous mesh variables (the user can specify the interpolation order) and so they are also differentiable (once).
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 # %%
@@ -403,7 +407,7 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
-velocity_points.point_data["X"]
+velocity_points.point_data["V"]
 
 uw.function.evalf(v.sym[0], velocity_points.points[:,0:2])
 
@@ -413,7 +417,4 @@ velocity_points.point_data["V"]
 
 velocity_points.points.min()
 # -
-
-
-
 

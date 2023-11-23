@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -18,6 +18,10 @@
 # - No advection as the velocity field is not updated (and set to 0).
 # - Comparison between 1D numerical solution and 2D UW model.
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 from petsc4py import PETSc
 import underworld3 as uw
@@ -82,13 +86,13 @@ dTdY = uw.discretisation.MeshVariable(
 
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
-    mesh,
-    u_Field=T,
-    V_Field=v,
-    solver_name="adv_diff",
-)
+                                        mesh,
+                                        u_Field=T,
+                                        V_fn=v,
+                                        solver_name="adv_diff",
+                                    )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(T)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 
 
 # %%
@@ -135,35 +139,18 @@ def plot_fig():
     updateFields()
 
     if uw.mpi.size == 1:
-        import numpy as np
+        
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
+        pvmesh = vis.mesh_to_pv_mesh(mesh)
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, T.sym)
+        pvmesh.point_data["k"] = vis.scalar_fn_to_pv_points(pvmesh, k.sym)
+        
+        velocity_points = vis.meshVariable_to_pv_cloud(v)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
 
-        # pv.start_xvfb()
-        mesh.vtk("tmpMsh.vtk")
-        # mesh.vtk("ignore_periodic_mesh.vtk")
-        pvmesh = pv.read("tmpMsh.vtk")
-
-        # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
-
-        with mesh.access():
-            vsol = v.data.copy()
-            pvmesh["T"] = T.data.copy()
-            pvmesh["k"] = uw.function.evaluate(k.sym[0], mesh.data)
-
-        arrow_loc = np.zeros((v.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v.coords[...]
-
-        arrow_length = np.zeros((v.coords.shape[0], 3))
-        arrow_length[:, 0:2] = vsol[...]
-
-        pl = pv.Plotter()
+        pl = pv.Plotter(window_size=(750, 750))
 
         pl.add_mesh(pvmesh, "Black", "wireframe")
 
@@ -192,7 +179,7 @@ def plot_fig():
         #     opacity=0.95,
         # )
 
-        pl.add_arrows(arrow_loc, arrow_length, mag=5.0, opacity=0.5)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=5.0, opacity=0.5)
         # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
         # pl.add_points(pdata)
@@ -270,7 +257,7 @@ tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
 step = 0
 time = 0.0
 
-nsteps = 21
+nsteps = 1 # 21
 
 adv_diff.petsc_options["ksp_rtol"] = 1.0e-8
 
@@ -319,3 +306,5 @@ while step < nsteps:
 plt.show()
 
 plot_fig()
+
+

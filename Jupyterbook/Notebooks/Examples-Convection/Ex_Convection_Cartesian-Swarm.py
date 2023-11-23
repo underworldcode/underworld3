@@ -8,6 +8,10 @@
 #
 # (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
@@ -21,13 +25,12 @@ import sympy
 
 # -
 
-meshbox = uw.meshes.Unstructured_Simplex_Box(
-    dim=2,
-    minCoords=(0.0, 0.0, 0.0),
-    maxCoords=(1.0, 1.0, 1.0),
-    cell_size=1.0 / 32.0,
-    regular=True,
-)
+meshbox = uw.meshing.UnstructuredSimplexBox(
+                                            minCoords=(0.0, 0.0),
+                                            maxCoords=(1.0, 1.0),
+                                            cellSize=1.0 / 32.0,
+                                            regular=True,
+                                            )
 meshbox.dm.view()
 
 # +
@@ -38,35 +41,22 @@ import sympy
 
 x = meshbox.N.x
 y = meshbox.N.y
+# -
 
-# +
 # check the mesh if in a notebook / serial
-
-
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
-    pv.global_theme.show_edges = True
-    pv.global_theme.axes.show = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
 
-    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
     pl.add_mesh(pvmesh, edge_color="Black", show_edges=True)
 
     pl.show(cpos="xy")
-# -
 
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
@@ -80,7 +70,7 @@ swarm.populate(fill_param=5)
 
 
 # +
-ad = uw.systems.AdvDiffusionSwarm(meshbox, t_soln, T1.fn, degree=3, projection=True)
+ad = uw.systems.AdvDiffusion(meshbox, t_soln, T1.sym, order=3)
 
 ad._u_star_projector.smoothing = 0.0
 
@@ -102,14 +92,14 @@ with swarm.access(T1):
 # Create Stokes object
 
 stokes = Stokes(
-    meshbox,
-    velocityField=v_soln,
-    pressureField=p_soln,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
-    solver_name="stokes",
-    verbose=False,
-)
+                meshbox,
+                velocityField=v_soln,
+                pressureField=p_soln,
+                u_degree=v_soln.degree,
+                p_degree=p_soln.degree,
+                solver_name="stokes",
+                verbose=False,
+            )
 
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
@@ -132,45 +122,24 @@ stokes.bodyforce = meshbox.N.j * buoyancy_force
 
 # check the stokes solve is set up and that it converges
 stokes.solve()
+# -
 
 
-# +
 # check the projection
-
-
 if uw.mpi.size == 1 and ad.projection:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["T1"] = vis.scalar_fn_to_pv_points(pvmesh, T1.sym)
+    pvmesh.point_data["mT1"] = vis.scalar_fn_to_pv_points(pvmesh, ad._u_star_projected.sym)
+    pvmesh.point_data["dT1"] = vis.scalar_fn_to_pv_points(pvmesh, T1.sym) - vis.scalar_fn_to_pv_points(pvmesh, ad._u_star_projected.sym)
 
-    pv.start_xvfb()
+    velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
 
-    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    with meshbox.access():
-        usol = stokes.u.data.copy()
-
-    pvmesh.point_data["mT1"] = uw.function.evaluate(
-        ad._u_star_projected.fn, meshbox.data
-    )
-    pvmesh.point_data["T1"] = uw.function.evaluate(T1.fn, meshbox.data)
-    pvmesh.point_data["dT1"] = uw.function.evaluate(
-        T1.fn - ad._u_star_projected.fn, meshbox.data
-    )
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
@@ -192,58 +161,29 @@ if uw.mpi.size == 1 and ad.projection:
     pl.show(cpos="xy")
 
 
-# -
-
-
 def plot_T_mesh(filename):
     if uw.mpi.size == 1:
-        import numpy as np
+        
         import pyvista as pv
-        import vtk
+        import underworld3.visualisation as vis
 
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
-        pv.global_theme.smooth_shading = False
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+        pvmesh = vis.mesh_to_pv_mesh(meshbox)
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+        tpoints = vis.meshVariable_to_pv_cloud(t_soln)
+        tpoints.point_data["T"] = vis.scalar_fn_to_pv_points(tpoints, t_soln.sym)
+        tpoint_cloud = pv.PolyData(tpoints)
 
-        pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
-        point_cloud = pv.PolyData(points)
-
-        with meshbox.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
-
-        swarm_point_cloud = pv.PolyData(points)
-
+        spoints = vis.swarm_to_pv_cloud(swarm)
+        swarm_point_cloud = pv.PolyData(spoints)
         with swarm.access():
             swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
-        with meshbox.access():
-            usol = stokes.u.data.copy()
+        velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
 
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+        pl = pv.Plotter(window_size=(750, 750))
 
-        arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-        arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        pl = pv.Plotter()
-
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.00001, opacity=0.75)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00001, opacity=0.75)
 
         pl.add_points(
             swarm_point_cloud,  # cmap="RdYlBu_r", scalars="T1",
@@ -287,7 +227,7 @@ expt_name = "output/Ra1e6_swarm_pnots"
 
 ad_delta_t = 0.000033  # target
 
-for step in range(0, 250):
+for step in range(0, 2): #250
     stokes.solve(zero_init_guess=False)
     stokes_delta_t = 5.0 * stokes.estimate_dt()
     delta_t = stokes_delta_t
@@ -328,57 +268,28 @@ for step in range(0, 250):
 # meshbox.generate_xdmf(savefile)
 
 
-# +
-
-
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    tpoints = vis.meshVariable_to_pv_cloud(t_soln)
+    tpoints.point_data["T"] = vis.scalar_fn_to_pv_points(tpoints, t_soln.sym)
+    tpoint_cloud = pv.PolyData(tpoints)
 
-    pv.start_xvfb()
-
-    pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
-
-    point_cloud = pv.PolyData(points)
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-
-    swarm_point_cloud = pv.PolyData(points)
-
+    spoints = vis.swarm_to_pv_cloud(swarm)
+    swarm_point_cloud = pv.PolyData(spoints)
     with swarm.access():
         swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
-    with meshbox.access():
-        point_cloud.point_data["T"] = t_soln.data.copy()
+    velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
+    
+    pl = pv.Plotter(window_size=(750, 750))
 
-    with meshbox.access():
-        usol = stokes.u.data.copy()
-
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.00002, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(point_cloud, cmap="coolwarm",
@@ -407,3 +318,5 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
+
+

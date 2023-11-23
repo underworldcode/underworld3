@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -52,6 +52,10 @@
 # | viscosity (oil)  | $$\eta{_o}$$ | $$20\eta_s$$  | $$Pa s$$  |   |
 # | pressure  | $$p$$  | $$10^{5}$$  | $$Pa$$  |   |
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 from petsc4py import PETSc
@@ -105,37 +109,18 @@ mat_ckpt.read_timestep(checkpoint_base, "mat", step, outputPath=checkpoint_dir)
 # +
 if uw.mpi.size == 1:
     
-    # plot the mesh
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = 'ssaa'
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    vizmesh.vtk("viz_mesh.vtk")
-    pvmesh = pv.read("viz_mesh.vtk")
+    pvmesh = vis.mesh_to_pv_mesh(vizmesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln_ckpt.sym)
+    pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, mat_ckpt.sym)
+    pvmesh.point_data["p"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln_ckpt.sym)
     
-    v_vectors = np.zeros((vizmesh.data.shape[0], 3))
-    v_vectors[:, 0] = uw.function.evalf(v_soln_ckpt[0].sym, vizmesh.data)
-    v_vectors[:, 1] = uw.function.evalf(v_soln_ckpt[1].sym, vizmesh.data)
-    pvmesh.point_data["V"] = v_vectors
-
-    arrow_loc = np.zeros((v_soln_ckpt.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln_ckpt.coords[...]
-
-    with mesh.access():
-        arrow_length = np.zeros((v_soln_ckpt.coords.shape[0], 3))
-        arrow_length[:, 0:2] = v_soln_ckpt.data[...]
-        arrow_length /= arrow_length.max()
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln_ckpt)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym)/vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym).max()
     
-    pvmesh['mat'] =  uw.function.evalf(mat_ckpt.sym[0], vizmesh.data) #uw.function.evaluate(mat.sym[0], mesh.data)
-    pvmesh['p'] =  uw.function.evalf(p_soln_ckpt.sym[0], vizmesh.data) #uw.function.evaluate(mat.sym[0], mesh.data)
-    
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(pvmesh, style="wireframe", cmap="RdYlBu_r", edge_color="Grey", scalars="mat",
                 show_edges=True, line_width=0.05, use_transparency=False, opacity=1)
@@ -145,7 +130,7 @@ if uw.mpi.size == 1:
   
 
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=250, opacity=1)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=250, opacity=1)
 
 
     pl.show(cpos="xy")

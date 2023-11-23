@@ -10,6 +10,7 @@ def mesh_to_pv_mesh(mesh):
     nest_asyncio.apply()
 
     import os
+    import shutil
     import tempfile
     import pyvista as pv
 
@@ -22,9 +23,13 @@ def mesh_to_pv_mesh(mesh):
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     with tempfile.TemporaryDirectory() as tmp:
-        vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
-
-        mesh.vtk(vtk_filename)
+        
+        if type(mesh)==str: # reading msh file directly
+            vtk_filename = os.path.join(tmp, "tmpMsh.msh")
+            shutil.copyfile(mesh, vtk_filename)
+        else: # reading mesh by creating vtk 
+            vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
+            mesh.vtk(vtk_filename)
 
         try:
             pv.global_theme.jupyter_backend = "trame"

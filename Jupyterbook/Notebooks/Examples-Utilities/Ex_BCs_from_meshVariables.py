@@ -5,15 +5,18 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Cylindrical 2D Diffusion
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 from petsc4py import PETSc
@@ -95,18 +98,10 @@ t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
 
 if PETSc.Comm.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
-    pv.global_theme.smooth_shading = True
-
-    meshbox.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
 
     clipped_stack = pvmesh.clip(
         origin=(0.0, 0.0, 0.0), normal=(-1, -1, 0), invert=False
@@ -129,8 +124,10 @@ if PETSc.Comm.size == 1:
 # Create Poisson object
 
 poisson = uw.systems.Poisson(
-    mesh, u_Field=t_soln, solver_name="poisson", degree=3, verbose=True
+    mesh, u_Field=t_soln, solver_name="poisson", verbose=True
 )
+
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.k = k
 poisson.f = 0.0
 
@@ -151,7 +148,9 @@ poisson.add_dirichlet_bc(-1.0, "Centre", components=0)
 
 poisson.petsc_options.getAll()
 
-poisson._setup_terms()
+# +
+# poisson._setup_terms()
+# -
 
 poisson.solve()
 
@@ -160,18 +159,10 @@ poisson.solve()
 
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
     pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.data)
 
@@ -189,10 +180,7 @@ if uw.mpi.size == 1:
     )
     pl.show(cpos="xy")
 # -
-savefile = "output/poisson_cyindrical_2d.h5"
-mesh.save(savefile)
-poisson.u.save(savefile)
-mesh.generate_xdmf(savefile)
+mesh.petsc_save_checkpoint(index=0, meshVars=[t_soln], outputPath='./output/')
 
 
 # +
