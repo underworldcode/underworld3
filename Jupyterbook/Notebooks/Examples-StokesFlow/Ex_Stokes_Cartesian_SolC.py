@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -38,6 +38,8 @@ from underworld3 import function
 from underworld3 import timing
 
 import numpy as np
+import sympy
+from sympy import Piecewise
 
 # +
 # %%
@@ -75,14 +77,6 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
 # -
-
-
-
-# %%
-# Set some things
-import sympy
-from sympy import Piecewise
-
 x,y = mesh.X
 
 mesh.get_min_radius()
@@ -194,16 +188,15 @@ stokes.solve()
 if uw.mpi.size == 1:
     
     import pyvista as pv
-    import underworld3 as uw
-    import underworld3.visualisation
+    import underworld3.visualisation as vis
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, stokes.bodyforce[1])
-    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, stokes.bodyforce[1])
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
-    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
+    velocity_points = vis.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
 
     pl = pv.Plotter(window_size=(1000, 750))
 
@@ -262,15 +255,14 @@ timing.print_table(display_fraction=0.999)
 if uw.mpi.size == 1:
     
     import pyvista as pv
-    import underworld3 as uw
-    import underworld3.visualisation
+    import underworld3.visualisation as vis
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
-    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v)
-    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v.sym)
+    velocity_points = vis.meshVariable_to_pv_cloud(v)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
 
     pl = pv.Plotter(window_size=(1000, 750))
 
@@ -315,7 +307,4 @@ except ImportError:
 
 # %%
 # -
-
-
-
 

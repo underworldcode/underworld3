@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -57,9 +57,6 @@
 # $$
 #
 # Where $\boldsymbol\tau^*$ and $\boldsymbol\tau^{**}$ are the upstream history values at $t - \Delta t$ and $t - 2\Delta t$ respectively.
-# + \frac {"incorrectly_encoded_metadata": "{8}{12} \\boldsymbol{\\tau^{*}}"}
-#
-
 # + \frac [markdown] {"incorrectly_encoded_metadata": "{1}{12} \\boldsymbol{\\tau^{* *}} \\right]"}
 #
 # In the Navier-stokes problem, it is common to write $\boldsymbol\tau=\eta \left(\nabla \mathbf u + (\nabla \mathbf u)^T \right)$ and $\boldsymbol\tau^*=\eta \left(\nabla \mathbf u^* + (\nabla \mathbf u^*)^T \right)$ which ignores  rotation and shearing of the stress during the interval $\Delta T$. This simplifies the implementation because only the velocity history is required, not the history of the stress tensor.
@@ -152,6 +149,10 @@
 #
 #
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # + \frac {"incorrectly_encoded_metadata": "{8}{12} \\mathbf{\\tau^*}"}
 import os
@@ -302,24 +303,19 @@ eta_0 = sympy.sympify(10) ** -6
 C_0 = sympy.log(10**6)
 
 
-stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-    stokes._u
-)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = sympy.symbols(r"\eta")
 stokes.constitutive_model.Parameters.shear_modulus = sympy.symbols(r"\mu")
 stokes.constitutive_model.Parameters.stress_star = stress_star.sym
 stokes.constitutive_model.Parameters.dt_elastic = sympy.symbols(
     r"\Delta\ t"
 )  # sympy.sympify(1) / 10
-stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
+stokes.constitutive_model.Parameters.strainrate_inv_II = stokes.Unknowns.Einv2
 stokes.constitutive_model.Parameters.strainrate_inv_II_min = 0
 stokes.constitutive_model
 # -
 
 stokes.constitutive_model.Parameters.viscosity
-
-0 / 0
-
 
 # +
 # Set solve options here (or remove default values
@@ -431,7 +427,6 @@ sdot1 = (s - s1) / dt
 
 # 2nd order difference for stress rate
 sdot2 = (3 * s - 4 * s1 + s2) / (2 * dt)
-# -
 
 
 # +
@@ -614,7 +609,6 @@ for step in range(0, 10):
 
     ts += 1
 
-# -
 
 
 # +
@@ -634,6 +628,9 @@ nodal_tau_inv2.solve()
 # unexpected. This is a limitation we are stuck with for the moment.
 
 if uw.mpi.size == 1:
+    
+    import underworld3.visualisation as vis # use tools from here
+    
     mesh1.vtk("tmp_shear_inclusion.vtk")
     pvmesh = pv.read("tmp_shear_inclusion.vtk")
 

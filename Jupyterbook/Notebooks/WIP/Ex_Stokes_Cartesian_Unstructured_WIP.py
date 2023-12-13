@@ -15,6 +15,11 @@
 #  - FAS in SNES does not work automatically because there is no automatic coarsening pathway that is set up when a mesh is refined. I expect that can be figured out by trawling through the C examples !
 
 # %%
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
+# %%
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -48,7 +53,7 @@ import vtk
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [1000, 500]
 pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 
 # %%

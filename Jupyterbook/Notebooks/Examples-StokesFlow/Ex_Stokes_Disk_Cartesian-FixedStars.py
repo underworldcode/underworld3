@@ -5,19 +5,22 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Cylindrical Stokes (Cartesian formulation)
 #
 # Let the embedded mesh deform to mimic a free surface. If we iterate on this, then it is almost exactly the same as the free-slip boundary condition (though there are potentially instabilities here).
 #
 # The problem has a constant velocity nullspace in x,y. We eliminate this by fixing the central node in this example, but it does introduce a perturbation to the flow near the centre which is not always stagnant.
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -30,7 +33,7 @@ from underworld3 import function
 import numpy as np
 import sympy
 
-res = 0.05
+res = 0.1 # 0.05
 r_s = 1.25
 r_o = 1.0
 r_i = 0.5
@@ -45,16 +48,24 @@ options = PETSc.Options()
 import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
-# -
 
-meshball = uw.meshing.AnnulusFixedStars(
-    radiusFixedStars=r_s,
-    radiusOuter=r_o,
-    radiusInner=r_i,
-    cellSize=res,
-    cellSize_FS=res * 3,
-    filename="tmp_fixedstarsMesh.msh",
-)
+# +
+# meshball = uw.meshing.AnnulusFixedStars(
+#     radiusFixedStars=r_s,
+#     radiusOuter=r_o,
+#     radiusInner=r_i,
+#     cellSize=res,
+#     cellSize_FS=res * 3,
+#     filename="tmp_fixedstarsMesh.msh",
+# )
+
+meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_s, 
+                                              radiusInternal=r_o, 
+                                              radiusInner=r_i, 
+                                              cellSize=res,
+                                              cellSize_Outer=res * 3,
+                                              filename="tmp_fixedstarsMesh.msh")
+# -
 
 
 v_soln = uw.discretisation.MeshVariable(r"\mathbf{u}", meshball, 2, degree=2)
@@ -68,8 +79,6 @@ phi_g = uw.discretisation.MeshVariable(r"\phi", meshball, 1, degree=3)
 # Create a density structure / buoyancy force
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
-
-import sympy
 
 radius_fn = meshball.CoordinateSystem.xR[0]
 unit_rvec = meshball.CoordinateSystem.unit_e_0
@@ -93,7 +102,7 @@ base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 
 swarm = uw.swarm.Swarm(mesh=meshball)
 material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0
+    "M", swarm, size=1, proxy_continuous=False, proxy_degree=0
 )
 swarm.populate(fill_param=1)
 
@@ -102,42 +111,17 @@ with swarm.access(material):
 # -
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 600]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
-
-    pvmesh = pv.read("tmp_fixedstarsMesh.msh")
-
-    with swarm.access():
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-
-    pvmesh.point_data["M"] = uw.function.evaluate(
-        material.sym[0], meshball.data, meshball.N
-    )
-    pvmesh.point_data["C"] = uw.function.evaluate(
-        celestial_fn, meshball.data, meshball.N
-    )
-    pvmesh.point_data["S"] = uw.function.evaluate(
-        surface_fn - base_fn, meshball.data, meshball.N
-    )
-
-    point_cloud = pv.PolyData(points)
-
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    points = vis.swarm_to_pv_cloud(swarm)
+    pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+    pvmesh.point_data["C"] = vis.scalar_fn_to_pv_points(pvmesh, celestial_fn)
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, surface_fn - base_fn)
 
     pl = pv.Plotter(window_size=(750, 750))
-    # pl.camera_position = "xy"
 
     pl.add_mesh(pvmesh, "Grey", "wireframe")
 
@@ -164,7 +148,7 @@ if uw.mpi.size == 1:
     )
 
     pl.add_points(
-        point_cloud,
+        points,
         cmap="Greys",
         render_points_as_spheres=True,
         clim=[-0.5, 1.0],
@@ -182,7 +166,7 @@ stokes = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 
 stokes.constitutive_model.Parameters.viscosity = 1.0
@@ -255,45 +239,21 @@ pressure_solver.solve()
 # +
 # check the mesh if in a notebook / serial
 
-
 if uw.mpi.size == 1:
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 600]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    with meshball.access():
-        pvmesh.point_data["V"] = uw.function.evaluate(
-            v_soln.sym.dot(v_soln.sym), meshball.data
-        )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evaluate(
-            t_init, meshball.data, coord_sys=meshball.N
-        )
-
-    with swarm.access():
-        pvmesh.cell_data["M"] = material.data[:, 0]
-
-    with meshball.access():
-        usol = stokes.u.data
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-    # -
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_cont.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_init)
+    pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+   
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
         pvmesh,
         cmap="coolwarm",
@@ -304,7 +264,7 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0002)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0002)
 
     pl.add_mesh(
         pvmesh,
@@ -318,8 +278,8 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 # -
-pvmesh.n_cells
+
+vsol_rms = np.sqrt(velocity_points.point_data["V"][:, 0] ** 2 + velocity_points.point_data["V"][:, 1] ** 2).mean()
+vsol_rms
 
 
-usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
-usol_rms

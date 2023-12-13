@@ -1,12 +1,15 @@
 {% set name = "underworld3" %}
-{% set version = "v0.1dev" %}
+{% set version = "0.9b" %}
 
 package:
   name: "{{ name|lower }}"
   version: "{{ version }}"
 
 source:
-  path: ..
+  git_url: https://github.com/underworldcode/underworld3
+  git_tag: development
+  git_depth: 1
+#  path: ..
 
 build:
   number: 0
@@ -15,29 +18,37 @@ build:
 requirements:
 
   build:
-    - {{ compiler('fortran') }}
     - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
 
-  host:
+  host: 
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - pkg-config
     - python
-    - pip
-    - Cython
-    - numpy
-    - {{ mpi }}
-    - petsc4py 3.14
-    - h5py
+    - setuptools
+    - cython
     - mpi4py
+    - petsc4py >=3.20.0
 
   run:
-    - python
     - {{ compiler('c') }}
-    - {{ pin_compatible('numpy') }}
-    - {{ mpi }}
-    - petsc4py 3.14
-    - h5py
+    - cython
+    - python
+    - petsc
+    - petsc4py >=3.20.0
     - mpi4py
-    - typeguard
+    - h5py
+    - pint
+    - pytest
+    - typing_extensions
     - sympy
+    - python-xxhash
+    - python-gmsh
+    - ipython
+    - typeguard
+    - nest-asyncio
+    - pyvista
 
 about:
   home: "https://github.com/underworldcode/underworld3"
@@ -48,7 +59,6 @@ about:
   dev_url: https://github.com/underworldcode/underworld3
 
 extra:
-  recipe-maintainers:
+  maintainers:
+    - jgiordani
     - lmoresi
-    - brmather
-    - rbeucher

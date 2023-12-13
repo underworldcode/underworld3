@@ -5,14 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
-
 
 #
 # # Constitutive relationships in Underworld (pt 1)
@@ -245,10 +243,12 @@ sympy.Array(sympy.symarray('C',(d,d,d,d)))
 
 # # This is how we use those things
 
-ViscousFlow = uw.constitutive_models.TransverseIsotropicFlowModel(u3)
+ViscousFlow = uw.constitutive_models.TransverseIsotropicFlowModel
 ViscousFlow.Parameters.eta_0=sympy.symbols(r"\eta_0")
 ViscousFlow.Parameters.eta_1=sympy.symbols(r"\eta_1")
 ViscousFlow.Parameters.director=sympy.Matrix([1,0,0]).T
+
+
 
 
 ViscousFlow.flux

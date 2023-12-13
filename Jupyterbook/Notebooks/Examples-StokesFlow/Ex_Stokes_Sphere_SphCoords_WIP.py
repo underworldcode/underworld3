@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -15,7 +15,11 @@
 # # Spherical Stokes
 # (In a spherical coordinate system)
 
-# + tags=[]
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
+# +
 import petsc4py
 from petsc4py import PETSc
 
@@ -27,6 +31,7 @@ import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
 
+# +
 r_o = 1.0
 r_i = 0.5
 
@@ -62,30 +67,15 @@ meshball_xyz = uw.meshing.SegmentedSphere(
 # -
 
 if uw.mpi.size == 1:
-    import numpy as np
+
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    pvmesh = pv.read("tmpWedgeX.msh")
+    pvmesh = vis.mesh_to_pv_mesh("tmpWedgeX.msh")
 
     pl = pv.Plotter()
 
     clipped = pvmesh.clip(normal="x", crinkle=True)
-
-    # pl.add_mesh(
-    #     pvmesh,
-    #     show_edges=True,
-    #     opacity=0.1,
-    #     # clim=[0,1]
-    # )
 
     pl.add_mesh(
         pvmesh,
@@ -149,7 +139,7 @@ stokes = uw.systems.Stokes(
 )
 stokes.petsc_options["snes_rtol"] = 1.0e-5
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.penalty = 0.0
 
@@ -183,7 +173,7 @@ stokes_xyz = uw.systems.Stokes(
     pressureField=p_soln_xyz,
     solver_name="stokes_xyz",
 )
-stokes_xyz.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln_xyz)
+stokes_xyz.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes_xyz.constitutive_model.Parameters.viscosity = 1
 stokes_xyz.petsc_options["snes_rtol"] = 1.0e-5
 
@@ -205,8 +195,14 @@ pressure_solver.smoothing = 1.0e-3
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
 t_init = sympy.cos(4 * p) * sympy.sin(t)
 stokes.bodyforce = sympy.Matrix([Rayleigh * t_init, 0, 0])
-stokes.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 2)
-stokes.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 2)
+
+stokes.add_dirichlet_bc(0.0, "PoleAxisN", 2)
+stokes.add_dirichlet_bc(0.0, "PolePtNo", 2)
+stokes.add_dirichlet_bc(0.0, "PolePtNi", 2)
+
+stokes.add_dirichlet_bc(0.0, "PoleAxisS", 2)
+stokes.add_dirichlet_bc(0.0, "PolePtSo", 2)
+stokes.add_dirichlet_bc(0.0, "PolePtSi", 2)
 
 # ----
 
@@ -214,15 +210,14 @@ t_init_xyz = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0
 stokes_xyz.bodyforce = Rayleigh * t_init_xyz * unit_rvec
 stokes_xyz.bodyforce -= 1.0e6 * v_soln_xyz.sym.dot(unit_rvec) * surface_fn * unit_rvec
+
+# +
+# stokes_xyz._setup_terms()
 # -
 
-stokes_xyz._setup_terms()
 
-
-# + tags=[]
-stokes._setup_terms()
+# stokes._setup_terms()
 stokes.solve(zero_init_guess=True)
-# -
 
 stokes._u_f0
 
@@ -234,8 +229,14 @@ pressure_solver.solve()
 projector = uw.systems.Vector_Projection(meshball, vector)
 projector.uw_function = stokes._u_f0
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 2)
-projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 2)
+
+projector.add_dirichlet_bc(0.0, "PoleAxisN", 2)
+projector.add_dirichlet_bc(0.0, "PolePtNo", 2)
+projector.add_dirichlet_bc(0.0, "PolePtNi", 2)
+
+projector.add_dirichlet_bc(0.0, "PoleAxisS", 2)
+projector.add_dirichlet_bc(0.0, "PolePtSo", 2)
+projector.add_dirichlet_bc(0.0, "PolePtSi", 2)
 
 options = projector.petsc_options
 options.setValue("snes_rtol", 1.0e-4)
@@ -243,8 +244,6 @@ options.setValue("snes_rtol", 1.0e-4)
 projector.solve()
 
 # -
-
-0 / 0
 
 U_xyz = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
@@ -255,14 +254,15 @@ U_xyz = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 ## the xyz mesh for Uxy, and use it for plotting.
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
     import vtk
+    import underworld3.visualisation as vis # use this 
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1000, 1000]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     pvmesh = pv.read("./tmpWedgeX.msh")
@@ -302,8 +302,8 @@ if uw.mpi.size == 1:
     arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_length[:, :] = usol[...] * 0.0001
 
-    arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length_xy[:, :] = usol_xyz[...]
+    # arrow_length_xy = np.zeros((stokes.u.coords.shape[0], 3))
+    # arrow_length_xy[:, :] = usol_xyz[...]
 
     pl = pv.Plotter(window_size=(750, 750))
 
@@ -341,3 +341,6 @@ print(f"MAX:  {usol_rms / usol_xy_rms}")
 # 0.1
 # MEAN: 0.8601596694865591
 # MAX:  1.0587809789060159
+# -
+
+

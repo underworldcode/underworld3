@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -65,6 +65,10 @@
 #
 #
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 from petsc4py import PETSc
@@ -149,21 +153,13 @@ y = mesh.N.y
 # +
 
 if uw.mpi.size == 1:
-    # plot the mesh
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -183,7 +179,7 @@ darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
-darcy.constitutive_model = uw.constitutive_models.DiffusionModel(mesh.dim)
+darcy.constitutive_model = uw.constitutive_models.DiffusionModel
 # -
 
 
@@ -207,10 +203,10 @@ conc = swarm.add_variable(name="C", size=1, proxy_degree=mat.degree)
 swarm.populate(fill_param=4)
 # -
 
-adv_diff = uw.systems.AdvDiffusionSwarm(
-    mesh=mesh, u_Field=mat, V_Field=v_soln, u_Star_fn=conc.sym[0]
+adv_diff = uw.systems.AdvDiffusion(
+    mesh=mesh, u_Field=mat, V_fn=v_soln, #DuDt=conc.sym[0]
 )
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(mesh.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 
 # ### Random material distribution along the interface
 
@@ -242,29 +238,21 @@ with swarm.access(material):
 
 # -
 if uw.mpi.size == 1:
-    # plot the mesh
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
+    
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, mat.sym)
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "ssaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("viz_mesh.vtk")
-    pvmesh = pv.read("viz_mesh.vtk")
-    pvmesh["mat"] = uw.function.evalf(mat.sym[0], mesh.data)
+    
+    points = vis.swarm_to_pv_cloud(swarm)
+    point_cloud = pv.PolyData(points)
 
     with swarm.access(material):
-        points = np.zeros((material.swarm.data.shape[0], 3))
-        points[:, 0] = material.swarm.data[:, 0]
-        points[:, 1] = material.swarm.data[:, 1]
-        point_cloud = pv.PolyData(points)
         point_cloud.point_data["M"] = material.data.copy()
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
 
@@ -331,14 +319,13 @@ adv_diff.add_dirichlet_bc(0.0, "Right")
 # darcy._v_projector.smoothing = 1e24
 # darcy._v_projector.add_dirichlet_bc(0.0, "Left", 0)
 # darcy._v_projector.add_dirichlet_bc(0.0, "Right", 0)
-# + tags=[]
-darcy.solve()
 # -
+darcy.solve()
 
 time = 0
 step = 0
 
-# + tags=[]
+# +
 finish_time = 0.01 * u.year
 
 while time < nd(finish_time):
@@ -395,43 +382,30 @@ while time < nd(finish_time):
 # -
 
 if uw.mpi.size == 1:
-    # plot the mesh
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "ssaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
 
-    vizmesh.vtk("viz_mesh.vtk")
-    pvmesh = pv.read("viz_mesh.vtk")
-
-    pvmesh["mat"] = uw.function.evalf(material.sym[0], vizmesh.data)
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    with mesh.access():
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = v_soln.data[...]
-        arrow_length /= arrow_length.max()
+    pvmesh = vis.mesh_to_pv_mesh(vizmesh)
+    pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+    
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln_ckpt)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym)/vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym).max()
+    
+    points = vis.swarm_to_pv_cloud(swarm)
+    point_cloud = pv.PolyData(points)
 
     with swarm.access(material):
-        points = np.zeros((material.swarm.data.shape[0], 3))
-        points[:, 0] = material.swarm.data[:, 0]
-        points[:, 1] = material.swarm.data[:, 1]
-        point_cloud = pv.PolyData(points)
         point_cloud.point_data["M"] = material.data.copy()
 
-    pl = pv.Plotter()
+
+    pl = pv.Plotter(window_size=(750, 750))
 
     # pl.add_mesh(pvmesh, style="surface", cmap="coolwarm", edge_color="Grey",
     #             show_edges=False, use_transparency=False, opacity=1)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=250, opacity=1)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=250, opacity=1)
 
     pl.add_points(
         point_cloud,

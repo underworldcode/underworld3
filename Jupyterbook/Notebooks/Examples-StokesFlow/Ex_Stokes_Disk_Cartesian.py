@@ -5,19 +5,22 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Cylindrical Stokes (Cartesian formulation)
 #
 # Let the mesh deform to create a free surface. If we iterate on this, then it is almost exactly the same as the free-slip boundary condition (though there are potentially instabilities here).
 #
 # The problem has a constant velocity nullspace in x,y. We eliminate this by fixing the central node in this example, but it does introduce a perturbation to the flow near the centre which is not always stagnant.
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -30,12 +33,13 @@ from underworld3 import function
 import numpy as np
 import sympy
 
+import os
+os.environ["UW_TIMING_ENABLE"] = "1"
+
+# +
+
 free_slip_upper = True
 free_slip_lower = False
-
-import os
-
-os.environ["UW_TIMING_ENABLE"] = "1"
 
 # Define the problem size
 #      1 - ultra low res for automatic checking
@@ -79,8 +83,6 @@ meshball = uw.meshing.Annulus(radiusOuter=r_o,
                               refinement=2,
                               qdegree=5,)
 
-
-
 # +
 # Test that the second one is skipped
 
@@ -95,8 +97,6 @@ maskr = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
 # Create a density structure / buoyancy force
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
-
-import sympy
 
 radius_fn = meshball.CoordinateSystem.xR[0]
 # radius_fn = maskr.sym[0]
@@ -118,15 +118,9 @@ base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
 # +
 # Create Stokes object
 
-stokes = Stokes(
-    meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
-)
-
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(
-    v_soln
-)
+stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
-
 stokes.penalty = 1.0
 
 # There is a null space if there are no fixed bcs, so we'll do this:
@@ -176,12 +170,11 @@ stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = No
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-
-# +
-# stokes._setup_pointwise_functions(verbose=False)
-# stokes._setup_discretisation(verbose=False)
 # -
+
+
+stokes._setup_pointwise_functions(verbose=False)
+stokes._setup_discretisation(verbose=False)
 
 pressure_solver = uw.systems.Projection(meshball, p_cont)
 pressure_solver.uw_function = p_soln.sym[0]
@@ -249,57 +242,34 @@ timing.print_table()
 # +
 # check the mesh if in a notebook / serial
 
-
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 600]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    with meshball.access():
-        pvmesh.point_data["V"] = uw.function.evalf(
-            v_soln.sym.dot(v_soln.sym), meshball.data
-        )
-        pvmesh.point_data["P"] = uw.function.evalf(p_cont.sym[0], meshball.data)
-        pvmesh.point_data["T"] = uw.function.evalf(
-            t_init, meshball.data, coord_sys=meshball.N
-        )
-
-    with meshball.access():
-        usol = stokes.u.data
-
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
-
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-    # -
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_cont.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_init)
+    
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        scalars="T",
-        show_edges=True,
-        use_transparency=False,
-        opacity=0.75,
-    )
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001)
+                pvmesh,
+                cmap="coolwarm",
+                edge_color="Black",
+                scalars="T",
+                show_edges=True,
+                use_transparency=False,
+                opacity=0.75,
+               )
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0001)
     pl.show(cpos="xy")
 # -
-usol_rms = np.sqrt(usol[:, 0] ** 2 + usol[:, 1] ** 2).mean()
-usol_rms
+
+vsol_rms = np.sqrt(velocity_points.point_data["V"][:, 0] ** 2 + velocity_points.point_data["V"][:, 1] ** 2).mean()
+vsol_rms
 
 stokes.dm.ds.view()
 

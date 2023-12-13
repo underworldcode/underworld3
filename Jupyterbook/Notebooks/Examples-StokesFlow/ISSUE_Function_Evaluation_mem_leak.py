@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -118,19 +118,18 @@ stokes = uw.systems.Stokes(
 import sympy
 from sympy import Piecewise
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.bodyforce = sympy.Matrix([0, -density])
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 # free slip.
 # note with petsc we always need to provide a vector of correct cardinality.
-stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Bottom", "Top"], 1
-)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(
-    (0.0, 0.0), ["Left", "Right"], 0
-)  # left/right: components, function, markers
+
+stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
 
 
@@ -171,5 +170,3 @@ for step in range(0, 10):
     swarm.advection(v_soln.sym, delta_t)
     print(f"Memory usage 4.2: {uw.utilities.mem_footprint()} Mb")
 
-
-# -

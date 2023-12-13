@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -17,7 +17,11 @@
 # Simple shear with material defined by particle swarm (based on inclusion model), position, pressure, strain rate etc. Check the implmentation of the Jacobians using various non-linear terms.
 #
 
-# + jupyter={"source_hidden": true} tags=[]
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
+# +
 import petsc4py
 import underworld3 as uw
 import numpy as np
@@ -28,17 +32,17 @@ import vtk
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [1250, 500]
 pv.global_theme.anti_aliasing = "ssaa"
-pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 20.0]
 
 
 # +
-step = 50
+step = 1 #50
 
-basename = "/Users/lmoresi/+Simulations/ShearTest/ShearTestHP_InclusionMu05/shear_band_sw_nonp_0.5"
-# basename = "output/shear_band_sw_nonp_0.5"
+# basename = "/Users/lmoresi/+Simulations/ShearTest/ShearTestHP_InclusionMu05/shear_band_sw_nonp_0.5"
+basename = "output/shear_band_sw_nonp_0.5"
 
 
 # + language="sh"
@@ -69,7 +73,7 @@ strain_rate_inv2_p = uw.discretisation.MeshVariable("eps_p", mesh1, 1, degree=1,
 strain_p = uw.discretisation.MeshVariable("p_strain", mesh1, 1, degree=2, varsymbol=r"varepsilon_p")
 
 strain = uw.swarm.SwarmVariable(
-    "Strain", swarm, num_components=1, 
+    "Strain", swarm, size=1, 
     proxy_degree=1, proxy_continuous=False, 
     varsymbol=r"\varepsilon", dtype=float,
 )
@@ -88,7 +92,7 @@ p_soln.read_from_vertex_checkpoint(f"{basename}.P.{step}.h5", "P")
 strain_rate_inv2_p.read_from_vertex_checkpoint(f"{basename}.eps_p.{step}.h5", "eps_p")
 strain_p.read_from_vertex_checkpoint(f"{basename}.proxy.Strain.{step}.h5", "proxy_Strain")
 
-# + tags=[]
+# +
 mesh1.vtk("tmp_shear_inclusion.vtk")
 pvmesh = pv.read("tmp_shear_inclusion.vtk")
 

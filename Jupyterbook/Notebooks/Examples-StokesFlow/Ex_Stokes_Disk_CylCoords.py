@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -15,24 +15,32 @@
 # # Cylindrical Stokes
 # (In cylindrical coordinates)
 
+# to fix trame issue
+import nest_asyncio
+
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3 import timing
+
 import numpy as np
 import sympy
 
 from IPython.display import display
 
 import nest_asyncio
+
 nest_asyncio.apply()
 
 import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
 
-
+# +
 # Define the problem size
 #      1 - ultra low res for automatic checking
 #      2 - low res problem to play with this notebook
@@ -73,7 +81,7 @@ meshball_xyz_tmp = uw.meshing.Annulus(
     radiusInner=r_i,
     cellSize=res,
     refinement=0,
-    # filename="tmp_meshball.msh"
+    filename="tmp_meshball.msh",
 )
 
 
@@ -89,8 +97,7 @@ rtheta[:, 1] = np.arctan2(xy[:, 1] + 1.0e-16, xy[:, 0] + 1.0e-16)
 rtheta_vec = xy_vec.copy()
 rtheta_vec.array[...] = rtheta.reshape(-1)[...]
 dmplex.setCoordinates(rtheta_vec)
-del meshball_xyz_tmp
-# -
+# del meshball_xyz_tmp
 
 
 meshball = uw.meshing.Mesh(
@@ -243,8 +250,6 @@ with meshball_xyz.access(r_xy):
     )
 
 # +
-from underworld3 import timing
-
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
@@ -252,14 +257,8 @@ timing.print_table()
 # -
 
 
-
-
-
 stokes_xy
 
-from underworld3 import timing
-
-# +
 timing.start()
 
 stokes_xy.petsc_options["snes_monitor"] = None
@@ -268,23 +267,25 @@ stokes_xy.tolerance = 1.0e-3
 if not free_slip_upper:
     stokes_xy.solve(zero_init_guess=True)
 else:
-
     with meshball_xyz.access(v_soln_xy):
         v_soln_xy.data[...] = 0.0
-    
-    for pen in [100,100000]:
 
+    for pen in [100, 100000]:
         print(f"penalty -> {pen}")
-    
+
         stokes_xy.natural_bcs = []
         stokes_xy.essential_bcs = []
         stokes_xy.dm = None
         stokes_xy._is_setup = False
-        
-        stokes_xy.add_essential_bc( [0.,0.], "Lower")  # no slip on the base
-        stokes_xy.add_natural_bc( pen * unit_rvec.dot(v_soln_xy.sym) * unit_rvec.T, "Upper")  
-        
-        stokes_xy.solve(verbose=False, zero_init_guess=False, picard=0, _force_setup=True)
+
+        stokes_xy.add_essential_bc([0.0, 0.0], "Lower")  # no slip on the base
+        stokes_xy.add_natural_bc(
+            pen * unit_rvec.dot(v_soln_xy.sym) * unit_rvec.T, "Upper"
+        )
+
+        stokes_xy.solve(
+            verbose=False, zero_init_guess=False, picard=0, _force_setup=True
+        )
         stokes_xy.petsc_options["snes_type"] = "newtontr"
 
 
@@ -297,9 +298,10 @@ U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 # +
 # Visuals
 
-import underworld3 as uw
-import pyvista as pv
-import underworld3.visualisation
+if uw.mpi.size == 1:
+    import underworld3.visualisation as vis  # use this module for plotting
+    import pyvista as pv
+    import vtk
 
 pl = pv.Plotter(window_size=(1000, 1000))
 
@@ -309,8 +311,12 @@ pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, t_init_
 velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v_soln_xy)
 velocity_points_rt = underworld3.visualisation.meshVariable_to_pv_cloud(v_soln)
 
-velocity_points.point_data["Vxy"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v_soln_xy.sym)
-velocity_points.point_data["Vrt"] = uw.visualisation.vector_fn_to_pv_points(velocity_points_rt, U_xy.T)
+velocity_points.point_data["Vxy"] = uw.visualisation.vector_fn_to_pv_points(
+    velocity_points, v_soln_xy.sym
+)
+velocity_points.point_data["Vrt"] = uw.visualisation.vector_fn_to_pv_points(
+    velocity_points_rt, U_xy.T
+)
 
 pl.add_mesh(
     pvmesh,
@@ -322,8 +328,20 @@ pl.add_mesh(
     opacity=1.0,
 )
 
-pl.add_arrows(velocity_points.points, velocity_points.point_data["Vxy"], mag=1.0e-4, opacity=0.75, color="Black")
-pl.add_arrows(velocity_points.points, velocity_points.point_data["Vrt"], mag=1.0e-4, opacity=0.75, color="Green" )
+pl.add_arrows(
+    velocity_points.points,
+    velocity_points.point_data["Vxy"],
+    mag=1.0e-4,
+    opacity=0.75,
+    color="Black",
+)
+pl.add_arrows(
+    velocity_points.points,
+    velocity_points.point_data["Vrt"],
+    mag=1.0e-4,
+    opacity=0.75,
+    color="Green",
+)
 
 pl.camera.SetPosition(0.75, 0.2, 1.5)
 pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
@@ -332,5 +350,3 @@ pl.camera.SetClippingRange(1.0, 8.0)
 pl.show()
 
 # -
-
-

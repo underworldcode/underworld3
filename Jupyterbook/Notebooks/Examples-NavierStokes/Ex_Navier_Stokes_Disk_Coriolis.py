@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -14,6 +14,10 @@
 
 
 # # Cylindrical Stokes with Coriolis term (out of plane)
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -174,34 +178,20 @@ swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
 
 # +
 # check the mesh if in a notebook / serial
-import pyvista as pv
-
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [1250, 1250]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = True
-
-pl = pv.Plotter()
-
 
 def plot_V_mesh(filename):
     if uw.mpi.size == 1:
-        pvmesh = pv.read("tmp_CoriolisDisk.msh")
 
-        with meshball.access():
-            pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
+        import pyvista as pv
+        import underworld3.visualisation as vis
 
-        with meshball.access():
-            usol = navier_stokes.u.data  # - v_inertial.data
+        pvmesh = vis.mesh_to_pv_mesh(meshball)
+        pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
 
-        arrow_loc = np.zeros((navier_stokes.u.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = navier_stokes.u.coords[...]
-
-        arrow_length = np.zeros((navier_stokes.u.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        pl.clear()
+        velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
+        
+        pl = pv.Plotter(window_size=(1000, 750))
         pl.camera.SetPosition(0.0001, 0.0001, 4.0)
 
         # pl.add_mesh(pvmesh,'Black', 'wireframe')
@@ -213,7 +203,7 @@ def plot_V_mesh(filename):
             use_transparency=False,
             opacity=0.5,
         )
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.2)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.2)
 
         pl.screenshot(
             filename="{}.png".format(filename),
@@ -284,36 +274,19 @@ for step in range(0, 250):
     ts += 1
 
 
-# +
 # check the mesh if in a notebook / serial
-
-
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1280, 640]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
 
-    pvmesh = meshball.mesh2pyvista()
-
-    with meshball.access():
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshball.data)
-
-    with meshball.access():
-        usol = navier_stokes.u.data  # - v_inertial.data
-
-    arrow_loc = np.zeros((navier_stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = navier_stokes.u.coords[...]
-
-    arrow_length = np.zeros((navier_stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
+    velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
+    
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
     pl.add_mesh(
@@ -327,7 +300,6 @@ if uw.mpi.size == 1:
     pl.add_arrows(arrow_loc, arrow_length, mag=0.2)
 
     pl.show(cpos="xy")
-# -
 
 
 pl.camera.GetClippingRange()

@@ -5,13 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
 
 # Stokes flow in a Spherical Domain
 #
@@ -62,6 +61,10 @@
 # $$
 
 # ## Computational script in python
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -150,15 +153,17 @@ meshball.dm.view()
 
 stokes = uw.systems.Stokes(
     meshball,
-    constitutive_model_class=uw.constitutive_models.ViscousFlowModel,
     verbose=False,
     solver_name="stokes",
 )
 
 
-v_soln = stokes._u
-p_soln = stokes._p
+v_soln = stokes.Unknowns.u
+p_soln = stokes.Unknowns.p
 
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model.Parameters.viscosity = 1
+stokes.penalty = 0.0
 
 # +
 # Create a density structure / buoyancy force
@@ -211,11 +216,6 @@ with meshball.access(t_soln):
     t_soln.data[...] = uw.function.evaluate(
         t_forcing_fn, t_soln.coords, meshball.N
     ).reshape(-1, 1)
-
-
-# -
-
-
 
 
 # +
@@ -304,11 +304,6 @@ timing.reset()
 timing.start()
 
 stokes.solve(zero_init_guess=True)
-# -
-
-
-
-
 # +
 
 # Note: we should remove the rigid body rotation nullspace
@@ -340,8 +335,6 @@ print(
 # -
 timing.print_table()
 
-
-
 # +
 # savefile = "output/stokesSphere_orig.h5"
 # meshball.save(savefile)
@@ -361,13 +354,14 @@ timing.print_table()
 if uw.mpi.size == 1:
 
     import pyvista as pv
+    import underworld3.visualisation as vis
 
-    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
-    pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-    pvmesh.point_data["P"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
     clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
 

@@ -1,3 +1,7 @@
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc
@@ -67,9 +71,14 @@ T.gradient()
 projector = uw.systems.Projection(bubblemesh, Tnode)
 projector.uw_function = T.sym[0]
 projector.smoothing = 1.0e-6
+
 # Test if bc's work
-projector.add_dirichlet_bc(10.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
-projector.add_dirichlet_bc(-10.0,["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
+projector.add_dirichlet_bc(10.0, "PoleAxisN", 0)
+projector.add_dirichlet_bc(10.0, "PolePtNo", 0)
+projector.add_dirichlet_bc(10.0, "PolePtNi", 0)
+projector.add_dirichlet_bc(-10.0, "PoleAxisS", 0)
+projector.add_dirichlet_bc(-10.0, "PolePtSo", 0)
+projector.add_dirichlet_bc(-10.0, "PolePtSi", 0)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
@@ -83,8 +92,13 @@ projector.solve()
 projector = uw.systems.Projection(bubblemesh, Tdiff)
 projector.uw_function = slope # sympy.diff(T.sym[0], lon)        
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
-projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
+
+projector.add_dirichlet_bc(0.0, "PoleAxisN", 0)
+projector.add_dirichlet_bc(0.0, "PolePtNo", 0)
+projector.add_dirichlet_bc(0.0, "PolePtNi", 0)
+projector.add_dirichlet_bc(0.0, "PoleAxisS", 0)
+projector.add_dirichlet_bc(0.0, "PolePtSo", 0)
+projector.add_dirichlet_bc(0.0, "PolePtSi", 0)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
@@ -94,8 +108,13 @@ projector.solve()
 projector = uw.systems.Projection(bubblemesh, Tdiffc)
 projector.uw_function = Tdiff.sym[0] # sympy.diff(T.sym[0], lon)        
 projector.smoothing = 1.0e-6
-projector.add_dirichlet_bc(0.0, ["PoleAxisN", "PolePtNo", "PolePtNi"], 0)
-projector.add_dirichlet_bc(0.0, ["PoleAxisS", "PolePtSo", "PolePtSi"], 0)
+
+projector.add_dirichlet_bc(0.0, "PoleAxisN", 0)
+projector.add_dirichlet_bc(0.0, "PolePtNo", 0)
+projector.add_dirichlet_bc(0.0, "PolePtNi", 0)
+projector.add_dirichlet_bc(0.0, "PoleAxisS", 0)
+projector.add_dirichlet_bc(0.0, "PolePtSo", 0)
+projector.add_dirichlet_bc(0.0, "PolePtSi", 0)
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
@@ -105,42 +124,27 @@ projector.solve()
 
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    import underworld3.visualisation as vis
  
+    # pvmesh = vis.mesh_to_pv_mesh(bubblemesh)
     pvmesh = pv.read("tmpWedge.msh")
-   
-    with bubblemesh.access():
-        pvmesh.point_data["nT"] = Tnode.data.copy()
-        pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.data)
-        pvmesh.point_data["dTc"] = Tdiffc.data.copy()
+    pvmesh.point_data["nT"] = vis.scalar_fn_to_pv_points(pvmesh, Tnode.sym)
+    pvmesh.point_data["dT"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiff.sym)
+    pvmesh.point_data["dTc"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiffc.sym)
 
-# +
-pl = pv.Plotter()  
-
+pl = pv.Plotter(window_size=(750, 750))  
 clipped = pvmesh.clip(normal='x', crinkle=True)
-
 pl.add_mesh(
-    clipped,
-    show_edges=True,
-    scalars="dT",
-    cmap="RdYlBu",
-    opacity=1.0,  
-    # clim=[-6,6]
-)
-
+            clipped,
+            show_edges=True,
+            scalars="dT",
+            cmap="RdYlBu",
+            opacity=1.0,  
+            # clim=[-6,6]
+        )
 pl.add_axes(labels_off=False)
-
-
 pl.show(cpos="xy")
 
 # +

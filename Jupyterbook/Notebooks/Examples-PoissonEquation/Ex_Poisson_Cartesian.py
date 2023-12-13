@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -19,6 +19,10 @@
 #
 # ## Generic scalar solver class
 
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 from petsc4py import PETSc
@@ -64,7 +68,7 @@ poisson = uw.systems.Poisson(mesh, u_Field=phi, solver_name="diffusion")
 
 # Constitutive law (diffusivity)
 
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(phi)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 
@@ -124,24 +128,17 @@ with mesh.access():
 # Validate
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("ignore_mesh.vtk")
-    pvmesh = pv.read("ignore_mesh.vtk")
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
     pvmesh.point_data["T"] = mesh_analytic_soln
     pvmesh.point_data["T2"] = mesh_numerical_soln
     pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
 
-    sargs = dict(interactive=True)  # doesn't appear to work :(
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -151,7 +148,7 @@ if uw.mpi.size == 1:
         scalars="DT",
         use_transparency=False,
         opacity=0.5,
-        scalar_bar_args=sargs,
+        # scalar_bar_args=sargs,
     )
 
     pl.camera_position = "xy"
@@ -179,7 +176,7 @@ orig_soln_mesh = uw.function.evalf(phi.sym[0], mesh.data)
 # %%
 poisson.solve(zero_init_guess=True, _force_setup=True)
 
-print(poisson._u.stats())
+print(poisson.Unknowns.u.stats())
 
 # Simply confirm results are different
 
@@ -193,24 +190,18 @@ mesh._evaluation_hash = None
 # Visual validation
 
 if uw.mpi.size == 1:
-    import numpy as np
+   
     import pyvista as pv
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("ignore_mesh.vtk")
-    pvmesh2 = pv.read("ignore_mesh.vtk")
-
+    import underworld3.visualisation as vis
+   
+    pvmesh2 = vis.mesh_to_pv_mesh(mesh)
+    
     pvmesh2.point_data["T"] = uw.function.evaluate(phi.sym[0], mesh.data)
     pvmesh2.point_data["Te"] = uw.function.evalf(phi.sym[0], mesh.data)
     pvmesh2.point_data["dT"] = pvmesh2.point_data["T"] - pvmesh.point_data["T"]
     pvmesh2.point_data["dTe"] = pvmesh2.point_data["T"] - pvmesh2.point_data["Te"]
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh2,
@@ -220,7 +211,7 @@ if uw.mpi.size == 1:
         scalars="dT",
         use_transparency=False,
         opacity=0.5,
-        scalar_bar_args=sargs,
+        # scalar_bar_args=sargs,
     )
 
     pl.camera_position = "xy"
@@ -246,7 +237,7 @@ display(poisson.f)
 # Constitutive law (diffusivity)
 # Linear solver first
 
-poisson.constitutive_model = uw.constitutive_models.DiffusionModel(poisson._u)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = 1
 
 poisson.solve()
@@ -272,21 +263,14 @@ poisson.solve(zero_init_guess=False)
 # Validate
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
+    import underworld3.visualisation as vis
+    
+    pvmesh2 = vis.mesh_to_pv_mesh(mesh)
+    pvmesh2.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh2, phi.sym)
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("ignore_mesh.vtk")
-    pvmesh2 = pv.read("ignore_mesh.vtk")
-
-    pvmesh2.point_data["T"] = uw.function.evalf(phi.sym[0], mesh.data)
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh2,
@@ -296,7 +280,7 @@ if uw.mpi.size == 1:
         scalars="T",
         use_transparency=False,
         opacity=0.5,
-        scalar_bar_args=sargs,
+        # scalar_bar_args=sargs,
     )
 
     pl.camera_position = "xy"
@@ -331,22 +315,16 @@ sympy.diff(scalar.sym[0], mesh.X[1])
 # Validate
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
+    import underworld3.visualisation as vis
+    
+    pvmesh2 = vis.mesh_to_pv_mesh(mesh)
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh2.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh2, scalar.sym)
+    pvmesh2.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh2, phi.sym)
 
-    mesh.vtk("ignore_mesh.vtk")
-    pvmesh2 = pv.read("ignore_mesh.vtk")
-
-    pvmesh2.point_data["K"] = uw.function.evalf(scalar.sym[0], mesh.data)
-    pvmesh2.point_data["T"] = uw.function.evalf(phi.sym[0], mesh.data)
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh2,
@@ -356,7 +334,7 @@ if uw.mpi.size == 1:
         scalars="T",
         use_transparency=False,
         opacity=0.5,
-        scalar_bar_args=sargs,
+        # scalar_bar_args=sargs,
     )
 
     pl.camera_position = "xy"
@@ -367,3 +345,5 @@ if uw.mpi.size == 1:
 poisson.snes.view()
 
 timing.print_table()
+
+

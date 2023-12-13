@@ -1,5 +1,9 @@
 # # Cylindrical Stokes
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
 import petsc4py
 from petsc4py import PETSc

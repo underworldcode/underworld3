@@ -139,42 +139,22 @@ with meshball.access(t_0, t_soln):
 # -
 def plot_T_mesh(filename):
     if uw.mpi.size == 1:
-        import numpy as np
+    
         import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.anti_aliasing = "msaa"
-        pv.global_theme.jupyter_backend = "trame"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-        meshball.vtk("tmp_ball.vtk")
-        pvmesh = pv.read("tmp_ball.vtk")
-
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
+        import underworld3.visualisation as vis
+        
+        pvmesh = vis.mesh_to_pv_mesh(meshball)
+        points = vis.meshVariable_to_pv_cloud(t_soln)
+        points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
+    
         point_cloud = pv.PolyData(points)
+    
+        velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+        
+        pl = pv.Plotter(window_size=(1000, 750))
 
-        with meshball.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
-        with meshball.access():
-            usol = v_soln.data.copy()
-
-        arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v_soln.coords[...]
-
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        pl = pv.Plotter()
-
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0001, opacity=0.75)
 
         pl.add_points(
             point_cloud,
@@ -220,42 +200,22 @@ adv_diff.solve(timestep=delta_t, verbose=False, _force_setup=False)
 
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "trame"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 10.0]
-
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    points = vis.meshVariable_to_pv_cloud(t_soln)
+    points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
 
     point_cloud = pv.PolyData(points)
 
-    with meshball.access():
-        point_cloud.point_data["T"] = t_soln.data.copy()
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    
+    pl = pv.Plotter(window_size=(1000, 750))
 
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01, opacity=0.75)
     pl.add_points(
         point_cloud,
         cmap="coolwarm",
@@ -303,49 +263,28 @@ for step in range(0, 10):
 
 t_soln.stats()
 
-
-
 # +
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "client"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
-
-    points = np.zeros((t_soln.coords.shape[0], 3))
-    points[:, 0] = t_soln.coords[:, 0]
-    points[:, 1] = t_soln.coords[:, 1]
+    
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+    points = vis.meshVariable_to_pv_cloud(t_soln)
+    points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
+    points.point_data["dT"] = vis.scalar_fn_to_pv_points(points, t_soln.sym) - vis.scalar_fn_to_pv_points(points, t_0.sym)
 
     point_cloud = pv.PolyData(points)
 
-    with meshball.access():
-        point_cloud.point_data["T"] = t_soln.data
-        point_cloud.point_data["dT"] = t_soln.data - t_0.data
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    
+    pl = pv.Plotter(window_size=(1000, 750))
 
-    with meshball.access():
-        usol = v_soln.data.copy()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0001, opacity=0.75)
 
     pl.add_points(
         point_cloud,
