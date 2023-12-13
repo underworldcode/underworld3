@@ -123,10 +123,8 @@ class Constitutive_Model(uw_object):
     @property
     def grad_u(self):
         mesh = self.Unknowns.u.mesh
-
-        return mesh.vector.gradient(self.Unknowns.u.sym)
-
-        # return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
+        # return mesh.vector.gradient(self.Unknowns.u.sym)
+        return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
     def DuDt(self):
@@ -194,7 +192,7 @@ class Constitutive_Model(uw_object):
         may be required to evaluate the flux.
         """
 
-        ddu = self.me
+        ddu = self.grad_u
 
         return self._q(ddu)
 

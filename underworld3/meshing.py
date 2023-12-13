@@ -1289,10 +1289,13 @@ def CubedSphere(
 
         gmsh.model.geo.synchronize()
 
-        gmsh.model.addPhysicalGroup(2, [1, 34, 61, 88, 115, 137], boundaries["Upper"])
-        gmsh.model.setPhysicalName(2, boundaries["Upper"], "Upper")
-        gmsh.model.addPhysicalGroup(2, [2, 14, 41, 68, 95, 117], boundaries["Lower"])
-        gmsh.model.setPhysicalName(2, boundaries["Lower"], "Lower")
+        gmsh.model.addPhysicalGroup(
+            2, [1, 34, 61, 88, 115, 137], boundaries.Upper.value
+        )
+        gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
+
+        gmsh.model.addPhysicalGroup(2, [2, 14, 41, 68, 95, 117], boundaries.Lower.value)
+        gmsh.model.setPhysicalName(2, boundaries.Lower.value, "Lower")
 
         gmsh.model.addPhysicalGroup(3, [1, 13, 40, 67, 94, 116], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
