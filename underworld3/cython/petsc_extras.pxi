@@ -52,12 +52,18 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)
+    
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
+    
     PetscErrorCode PetscDSSetBdJacobian( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
     PetscErrorCode PetscDSSetBdJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
     PetscErrorCode PetscDSSetBdResidual( PetscDS, PetscInt, PetscDSBdResidualFn, PetscDSBdResidualFn )
+    
+    PetscErrorCode PetscDSAddBdJacobian( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
+    PetscErrorCode PetscDSAddBdJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
+    PetscErrorCode PetscDSAddBdResidual( PetscDS, PetscInt, PetscDSBdResidualFn, PetscDSBdResidualFn )
 
     PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
     PetscErrorCode DMGetLabel(PetscDM dm, const char name[], PetscDMLabel *label)

@@ -4,10 +4,10 @@
 def mesh_to_pv_mesh(mesh):
     """Initialise pyvista engine from existing mesh"""
 
-    # Required in notebooks
-    import nest_asyncio
+    # # Required in notebooks
+    # import nest_asyncio
 
-    nest_asyncio.apply()
+    # nest_asyncio.apply()
 
     import os
     import tempfile

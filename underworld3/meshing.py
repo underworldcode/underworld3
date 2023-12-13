@@ -43,13 +43,35 @@ def UnstructuredSimplexBox(
 
     """
 
-    class boundaries(Enum):
+    class boundaries_2D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+
+    class boundaries_3D(Enum):
         Bottom = 11
         Top = 12
         Right = 13
         Left = 14
         Front = 15
         Back = 16
+
+    # Enum is not quite natural but matches the above
+
+    class boundary_normals_2D(Enum):
+        Bottom = sympy.Matrix([0, 1])
+        Top = sympy.Matrix([0, 1])
+        Right = sympy.Matrix([1, 0])
+        Left = sympy.Matrix([1, 0])
+
+    class boundary_normals_3D(Enum):
+        Bottom = sympy.Matrix([0, 0, 1])
+        Top = sympy.Matrix([0, 0, 1])
+        Right = sympy.Matrix([1, 0, 0])
+        Left = sympy.Matrix([1, 0, 0])
+        Front = sympy.Matrix([0, 1, 0])
+        Back = sympy.Matrix([0, 1, 0])
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -70,6 +92,9 @@ def UnstructuredSimplexBox(
         dim = len(minCoords)
 
         if dim == 2:
+            boundaries = boundaries_2D
+            boundary_normals = boundary_normals_2D
+
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -107,6 +132,9 @@ def UnstructuredSimplexBox(
                 )
 
         else:
+            boundaries = boundaries_3D
+            boundary_normals = boundary_normals_3D
+
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
 
@@ -177,6 +205,7 @@ def UnstructuredSimplexBox(
         degree=degree,
         qdegree=qdegree,
         boundaries=boundaries,
+        boundary_normals=boundary_normals,
         coordinate_system_type=CoordinateSystemType.CARTESIAN,
         useMultipleTags=True,
         useRegions=True,
@@ -220,13 +249,35 @@ def StructuredQuadBox(
 
     # boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
 
-    class boundaries(Enum):
+    class boundaries_2D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+
+    class boundaries_3D(Enum):
         Bottom = 11
         Top = 12
         Right = 13
         Left = 14
         Front = 15
         Back = 16
+
+    # Enum is not quite natural but matches the above
+
+    class boundary_normals_2D(Enum):
+        Bottom = sympy.Matrix([0, 1])
+        Top = sympy.Matrix([0, 1])
+        Right = sympy.Matrix([1, 0])
+        Left = sympy.Matrix([1, 0])
+
+    class boundary_normals_3D(Enum):
+        Bottom = sympy.Matrix([0, 0, 1])
+        Top = sympy.Matrix([0, 0, 1])
+        Right = sympy.Matrix([1, 0, 0])
+        Left = sympy.Matrix([1, 0, 0])
+        Front = sympy.Matrix([0, 1, 0])
+        Back = sympy.Matrix([0, 1, 0])
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -247,6 +298,9 @@ def StructuredQuadBox(
         dim = len(minCoords)
 
         if dim == 2:
+            boundaries = boundaries_2D
+            boundary_normals = boundary_normals_2D
+
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -298,6 +352,9 @@ def StructuredQuadBox(
             gmsh.model.mesh.set_recombine(2, surface)
 
         else:
+            boundaries = boundaries_3D
+            boundary_normals = boundary_normals_3D
+
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
 
@@ -437,6 +494,7 @@ def StructuredQuadBox(
         degree=degree,
         qdegree=qdegree,
         boundaries=boundaries,
+        boundary_normals=boundary_normals,
         coordinate_system_type=CoordinateSystemType.CARTESIAN,
         useMultipleTags=True,
         useRegions=True,
@@ -459,9 +517,6 @@ def SphericalShell(
     refinement=None,
     verbosity=0,
 ):
-    # boundaries = {"Lower": 11, "Upper": 12}
-    # vertices = {"Centre": 1}
-
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -588,9 +643,15 @@ def SphericalShell(
         useRegions=True,
         markVertices=True,
         boundaries=boundaries,
+        boundary_normals=None,
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
     )
+
+    class boundary_normals(Enum):
+        Lower = 11
+        Upper = 12
+        Centre = 1
 
     return new_mesh
 
@@ -741,8 +802,22 @@ def QuarterAnnulus(
         useRegions=True,
         markVertices=True,
         boundaries=boundaries,
+        boundary_normals=None,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
     )
+
+    # add boundary normal information to the new mesh
+    # this is done now because it requires the coordinate system to be
+    # instantiated already (could/should this be done before the mesh is constructed ?)
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Left = new_mesh.CoordinateSystem.unit_e_1
+        Right = new_mesh.CoordinateSystem.unit_e_1
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
 
     return new_mesh
 
@@ -899,6 +974,13 @@ def Annulus(
         return_coords_to_bounds=annulus_return_coords_to_bounds,
     )
 
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
+
     return new_mesh
 
 
@@ -920,9 +1002,6 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
-
-    # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
-    # vertices = {"Centre": 10}
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1019,6 +1098,58 @@ def AnnulusInternalBoundary(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    ## This is the same as the simple annulus
+    def annulus_internal_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
+    ## This has an additional step to move the inner boundary
+    def annulus_internal_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+        r_int = radiusInternal
+
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 2)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        internalIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Internal"
+            )
+        )
+
+        coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -1027,8 +1158,19 @@ def AnnulusInternalBoundary(
         useRegions=True,
         markVertices=True,
         boundaries=boundaries,
+        boundary_normals=None,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        refinement_callback=annulus_internal_mesh_refinement_callback,
+        return_coords_to_bounds=annulus_internal_return_coords_to_bounds,
     )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Internal = new_mesh.CoordinateSystem.unit_e_0
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
 
     return new_mesh
 
@@ -1051,7 +1193,9 @@ def CubedSphere(
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
     The number of elements is the edge of each cube"""
 
-    boundaries = {"Lower": 1, "Upper": 2}
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -1213,10 +1357,18 @@ def CubedSphere(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
     )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+
+    new_mesh.boundary_normals = boundary_normals
 
     return new_mesh
 
@@ -1380,6 +1532,9 @@ def SegmentedSphericalSurface2D(
     # )
 
     return new_mesh
+
+
+## THIS IS OUT OF DATE !!
 
 
 @timing.routine_timer_decorator

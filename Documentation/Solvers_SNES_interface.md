@@ -1,26 +1,46 @@
+---
+title: "Underworld 3: Solvers"
+keywords: [underworld3, sympy, PETSc, SNES]
+authors: 
+  - name: Underworld Team
+exports:
+  - format: pdf
+    template: lapreprint
+    theme_color: blue
+---
+
+# Introduction to solvers in Underworld3 
+
+This will deal with the pointwise forms, sympy and that sort of thing and talks about the SNES interfaces
+
+Implementations are in the equation systems section
+
+
 # PETSc pointwise functions and PDE solvers
 
-As we saw in [the Finite Element Pages], the finite element method provides a very general way to approach the numerical solution of a very wide variety of problems in continuum mechanics using a standardised, matrix-based formulation and with considerable flexibility in the choice of discretisation, mesh geometry, and the ability to deal very naturally with jumps in material properties. 
+Tthe finite element method provides a very general way to approach the numerical solution of a very wide variety of problems in continuum mechanics using a standardised, matrix-based formulation and with considerable flexibility in the choice of discretisation, mesh geometry, and the ability to deal very naturally with jumps in material properties. 
 
-However, the FEM is based upon a variational, "weak" form of the governing equations of any problem while most publications outline the strong form of any problem and this can make it difficult for anyone without a strong mathematical background to translate quickly from publication to a new model.
+However, the FEM is based upon a variational, "weak" form of the governing equations of any problem while most publications outline the strong form of any problem and it is not always trivial to 
+translate quickly from publication to a new model.
 
 PETSc provides a mechanism to automatically generate a finite element weak form from the strong (point-wise) form of the governing equations. This takes the form of a template equation and, in the case of non-linear problems, a template for the corresponding Jacobian derivatives. 
 
 The PETSc strong-form interface asks the user to provide pre-compiled functions with a pre-defined pattern of arguments relating known nodal-point variables, shape-functions and derivatives at any point in the domain.  If the strong form is written 
 
-$$ \mathbf{F}(\mathbf{u}) \sim \nabla.\mathbf{f}_1(u, \nabla u) - f_0 (u, \nabla u) = 0 $$ 
+$$
+\boldsymbol{\cal{F}}(\mathbf{u}) \sim \color{Black}{\nabla \cdot \mathbf{f}_1 (u, \nabla u)} - \color{Black}{{f_0} (u, \nabla u)} = 0
+$$
 
-Where the $f_0$ term, generally speaking, represents the forces and $f_1$ comprises flux terms.
+Where the ${\color{Black} {f_0}}$ term, generally speaking, represents the forces and $\color{Black}\mathbf{f}_1$ comprises flux-like terms.
+
 Then a corresponding weak form is 
 
-$$ \phi^T \mathbf{F}(\mathbf{u}) \sim \int_\Omega \phi \cdot f_0 \left(u, \nabla u \right) + 
-                                                   \nabla \phi \mathbf{f}_1 \left(u, \nabla u \right) = 0 $$
+$$ \phi^T \mathbf{\cal F}(\mathbf{u}) \sim \int_\Omega \phi \cdot {\color{Black} {f}_0 \left(u, \nabla u \right)} + 
+\nabla \phi \; {\color{Black}\mathbf{f}_1 \left(u, \nabla u \right)} = 0 $$
 
+The discrete form of this equation has some obvious similarities to the standard finite element matrix form except that the functions $\color{Maroon} \mathbf{f}$ and $\mathbf{f}_1$ are not directly expressed in terms of the basis function matrices: 
 
-The discrete form of this equation has some obvious similarities to the standard finite element matrix form except that the functions $f_0$ and $\mathbf{f}_1$ are not directly expressed in terms of the basis function matrices: 
-
-$$ \cal{F}(\cal{u}) \sim \sum_e \epsilon_e^T \left[ B^T W f_0(u^q, \nabla u^q) + 
-                                                    \sum_k D_k^T W \mathbf{f}_1^k (u^q, \nabla u^q) \right] = 0 
+$$ \cal{F}(\cal{u}) \sim \sum_e \epsilon_e^T \left[ B^T W f_0(u^q, \nabla u^q) + \sum_k D_k^T W \mathbf{f}_1^k (u^q, \nabla u^q) \right] = 0 
 $$
 
 where $q$ represents a set of quadrature points, $W$ is a matrix of weights and $B$, $D$ are the usual basis function matrices but here evaluated at the quadrature points. $\epsilon$ restricts the terms to the element. See {cite}`knepleyAchievingHighPerformance2013` for details.
@@ -48,21 +68,23 @@ $$ \cal{F'}(\cal{u}) \sim \sum_e \epsilon_e^T
                 \end{array}\right]
 $$
 
-This formulation greatly simplifies writing optimal code as the user sets up a problem without touching the bulk of the implementation. The only difficulty is ensuring that the Jacobians are derived consistently and correctly. As the Jacobians need to be calculated and implemented as separate functions this introduces a potential point of failure. 
+This formulation greatly simplifies writing bug-free and efficient code as the user sets up a problem without touching the bulk of the implementation. 
+
+The only real difficulty is ensuring that the Jacobians are derived consistently and correctly in cases where the constitutive models are complicated. As the Jacobians need to be calculated and implemented as separate functions this introduces a potential point of failure. 
 
 In `underworld`, we provide a fully symbolic approach to specifying the strong form terms, $f_0$ and $\mathbf{f}_1$ using the `sympy` symbolic algebra python package. `sympy` is also able to differentiate
 $f_0$ and $\mathbf{f}_1$ to obtain the relevant Jacobian matrices in symbolic form. We also take
-advantage of `sympy`s automatic code generation capabilities to compile functions that match 
-the PETSc templates. 
+advantage of `sympy`s automatic code generation capabilities to compile functions that match the PETSc templates. 
 
 This provides a very natural mapping between the formulation above and the `sympy` python code.
 
 ```python
 
-        # X and U are sympy position vector, unknown vector 
-        # that may include mesh variables 
+        # X and U are sympy (symbolic) position vector, 
+        # and the meshVariable corresponding to the unknowns 
+        # respectively
  
-        U_grad = sympy.derive_by_array(U, X)
+        grad_U = sympy.derive_by_array(U, X)
 
         F0 = f
         F1 = kappa * U_grad
@@ -70,9 +92,9 @@ This provides a very natural mapping between the formulation above and the `symp
         # Jacobians are 
 
         J_00 = sympy.derive_by_array(F0, U)
-        J_01 = sympy.derive_by_array(F0, U_grad)
+        J_01 = sympy.derive_by_array(F0, grad_U)
         J_10 = sympy.derive_by_array(F1, U)
-        J_11 = sympy.derive_by_array(F1, U_grad)
+        J_11 = sympy.derive_by_array(F1, grad_U)
 
         # Pass F0, F1, J_xx to sympy code generation routines
 
@@ -80,19 +102,26 @@ This provides a very natural mapping between the formulation above and the `symp
 
 ```
 
-Note: some re-indexing may be necessary to interface between `sympy` and PETSc 
-especially for vector problems.
-
 Note: underworld provides a translation between mesh variables and their `sympy`
 symbolic representation on the user-facing side that also needs to translate 
 to PETSc data structures in the compiled code. 
 
-## Underworld Solver Classes
+## Underworld Base Solver Classes
 
-We provide 3 base classes to build solvers. These are a scalar SNES solver, 
+We provide 3 base classes that are used to build high level solvers for systems of equations. 
+
+
+These are a scalar SNES solver, 
 a vector SNES solver and a Vector SNES saddle point solver (constrained vector problem).
 These are bare-bones classes that implement the pointwise function / sympy approach that
 can then be used to build solvers for many common situations. 
+
+
+EXPAND on these
+
+
+
+
 
 A blank slate is a very scary thing and so we provide templates for some common equations
 and examples to show how these can be extended. 

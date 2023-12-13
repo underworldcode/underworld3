@@ -124,7 +124,9 @@ class Constitutive_Model(uw_object):
     def grad_u(self):
         mesh = self.Unknowns.u.mesh
 
-        return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
+        return mesh.vector.gradient(self.Unknowns.u.sym)
+
+        # return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
     def DuDt(self):
@@ -192,7 +194,7 @@ class Constitutive_Model(uw_object):
         may be required to evaluate the flux.
         """
 
-        ddu = self.grad_u
+        ddu = self.me
 
         return self._q(ddu)
 
@@ -366,10 +368,12 @@ class ViscousFlowModel(Constitutive_Model):
     @property
     def grad_u(self):
         mesh = self.Unknowns.u.mesh
-        ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
-        edot = (ddu + ddu.T) / 2
 
-        return edot
+        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
+
+        # ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
+        # edot = (ddu + ddu.T) / 2
+        # return edot
 
     def _build_c_tensor(self):
         """For this constitutive law, we expect just a viscosity function"""

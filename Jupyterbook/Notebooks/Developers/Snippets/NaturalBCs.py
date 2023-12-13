@@ -65,14 +65,8 @@ I = uw.maths.Integral(mesh, surface_fn)
 norm = I.evaluate()
 
 
-norm
-
-# +
-# uw.function.evalf(surface_fn, np.array([[0.0,0.9]]))
-# -
-
 stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(u)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1
 
 if mesh.dim == 2:
@@ -164,7 +158,7 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
     pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     mesh.vtk("tmp_mesh.vtk")
@@ -218,6 +212,6 @@ if uw.mpi.size == 1:
 
 V.coords
 
-stokes.natural_bcs[0].fns["uu_G0"]
+
 
 # #####

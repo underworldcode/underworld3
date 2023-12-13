@@ -72,7 +72,7 @@ stokes_f = Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes_fixed"
 )
 
-stokes_f.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes_f.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes_f.constitutive_model.material_properties = (
     stokes_f.constitutive_model.Parameters(viscosity=1)
 )

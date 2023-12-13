@@ -68,7 +68,6 @@ class CoordinateSystem:
         mesh,
         system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN,
     ):
-
         self.mesh = mesh
         self.coordinate_type = system
 
@@ -422,6 +421,13 @@ class CoordinateSystem:
     def unit_k(self) -> sympy.Matrix:
         if self.mesh.dim == 3:
             return self._xRotN[2, :]
+        else:
+            return None
+
+    # Should validate on dim
+    def unit_ijk(self, dirn) -> sympy.Matrix:
+        if dirn <= self.mesh.dim:
+            return self._xRotN[dirn, :]
         else:
             return None
 

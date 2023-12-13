@@ -135,6 +135,7 @@ class Mesh(Stateful, uw_object):
         refinement_callback=None,
         return_coords_to_bounds=None,
         boundaries=None,
+        boundary_normals=None,
         name=None,
         *args,
         **kwargs,
@@ -180,6 +181,7 @@ class Mesh(Stateful, uw_object):
 
         self.filename = filename
         self.boundaries = boundaries
+        self.boundary_normals = boundary_normals
 
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
@@ -266,7 +268,7 @@ class Mesh(Stateful, uw_object):
         except:
             self.isSimplex = simplex
 
-        #self._vars = weakref.WeakValueDictionary()
+        # self._vars = weakref.WeakValueDictionary()
         self._vars = {}
         self._block_vars = {}
 
@@ -394,7 +396,7 @@ class Mesh(Stateful, uw_object):
             PETSc.COMM_WORLD,
         )
 
-        if PETSc.Sys.getVersion() < (3,20,1): 
+        if PETSc.Sys.getVersion() < (3, 20, 1):
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
@@ -1557,6 +1559,19 @@ class _MeshVariable(Stateful, uw_object):
         self._setup_ds()
 
         return
+
+    def clone(self, name, varsymbol):
+        newMeshVariable = _MeshVariable(
+            varname=name,
+            mesh=self.mesh,
+            size=self.shape,
+            vtype=self.vtype,
+            degree=self.degree,
+            continuous=self.continuous,
+            varsymbol=varsymbol,
+        )
+
+        return newMeshVariable
 
     def __getitem__(self, indices):
         if not isinstance(indices, tuple):

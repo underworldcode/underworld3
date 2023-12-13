@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.4
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -99,8 +99,7 @@ nodal_vorticity_from_v.smoothing = 0.0
 # Constant visc
 
 
-navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v_soln)
-
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 navier_stokes.constitutive_model.Parameters.viscosity = 1.0
 
 
@@ -129,191 +128,83 @@ nodal_vorticity_from_v.solve()
 
 
 # +
-# check the mesh if in a notebook / serial
 
+import underworld3 as uw
+import pyvista as pv
+import underworld3.visualisation
 
-if uw.mpi.size == 1:
-    import numpy as np
+pl = pv.Plotter(window_size=(1000, 750))
+
+def plot_V_mesh(filename):
+    import underworld3 as uw
+
+    if uw.mpi.size != 1:
+        return
+    
+        
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    pvmesh.point_data["Omega"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
+    pvmesh.point_data["Vmag"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
 
-    meshball.vtk("tmp_ball.vtk")
-    pvmesh = pv.read("tmp_ball.vtk")
+    velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
+    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
 
-    point_cloud = pv.PolyData(points)
-
-    # point sources at cell centres
+    # point sources at cell centres for streamlines
 
     points = np.zeros((meshball._centroids.shape[0], 3))
     points[:, 0] = meshball._centroids[:, 0]
     points[:, 1] = meshball._centroids[:, 1]
-    centroid_cloud = pv.PolyData(points)
-
-    with meshball.access():
-        pvmesh.point_data["Omega"] = uw.function.evalf(vorticity.sym[0], meshball.data)
-
-    v_vectors = np.zeros((meshball.data.shape[0], 3))
-    v_vectors[:, 0] = uw.function.evalf(v_soln.sym[0], meshball.data)
-    v_vectors[:, 1] = uw.function.evalf(v_soln.sym[1], meshball.data)
-    pvmesh.point_data["V"] = v_vectors
+    point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
-        centroid_cloud,
-        vectors="V",
-        integration_direction="both",
-        surface_streamlines=True,
-        max_time=0.25,
+        point_cloud, vectors="V", integration_direction="forward", max_steps=10
     )
 
-    with meshball.access():
-        usol = v_soln.data.copy()
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="Vmag",
+        use_transparency=False,
+        opacity=1.0,
+    )
+    
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
+    pl.add_mesh(pvstream)
 
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    pl = pv.Plotter()
-
-    pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1)
-    pl.add_mesh(pvstream, opacity=0.33)
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-2, opacity=0.75)
     # pl.add_points(
-    #     point_cloud,
+    #     passive_swarm_points,
     #     color="Black",
     #     render_points_as_spheres=True,
-    #     point_size=0.5,
-    #     opacity=0.33,
+    #     point_size=5,
+    #     opacity=0.5,
     # )
 
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
 
-    # pl.remove_scalar_bar("T")
-    # pl.remove_scalar_bar("mag")
+    pl.camera.SetPosition(0.75, 0.2, 1.5)
+    pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
+    pl.camera.SetClippingRange(1.0, 8.0)
 
-    pl.show()
+    # pl.remove_scalar_bar("Omega")
+    pl.remove_scalar_bar("mag")
+    pl.remove_scalar_bar("V")
 
+    # pl.camera_position = "xz"
+    pl.screenshot(
+        filename="{}.png".format(filename),
+        window_size=(2560, 1280),
+        return_img=False,
+    )
 
+    pl.clear()
 # -
-
-
-def plot_V_mesh(filename):
-    if uw.mpi.size == 1:
-        import numpy as np
-        import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [1250, 1250]
-        pv.global_theme.anti_aliasing = "msaa"
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-        meshball.vtk("tmp_ball.vtk")
-        pvmesh = pv.read("tmp_ball.vtk")
-
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
-
-        point_cloud = pv.PolyData(points)
-
-        # point sources at cell centres
-
-        points = np.zeros((meshball._centroids.shape[0], 3))
-        points[:, 0] = meshball._centroids[:, 0]
-        points[:, 1] = meshball._centroids[:, 1]
-        centroid_cloud = pv.PolyData(points)
-
-        with meshball.access():
-            pvmesh.point_data["P"] = uw.function.evalf(p_soln.sym[0], meshball.data)
-            pvmesh.point_data["Omega"] = uw.function.evalf(
-                vorticity.sym[0], meshball.data
-            )
-
-        with meshball.access():
-            usol = v_soln.data.copy()
-
-        arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_loc[:, 0:2] = v_soln.coords[...]
-
-        arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-        arrow_length[:, 0:2] = usol[...]
-
-        v_vectors = np.zeros((meshball.data.shape[0], 3))
-        v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, meshball.data)
-        pvmesh.point_data["V"] = v_vectors
-
-        pvstream = pvmesh.streamlines_from_source(
-            centroid_cloud,
-            vectors="V",
-            integration_direction="both",
-            surface_streamlines=True,
-            max_time=0.25,
-        )
-
-        pl = pv.Plotter()
-
-        pl.add_arrows(arrow_loc, arrow_length, mag=0.01, opacity=0.75)
-
-        # pl.add_points(
-        #     point_cloud,
-        #     color="Black",
-        #     render_points_as_spheres=True,
-        #     point_size=2,
-        #     opacity=0.66,
-        # )
-
-        # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-        pl.add_mesh(
-            pvmesh,
-            cmap="coolwarm",
-            edge_color="Black",
-            show_edges=False,
-            scalars="Omega",
-            use_transparency=False,
-            opacity=0.5,
-        )
-
-        pl.add_mesh(
-            pvmesh,
-            cmap="RdBu",
-            scalars="Omega",
-            opacity=0.1,  # clim=[0.0, 20.0]
-        )
-
-        pl.add_mesh(pvstream, opacity=0.33)
-
-        scale_bar_items = list(pl.scalar_bars.keys())
-
-        for scalar in scale_bar_items:
-            pl.remove_scalar_bar(scalar)
-
-        pl.screenshot(
-            filename="{}.png".format(filename),
-            window_size=(2560, 2560),
-            return_img=False,
-        )
-
-        # pl.show()
-
 
 ts = 0
 
@@ -341,3 +232,5 @@ for step in range(0, 250):
 
     ts += 1
 # -
+
+

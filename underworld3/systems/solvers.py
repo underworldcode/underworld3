@@ -553,7 +553,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def strainrate(self):
-        return sympy.Matrix(self.Unknowns.E)
+        return sympy.Matrix(self.mesh.vector.strain_tensor(self.Unknowns.u.sym))
 
     @property
     def strainrate_1d(self):
@@ -582,9 +582,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def div_u(self):
-        E = self.strainrate
-        divergence = E.trace()
-        return divergence
+        # E = self.strainrate
+        # divergence = E.trace()
+        # return divergence
+
+        return self.mesh.vector.divergence(self.Unknowns.u.sym)
 
     @property
     def constraints(self):
@@ -1204,7 +1206,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.SCALAR,
             degree=u_Field.degree,
-            continuous=u_Field.continuous,
+            continuous=False,  # u_Field.continuous,
             varsymbol=u_Field.symbol,
             verbose=verbose,
             bcs=self.essential_bcs,
@@ -1219,7 +1221,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             ),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
-            degree=u_Field.degree - 1,
+            degree=1,  ## Consider this instead
             continuous=True,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
@@ -1348,9 +1350,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
-        # Update SemiLagrange Flux terms
-        self.DuDt.update(timestep, verbose=verbose)
-        self.DFDt.update(timestep, verbose=verbose)
+        # Update SemiLagrange Unknown and Flux terms
+        self.DuDt.update(timestep, verbose=verbose, evalf=True)
+        self.DFDt.update(timestep, verbose=verbose, evalf=True)
 
         super().solve(zero_init_guess, _force_setup)
 
