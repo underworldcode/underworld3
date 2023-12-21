@@ -6,6 +6,7 @@ import io
 import sys
 from collections import UserString
 from contextlib import redirect_stdout, redirect_stderr
+from mpi4py import MPI
 
 
 # # Capture the stdout to an object
@@ -88,11 +89,11 @@ def mem_footprint():
     return python_process.memory_info().rss // 1000000
 
 
-def gather_data(val, bcast=False):
+def gather_data(array, bcast=False):
     """
     gather values on root (bcast=False) or all (bcast = True) processors
     Parameters:
-        vals : Values to combine into a single array on the root or all processors
+        array : Numpy array to combine into a single array on the root or all processors
 
     returns:
         val_global : combination of values form all processors
@@ -101,42 +102,45 @@ def gather_data(val, bcast=False):
 
     comm = uw.mpi.comm
     rank = uw.mpi.rank
-    size = uw.mpi.size
+    
 
-    ### make sure all data comes in the same order
-    with uw.mpi.call_pattern(pattern="sequential"):
-        if len(val > 0):
-            val_local = np.ascontiguousarray(val.copy())
-        else:
-            val_local = np.array([np.nan], dtype="float64")
+    dtype = array.dtype
+    # Determine the total size of the array on the root processor
+    total_size = comm.reduce(array.size, op=MPI.SUM, root=0)
 
-    comm.barrier()
-
-    ### Collect local array sizes using the high-level mpi4py gather
-    sendcounts = np.array(comm.gather(len(val_local), root=0))
-
+    
+    # Create the receive buffer on the root processor
     if rank == 0:
-        val_global = np.zeros((sum(sendcounts)), dtype="float64")
+        recv_data = np.empty(total_size, dtype=dtype)
+    else:
+        recv_data = None
+    
+    # Gather the sizes of the send buffers
+    send_sizes = comm.gather(array.size, root=0)
+
+    # Calculate the total size of the array on the root processor
+    if rank == 0:
+        total_size = np.sum(send_sizes)
+    else:
+        total_size = None
+    
+    # Create the receive buffer on the root processor
+    if rank == 0:
+        val_global = np.empty(total_size, dtype=dtype)
     else:
         val_global = None
+    
+    # Calculate the displacements for Gatherv
+    if rank == 0:
+        displacements = np.insert(np.cumsum(send_sizes), 0, 0)[0:-1]
+    else:
+        displacements = None
+    
+    # Gather the arrays on the root processor
+    comm.Gatherv(sendbuf=array, recvbuf=(val_global, send_sizes, displacements, MPI.DOUBLE), root=0)
 
-    comm.barrier()
-
-    ## gather x values, can't do them together
-    comm.Gatherv(sendbuf=val_local, recvbuf=(val_global, sendcounts), root=0)
-
-    comm.barrier()
-
-    if uw.mpi.rank == 0:
-        ### remove rows with NaN
-        val_global = val_global[~np.isnan(val_global)]
-
-    comm.barrier()
 
     if bcast == True:
-        #### make swarm coords available on all processors
         val_global = comm.bcast(val_global, root=0)
-
-    comm.barrier()
 
     return val_global

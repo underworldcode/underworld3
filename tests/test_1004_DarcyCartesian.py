@@ -33,6 +33,7 @@ unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(minCoords=(min
 )
 
 
+
 def test_Darcy_boxmesh_noG(mesh):
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
@@ -127,6 +128,25 @@ def test_Darcy_boxmesh_noG(mesh):
     # ### Compare analytical and numerical solution
     assert np.allclose(pressure_analytic_noG, pressure_interp, atol=1e-2)
 
+### Quads
+meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
+    elementRes=(int(res), int(res)), minCoords=(minX, minY), maxCoords=(maxX, maxY), qdegree=2,
+)
+
+unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), 
+                                                                    cellSize=1/res, qdegree=2, regular=True)
+
+unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), 
+                                                                    cellSize=1/res, qdegree=2, regular=False)
+
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        meshStructuredQuadBox,
+        unstructured_quad_box_irregular,
+        unstructured_quad_box_regular,
+    ],
+)
 
 def test_Darcy_boxmesh_G(mesh):
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
@@ -139,9 +159,6 @@ def test_Darcy_boxmesh_G(mesh):
     # x and y coordinates
     x = mesh.N.x
     y = mesh.N.y
-
-    minX, maxX = 0, 1
-    minY, maxY = 0, 1
 
     # #### Set up the Darcy solver
     darcy = uw.systems.SteadyStateDarcy(mesh, p_soln, v_soln)
@@ -161,6 +178,7 @@ def test_Darcy_boxmesh_G(mesh):
 
     interfaceY = -0.25
 
+
     k1 = 1.0
     k2 = 1.0e-4
 
@@ -172,7 +190,9 @@ def test_Darcy_boxmesh_G(mesh):
 
     darcy.constitutive_model.Parameters.diffusivity=kFunc
 
-    ### add bodyforce term
+
+    darcy.f = 0.0
+
     darcy.s = sympy.Matrix([0, -1]).T
 
 
@@ -186,7 +206,6 @@ def test_Darcy_boxmesh_G(mesh):
     darcy._v_projector.smoothing = 1.0e-6
     darcy._v_projector.add_dirichlet_bc(0.0, "Left",  [0])
     darcy._v_projector.add_dirichlet_bc(0.0, "Right", [0])
-# -
 
     # Solve darcy
     darcy.solve()
@@ -222,5 +241,6 @@ def test_Darcy_boxmesh_G(mesh):
 
     # ### Compare analytical and numerical solution
     assert np.allclose(pressure_analytic, pressure_interp, atol=1e-2)
+
 
 

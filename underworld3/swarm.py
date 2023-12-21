@@ -20,6 +20,7 @@ comm = MPI.COMM_WORLD
 
 from enum import Enum
 
+from scipy.spatial import distance
 
 class SwarmType(Enum):
     DMSWARM_PIC = 1
@@ -717,6 +718,290 @@ class IndexSwarmVariable(SwarmVariable):
                     meshVar.data[np.where(w == 0.0)] = 0.0
 
         return
+
+class PopulationControl(uw_object):
+    def __init__(self, swarm):
+
+        self._swarm = swarm
+
+        ### copy the original swarm coords and cellids
+        with swarm.access():
+            ### intial coords
+            self._swarm_coords     = np.copy(np.ascontiguousarray( self._swarm.data))
+            ### initial cell IDs
+            self._swarm_cellid     = np.copy(np.ascontiguousarray( self._swarm.particle_cellid.data[:,0]))
+            ### total number of particles
+            self._particleNumber   = self._swarm.data.shape[0]
+            ### get the cell IDs from the initial layout
+            self._mesh_cID, self._cIDcount  = np.unique(self._swarm_cellid, return_counts=True)
+            ### get the initial particles per cell
+            self._swarm_ppc                  = self._cIDcount[0] #int(self._particleNumber / self._mesh_cID.shape[0])
+
+    ### This way is quick and easy but isn't as good at distributing particles
+    def repopulate(self, updateField=None):
+        """
+        This method repopulates the swarm.
+        It determined the number of particles lost and uses the original particles that are furtherest from the present location to repopulate the swarm.
+        It does not delete/add particles from/to cells that have gained/lost particles (you can use repopulate_loop for this).
+        Pass the swarm field in the args that needs to be updated (e.g. the material field)
+        """
+
+        self._updateField = updateField
+
+        ### get the current swarm positions in the cell
+        with self._swarm.access():
+            current_swarm_coords = self._swarm.data
+            current_swarm_cells = self._swarm.particle_cellid.data
+
+        ### Get the local cells
+        local_cells = self._swarm.mesh.get_closest_local_cells(np.ascontiguousarray(self._swarm.mesh._centroids) )
+
+        ### get the original coords for these cells
+        local_original_coords = self._swarm_coords[np.isin(self._swarm_cellid, local_cells)]
+        
+        ### original total number of particles
+        original_particle_number = local_original_coords.shape[0]
+
+        current_particle_cellID, current_ppc  = np.unique(current_swarm_cells, return_counts=True)
+
+        num_of_particles_to_delete=np.max([0, (np.sum(current_ppc) - original_particle_number)])
+
+        num_of_particles_to_add = np.max([0, (original_particle_number - np.sum(current_ppc))])
+
+        ### compare distance between the original particles and the current layout
+        point_distance = distance.cdist(local_original_coords, current_swarm_coords, 'euclidean')
+        ### sort the distances from largest to smallest
+        particles_to_add = local_original_coords[np.min(point_distance, axis=1).argsort()[::-1]][:int(num_of_particles_to_add)] if num_of_particles_to_add > 0 else np.empty(shape=(0,2))
+
+
+        new_cells = self._swarm.mesh.get_closest_local_cells(particles_to_add) if num_of_particles_to_add > 0 else np.empty(shape=(0,2))
+        
+        if isinstance(new_cells, int):
+            new_cells = np.array([new_cells])
+
+        # Ensure that 'valid' has the same length as 'particles_to_add'
+        if len(particles_to_add) != len(new_cells):
+            new_cells = np.resize(new_cells, len(particles_to_add))
+
+        valid = new_cells != -1
+
+        valid_coords = particles_to_add[valid]
+        valid_cells = new_cells[valid]
+
+        if valid_coords.size > 0:
+            all_local_coords = np.vstack([current_swarm_coords, valid_coords])
+            all_local_cells = np.hstack([current_swarm_cells[:,0], valid_cells])
+        else:
+            all_local_coords = current_swarm_coords
+            all_local_cells = current_swarm_cells[:,0]
+
+
+        ### do interp before adding particles, otherwise interp happens from the newly added particles
+        if (self._updateField != None):
+            ### defualt to the nnn value
+            new_particle_mat = np.rint( self._updateField.rbf_interpolate(all_local_coords) )#, nnn=self._swarm_ppc))
+        
+        swarm_new_size = all_local_coords.data.shape[0]
+
+        self._swarm.dm.addNPoints(swarm_new_size - current_swarm_coords.shape[0])
+
+        cellid = self._swarm.dm.getField("DMSwarm_cellid")
+        coords = self._swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, self._swarm.dim))
+
+        coords[...] = all_local_coords[...]
+        cellid[:]   = all_local_cells[:]
+
+        self._swarm.dm.restoreField("DMSwarmPIC_coor")
+        self._swarm.dm.restoreField("DMSwarm_cellid")
+
+        if (self._updateField != None):
+            with self._swarm.access(self._updateField):
+                self._updateField.data[:,0] = new_particle_mat[:,0]
+
+        uw.mpi.barrier()
+
+        # Delete particles on ranks with too many particles
+        with self._swarm.access(self._swarm.particle_coordinates):
+            ### get current coords
+            all_current_coords = self._swarm.data
+
+            if num_of_particles_to_delete > 0:
+                rng = np.random.default_rng()
+
+                #### Selection of coords doesn't delete all particles (?)
+                overpopulated_rank_coords = (rng.choice(all_current_coords, num_of_particles_to_delete))
+                    
+                # Calculate point_distance
+                point_distance = distance.cdist(all_current_coords, overpopulated_rank_coords, 'euclidean')
+
+                # Get the index of particles to remove
+                index_condition = np.min(point_distance, axis=1).argsort()[:num_of_particles_to_delete]
+
+                # Set coords to 1.0e100 so they are deleted by the DM, following the same logic as the remeshing example
+                self._swarm.data[index_condition] = 1.0e100
+
+
+
+        return
+
+
+## This way seems to give a better distribution of particles
+    def redistribute(self, updateField=None):
+        """
+        This method repopulates the swarm and maintains a well-distributed swarm, deleting and adding particles where required.
+        It identifies which cells have lost particles and repopulates them with particles from the original layout.
+        It does delete/add particles from/to cells that have gained/lost particles.
+        Takes the swarm field that needs to be updated (e.g. the material field)
+        """
+
+        self._updateField = updateField
+        
+        ### get the original particle positions in the cell
+        original_swarm_coords    = self._swarm_coords
+
+        ### get the current swarm positions in the cell
+        with self._swarm.access():
+            current_swarm_coords = self._swarm.data
+            current_swarm_cells = self._swarm.particle_cellid.data[:,0]
+
+        current_particle_cellID, current_ppc  = np.unique(current_swarm_cells, return_counts=True)
+
+
+        ### find cells that are empty
+        empty_cells = self._mesh_cID[np.isin(self._mesh_cID, current_particle_cellID, invert=True)]
+
+        ### get the coords from the original swarm layout
+        empty_cell_coords = original_swarm_coords[np.isin(self._swarm_cellid,  empty_cells)]
+
+        ### find under-populated cells
+        underpopulated_cells = current_particle_cellID[current_ppc < self._swarm_ppc]
+
+        ### number of particles missing from each cell
+        underpopulated_cell_coords = []
+
+        for cell in underpopulated_cells:
+            ### get the current number of particles in the cell
+            current_particles = current_ppc[current_particle_cellID == cell][0]
+            ### get the number of particles to add
+            no_particles_to_add = self._swarm_ppc - current_particles
+
+            original_cell_coords = original_swarm_coords[self._swarm_cellid == cell]
+            current_cell_coords  = current_swarm_coords[current_swarm_cells == cell]
+
+            ### caculate the distances between the original and current particle positions
+            point_distance = distance.cdist(original_cell_coords, current_cell_coords, 'euclidean')
+            ### add the ones with the largest distance
+            underpopulated_cell_coords.append(original_cell_coords[np.min(point_distance, axis=1).argsort()[::-1]][:no_particles_to_add])
+ 
+
+        if underpopulated_cell_coords:  # Check if the list is not empty
+            underpopulated_cell_coords = np.concatenate(underpopulated_cell_coords)
+        else:
+            underpopulated_cell_coords = np.empty(shape=(0,2))  # Create an empty numpy array
+
+
+        ### Combination of the empty cells and the underpopulated cells
+        particles_to_add = np.vstack([underpopulated_cell_coords, empty_cell_coords])
+
+
+        uw.mpi.barrier()
+
+        new_cells = self._swarm.mesh.get_closest_local_cells(particles_to_add)
+        
+        if isinstance(new_cells, int):
+            new_cells = np.array([new_cells])
+
+        # Ensure that 'valid' has the same length as 'particles_to_add'
+        if len(particles_to_add) != len(new_cells):
+            new_cells = np.resize(new_cells, len(particles_to_add))
+
+        valid = new_cells != -1
+
+        valid_coords = particles_to_add[valid]
+        valid_cells = new_cells[valid]
+
+        all_local_coords = np.vstack([current_swarm_coords, valid_coords])
+
+        all_local_cells = np.hstack([current_swarm_cells, valid_cells])
+
+        ### do interp before adding particles, otherwise interp happens from the newly added particles
+        if (self._updateField != None):
+            ### defualt to the nnn value
+            new_particle_mat = np.rint( self._updateField.rbf_interpolate(all_local_coords) )#, nnn=self._swarm_ppc))
+        
+        swarm_new_size = all_local_coords.data.shape[0]
+
+        self._swarm.dm.addNPoints(swarm_new_size - current_swarm_coords.shape[0])
+
+        cellid = self._swarm.dm.getField("DMSwarm_cellid")
+        coords = self._swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, self._swarm.dim))
+
+        coords[...] = all_local_coords[...]
+        cellid[:]   = all_local_cells[:]
+
+        self._swarm.dm.restoreField("DMSwarmPIC_coor")
+        self._swarm.dm.restoreField("DMSwarm_cellid")
+
+        if (self._updateField != None):
+            with self._swarm.access(self._updateField):
+                self._updateField.data[:,0] = new_particle_mat[:,0]
+
+        uw.mpi.barrier()
+
+
+        ### get the current swarm positions in the cell
+        with self._swarm.access():
+            current_swarm_coords = self._swarm.data
+            current_swarm_cells = self._swarm.particle_cellid.data[:,0]
+
+        current_particle_cellID, current_ppc  = np.unique(current_swarm_cells, return_counts=True)
+
+        ### find over-populated cells
+        overpopulated_cells = current_particle_cellID[current_ppc > self._swarm_ppc]
+
+        overpopulated_cell_coords = []
+
+        for cell in overpopulated_cells:
+            ### get the current particles in the cell
+            current_particles = current_ppc[current_particle_cellID == cell][0]
+            ### number of particles to delete
+            no_particles_to_remove = current_particles - self._swarm_ppc
+            ### randomly select particles to remove from the current cell
+            rng = np.random.default_rng()
+
+            #### Selection of coords doesn't delete all particles (?)
+            current_cell_coords  = current_swarm_coords[current_swarm_cells == cell]
+            overpopulated_cell_coords.append(rng.choice(current_cell_coords, no_particles_to_remove))
+
+
+        if overpopulated_cell_coords:  # Check if the list is not empty
+            particles_to_remove = np.concatenate(overpopulated_cell_coords)
+        else:
+            particles_to_remove = np.empty(shape=(0,2))  # Create an empty numpy array
+
+        # Check if all_current_coords and particles_to_remove are not empty
+        with self._swarm.access(self._swarm.particle_coordinates):
+            ### get current coords
+            all_current_coords = self._swarm.data
+
+            if particles_to_remove.size > 0:
+                ### get number of particles to remove
+                no_particles_to_remove = particles_to_remove.shape[0]
+
+                    
+                # Calculate point_distance
+                point_distance = distance.cdist(all_current_coords, particles_to_remove, 'euclidean')
+
+                # Get the index of particles to remove
+                index_condition = np.min(point_distance, axis=1).argsort()[:no_particles_to_remove]
+
+                # Set coords to 1.0e100 so they are deleted by the DM, following the same logic as the remeshing example
+                self._swarm.data[index_condition] = 1.0e100
+
+
+        return
+
+
 
 
 # @typechecked
@@ -1877,6 +2162,238 @@ class NodalPointSwarm(Swarm):
 
         return
 
+class Eulerian_D_Dt(uw_object):
+    r"""Eulerian  (mesh based) History Manager:
+    This manages the update of a variable, $\psi$ on the mesh across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.bcs = bcs
+        self.verbose = verbose
+        self.degree = degree
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can't
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
+
+        self._psi_fn = psi_fn
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            self.psi_star.append(
+                uw.discretisation.MeshVariable(
+                    f"psi_star_sl_{self.instance_number}_{i}",
+                    self.mesh,
+                    vtype=vtype,
+                    degree=degree,
+                    continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+
+        # The projection operator for mapping swarm values to the mesh - needs to be different for
+        # each variable type, unfortunately ...
+        ### using this to store the flux term
+
+        if vtype == uw.VarType.SCALAR:
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.psi_star[0], verbose=False
+            )
+        elif vtype == uw.VarType.VECTOR:
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self.psi_star[0], verbose=False
+                )
+            )
+        elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            self._WorkVar = uw.discretisation.MeshVariable(
+                f"W_star_slcn_{self.instance_number}",
+                self.mesh,
+                vtype=uw.VarType.SCALAR,
+                degree=degree,
+                continuous=continuous,
+                varsymbol=r"W^{*}",
+            )
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Tensor_Projection(
+                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+                )
+            )
+
+        self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.bcs = bcs
+        self._psi_star_projection_solver.smoothing = smoothing
+
+        
+        ### solve to get initial values
+        self._psi_star_projection_solver.solve()
+
+        ### set up all history terms to the initial values
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+        
+        ### set the default values to the initial condition
+        ### Doesn't work for flux terms due to containing derivatives
+        # for i in range(self.order):
+        #     with self.mesh.access(self.psi_star[i]):
+        #         for d in range(self.psi_star[i].shape[1]):
+        #             self.psi_star[i].data[:, d] = uw.function.evalf(
+        #                          self._psi_fn[d], self.psi_star[i].coords
+        #                         )
+    
+
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn
+        self._psi_star_projection_solver.uw_function = self._psi_fn
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        # display(
+        #     Latex(
+        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
+        #         + sympy.sympify(self.dt_physical)._repr_latex_()
+        #     )
+        # )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+    def update(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # if average_over_dt:
+        #     phi = min(1.0, dt / self.dt_physical)
+        # else:
+        #     phi = 1.0
+
+        if verbose and uw.mpi.rank == 0:
+            print(f"Update {self.psi_fn}", flush=True)
+
+
+        ### copy values down the chain
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
+
+        ### update the first value in the chain
+        self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.solve()
+
+        return
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am
 
 class SemiLagrange_D_Dt(uw_object):
     r"""Nodal-Swarm  Lagrangian History Manager:
