@@ -1,16 +1,11 @@
-# from telnetlib import DM
-# from this import d
 from typing import Optional, Tuple, Union
 import os
-from xmlrpc.client import Boolean
-import mpi4py
 import numpy
 import sympy
 import sympy.vector
 from petsc4py import PETSc
 import underworld3 as uw
 
-from underworld3.utilities import _api_tools
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 
@@ -19,8 +14,6 @@ from underworld3.cython import petsc_discretisation
 
 
 import underworld3.timing as timing
-import weakref
-from collections import namedtuple
 
 
 @timing.routine_timer_decorator
@@ -266,7 +259,6 @@ class Mesh(Stateful, uw_object):
         except:
             self.isSimplex = simplex
 
-        #self._vars = weakref.WeakValueDictionary()
         self._vars = {}
         self._block_vars = {}
 
@@ -1121,7 +1113,7 @@ class Mesh(Stateful, uw_object):
         (
             sizes,
             centroids,
-        ) = uw.cython.petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
 
         import numpy as np
 
@@ -1156,7 +1148,7 @@ class Mesh(Stateful, uw_object):
         (
             sizes,
             centroids,
-        ) = uw.cython.petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
 
         return centroids
 
