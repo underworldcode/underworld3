@@ -49,7 +49,7 @@ cdef extern from "petsc_compat.h":
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
-    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *)
+    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)
