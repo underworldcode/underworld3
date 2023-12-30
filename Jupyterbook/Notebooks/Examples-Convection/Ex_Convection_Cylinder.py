@@ -311,14 +311,15 @@ for step in range(0, 50):
                                    meshVars=[v_soln, t_soln], 
                                    outputPath=expt_name)
 
+
+
+# +
+# savefile = "output_conv/convection_cylinder.h5".format(step)
+# meshball.save(savefile)
+# v_soln.save(savefile)
+# t_soln.save(savefile)
+# meshball.generate_xdmf(savefile)
 # -
-
-
-savefile = "output_conv/convection_cylinder.h5".format(step)
-meshball.save(savefile)
-v_soln.save(savefile)
-t_soln.save(savefile)
-meshball.generate_xdmf(savefile)
 
 
 if uw.mpi.size == 1:

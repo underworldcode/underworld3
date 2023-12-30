@@ -8,9 +8,10 @@
 #
 # (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
+# +
 # to fix trame issue
-import nest_asyncio
-nest_asyncio.apply()
+# import nest_asyncio
+# nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -340,28 +341,25 @@ delta_t_diff
 # Convection model / update in time
 
 
-for step in range(0, 10):
-
-    print("Stokes", flush=True)
+for step in range(0, 51):
 
     stokes.solve(verbose=False, zero_init_guess=False, picard=0)
-
-    print("Adv-Diff", flush=True)
 
     delta_t = adv_diff.estimate_dt(v_factor=2.0)
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
+    stats = t_soln.stats()
+    stats_star = adv_diff.DuDt.psi_star[0].stats()
+    
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(ts, delta_t))
-        print(t_soln.stats())
-        print(adv_diff.DuDt.psi_star[0].stats())
+        print(stats)
+        print(stats_star)
 
     if step%5 == 0:
         plot_T_mesh(filename="{}_step_{}".format(os.path.join(output_dir, expt_name),ts))
 
-
     if step%10 == 0:
-        print("Save", flush=True)
 
         meshball.write_timestep(
                 expt_name,
@@ -370,9 +368,6 @@ for step in range(0, 10):
                 outputPath=output_dir,
                 index=ts,
             )
-
-        print("Saved", flush=True)
-
 
     ts += 1
 
