@@ -267,8 +267,8 @@ def StructuredQuadBox(
 
     class boundary_normals_2D(Enum):
         Bottom = sympy.Matrix([0, 1])
-        Top = sympy.Matrix([0, 1])
-        Right = sympy.Matrix([1, 0])
+        Top = sympy.Matrix([0, -1])
+        Right = sympy.Matrix([-1, 0])
         Left = sympy.Matrix([1, 0])
 
     class boundary_normals_3D(Enum):

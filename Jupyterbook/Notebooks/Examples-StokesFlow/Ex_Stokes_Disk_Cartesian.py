@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -80,7 +80,7 @@ elif problem_size >= 6:
 meshball = uw.meshing.Annulus(radiusOuter=r_o,
                               radiusInner=r_i,
                               cellSize=res,
-                              refinement=2,
+                              refinement=0,
                               qdegree=5,)
 
 # +
@@ -133,10 +133,6 @@ if not free_slip_lower:
 
 v_r = v_soln.sym.dot(unit_rvec)*unit_rvec
     
-# stokes.add_natural_bc( -1.0e3 * sympy.Matrix([v_r[0],v_r[1]]), "Upper")
-
-# stokes.add_natural_bc( -1.0, sympy.Matrix((0.0, 0.0)).T , "Upper", component=0)
-# stokes.add_natural_bc( -2.0, sympy.Matrix((0.0, 0.0)).T , "Upper", component=1)
 
 stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
 

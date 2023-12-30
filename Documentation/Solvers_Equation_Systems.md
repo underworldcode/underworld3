@@ -40,14 +40,16 @@ $$
        \underbrace{\Bigl[ \boldsymbol\kappa \nabla T \Bigr]}_{\mathbf{F}}} -
 \color{Maroon}{\underbrace{\Bigl[ H \Bigl] }_{\mathbf{f}}} 
 {\color{Black} = 0}
+
+\label{eqn-template}
 $$
 
-To match the template form provided by the PETSc pointwise interface, we need to express  the term labeled as $\dot{\mathbf{f}}$ in terms of $f_0$ and $\mathbf{f}_1$ from equation YY.
+To match the template form provided by the PETSc pointwise interface, we need to express  the term labeled as $\dot{\mathbf{f}}$ in terms of $f_0$ and $\mathbf{f}_1$ from equation [%s](#eqn-template).
 
 We can express the material derivate term ${\partial T}/{\partial t} + \left( \mathbf{v} \cdot \nabla \right) T$ in (first-order) finite difference form:
 
 $$
-\frac{\partial T}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) \sim \frac{T(\mathbf{x}) - T^*(\mathbf{x}^*)}{\Delta t}
+\frac{\partial T}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) T \sim \frac{T(\mathbf{x}) - T^*(\mathbf{x}^*)}{\Delta t}
 $$
 
 Here $T^*$ is the value of $T$ at the earlier time $t - \Delta t$ measured at the location $\mathbf{x}^*$ which was transported to $\mathbf{x}$ by the fluid over the timestep.
@@ -57,8 +59,6 @@ Here $T^*$ is the value of $T$ at the earlier time $t - \Delta t$ measured at th
 
 
 
-A blank slate is a very scary thing and so we provide templates for some common equations
-and examples to show how these can be extended. 
 
 
 `````{tabbed} Poisson Equation

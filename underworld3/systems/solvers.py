@@ -1206,7 +1206,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.SCALAR,
             degree=u_Field.degree,
-            continuous=False,  # u_Field.continuous,
+            continuous=u_Field.continuous,
             varsymbol=u_Field.symbol,
             verbose=verbose,
             bcs=self.essential_bcs,
@@ -1218,11 +1218,11 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self.mesh,
             sympy.Matrix(
                 [[0] * self.mesh.dim]
-            ),  # Actual function is not defined at this point
+            ),  # Actual function is not defined at this stage
             self._V_fn,
             vtype=uw.VarType.VECTOR,
-            degree=1,  ## Consider this instead
-            continuous=True,
+            degree=u_Field.degree - 1,
+            continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
@@ -1264,7 +1264,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
         self._delta_t = sympify(value)
 
     @timing.routine_timer_decorator
-    def estimate_dt(self):
+    def estimate_dt(self, v_factor=1.0):
         """
         Calculates an appropriate advective timestep for the given
         mesh and diffusivity configuration.
@@ -1313,7 +1313,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
         else:
             dt_diff = (min_dx**2) / diffusivity_glob
             dt_adv = min_dx / max_magvel_glob
-            dt_estimate = min(dt_diff, dt_adv)
+            dt_estimate = min(dt_diff, v_factor * dt_adv)
 
         return dt_estimate
 
@@ -1474,7 +1474,8 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.adv_diff_slcn_problem_description
 
-        ### Setup the history terms
+        ### Setup the history terms ... This version should not build anything
+        ### by default - it's the template / skeleton
 
         if DuDt is None:
             if order is None:
@@ -1514,7 +1515,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree - 1,
-            continuous=True,
+            continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,

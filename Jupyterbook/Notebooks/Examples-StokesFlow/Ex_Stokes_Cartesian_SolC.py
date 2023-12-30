@@ -109,12 +109,14 @@ stokes.bodyforce = sympy.Matrix(
 )
 
 # +
-# This is the other way to impose no vertical 
+# This is the other way to impose no vertical flow
 
 # stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
 # stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
-# stokes.add_natural_bc( -1.0e10 * v.sym[1], sympy.Matrix((0.0, 0.0)).T , "Top", components=[1])
+stokes.add_natural_bc(   [0.0,1e5*v.sym[1]], "Top")              # Top "free slip / penalty"
+
+
 
 
 # +
@@ -122,7 +124,7 @@ stokes.bodyforce = sympy.Matrix(
 # note with petsc we always need to provide a vector of correct cardinality.
 
 stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
-stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+# stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
@@ -223,8 +225,8 @@ stokes.bodyforce = sympy.Matrix(
     [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
 )
 
-stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
-stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
+# stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
+# stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
     (1.0e8, x > x_c),

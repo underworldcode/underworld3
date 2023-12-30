@@ -5,7 +5,6 @@ import numpy as np
 import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
-# os.environ["UW_JITNAME"] = "TEST_PF"
 
 # #### These are tested by test_001_meshes.py
 

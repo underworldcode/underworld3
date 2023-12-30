@@ -671,7 +671,7 @@ class Mesh(Stateful, uw_object):
 
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
-        # options.setValue("viewer_hdf5_collective", True)
+        options.setValue("viewer_hdf5_collective", False)
 
         import os
 
@@ -838,6 +838,7 @@ class Mesh(Stateful, uw_object):
             correspond to the timestep (for example).
 
         """
+
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
@@ -1677,6 +1678,8 @@ class _MeshVariable(Stateful, uw_object):
             The filename of the mesh checkpoint file
         """
 
+        print(f"Writing mesh Variable {self.name}", flush=True)
+
         self._set_vec(available=False)
 
         # Variable coordinates - let's put those in the file to
@@ -1723,6 +1726,8 @@ class _MeshVariable(Stateful, uw_object):
         uw.mpi.barrier()
         viewer.destroy()
         dmfe.destroy()
+
+        print(f"Writing mesh Variable {self.name} ... done", flush=True)
 
         return
 

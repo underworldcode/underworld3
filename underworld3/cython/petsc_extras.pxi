@@ -36,10 +36,10 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
     # PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
 
-    PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
-    PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*, PetscInt, void*, PetscInt, void*)
-    PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*, PetscInt, void*, PetscInt, void*)
-    PetscErrorCode UW_PetscDSSetBdTerms(PetscDS , PetscDMLabel , PetscInt , PetscInt , PetscInt , PetscInt , PetscInt, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *, PetscInt , void *)
+    PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*)
+    PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*)
+    PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*)
+    PetscErrorCode UW_PetscDSSetBdTerms   (PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*, void*, void* )
     PetscErrorCode UW_PetscDSViewWF(PetscDS)     
     PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)     
     
@@ -48,7 +48,8 @@ cdef extern from "petsc_compat.h":
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
-    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
+    # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
+    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)

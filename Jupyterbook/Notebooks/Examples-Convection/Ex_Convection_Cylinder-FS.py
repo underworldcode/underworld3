@@ -8,29 +8,40 @@
 #
 # (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
-# +
 # to fix trame issue
-# import nest_asyncio
-# nest_asyncio.apply()
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.systems import Stokes
 from underworld3 import function
 
 import numpy as np
+
+# +
+import os
+
+rayleigh=1.0e5
+
+output_dir = os.path.join("output","Cylinder_FS_Ra1e5_p")
+expt_name = "Cylinder_FS"
+
+os.makedirs(output_dir, exist_ok=True  )
+
+
+viz = True
 # -
 
 meshball = uw.meshing.Annulus(
-    radiusInner=0.5, radiusOuter=1.0, cellSize=0.1, degree=1, qdegree=3
+    radiusInner=0.5, radiusOuter=1.0, cellSize=0.05, qdegree=3
 )
 
 
 # check the mesh if in a notebook / serial
-if uw.mpi.size == 1:
+if viz and uw.mpi.size == 1:
     
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -64,26 +75,51 @@ swarm.populate(fill_param=3)
 
 
 # +
-# Create Stokes object
+#### Create Stokes object
 
-stokes = Stokes(
+stokes = uw.systems.Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1.0
 
-
-# Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
 stokes.petsc_options.delValue("ksp_monitor")
+stokes.petsc_options.delValue("snes_monitor")
 
 # Constant visc
 stokes.viscosity = 1.0
 
 # Velocity boundary conditions
-stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
-stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
+stokes.add_essential_bc((0.0, 0.0), "Lower", (0, 1))
+
+
+# +
+stokes.petsc_options["snes_type"] = "newtonls"
+stokes.petsc_options["ksp_type"] = "fgmres"
+
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
+stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+
+# gasm is super-fast ... but mg seems to be bulletproof
+# gamg is toughest wrt viscosity
+
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
+stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+
+# # mg, multiplicative - very robust ... similar to gamg, additive
+
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 # +
 # Create a density structure / buoyancy force
@@ -95,7 +131,7 @@ import sympy
 radius_fn = sympy.sqrt(
     meshball.X.dot(meshball.X)
 )  # normalise by outer radius if not 1.0
-unit_rvec = meshball.X / (1.0e-10 + radius_fn)
+unit_rvec = meshball.X / (radius_fn)
 gravity_fn = radius_fn
 
 # Some useful coordinate stuff
@@ -103,8 +139,8 @@ gravity_fn = radius_fn
 x = meshball.X[0]
 y = meshball.X[1]
 
-r = sympy.sqrt(x**2 + y**2)
-th = sympy.atan2(y + 1.0e-5, x + 1.0e-5)
+r = meshball.CoordinateSystem.R[0]
+th = meshball.CoordinateSystem.R[1]
 
 # +
 # Create adv_diff object
@@ -115,7 +151,7 @@ h = 0.0
 r_i = 0.5
 r_o = 1.0
 
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=t_soln,
     V_fn=v_soln,
@@ -126,8 +162,8 @@ adv_diff = uw.systems.AdvDiffusion(
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = 1
 
-adv_diff.theta = 0.5
-# adv_diff.f = t_soln.fn / delta_t - t_star.fn / delta_t
+adv_diff.tolerance=1.0e-4
+
 
 
 # +
@@ -136,7 +172,7 @@ adv_diff.theta = 0.5
 import sympy
 
 abs_r = sympy.sqrt(meshball.rvec.dot(meshball.rvec))
-init_t = 0.01 * sympy.sin(15.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i)) + (
+init_t = 0.01 * sympy.sin(5.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i)) + (
     r_o - r
 ) / (r_o - r_i)
 
@@ -147,40 +183,47 @@ with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 # +
-buoyancy_force = 1.0e6 * t_soln.sym[0] / (0.5) ** 3
+buoyancy_force = rayleigh * t_soln.sym[0] / (0.5) ** 3
 stokes.bodyforce = unit_rvec * buoyancy_force
 
-# check the stokes solve converges
-stokes.solve()
+stokes.tolerance = 1.0e-3
+stokes.petsc_options.setValue("ksp_monitor", None)
+stokes.petsc_options.setValue("snes_monitor", None)
+
+stokes.add_essential_bc([0.0, 0.0], "Lower")  # no slip on the base
+stokes.add_natural_bc(
+    10000 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "Upper"
+)
+
+stokes.solve(verbose=False, zero_init_guess=True, picard=1 )
+
+# -
+
+stokes.solve(
+        verbose=False, zero_init_guess=False, picard=3
+    )
 
 # +
 # Check the diffusion part of the solve converges
-adv_diff.petsc_options["ksp_monitor"] = None
-adv_diff.petsc_options["monitor"] = None
+# adv_diff.petsc_options["ksp_monitor"] = None
+adv_diff.petsc_options["snes_monitor"] = None
 
-adv_diff.solve(timestep=0.00001 * stokes.estimate_dt())
+adv_diff.solve(verbose=False, timestep=0.5 * stokes.estimate_dt())
+# -
 
 
-# +
-# diff = uw.systems.Poisson(meshball, u_Field=t_soln, solver_name="diff_only")
-
-# diff.constitutive_model = uw.constitutive_models.DiffusionModel(meshball.dim)
-# diff.constitutive_model.material_properties = adv_diff.constitutive_model.Parameters(diffusivity=1)
-# diff.solve()
-
+stokes.solve(verbose=True, zero_init_guess=True, picard=0)
 
 # +
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if viz and uw.mpi.size == 1:
     
     import pyvista as pv
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-    # pvmesh.point_data["Ts"] = vis.scalar_fn_to_pv_points(pvmesh, adv_diff._u_star.sym)
-    # pvmesh.point_data["dT"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym) - vis.scalar_fn_to_pv_points(pvmesh, adv_diff._u_star.sym)
 
     velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
@@ -200,7 +243,7 @@ if uw.mpi.size == 1:
         opacity=0.5,
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0005)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.002)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)
@@ -240,7 +283,7 @@ if uw.mpi.size == 1:
         opacity=0.5,
     )
 
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.025)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1000.0/rayleigh, opacity=0.75)
 
     # pl.add_points(pdata)
 
@@ -248,7 +291,7 @@ if uw.mpi.size == 1:
 
 
 def plot_T_mesh(filename):
-    if uw.mpi.size == 1:
+    if viz and uw.mpi.size == 1:
         
         import pyvista as pv
         import underworld3.visualisation as vis
@@ -265,17 +308,17 @@ def plot_T_mesh(filename):
 
         pl = pv.Plotter(window_size=(750, 750))
 
-        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00002, opacity=0.75)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=10.0/rayleigh, opacity=0.75)
 
         pl.add_points(
-            point_cloud,
+            tpoint_cloud,
             cmap="coolwarm",
             render_points_as_spheres=False,
             point_size=10,
             opacity=0.66,
         )
 
-        pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+        pl.add_mesh(pvmesh, scalars="T", cmap="coolwarm", show_edges=True, opacity=0.75)
 
         pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("mag")
@@ -288,37 +331,54 @@ def plot_T_mesh(filename):
         # pl.show()
 
 
+ts = 0
+
+delta_t_diff = adv_diff.estimate_dt()
+delta_t_diff
+
 # +
 # Convection model / update in time
 
-expt_name = "output/Cylinder_Ra1e6i"
 
-for step in range(0, 50):
-    stokes.solve()
-    delta_t = 5.0 * stokes.estimate_dt()
-    adv_diff.solve(timestep=delta_t)
+for step in range(0, 10):
 
-    # stats then loop
-    tstats = t_soln.stats()
+    print("Stokes", flush=True)
+
+    stokes.solve(verbose=False, zero_init_guess=False, picard=0)
+
+    print("Adv-Diff", flush=True)
+
+    delta_t = adv_diff.estimate_dt(v_factor=2.0)
+    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(step, delta_t))
-    #         print(tstats)
+        print("Timestep {}, dt {}".format(ts, delta_t))
+        print(t_soln.stats())
+        print(adv_diff.DuDt.psi_star[0].stats())
 
-    #     plot_T_mesh(filename="{}_step_{}".format(expt_name,step))
+    if step%5 == 0:
+        plot_T_mesh(filename="{}_step_{}".format(os.path.join(output_dir, expt_name),ts))
 
-    meshball.petsc_save_checkpoint(index=step, 
-                                   meshVars=[v_soln, t_soln], 
-                                   outputPath=expt_name)
+
+    if step%10 == 0:
+        print("Save", flush=True)
+
+        meshball.write_timestep(
+                expt_name,
+                meshUpdates=True,
+                meshVars=[p_soln, v_soln, t_soln],
+                outputPath=output_dir,
+                index=ts,
+            )
+
+        print("Saved", flush=True)
+
+
+    ts += 1
+
+
 
 # -
-
-
-savefile = "output_conv/convection_cylinder.h5".format(step)
-meshball.save(savefile)
-v_soln.save(savefile)
-t_soln.save(savefile)
-meshball.generate_xdmf(savefile)
 
 
 if uw.mpi.size == 1:

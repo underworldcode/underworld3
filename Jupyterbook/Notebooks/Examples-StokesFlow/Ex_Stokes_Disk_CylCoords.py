@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -249,12 +249,10 @@ with meshball_xyz.access(r_xy):
         coord_sys=meshball_xyz.N,
     )
 
-# +
 timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-# -
 
 
 stokes_xy
@@ -270,7 +268,7 @@ else:
     with meshball_xyz.access(v_soln_xy):
         v_soln_xy.data[...] = 0.0
 
-    for pen in [100, 100000]:
+    for pen in [10, 100]:
         print(f"penalty -> {pen}")
 
         stokes_xy.natural_bcs = []
@@ -284,9 +282,13 @@ else:
         )
 
         stokes_xy.solve(
-            verbose=False, zero_init_guess=False, picard=0, _force_setup=True
+            verbose=False, zero_init_guess=False, picard=5, _force_setup=True
         )
         stokes_xy.petsc_options["snes_type"] = "newtontr"
+
+
+(unit_rvec.dot(v_soln_xy.sym) * unit_rvec.T).subs([(meshball_xyz.N.x,0),(meshball_xyz.N.y,-1)]) 
+
 
 
 timing.print_table()
@@ -349,4 +351,3 @@ pl.camera.SetClippingRange(1.0, 8.0)
 
 pl.show()
 
-# -

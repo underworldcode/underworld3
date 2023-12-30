@@ -134,7 +134,15 @@ class Solver(uw_object):
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
         return
 
+    def _reset(self):
 
+        self.natural_bcs = []
+        self.essential_bcs = []
+        self.dm = None
+        self._is_setup = False
+
+        return
+            
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
@@ -430,7 +438,6 @@ class SNES_Scalar(Solver):
 
     @tolerance.setter
     def tolerance(self, value):
-        self.is_setup = False # Need to make sure the snes machinery is set up consistently (maybe ?)
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-1
@@ -748,7 +755,7 @@ class SNES_Scalar(Solver):
 
 
         cdef DM dm = self.dm
-        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
+        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -954,7 +961,6 @@ class SNES_Vector(Solver):
         return self._tolerance
     @tolerance.setter
     def tolerance(self, value):
-        self.is_setup = False # Need to make sure the snes machinery is set up consistently (maybe ?)
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-1
@@ -984,6 +990,11 @@ class SNES_Vector(Solver):
 
         options = PETSc.Options()
         options.setValue("private_{}_u_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
+        options.setValue("private_{}_u_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
+        options.setValue("private_{}_u_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
+ 
+ 
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
@@ -1274,7 +1285,7 @@ class SNES_Vector(Solver):
         self.snes.setFromOptions()
 
         cdef DM dm = self.dm
-        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL, NULL)
+        DMPlexSetSNESLocalFEM(dm.dm, NULL, NULL)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -1606,7 +1617,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
     @tolerance.setter
     def tolerance(self, value):
-        self.is_setup = False #
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["snes_use_ew"] = None
@@ -1818,7 +1828,6 @@ class SNES_Stokes_SaddlePt(Solver):
         # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
         # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
 
-
         self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
         self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
         self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
@@ -1877,45 +1886,48 @@ class SNES_Stokes_SaddlePt(Solver):
                 permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
 
                 bd_F0  = sympy.Array(bc.fn_f)
+
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
+                fns_bd_residual += [bc.fns["u_f0"]]
 
                 G0 = sympy.derive_by_array(bd_F0, self.Unknowns.u.sym)
                 G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
-
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
-                # self._uu_G0 = sympy.ImmutableMatrix( self._uu_G0 + bc.fns["uu_G0"])
-                # self._uu_G1 = sympy.ImmutableMatrix( self._uu_G1 + bc.fns["uu_G1"])
-                # fns_jacobian += [self._uu_G0, self._uu_G1]
+                G0 = sympy.derive_by_array(bc.fns["u_f0"], P)
+                G1 = sympy.derive_by_array(bc.fns["u_f0"], self._G)
 
-                fns_bd_residual += [bc.fns["u_f0"]]
-                fns_bd_jacobian += [bc.fns["uu_G0"]]
-                fns_bd_jacobian += [bc.fns["uu_G1"]]
+                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
+                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                fns_bd_jacobian += [bc.fns["up_G0"], bc.fns["up_G1"]]
 
-                # An orientation matrix (surface normal) - should be the diagonal matrix formed with N on the diagonal or something like that
-                # fn_F = 0*sympy.Matrix([[1,0],[0,0]]) * self._u_F1 
+                # bc.fns["pu_G0"] = sympy.ImmutableMatrix(sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=1,cols=dim))) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
+                # bc.fns["pu_G1"] = sympy.ImmutableMatrix(sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=dim,cols=dim))) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+                # fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"],]
+
+                # Set this explicitly to zero initially
+                # fn_F = sympy.Matrix([[0,0],[0,0]]) 
 
                 # bd_F1  = sympy.Array(fn_F).reshape(dim,dim)
                 # bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
+                # fns_bd_residual += [bc.fns["u_F1"]]
 
                 # G2 = bc.fns["u_F1"].diff(self.Unknowns.u.sym)
                 # G3 = bc.fns["u_F1"].diff(self.Unknowns.L)
-
                 # bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
                 # bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-
-                # fns_bd_residual += [bc.fns["u_F1"]]
                 # fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
                 # G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
                 # G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
-
                 # bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
                 # bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+                # fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"],]
 
-                # bc.fns["pp_G0"] = self._pp_G0
-                # fns_bd_jacobian += [bc.fns["pp_G0"]]
+                bc.fns["pp_G0"] = sympy.ImmutableMatrix([0])
+                fns_bd_jacobian += [bc.fns["pp_G0"]]
 
 
         self._fns_bd_residual = fns_bd_residual
@@ -2075,8 +2087,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
-
-
             bc_type = 5
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
@@ -2096,55 +2106,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
-        ## Pressure BCs DO NOT USE THIS
-        for index,bc in enumerate(self.essential_p_bcs):
-            if uw.mpi.rank == 0 and self.verbose:
-                print("Setting p bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))  # Validation !
-                print(" - boundary:   {}".format(bc.boundary))
-                print(" - fn:         {} ".format(bc.fn))
-
-            boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
-
-            # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
-
-            bc_type = 5
-            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
-            num_constrained_components = bc.components.shape[0]
-            comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
-                                1, 
-                                num_constrained_components,
-                                <const PetscInt *> &comps_view[0],  
-                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
-                                NULL, )
-
-            self.essential_p_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
-
-        # self.dm.createDS()
-
+ 
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
@@ -2180,9 +2142,6 @@ class SNES_Stokes_SaddlePt(Solver):
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
-        # self.dm.setUp()
-        # self.dm.ds.setUp()
-
 
         cdef DMLabel c_label
 
@@ -2201,53 +2160,79 @@ class SNES_Stokes_SaddlePt(Solver):
 
                 if bc.fn_f is not None:
 
-                    ## Note: we should consider the other coupling terms here up can be non-zero 
-                    UW_PetscDSSetBdTerms(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                                    0, 0, 0,
-                                    idx0, ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
-                                    idx0, NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
+                                    NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
                                     ) 
+
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL) 
+
 
                     UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
                                     0, 0, 0,
-                                    idx0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    idx0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
 
-                    ## This seems to have no effect (i.e. these are not executed if not in the above call)
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 1, 0,                                     
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]], 
+                                    NULL, NULL)
+
+                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    #                 1, 0, 0,
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]], 
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]], 
+                    #                 NULL, NULL)
+
+                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    #                 1, 1, 0, 
+                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],  
+                    #                 NULL, NULL, NULL)
+
                     UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
                                     0, 0, 0,
-                                    idx0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    idx0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
-                                    idx0, NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
+
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 1, 0, 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]], 
+                                    NULL, NULL)
+
+                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    #                 1, 0, 0, 
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]], 
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]], 
+                    #                 NULL, NULL)
 
                     # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
                     #                 1, 1, 0,
-                    #                 idx0, ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],  
-                    #                 idx0, NULL, 
-                    #                 idx0, NULL, 
-                    #                 idx0, NULL)
-
-
-
-
-
+                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],  
+                    #                 NULL, 
+                    #                 NULL, 
+                    #                 NULL)                                   
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
             UW_PetscDSViewWF(ds.ds)
+            print(f"=============", flush=True)
 
             print(f"Weak form(s) (Natural Boundaries)", flush=True)
             for boundary in self.natural_bcs:
                 UW_PetscDSViewBdWF(ds.ds, boundary.PETScID)
+
+
+        # self.dm.setUp()
+        # self.dm.ds.setUp()
 
 
         # Rebuild this lot
@@ -2260,15 +2245,13 @@ class SNES_Stokes_SaddlePt(Solver):
         for coarse_dm in self.dm_hierarchy:
             coarse_dm.createClosureIndex(None)
 
-
-
         self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
         self.snes.setDM(self.dm)
         self.snes.setOptionsPrefix(self.petsc_options_prefix)
         self.snes.setFromOptions()
 
         cdef DM c_dm = self.dm
-        DMPlexSetSNESLocalFEM(c_dm.dm, NULL, NULL, NULL)
+        DMPlexSetSNESLocalFEM(c_dm.dm, NULL, NULL)
 
         # Setup subdms here too.
         # These will be used to copy back/forth SNES solutions
@@ -2303,12 +2286,11 @@ class SNES_Stokes_SaddlePt(Solver):
             and `self.p` will be used.
         """
 
-
-
         if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
         if (not self.is_setup):
+            self.dm = None
             self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
