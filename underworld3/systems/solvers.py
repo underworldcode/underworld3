@@ -1222,7 +1222,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree - 1,
-            continuous=False,
+            continuous=True,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
@@ -1264,15 +1264,24 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
         self._delta_t = sympify(value)
 
     @timing.routine_timer_decorator
-    def estimate_dt(self, v_factor=1.0):
+    def estimate_dt(self, v_factor=1.0, diffusivity=None):
         """
         Calculates an appropriate advective timestep for the given
         mesh and diffusivity configuration.
         """
 
-        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
+        ## If k is non-linear and depends on gradients, then this evaluation
+        ## does not work, we instead need a projection.
+
+        if diffusivity is None:
+            diffusivity = self.constitutive_model.Parameters.diffusivity
+
+        if isinstance(diffusivity, uw.discretisation._MeshVariable):
+            diffusivity = diffusivity.sym[0]
+
+        if isinstance(diffusivity, sympy.Expr):
             k = uw.function.evaluate(
-                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                sympy.sympify(diffusivity),
                 self.mesh._centroids,
                 self.mesh.N,
             )
@@ -1351,10 +1360,18 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             self._setup_solver(verbose)
 
         # Update SemiLagrange Unknown and Flux terms
-        self.DuDt.update(timestep, verbose=verbose, evalf=True)
-        self.DFDt.update(timestep, verbose=verbose, evalf=True)
+        # self.DuDt.update(timestep, verbose=verbose, evalf=False)
+        # self.DFDt.update(timestep, verbose=verbose, evalf=False)
+
+        # super().solve(zero_init_guess, _force_setup)
+
+        self.DuDt.update_pre_solve(timestep, verbose=verbose)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose)
 
         super().solve(zero_init_guess, _force_setup)
+
+        self.DuDt.update_post_solve(timestep, verbose=verbose)
+        self.DFDt.update_post_solve(timestep, verbose=verbose)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -1439,7 +1456,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
         DuDt: uw.swarm.Lagrangian_D_Dt = None,
-        order: int = None,
+        order: int = 1,
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
@@ -1478,9 +1495,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### by default - it's the template / skeleton
 
         if DuDt is None:
-            if order is None:
-                order = 1  # default value
-
             self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
                 self.mesh,
                 u_Field.sym,
@@ -1502,7 +1516,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             else:
                 if DuDt.order < order:
                     raise RuntimeError(
-                        f"DuDt supplied is order {DuDt.order} but order required is {order}"
+                        f"DuDt supplied is order {DuDt.order} but order requested is {order}"
                     )
 
             self.Unknowns.DuDt = DuDt

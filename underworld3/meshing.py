@@ -827,6 +827,7 @@ def Annulus(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.3,
     cellSize: float = 0.1,
+    cellSizeInner: float = None,
     centre: bool = False,
     degree: int = 1,
     qdegree: int = 2,
@@ -834,9 +835,6 @@ def Annulus(
     refinement=None,
     verbosity=0,
 ):
-    # boundaries = {"Lower": 1, "Upper": 2, "FixedStars": 3}
-    # vertices = {"Centre": 10}
-
     class boundaries(Enum):
         Lower = 1
         Upper = 2
@@ -852,6 +850,9 @@ def Annulus(
     else:
         uw_filename = filename
 
+    if cellSizeInner is None:
+        cellSizeInner = cellSize
+
     if uw.mpi.rank == 0:
         import gmsh
 
@@ -859,13 +860,15 @@ def Annulus(
         gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Annulus")
 
-        p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+        p1 = gmsh.model.geo.add_point(0.00, 0.00, 0.00, meshSize=cellSizeInner)
 
         loops = []
 
         if radiusInner > 0.0:
-            p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
-            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
+            p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSizeInner)
+            p3 = gmsh.model.geo.add_point(
+                -radiusInner, 0.0, 0.0, meshSize=cellSizeInner
+            )
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)

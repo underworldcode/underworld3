@@ -63,6 +63,10 @@ X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
 swarm.populate(fill_param=3)
 
 
+
+
+
+
 # +
 # Create Stokes object
 

@@ -117,7 +117,7 @@ def JacDiffViewer(stokes_solver1, stokes_solver2):
 
 JacViewer(stokes0)
 
-        
+
 
 # +
 ## Now try adding a null natural bc - Expect no changes to J, P though 

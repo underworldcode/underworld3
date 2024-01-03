@@ -198,11 +198,6 @@ stokes.add_natural_bc(
 
 stokes.solve(verbose=False, zero_init_guess=True, picard=1 )
 
-# -
-
-stokes.solve(
-        verbose=False, zero_init_guess=False, picard=3
-    )
 
 # +
 # Check the diffusion part of the solve converges
@@ -212,51 +207,6 @@ adv_diff.petsc_options["snes_monitor"] = None
 adv_diff.solve(verbose=False, timestep=0.5 * stokes.estimate_dt())
 # -
 
-
-stokes.solve(verbose=True, zero_init_guess=True, picard=0)
-
-# +
-# check the mesh if in a notebook / serial
-
-if viz and uw.mpi.size == 1:
-    
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(meshball)
-    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-
-    velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
-    
-
-    pl = pv.Plotter(window_size=(750, 750))
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="T",
-        use_transparency=False,
-        opacity=0.5,
-    )
-
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.002)
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-
-    # pl.add_points(pdata)
-
-    pl.show(cpos="xy")
-
-
-# +
-# pvmesh.point_data["Ts"].min()
-# -
-
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
 
 # check the mesh if in a notebook / serial
 if uw.mpi.size == 1:
@@ -333,9 +283,6 @@ def plot_T_mesh(filename):
 
 
 ts = 0
-
-delta_t_diff = adv_diff.estimate_dt()
-delta_t_diff
 
 # +
 # Convection model / update in time
