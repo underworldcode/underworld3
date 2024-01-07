@@ -16,6 +16,23 @@ from underworld3.cython import petsc_discretisation
 import underworld3.timing as timing
 
 
+## Introduce these two specific types of coordinate tracking vector objects
+
+from sympy.vector import CoordSys3D
+
+
+# class MeshBasisVec(CoordSys3D):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         return
+
+
+# class MeshSurfaceNormalVec(CoordSys3D):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         return
+
+
 @timing.routine_timer_decorator
 def _from_gmsh(
     filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True
@@ -237,9 +254,10 @@ class Mesh(Stateful, uw_object):
             self.dm.setName(f"uw_{self.name}")
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
+        # A unique set of vectors / names for each mesh instance
+
         from sympy.vector import CoordSys3D
 
-        # A unique set of vectors / names for each mesh instance
         self._N = CoordSys3D(f"N")
 
         self._N.x._latex_form = r"\mathrm{\xi_0}"
@@ -248,6 +266,12 @@ class Mesh(Stateful, uw_object):
         self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_0}"
         self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
         self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
+
+        self._Gamma = CoordSys3D(r"\Gamma")
+
+        self._Gamma.x._latex_form = r"\Gamma_x"
+        self._Gamma.y._latex_form = r"\Gamma_y"
+        self._Gamma.z._latex_form = r"\Gamma_z"
 
         # Now add the appropriate coordinate system for the mesh's natural geometry
         # This step will usually over-write the defaults we just defined
@@ -604,6 +628,20 @@ class Mesh(Stateful, uw_object):
         The mesh coordinate system.
         """
         return self._N
+
+    @property
+    def Gamma_N(self) -> sympy.vector.CoordSys3D:
+        """
+        The mesh coordinate system.
+        """
+        return self._Gamma
+
+    @property
+    def Gamma(self) -> sympy.vector.CoordSys3D:
+        """
+        The mesh coordinate system.
+        """
+        return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
 
     @property
     def X(self) -> sympy.Matrix:

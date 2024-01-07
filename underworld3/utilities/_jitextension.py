@@ -301,14 +301,24 @@ def _createext(
     # Patch in `_code` methods. Note that the order here
     # is important, as the secondary call will overwrite
     # those patched in the first call.
+
     ccode_patch_fns(mesh.vars.values(), "petsc_a")
     ccode_patch_fns(primary_field_list, "petsc_u")
-    # Also patch `BaseScalar` types
-    type(mesh.N.x)._ccode = lambda self, printer: f"petsc_x[{self._id[0]}]"
 
-    # Some way to patch in the boundary normals that petsc supplies to bd point functions
-    # Need to add a matching symbol on the mesh in sympy (e.g. mesh.Gamma)
-    # type(mesh.Gamma)._ccode = lambda self, printer: f"petsc_n[{self._id[0]}]"
+    # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
+    # make sure each component points to the correct PETSc data
+
+    mesh.N.x._ccodestr = "petsc_x[0]"
+    mesh.N.y._ccodestr = "petsc_x[1]"
+    mesh.N.z._ccodestr = "petsc_x[2]"
+
+    # Surface integrals also have normal vector information as petsc_n
+
+    mesh.Gamma_N.x._ccodestr = "petsc_n[0]"
+    mesh.Gamma_N.y._ccodestr = "petsc_n[1]"
+    mesh.Gamma_N.z._ccodestr = "petsc_n[2]"
+
+    type(mesh.N.x)._ccode = lambda self, printer: self._ccodestr
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,
@@ -330,7 +340,7 @@ def _createext(
                 "Heaviside_1",
             ),  # for single arg Heaviside  (defaults to 0.5 at jump).
             (lambda *args: len(args) == 2, "Heaviside_2"),
-        ]  # for two arg Heavisides    (second arg is jump value).
+        ],  # for two arg Heavisides    (second arg is jump value).
     }
 
     # Now go ahead and generate C code from subsituted Sympy expressions.

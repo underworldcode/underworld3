@@ -1,4 +1,4 @@
-# # Stokes in a disc with adv_diff to solve T and back-in-time sampling with particles
+# # Stokes in an annulus with adv_diff to solve T and back-in-time sampling with particles
 #
 # This is a simple example in which we try to instantiate two solvers on the mesh and have them use a common set of variables.
 #

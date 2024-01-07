@@ -201,9 +201,7 @@ meshball.vector.strain_tensor(stokes.Unknowns.u.sym)
 radius_fn = meshball_xyz.CoordinateSystem.xR[0]
 radius_fn = r_xy.sym[0]
 
-hw = 20000.0 / res
-surface_fn = sympy.exp(-((radius_fn - r_o) ** 2) * hw)
-base_fn = sympy.exp(-((radius_fn - r_i) ** 2) * hw)
+unit_rvec_xy = meshball_xyz.CoordinateSystem.unit_e_0
 
 stokes_xy = uw.systems.Stokes(
     meshball_xyz,
@@ -211,18 +209,25 @@ stokes_xy = uw.systems.Stokes(
     pressureField=p_soln_xy,
     solver_name="stokes_xy",
 )
+
 stokes_xy.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes_xy.constitutive_model.Parameters.shar_viscosity_0 = 1
-stokes_xy.petsc_options["snes_rtol"] = 1.0e-8
+stokes_xy.petsc_options["snes_rtol"] = 1.0e-6
+stokes_xy.petsc_options["snes_monitor"] = None
 
 # Velocity boundary conditions
 
 if not free_slip_upper:
     stokes_xy.add_dirichlet_bc(0.0, "Upper", 0)
     stokes_xy.add_dirichlet_bc(0.0, "Upper", 1)
+else:
+    print("Free slip !")
+    penalty = 100000
+    stokes_xy.add_natural_bc(
+            penalty * unit_rvec_xy.dot(v_soln_xy.sym) * unit_rvec, "Upper"
+        )
 
-stokes_xy.add_dirichlet_bc(0.0, "Lower", 0)
-stokes_xy.add_dirichlet_bc(0.0, "Lower", 1)
+stokes_xy.add_dirichlet_bc([0.0, 0.0], "Lower")
 
 # +
 # pressure_solver = uw.systems.Projection(meshball, p_cont)
@@ -239,7 +244,7 @@ stokes.bodyforce = sympy.Matrix([Rayleigh * t_init, 0])
 t_init_xy = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0
 stokes_xy.bodyforce = Rayleigh * t_init_xy * unit_rvec
-stokes_xy.bodyforce -= 1.0e6 * v_soln_xy.sym.dot(unit_rvec) * surface_fn * unit_rvec
+
 # -
 
 with meshball_xyz.access(r_xy):
@@ -253,46 +258,13 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 timing.print_table()
 
-
-
-stokes_xy
-
 timing.start()
 
-stokes_xy.petsc_options["snes_monitor"] = None
-stokes_xy.tolerance = 1.0e-3
-
-if not free_slip_upper:
-    stokes_xy.solve(zero_init_guess=True)
-else:
-    with meshball_xyz.access(v_soln_xy):
-        v_soln_xy.data[...] = 0.0
-
-    for pen in [10, 100]:
-        print(f"penalty -> {pen}")
-
-        stokes_xy.natural_bcs = []
-        stokes_xy.essential_bcs = []
-        stokes_xy.dm = None
-        stokes_xy._is_setup = False
-
-        stokes_xy.add_essential_bc([0.0, 0.0], "Lower")  # no slip on the base
-        stokes_xy.add_natural_bc(
-            pen * unit_rvec.dot(v_soln_xy.sym) * unit_rvec.T, "Upper"
-        )
-
-        stokes_xy.solve(
-            verbose=False, zero_init_guess=False, picard=5, _force_setup=True
-        )
-        stokes_xy.petsc_options["snes_type"] = "newtontr"
-
-
-(unit_rvec.dot(v_soln_xy.sym) * unit_rvec.T).subs([(meshball_xyz.N.x,0),(meshball_xyz.N.y,-1)]) 
+stokes_xy.solve(zero_init_guess=True)
 
 
 
 timing.print_table()
-# -
 
 U_xy = meshball.CoordinateSystem.xRotN * v_soln.sym.T
 
@@ -310,8 +282,8 @@ pl = pv.Plotter(window_size=(1000, 1000))
 pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball_xyz)
 pvmesh.point_data["T"] = uw.visualisation.scalar_fn_to_pv_points(pvmesh, t_init_xy)
 
-velocity_points = underworld3.visualisation.meshVariable_to_pv_cloud(v_soln_xy)
-velocity_points_rt = underworld3.visualisation.meshVariable_to_pv_cloud(v_soln)
+velocity_points = uw.visualisation.meshVariable_to_pv_cloud(v_soln_xy)
+velocity_points_rt = uw.visualisation.meshVariable_to_pv_cloud(v_soln)
 
 velocity_points.point_data["Vxy"] = uw.visualisation.vector_fn_to_pv_points(
     velocity_points, v_soln_xy.sym
@@ -350,4 +322,7 @@ pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
 pl.camera.SetClippingRange(1.0, 8.0)
 
 pl.show()
+
+# -
+
 

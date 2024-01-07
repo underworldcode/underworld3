@@ -581,7 +581,6 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
         if verbose:
             print(f"{varfn} = {parent.name}[{component}]")
 
-
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
     import string
@@ -604,6 +603,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     if coord_sys is not None:
         N = coord_sys
     elif mesh is None:
+        from sympy.vector import CoordSys3D
         N = CoordSys3D(f"N")
     else:
         N = mesh.N

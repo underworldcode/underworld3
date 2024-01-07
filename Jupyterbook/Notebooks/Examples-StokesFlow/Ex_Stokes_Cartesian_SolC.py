@@ -111,12 +111,7 @@ stokes.bodyforce = sympy.Matrix(
 # +
 # This is the other way to impose no vertical flow
 
-# stokes.bodyforce[0] -= 1.0e6 * v.sym[0] * (left_fn + right_fn)
-# stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
-
 stokes.add_natural_bc(   [0.0,1e5*v.sym[1]], "Top")              # Top "free slip / penalty"
-
-
 
 
 # +
@@ -309,6 +304,4 @@ except ImportError:
 
 # %%
 # -
-mesh.boundaries["Bottom"].value
-
 

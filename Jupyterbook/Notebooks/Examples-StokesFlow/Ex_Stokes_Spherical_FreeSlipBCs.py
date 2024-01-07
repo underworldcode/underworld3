@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -91,8 +91,7 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-
-problem_size = uw.options.getInt("problem_size", default=2)
+problem_size = uw.options.getInt("problem_size", default=1)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
 grid_type = uw.options.getString("grid_type", default="simplex")
 
@@ -100,6 +99,7 @@ grid_type = uw.options.getString("grid_type", default="simplex")
 # +
 visuals = 1
 output_dir = "output"
+grid_type = "cubed_sphere"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
@@ -151,6 +151,8 @@ else:
 meshball.dm.view()
 # -
 
+
+
 stokes = uw.systems.Stokes(
     meshball,
     verbose=False,
@@ -195,12 +197,12 @@ unit_rvec = meshball.X / (radius_fn)
 gravity_fn = radius_fn
 
 
-hw = 1000.0 / res
-surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
+# hw = 1000.0 / res
+# surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
+# surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
 
-base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
+# base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
+# base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 
 ## Buoyancy (T) field
 
@@ -241,15 +243,6 @@ v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 
 # +
-I = uw.maths.Integral(meshball, surface_fn_a)
-s_norm = I.evaluate()
-I.fn = base_fn_a
-
-b_norm = I.evaluate()
-s_norm, b_norm
-
-
-# +
 # Stokes settings
 
 stokes.tolerance = 1.0e-3
@@ -285,19 +278,18 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # thermal buoyancy force
-buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
 
-# Free slip condition by penalizing radial velocity at the surface (non-linear term)
-free_slip_penalty_upper = v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
-free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
+buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn 
+
+Gamma = meshball.Gamma
+
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
 
 stokes.bodyforce = unit_rvec * buoyancy_force
-stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
-
 # -
 
-stokes._setup_pointwise_functions()
-stokes._setup_discretisation()
+Gamma.dot(v_soln.sym)
 
 # +
 timing.reset()
@@ -390,8 +382,4 @@ if uw.mpi.size == 1:
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
-
-stokes._uu_G0
-# -
-
 

@@ -157,7 +157,7 @@ init_t = 0.25 + 0.25 * sympy.sin(7.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o 
 adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 with meshball.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+    t_0.data[...] = uw.function.evalf(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 # +
 tstats = t_soln.stats()
@@ -170,12 +170,11 @@ print(Tgrad_stats)
 # -
 
 with meshball.access(r_mesh):
-    r_mesh.data[:, 0] = uw.function.evaluate(r, meshball.data)
+    r_mesh.data[:, 0] = uw.function.evalf(r, meshball.data)
 
 # +
 
 stokes.bodyforce = unit_rvec * gravity_fn * Rayleigh * t_soln.fn
-# check the stokes solve converges
 stokes.solve()
 # -
 
@@ -185,12 +184,6 @@ adv_diff.constitutive_model.Parameters.diffusivity = k_eff
 adv_diff.solve(timestep=0.1*stokes.estimate_dt(), zero_init_guess=False)
 
 calculate_diffusivity.solve()
-
-
-
-adv_diff.DFDt.psi_fn
-
-
 
 # +
 # check the mesh if in a notebook / serial

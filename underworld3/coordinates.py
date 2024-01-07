@@ -352,7 +352,7 @@ class CoordinateSystem:
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
 
-            self._X = self._N.copy()
+            self._X = self._N  # .copy()
             self._x = self._X
 
             self._xRotN = sympy.eye(self.mesh.dim)
