@@ -247,9 +247,6 @@ v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 stokes.tolerance = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options[
-    "snes_max_it"
-] = 1  # for timing cases only - force 1 snes iteration for all examples
 
 stokes.petsc_options["snes_type"] = "newtonls"
 stokes.petsc_options["ksp_type"] = "fgmres"

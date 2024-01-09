@@ -20,10 +20,6 @@ PIC as motivation for this approach
 
 
 
-
-
-
-
 ## Template problem
 
 IMAGE
@@ -49,15 +45,10 @@ To match the template form provided by the PETSc pointwise interface, we need to
 We can express the material derivate term ${\partial T}/{\partial t} + \left( \mathbf{v} \cdot \nabla \right) T$ in (first-order) finite difference form:
 
 $$
-\frac{\partial T}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) T \sim \frac{T(\mathbf{x}) - T^*(\mathbf{x}^*)}{\Delta t}
+\frac{\partial T}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) T \sim \frac{T(\mathbf{x}) - T^*(\mathbf{x}^*)}{t-t^*}
 $$
 
-Here $T^*$ is the value of $T$ at the earlier time $t - \Delta t$ measured at the location $\mathbf{x}^*$ which was transported to $\mathbf{x}$ by the fluid over the timestep.
-
-
-
-
-
+Here $T^*$ is the value of $T$ at the earlier time ($t^*$) measured at the location $\mathbf{x}^*$ which was transported to $\mathbf{x}$ by the velocity field, $\mathbf{v}$ over the timestep.
 
 
 

@@ -12,11 +12,8 @@
 #     name: python3
 # ---
 
-# # Cylindrical Stokes (Cartesian formulation)
+# # Stokes (Cartesian formulation) in Elliptical Domain
 #
-# Let the mesh deform to create a free surface. If we iterate on this, then it is almost exactly the same as the free-slip boundary condition (though there are potentially instabilities here).
-#
-# The problem has a constant velocity nullspace in x,y. We eliminate this by fixing the central node in this example, but it does introduce a perturbation to the flow near the centre which is not always stagnant.
 
 # to fix trame issue
 import nest_asyncio
@@ -61,7 +58,7 @@ if uw_testing_level:
         pass
 
 r_o = 1.0
-r_i = 0.5
+r_i = 0.33
 
 if problem_size <= 1:
     res = 0.5
@@ -80,7 +77,7 @@ elif problem_size >= 6:
 cellSizeOuter = res
 cellSizeInner = res/2
 ellipticityOuter = 3.0
-ellipticityInner = 0.5
+ellipticityInner = 5.0
 
 radiusOuter = r_o
 radiusInner = r_i
@@ -184,10 +181,11 @@ Gamma_N_Outer = Gamma_N_Outer / sympy.sqrt(Gamma_N_Outer.dot(Gamma_N_Outer))
 Gamma_N_Inner = sympy.Matrix([2 * x / ellipticityInner**2, 2 * y ]).T
 Gamma_N_Inner = Gamma_N_Inner / sympy.sqrt(Gamma_N_Inner.dot(Gamma_N_Inner))
 
-# -
 
-# check the mesh if in a notebook / serial
-if uw.mpi.size == 1:
+# +
+# check the mesh if in a notebook / serial and look at the surface normals (check them)
+
+if 0 and uw.mpi.size == 1:
     
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -203,7 +201,7 @@ if uw.mpi.size == 1:
     pvmesh.point_data["Gamma2"] = vis.vector_fn_to_pv_points(pvmesh, Gamma_N_Inner, dim=2)
 
     pl.add_arrows(pvmesh.points,pvmesh.point_data["Gamma"], mag=0.1, color="Red")
-    pl.add_arrows(pvmesh.points,pvmesh.point_data["Gamma2"], mag=0.1, color="Green")
+    pl.add_arrows(pvmesh.points,pvmesh.point_data["Gamma2"], mag=0.1, color="Blue")
 
     pl.show()
 
@@ -212,7 +210,6 @@ if uw.mpi.size == 1:
 
 v_soln = uw.discretisation.MeshVariable(r"U", elliptical_mesh, 2, degree=2, continuous=True, varsymbol=r"\mathbf{u}")
 p_soln = uw.discretisation.MeshVariable(r"P", elliptical_mesh, 1, degree=1, continuous=True, varsymbol=r"\mathbf{p}")
-p_cont = uw.discretisation.MeshVariable(r"p_c", elliptical_mesh, 1, degree=1, continuous=True)
 t_soln = uw.discretisation.MeshVariable(r"T", elliptical_mesh, 1, degree=3, varsymbol="\Delta T")
 
 
@@ -243,14 +240,14 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 stokes.penalty = 1.0
 
-Gamma_2 = sympy.Matrix([elliptical_mesh.Gamma_N.x,elliptical_mesh.Gamma_N.y])
+# Surface normals provided by DMPLEX
+
 Gamma = elliptical_mesh.Gamma
 
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Outer")
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Inner")
 
-
-# Use the analytic version instead
+# Or, use the analytic version instead
 
 # stokes.add_natural_bc(10000 * Gamma_N_Outer.dot(v_soln.sym) *  Gamma_N_Outer, "Outer")
 # stokes.add_natural_bc(10000 * Gamma_N_Inner.dot(v_soln.sym) *  Gamma_N_Inner, "Inner")
@@ -289,12 +286,8 @@ stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = No
 # -
 
 
-stokes._setup_pointwise_functions(verbose=True)
+stokes._setup_pointwise_functions(verbose=False)
 stokes._setup_discretisation(verbose=False)
-
-pressure_solver = uw.systems.Projection(elliptical_mesh, p_cont)
-pressure_solver.uw_function = p_soln.sym[0]
-pressure_solver.smoothing = 1.0e-3
 
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
 t_init = sympy.sin(2 * sympy.atan2(y,x))
@@ -321,21 +314,12 @@ stokes.tolerance = 1.0e-4
 # +
 from underworld3 import timing
 
-stokes._setup_pointwise_functions()
-stokes._setup_discretisation()
-stokes._setup_solver()
-
 timing.reset()
 timing.start()
 # +
-stokes.solve(zero_init_guess=True, debug=True)
+stokes.solve(zero_init_guess=True, debug=False)
 
 timing.print_table()
-# +
-# Pressure at mesh nodes
-
-# pressure_solver.solve()
-
 # +
 # check the mesh if in a notebook / serial
 
@@ -348,7 +332,6 @@ if uw.mpi.size == 1:
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
-    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_cont.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_init)
 
     points = np.zeros((elliptical_mesh._centroids.shape[0], 3))
@@ -377,7 +360,7 @@ if uw.mpi.size == 1:
                 use_transparency=False,
                 opacity=0.75,
                )
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00001)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.000005)
     
     pl.add_mesh(pvstream)
 
@@ -392,95 +375,12 @@ if uw.mpi.size == 1:
 #
 # $$\int_\Gamma \phi {\vec f}_0(u, u_t, \nabla u, x, t) \cdot \hat n + \nabla\phi \cdot {\overleftrightarrow f}_1(u, u_t, \nabla u, x, t) \cdot \hat n$$
 #
-#     PetscErrorCode PetscDSSetBdResidual(
-#                         PetscDS ds, 
-#                         PetscInt f, 
-#                         void (*f0)( PetscInt dim, 
-#                                     PetscInt Nf, 
-#                                     PetscInt NfAux, 
-#                                     const PetscInt uOff[], 
-#                                     const PetscInt uOff_x[], 
-#                                     const PetscScalar u[], 
-#                                     const PetscScalar u_t[], 
-#                                     const PetscScalar u_x[], 
-#                                     const PetscInt aOff[], 
-#                                     const PetscInt aOff_x[], 
-#                                     const PetscScalar a[], 
-#                                     const PetscScalar a_t[], 
-#                                     const PetscScalar a_x[], 
-#                                     PetscReal t, 
-#                                     const PetscReal x[], 
-#                                     const PetscReal n[], ## <-- Different in boundary integral f0
-#                                     PetscInt numConstants, 
-#                                     const PetscScalar constants[], 
-#                                     PetscScalar f0[]), 
-#                         void (*f1)( PetscInt dim, 
-#                                     PetscInt Nf, 
-#                                     PetscInt NfAux, 
-#                                     const PetscInt uOff[], 
-#                                     const PetscInt uOff_x[], 
-#                                     const PetscScalar u[], 
-#                                     const PetscScalar u_t[], 
-#                                     const PetscScalar u_x[], 
-#                                     const PetscInt aOff[], 
-#                                     const PetscInt aOff_x[], 
-#                                     const PetscScalar a[], 
-#                                     const PetscScalar a_t[], 
-#                                     const PetscScalar a_x[], 
-#                                     PetscReal t, 
-#                                     const PetscReal x[], 
-#                                     const PetscReal n[],  ## <-- Different in boundary integral f1
-#                                     PetscInt numConstants, 
-#                                     const PetscScalar constants[], 
-#                                     PetscScalar f1[])
-#                         )
-#
 #
 # ## Interior integrals
 #
 # $$\int_\Omega \phi f_0(u, u_t, \nabla u, x, t) + \nabla\phi \cdot {\vec f}_1(u, u_t, \nabla u, x, t)$$
 #
 #
-#     PetscErrorCode PetscDSSetResidual(  PetscDS ds, 
-#                                         PetscInt f, 
-#                                         void (*f0)( PetscInt dim, 
-#                                                     PetscInt Nf,
-#                                                     PetscInt NfAux,
-#                                                     const PetscInt uOff[],
-#                                                     const PetscInt uOff_x[],
-#                                                     const PetscScalar u[],
-#                                                     const PetscScalar u_t[],
-#                                                     const PetscScalar u_x[],
-#                                                     const PetscInt aOff[],
-#                                                     const PetscInt aOff_x[],
-#                                                     const PetscScalar a[],
-#                                                     const PetscScalar a_t[],
-#                                                     const PetscScalar a_x[], 
-#                                                     PetscReal t, 
-#                                                     const PetscReal x[], 
-#                                                     PetscInt numConstants, 
-#                                                     const PetscScalar constants[], 
-#                                                     PetscScalar f0[]),
-#                                         void (*f1)( PetscInt dim, 
-#                                                     PetscInt Nf, 
-#                                                     PetscInt NfAux, 
-#                                                     const PetscInt uOff[], 
-#                                                     const PetscInt uOff_x[], 
-#                                                     const PetscScalar u[], 
-#                                                     const PetscScalar u_t[], 
-#                                                     const PetscScalar u_x[], 
-#                                                     const PetscInt aOff[], 
-#                                                     const PetscInt aOff_x[], 
-#                                                     const PetscScalar a[], 
-#                                                     const PetscScalar a_t[], 
-#                                                     const PetscScalar a_x[], 
-#                                                     PetscReal t, 
-#                                                     const PetscReal x[], 
-#                                                     PetscInt numConstants, 
-#                                                     const PetscScalar constants[], PetscScalar f1[])
-#                                         )
 #
-#
-#
-#     
-#
+
+

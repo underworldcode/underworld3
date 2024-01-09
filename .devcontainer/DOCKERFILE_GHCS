@@ -10,6 +10,10 @@ RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yml
 RUN export PETSC_DIR=/opt/conda \
     && pip install petsc4py==3.18
 
+## Add our own petsc here if required
+
+
+
 RUN pip install gmsh pygmsh
 
 # For launching later

@@ -17,7 +17,7 @@ The development branch has similar documentation:
 
 Refer to the Dockerfile for uw3 build instructions.  
 
-For development, building inplace will prob be preferable.  Remove
+For development, building inplace will probably be preferable.  Remove
 any existing installations using `clean.sh` then run
 
 ```shell
@@ -30,6 +30,7 @@ The in-place `pip` installation may be helpful for developers (after the above)
 pip install -e .
 ```
 
-For in place usage, you will usually need to set an appropriate PYTHONPATH.
+For in place usage, you will usually need to set an appropriate PYTHONPATH to 
+include the underworld build directory.
 
 

@@ -371,6 +371,7 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
         ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
+        
         if ierr != 0:
             raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
                                "Interpolation location is possibly outside the domain.")
