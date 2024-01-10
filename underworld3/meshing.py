@@ -659,7 +659,7 @@ def SphericalShell(
 @timing.routine_timer_decorator
 def QuarterAnnulus(
     radiusOuter: float = 1.0,
-    radiusInner: float = 0.3,
+    radiusInner: float = 0.547,
     angle: float = 45,
     cellSize: float = 0.1,
     centre: bool = False,
@@ -825,7 +825,7 @@ def QuarterAnnulus(
 @timing.routine_timer_decorator
 def Annulus(
     radiusOuter: float = 1.0,
-    radiusInner: float = 0.3,
+    radiusInner: float = 0.547,
     cellSize: float = 0.1,
     cellSizeInner: float = None,
     centre: bool = False,
@@ -1184,7 +1184,7 @@ def AnnulusInternalBoundary(
 @timing.routine_timer_decorator
 def CubedSphere(
     radiusOuter: float = 1.0,
-    radiusInner: float = 0.3,
+    radiusInner: float = 0.547,
     numElements: int = 5,
     degree: int = 1,
     qdegree: int = 2,
@@ -1301,6 +1301,198 @@ def CubedSphere(
         gmsh.model.setPhysicalName(2, boundaries.Lower.value, "Lower")
 
         gmsh.model.addPhysicalGroup(3, [1, 13, 40, 67, 94, 116], 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        for _, line in gmsh.model.get_entities(1):
+            gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
+
+        for _, surface in gmsh.model.get_entities(2):
+            gmsh.model.mesh.setTransfiniteSurface(surface)
+            if not simplex:
+                gmsh.model.mesh.set_recombine(2, surface)
+
+        if not simplex:
+            for _, volume in gmsh.model.get_entities(3):
+                gmsh.model.mesh.set_transfinite_volume(volume)
+                # if not simplex:
+                gmsh.model.mesh.set_recombine(3, volume)
+
+        # Generate Mesh
+        gmsh.model.mesh.generate(3)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+    )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh
+
+
+# ToDo: if keeping, we need to add boundaries etc.
+
+
+@timing.routine_timer_decorator
+def RegionalSphericalBox(
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.547,
+    numElements: int = 5,
+    degree: int = 1,
+    qdegree: int = 2,
+    simplex: bool = False,
+    filename=None,
+    refinement=None,
+    verbosity=0,
+):
+    """One section of the cube-sphere mesh - currently there is no choice of the lateral extent"""
+
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
+        North = 3
+        South = 4
+        East = 5
+        West = 6
+
+    r1 = radiusInner / np.sqrt(3)
+    r2 = radiusOuter / np.sqrt(3)
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 4)
+        gmsh.model.add("Cubed Sphere")
+
+        center_point = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=1)
+
+        gmsh.model.geo.addPoint(r2, r2, -r2, tag=2)
+        gmsh.model.geo.addPoint(-r2, r2, -r2, tag=3)
+        gmsh.model.geo.addPoint(-r2, -r2, -r2, tag=4)
+        gmsh.model.geo.addPoint(r2, -r2, -r2, tag=5)
+
+        gmsh.model.geo.addCircleArc(3, 1, 2, tag=1)
+        gmsh.model.geo.addCircleArc(2, 1, 5, tag=2)
+        gmsh.model.geo.addCircleArc(5, 1, 4, tag=3)
+        gmsh.model.geo.addCircleArc(4, 1, 3, tag=4)
+
+        gmsh.model.geo.addCurveLoop([1, 2, 3, 4], tag=1)
+        gmsh.model.geo.addSurfaceFilling([1], tag=1, sphereCenterTag=1)
+
+        gmsh.model.geo.addPoint(r1, r1, -r1, tag=6)
+        gmsh.model.geo.addPoint(-r1, r1, -r1, tag=7)
+        gmsh.model.geo.addPoint(-r1, -r1, -r1, tag=8)
+        gmsh.model.geo.addPoint(r1, -r1, -r1, tag=9)
+
+        gmsh.model.geo.addCircleArc(7, 1, 6, tag=5)
+        gmsh.model.geo.addCircleArc(6, 1, 9, tag=6)
+        gmsh.model.geo.addCircleArc(9, 1, 8, tag=7)
+        gmsh.model.geo.addCircleArc(8, 1, 7, tag=8)
+
+        gmsh.model.geo.addCurveLoop([5, 6, 7, 8], tag=2)
+        gmsh.model.geo.addSurfaceFilling([2], tag=2, sphereCenterTag=1)
+
+        gmsh.model.geo.addLine(2, 6, tag=9)
+        gmsh.model.geo.addLine(3, 7, tag=10)
+        gmsh.model.geo.addLine(5, 9, tag=11)
+        gmsh.model.geo.addLine(4, 8, tag=12)
+
+        gmsh.model.geo.addCurveLoop([3, 12, -7, -11], tag=3)
+        gmsh.model.geo.addSurfaceFilling([3], tag=3)
+
+        gmsh.model.geo.addCurveLoop([10, 5, -9, -1], tag=4)
+        gmsh.model.geo.addSurfaceFilling([4], tag=4)
+
+        gmsh.model.geo.addCurveLoop([9, 6, -11, -2], tag=5)
+        gmsh.model.geo.addSurfaceFilling([5], tag=5)
+
+        gmsh.model.geo.addCurveLoop([12, 8, -10, -4], tag=6)
+        gmsh.model.geo.addSurfaceFilling([6], tag=6)
+
+        gmsh.model.geo.addSurfaceLoop([2, 4, 6, 3, 1, 5], tag=1)
+        gmsh.model.geo.addVolume([1], tag=1)
+
+        gmsh.model.geo.synchronize()
+
+        gmsh.model.addPhysicalGroup(2, [1], boundaries.Upper.value)
+        gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
+
+        gmsh.model.addPhysicalGroup(2, [2], boundaries.Lower.value)
+        gmsh.model.setPhysicalName(2, boundaries.Lower.value, "Lower")
+
+        ## These probably have the wrong names ... check ordering
+
+        gmsh.model.addPhysicalGroup(2, [3], boundaries.North.value)
+        gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
+
+        gmsh.model.addPhysicalGroup(2, [4], boundaries.West.value)
+        gmsh.model.setPhysicalName(2, boundaries.West.value, "West")
+
+        gmsh.model.addPhysicalGroup(2, [5], boundaries.South.value)
+        gmsh.model.setPhysicalName(2, boundaries.South.value, "South")
+
+        gmsh.model.addPhysicalGroup(2, [6], boundaries.East.value)
+        gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
+
+        gmsh.model.addPhysicalGroup(3, [1], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         for _, line in gmsh.model.get_entities(1):
@@ -1546,7 +1738,7 @@ def SegmentedSphericalSurface2D(
 @timing.routine_timer_decorator
 def SegmentedSphere(
     radiusOuter: float = 1.0,
-    radiusInner: float = 0.3,
+    radiusInner: float = 0.547,
     cellSize: float = 0.05,
     numSegments: int = 6,
     degree: int = 1,
