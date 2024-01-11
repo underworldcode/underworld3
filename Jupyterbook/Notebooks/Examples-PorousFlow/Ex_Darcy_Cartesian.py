@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -56,6 +56,8 @@ new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.data, mesh.N)
 
 mesh.deform_mesh(new_coords=new_coords)
 
+
+
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
     
@@ -88,6 +90,8 @@ darcy.petsc_options.delValue("ksp_monitor")
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
 darcy.constitutive_model.Parameters.diffusivity = k
 
+k
+
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, -1]).T
 
@@ -95,11 +99,14 @@ darcy.add_dirichlet_bc(0.0, "Top")
 
 # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.smoothing = 0.0e-3
+darcy._v_projector.smoothing = 0.0
+
+
 
 # %%
 # Solve time
-darcy.solve()
+darcy.petsc_options.setValue("snes_monitor", None)
+darcy.solve(verbose=False)
 
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
@@ -112,16 +119,11 @@ if uw.mpi.size == 1 and uw.is_notebook:
 
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
     pvmesh.point_data["dP"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym[0] - (h_fn - y))
-    pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, k.sym)
+    pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, k)
     pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(v_soln.sym.dot(v_soln.sym)))
 
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-
-    # pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0], mesh.data, mesh.N)
-    # pvmesh.point_data["dP"] = uw.function.evaluate(p_soln.sym[0] - (h_fn - y), mesh.data, mesh.N)
-    # pvmesh.point_data["K"] = uw.function.evaluate(k, mesh.data, mesh.N)
-    # pvmesh.point_data["S"] = uw.function.evaluate(sympy.log(v_soln.sym.dot(v_soln.sym)), mesh.data, mesh.N)
 
     # point sources at cell centres
 
@@ -153,10 +155,8 @@ if uw.mpi.size == 1 and uw.is_notebook:
                 opacity=1.0,
             )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.5, opacity=0.75)
-
-    pl.add_mesh(pvstream, line_width=10.0)
-
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.25, opacity=0.5)
+    pl.add_mesh(pvstream, line_width=1.0)
     pl.show(cpos="xy")
 
 #

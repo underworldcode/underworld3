@@ -22,7 +22,9 @@ PIC as motivation for this approach
 
 ## Template problem
 
-IMAGE
+
+
+
 
 In classical fluid dynamics we write evolution equations by considering the conservation of a given quantity with the explicit assumption of fluid-mediated transport when we derive the partial differential equations. 
 

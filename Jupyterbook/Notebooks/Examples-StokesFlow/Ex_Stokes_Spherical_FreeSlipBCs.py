@@ -91,7 +91,7 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = uw.options.getInt("problem_size", default=1)
+problem_size = uw.options.getInt("problem_size", default=3)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
 grid_type = uw.options.getString("grid_type", default="simplex")
 
@@ -109,21 +109,23 @@ Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # +
 if problem_size <= 1:
-    cell_size = 0.33
+    els = 3
 elif problem_size == 2:
-    cell_size = 0.15
+    els = 6
 elif problem_size == 3:
-    cell_size = 0.05
+    els = 12
 elif problem_size == 4:
+    els = 50
     cell_size = 0.02
 elif problem_size == 5:  # Pretty extreme to mesh this on proc0
-    cell_size = 0.015
+    els = 66
 elif problem_size >= 6:  # should consider refinement (or prebuild)
-    cell_size = 0.01
+    els = 100
 
+cell_size = 1/els
 res = cell_size
 
-expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
+expt_name = f"Stokes_Sphere_free_slip_{els}"
 
 from underworld3 import timing
 
@@ -143,16 +145,13 @@ else:
     meshball = uw.meshing.CubedSphere(
         radiusInner=r_i,
         radiusOuter=r_o,
-        numElements=3,
+        numElements=els,
         refinement=grid_refinement,
         qdegree=2,
     )
 
 meshball.dm.view()
 # -
-
-
-
 stokes = uw.systems.Stokes(
     meshball,
     verbose=False,
@@ -172,37 +171,19 @@ stokes.penalty = 0.0
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
 
-
 # Some useful coordinate stuff
 
 x, y, z = meshball.CoordinateSystem.N
 ra, l1, l2 = meshball.CoordinateSystem.R
 
-
-## Mesh Variables for T and radial coordinate
-
-meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
-
-with meshball.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), meshball.data, meshball.N
-    )  # cf radius_fn which is 0->1
-
-## 
+## Mesh Variables for T ## 
 
 radius_fn = sympy.sqrt(
     meshball.rvec.dot(meshball.rvec)
 )  # normalise by outer radius if not 1.0
+
 unit_rvec = meshball.X / (radius_fn)
 gravity_fn = radius_fn
-
-
-# hw = 1000.0 / res
-# surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-# surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
-
-# base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-# base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 
 ## Buoyancy (T) field
 
@@ -227,18 +208,18 @@ with meshball.access(t_soln):
 # that we are not adding anything to excite these modes in the forcing terms.
 
 orientation_wrt_z = sympy.atan2(y + 1.0e-10, x + 1.0e-10)
-v_rbm_z_x = -meshr.fn * sympy.sin(orientation_wrt_z)
-v_rbm_z_y = meshr.fn * sympy.cos(orientation_wrt_z)
+v_rbm_z_x = -ra * sympy.sin(orientation_wrt_z)
+v_rbm_z_y = ra * sympy.cos(orientation_wrt_z)
 v_rbm_z = sympy.Matrix([v_rbm_z_x, v_rbm_z_y, 0]).T
 
 orientation_wrt_x = sympy.atan2(z + 1.0e-10, y + 1.0e-10)
-v_rbm_x_y = -meshr.fn * sympy.sin(orientation_wrt_x)
-v_rbm_x_z = meshr.fn * sympy.cos(orientation_wrt_x)
+v_rbm_x_y = -ra * sympy.sin(orientation_wrt_x)
+v_rbm_x_z = ra * sympy.cos(orientation_wrt_x)
 v_rbm_x = sympy.Matrix([0, v_rbm_x_y, v_rbm_x_z]).T
 
 orientation_wrt_y = sympy.atan2(z + 1.0e-10, x + 1.0e-10)
-v_rbm_y_x = -meshr.fn * sympy.sin(orientation_wrt_y)
-v_rbm_y_z = meshr.fn * sympy.cos(orientation_wrt_y)
+v_rbm_y_x = -ra * sympy.sin(orientation_wrt_y)
+v_rbm_y_z = ra * sympy.cos(orientation_wrt_y)
 v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
 
 
@@ -276,17 +257,11 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # thermal buoyancy force
 
-buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn 
-
 Gamma = meshball.Gamma
-
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
 
-stokes.bodyforce = unit_rvec * buoyancy_force
-# -
-
-Gamma.dot(v_soln.sym)
+stokes.bodyforce = unit_rvec * Rayleigh * gravity_fn * t_forcing_fn 
 
 # +
 timing.reset()
@@ -298,7 +273,6 @@ stokes.solve(zero_init_guess=True)
 # Note: we should remove the rigid body rotation nullspace
 # This should be done during the solve, but it is also reasonable to
 # remove it from the force terms and solution to prevent it growing if present
-
 
 I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
 norm = I0.evaluate()
@@ -325,6 +299,17 @@ print(
 timing.print_table()
 
 # +
+outdir="output"
+
+meshball.write_timestep(
+    expt_name,
+    meshUpdates=True,
+    meshVars=[p_soln, v_soln],
+    outputPath=outdir,
+    index=0,
+)
+
+
 # savefile = "output/stokesSphere_orig.h5"
 # meshball.save(savefile)
 # # v_soln.save(savefile)
@@ -379,4 +364,7 @@ if uw.mpi.size == 1:
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
+
+# -
+
 

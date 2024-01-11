@@ -273,7 +273,7 @@ class SNES_Darcy(SNES_Scalar):
     @property
     def darcy_flux(self):
         # flux = self.constitutive_model.flux(self.Unknowns.L - self.s).T
-        flux = self.constitutive_model.flux.T
+        flux = (self.constitutive_model.flux.T -self.s)
         return flux
 
     @property
