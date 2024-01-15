@@ -37,8 +37,6 @@ p = uw.discretisation.MeshVariable(
 
 ## This needs to be fixed up for systems that don't use /tmp like this
 def test_build_functions():
-
-    
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
@@ -48,6 +46,8 @@ def test_build_functions():
     stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
+
+    print(f"mesh.N.x -> {type(mesh.N.x)}")
 
     with uw.utilities.CaptureStdout(split=False) as captured_setup_solver:
         stokes._setup_pointwise_functions(
@@ -99,7 +99,6 @@ def test_build_functions():
 
 ## This needs to be fixed up for systems that don't use /tmp like this
 def test_build_boundary_functions():
-    
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
@@ -126,7 +125,6 @@ def test_build_boundary_functions():
     # print("============", flush=True)
     # print(captured_setup_solver, flush=True)
     # print("============", flush=True)
-
 
     counter = len(stokes.ext_dict)
 
@@ -155,7 +153,6 @@ def test_build_boundary_functions():
     # assert r"boundary_jacobian_g0" in captured_setup_solver
     # assert r"boundary_residual_f0" in captured_setup_solver
     # assert r"boundary_jacobian_preconditioner_g0" in captured_setup_solver
-
 
     del stokes
 

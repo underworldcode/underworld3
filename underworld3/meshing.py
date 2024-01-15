@@ -1322,6 +1322,19 @@ def CubedSphere(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def sphere_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        ## Note these numbers should not be hard-wired
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -1368,6 +1381,7 @@ def CubedSphere(
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        return_coords_to_bounds=sphere_return_coords_to_bounds,
     )
 
     class boundary_normals(Enum):
@@ -1472,6 +1486,8 @@ def RegionalSphericalBox(
 
         gmsh.model.geo.synchronize()
 
+        # gmsh.model.geo.rotate([(3, 1)], 0.0, 0.0, 0.0, 1.0, 0.0, np.pi, 0.0)
+
         gmsh.model.addPhysicalGroup(2, [1], boundaries.Upper.value)
         gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
 
@@ -1492,7 +1508,7 @@ def RegionalSphericalBox(
         gmsh.model.addPhysicalGroup(2, [6], boundaries.East.value)
         gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
 
-        gmsh.model.addPhysicalGroup(3, [1], 99999)
+        gmsh.model.addPhysicalGroup(3, [1, 2], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         for _, line in gmsh.model.get_entities(1):
@@ -1513,6 +1529,19 @@ def RegionalSphericalBox(
         gmsh.model.mesh.generate(3)
         gmsh.write(uw_filename)
         gmsh.finalize()
+
+    def sphere_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        ## Note these numbers should not be hard-wired
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
 
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
@@ -1560,6 +1589,7 @@ def RegionalSphericalBox(
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        return_coords_to_bounds=sphere_return_coords_to_bounds,
     )
 
     class boundary_normals(Enum):

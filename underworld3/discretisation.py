@@ -260,6 +260,9 @@ class Mesh(Stateful, uw_object):
 
         self._N = CoordSys3D(f"N")
 
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
+
         self._N.x._latex_form = r"\mathrm{\xi_0}"
         self._N.y._latex_form = r"\mathrm{\xi_1}"
         self._N.z._latex_form = r"\mathrm{\xi_2}"
@@ -277,8 +280,18 @@ class Mesh(Stateful, uw_object):
         # This step will usually over-write the defaults we just defined
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
 
-        # Tidy some of this printing without changing the
-        # underlying vector names (as these are part of the code generation system)
+        # This was in the _jit extension but ... if
+        # not here then the tests fail sometimes (caching ?)
+
+        self._N.x._ccodestr = "petsc_x[0]"
+        self._N.y._ccodestr = "petsc_x[1]"
+        self._N.z._ccodestr = "petsc_x[2]"
+
+        # Surface integrals also have normal vector information as petsc_n
+
+        self._Gamma.x._ccodestr = "petsc_n[0]"
+        self._Gamma.y._ccodestr = "petsc_n[1]"
+        self._Gamma.z._ccodestr = "petsc_n[2]"
 
         try:
             self.isSimplex = self.dm.isSimplex()

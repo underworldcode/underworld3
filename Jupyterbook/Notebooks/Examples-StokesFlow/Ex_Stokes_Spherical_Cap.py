@@ -91,15 +91,14 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = uw.options.getInt("problem_size", default=2)
+problem_size = uw.options.getInt("problem_size", default=4)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
-grid_simplex = uw.options.getBool("simplex", default=False)
+grid_simplex = uw.options.getBool("simplex", default=True)
 
 
 # +
 visuals = 1
 output_dir = "output"
-grid_type = "cubed_sphere"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
@@ -115,12 +114,11 @@ elif problem_size == 2:
 elif problem_size == 3:
     els = 12
 elif problem_size == 4:
-    els = 50
-    cell_size = 0.02
+    els = 24
 elif problem_size == 5:  # Pretty extreme to mesh this on proc0
-    els = 66
+    els = 48
 elif problem_size >= 6:  # should consider refinement (or prebuild)
-    els = 100
+    els = 96
 
 cell_size = 1/els
 res = cell_size
@@ -145,45 +143,6 @@ meshball = uw.meshing.RegionalSphericalBox(
 
 meshball.dm.view()
 # -
-
-
-# +
-# OR
-# check the mesh if in a notebook / serial
-
-if uw.mpi.size == 1:
-
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(meshball)
-
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
-
-    pl = pv.Plotter(window_size=[1000, 1000])
-    pl.add_axes()
-
-    pl.add_mesh(
-        clipped,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        use_transparency=False,
-        show_scalar_bar = False,
-        opacity=1.0,
-    )
-
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-    #               use_transparency=False, opacity=1.0)
-
-
-
-    # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
-    # OR
-    pl.show(cpos="xy")
-
-# -
-
 stokes = uw.systems.Stokes(
     meshball,
     verbose=False,
@@ -224,7 +183,7 @@ t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 t_forcing_fn = 1.0 * (
     sympy.exp(-10.0 * (x**2 + (y - 0.8) ** 2 + z**2))
     + sympy.exp(-10.0 * ((x - 0.8) ** 2 + y**2 + z**2))
-    + sympy.exp(-10.0 * (x**2 + y**2 + (z - 0.8) ** 2))
+    + sympy.exp(-10.0 * (x**2 + y**2 + (z + 0.8) ** 2))
 )
 
 with meshball.access(t_soln):
@@ -239,26 +198,25 @@ with meshball.access(t_soln):
 stokes.tolerance = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.petsc_options["snes_type"] = "newtonls"
-stokes.petsc_options["ksp_type"] = "fgmres"
+# stokes.petsc_options["ksp_type"] = "fgmres"
 
-# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+# # stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+# stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+# stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
-stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+# stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
+# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
+# stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
 
-# gasm is super-fast ... but mg seems to be bulletproof
-# gamg is toughest wrt viscosity
+# # gasm is super-fast ... but mg seems to be bulletproof
+# # gamg is toughest wrt viscosity
 
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
+# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 # # # mg, multiplicative - very robust ... similar to gamg, additive
 
@@ -297,16 +255,6 @@ meshball.write_timestep(
 )
 
 
-# savefile = "output/stokesSphere_orig.h5"
-# meshball.save(savefile)
-# # v_soln.save(savefile)
-# # p_soln.save(savefile)
-# meshball.generate_xdmf(savefile)
-# meshball.write_checkpoint("output/stokesSphere",
-#                           meshUpdates=True,
-#                           meshVars=[p_soln,v_soln],
-#                           index=0)
-
 
 # +
 # OR
@@ -318,40 +266,62 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)    
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 1, 0), invert=True)
+
+    points = np.zeros((meshball._centroids.shape[0], 3))
+    points[:, 0] = meshball._centroids[:, 0]
+    points[:, 1] = meshball._centroids[:, 1]
+    points[:, 2] = meshball._centroids[:, 2]
+
+    point_cloud = pv.PolyData(points)
+
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", 
+        integration_direction="forward", 
+        integrator_type=45,
+        surface_streamlines=False,
+        initial_step_length=0.01,
+        max_time=0.25,
+        max_steps=1000
+    )
 
     pl = pv.Plotter(window_size=[1000, 750])
     pl.add_axes()
 
     pl.add_mesh(
         clipped,
+        # cmap="RdGy_r",
         cmap="coolwarm",
         edge_color="Black",
-        show_edges=True,
+        show_edges=False,
         scalars="T",
         use_transparency=False,
         show_scalar_bar = False,
-        opacity=1.0,
+        opacity=1,
     )
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
+    
+    pl.add_mesh(pvstream)
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-                           show_scalar_bar = False,
-                           mag=1000/Rayleigh, )
+    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+    #                        show_scalar_bar = False, 
+    #                        mag=10/Rayleigh, )
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
 
 # -
+
 
 

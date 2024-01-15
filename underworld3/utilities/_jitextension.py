@@ -308,17 +308,20 @@ def _createext(
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
     # make sure each component points to the correct PETSc data
 
-    mesh.N.x._ccodestr = "petsc_x[0]"
-    mesh.N.y._ccodestr = "petsc_x[1]"
-    mesh.N.z._ccodestr = "petsc_x[2]"
+    ## This is set up in the mesh at the moment but this does seem to be the wrong place
 
-    # Surface integrals also have normal vector information as petsc_n
+    # mesh.N.x._ccodestr = "petsc_x[0]"
+    # mesh.N.y._ccodestr = "petsc_x[1]"
+    # mesh.N.z._ccodestr = "petsc_x[2]"
 
-    mesh.Gamma_N.x._ccodestr = "petsc_n[0]"
-    mesh.Gamma_N.y._ccodestr = "petsc_n[1]"
-    mesh.Gamma_N.z._ccodestr = "petsc_n[2]"
+    # # Surface integrals also have normal vector information as petsc_n
+
+    # mesh.Gamma_N.x._ccodestr = "petsc_n[0]"
+    # mesh.Gamma_N.y._ccodestr = "petsc_n[1]"
+    # mesh.Gamma_N.z._ccodestr = "petsc_n[2]"
 
     type(mesh.N.x)._ccode = lambda self, printer: self._ccodestr
+    type(mesh.Gamma_N.x)._ccode = lambda self, printer: self._ccodestr
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,

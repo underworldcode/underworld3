@@ -589,9 +589,7 @@ class SNES_Scalar(Solver):
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
-
-
-        
+            
         return
 
     @timing.routine_timer_decorator
@@ -1316,8 +1314,6 @@ class SNES_Vector(Solver):
             self._setup_pointwise_functions(verbose, debug=debug)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
-
-
 
         gvec = self.dm.getGlobalVec()
 
