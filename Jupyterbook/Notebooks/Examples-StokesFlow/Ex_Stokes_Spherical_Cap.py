@@ -313,15 +313,13 @@ if uw.mpi.size == 1:
     
     pl.add_mesh(pvstream)
 
-    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-    #                        show_scalar_bar = False, 
-    #                        mag=10/Rayleigh, )
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+                           show_scalar_bar = False, 
+                           mag=10/Rayleigh, )
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
 
 # -
-
-
 

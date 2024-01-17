@@ -264,7 +264,10 @@ stokes.add_natural_bc(10000 * Gamma.dot(v.sym) *  Gamma, "Lower")
 
 theta = 2 * sympy.pi / 180
 stokes.bodyforce = -sympy.Matrix([[sympy.sin(theta), 0.0, 0.0*sympy.cos(theta)]])
+# -
 
+
+Gamma.dot(v.sym)
 
 # +
 # Stokes settings
@@ -357,14 +360,14 @@ if uw.mpi.size == 1:
     # pl.add_mesh(clipped,'white', show_edges=False, opacity=0.75)
     # pl.add_mesh(pvmesh, 'white', show_edges=True, opacity=0.5)
 
-    pl.add_mesh(pvstream)
+    # pl.add_mesh(pvstream)
     pl.add_mesh(pvstream2)
 
 
-    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-    #                        show_scalar_bar = False, opacity=1
-    #                        ,
-    #                        mag=100, )
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+                           show_scalar_bar = False, opacity=1
+                           ,
+                           mag=100, )
 
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)

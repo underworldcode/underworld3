@@ -993,7 +993,9 @@ def AnnulusInternalBoundary(
     radiusInternal: float = 1.0,
     radiusInner: float = 0.5,
     cellSize: float = 0.1,
-    cellSize_Outer: float = 0.2,
+    cellSize_Outer: float = None,
+    cellSize_Inner: float = None,
+    cellSize_Internal: float = None,
     centre: bool = False,
     degree: int = 1,
     qdegree: int = 2,
@@ -1005,6 +1007,15 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
+
+    if cellSize_Inner is None:
+        cellSize_Inner = cellSize
+
+    if cellSize_Outer is None:
+        cellSize_Outer = cellSize
+
+    if cellSize_Internal is None:
+        cellSize_Internal = cellSize
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1026,8 +1037,12 @@ def AnnulusInternalBoundary(
         loops = []
 
         if radiusInner > 0.0:
-            p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize)
-            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize)
+            p2 = gmsh.model.geo.add_point(
+                radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
+            )
+            p3 = gmsh.model.geo.add_point(
+                -radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
+            )
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
@@ -1036,8 +1051,12 @@ def AnnulusInternalBoundary(
 
             loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize)
-        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize)
+        p4 = gmsh.model.geo.add_point(
+            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
+        )
+        p5 = gmsh.model.geo.add_point(
+            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
+        )
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -1048,7 +1067,7 @@ def AnnulusInternalBoundary(
         ### although the internal boundary is still defined in the mesh dm
         # loops = [cl2] + loops
 
-        # Fixed Stars
+        # Outermost mesh
 
         p6 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize_Outer)
         p7 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize_Outer)

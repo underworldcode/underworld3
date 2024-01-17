@@ -264,7 +264,7 @@ pl.add_mesh(
 )
 
 
-pl.add_arrows(velocity_points.points, velocity_points.point_data["V3"]-velocity_points.point_data["V0"], mag=10000, opacity=0.75)
+pl.add_arrows(velocity_points.points, velocity_points.point_data["V3"]-velocity_points.point_data["V0"], mag=100000, opacity=0.75)
 pl.add_arrows(velocity_points.points+(0.01,0.0,0.0), velocity_points.point_data["V3"], mag=1.0, opacity=0.75)
 pl.add_arrows(velocity_points.points+(0.00,0.0,0.0), velocity_points.point_data["V0"], mag=1.0, opacity=0.75)
 # pl.add_mesh(pvstream)

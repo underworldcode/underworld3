@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -81,12 +81,6 @@ x,y = mesh.X
 
 mesh.get_min_radius()
 
-hw = 0.1 * mesh.get_min_radius()
-surface_fn = 2 * uw.maths.delta_function(y-1, hw) / uw.maths.delta_function(0.0, hw)
-base_fn = 2 * uw.maths.delta_function(y, hw)
-right_fn = 2 * uw.maths.delta_function(x-1, hw)
-left_fn = 2 * uw.maths.delta_function(x, hw)
-
 # +
 # options = PETSc.Options()
 # options.getAll()
@@ -127,13 +121,7 @@ stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 
 # We may need to adjust the tolerance if $\Delta \eta$ is large
 
-# +
-# stokes.petsc_options["snes_rtol"] = 1.0e-6
-# stokes.petsc_options["ksp_rtol"] = 1.0e-6
-# stokes.petsc_options["snes_max_it"] = 10
-# -
-
-stokes.tolerance = 1.0e-3
+stokes.tolerance = 1.0e-6
 
 stokes.petsc_options["snes_monitor"]= None
 stokes.petsc_options["ksp_monitor"] = None
@@ -217,11 +205,8 @@ if uw.mpi.size == 1:
 
 # +
 stokes.bodyforce = sympy.Matrix(
-    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)*(1-(surface_fn + base_fn))]
+    [0, -sympy.cos(sympy.pi * x) * sympy.sin(2 * sympy.pi * y)]
 )
-
-# stokes.bodyforce[0] -= 1.0e3* v.sym[0] * (left_fn + right_fn)
-# stokes.bodyforce[1] -= 1.0e3 * v.sym[1] * (surface_fn + base_fn)
 
 viscosity_fn = sympy.Piecewise(
     (1.0e8, x > x_c),
