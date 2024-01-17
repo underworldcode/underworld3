@@ -73,6 +73,14 @@ def UnstructuredSimplexBox(
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
 
+    dim = len(minCoords)
+    if dim == 2:
+        boundaries = boundaries_2D
+        boundary_normals = boundary_normals_2D
+    else:
+        boundaries = boundaries_3D
+        boundary_normals = boundary_normals_3D
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
@@ -88,12 +96,7 @@ def UnstructuredSimplexBox(
         gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("Box")
 
-        # Create Box Geometry
-        dim = len(minCoords)
-
         if dim == 2:
-            boundaries = boundaries_2D
-            boundary_normals = boundary_normals_2D
 
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
@@ -279,6 +282,14 @@ def StructuredQuadBox(
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
 
+    dim = len(minCoords)
+    if dim == 2:
+        boundaries = boundaries_2D
+        boundary_normals = boundary_normals_2D
+    else:
+        boundaries = boundaries_3D
+        boundary_normals = boundary_normals_3D
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
@@ -295,11 +306,8 @@ def StructuredQuadBox(
         gmsh.model.add("Box")
 
         # Create Box Geometry
-        dim = len(minCoords)
 
         if dim == 2:
-            boundaries = boundaries_2D
-            boundary_normals = boundary_normals_2D
 
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
@@ -352,8 +360,6 @@ def StructuredQuadBox(
             gmsh.model.mesh.set_recombine(2, surface)
 
         else:
-            boundaries = boundaries_3D
-            boundary_normals = boundary_normals_3D
 
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
