@@ -81,19 +81,19 @@ if uw.mpi.size == 1 and uw.is_notebook:
 # %%
 # Create Poisson object
 darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_soln, v_Field=v_soln)
-darcy.constitutive_model = uw.constitutive_models.DiffusionModel
-darcy.constitutive_model.Parameters.diffusivity = 1
+darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
+darcy.constitutive_model.Parameters.permeability = 1
 darcy.petsc_options.delValue("ksp_monitor")
 
 # Set some things
 
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
-darcy.constitutive_model.Parameters.diffusivity = k
+darcy.constitutive_model.Parameters.permeability = k
 
 k
 
 darcy.f = 0.0
-darcy.s = sympy.Matrix([0, -1]).T
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
 
 darcy.add_dirichlet_bc(0.0, "Top")
 
@@ -163,11 +163,11 @@ if uw.mpi.size == 1 and uw.is_notebook:
 # ## Metrics
 
 _, _, _, max_p, _, _, _ = p_soln.stats()
-_, _, _, max_vh, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.i)))
-_, _, _, max_vv, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.j)))
 
-print("Max horizontal velocity: {:4f}".format(max_vh))
-print("Max vertical velocity:   {:4f}".format(max_vv))
+
+# +
+
 print("Max pressure         :   {:4f}".format(max_p))
+# -
 
 

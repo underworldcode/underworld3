@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -77,7 +77,7 @@ elif problem_size >= 6:
 cellSizeOuter = res
 cellSizeInner = res/2
 ellipticityOuter = 3.0
-ellipticityInner = 5.0
+ellipticityInner = 0.5
 
 radiusOuter = r_o
 radiusInner = r_i

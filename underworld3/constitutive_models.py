@@ -1158,6 +1158,102 @@ class DiffusionModel(Constitutive_Model):
         return
 
 
+class DarcyFlowModel(Constitutive_Model):
+    r"""
+    ```python
+    class DarcyFlowModel(Constitutive_Model)
+    ...
+    ```
+    ```python
+    diffusion_model = DiffusionModel(dim)
+    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
+    scalar_solver.constititutive_model = diffusion_model
+    ```
+    $$q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)$$
+
+    where $\kappa$ is the permeability, a scalar constant, `sympy` function, `underworld` mesh variable or
+    any valid combination of those types. $s$ is the body force 'source' of pressure gradients.
+
+    Access the constitutive model using:
+
+    ```python
+    flux = darcy_flow_model.flux
+    ```
+    ---
+    """
+
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
+
+        def __init__(
+            inner_self,
+            _owning_model,
+            diffusivity: Union[float, sympy.Function] = 1,
+        ):
+            inner_self._diffusivity = diffusivity
+            inner_self._owning_model = _owning_model
+
+        @property
+        def permeability(inner_self):
+            return inner_self._permeability
+
+        @permeability.setter
+        def permeability(inner_self, value: Union[float, sympy.Function]):
+            inner_self._permeability = value
+            inner_self._reset()
+
+        @property
+        def s(inner_self):
+            return inner_self._s
+
+        @s.setter
+        def s(inner_self, value: sympy.Matrix):
+            inner_self._s = value
+            inner_self._reset()
+
+    @property
+    def K(self):
+        return self.Parameters.permeability
+
+    def _build_c_tensor(self):
+        """For this constitutive law, we expect just a diffusivity function"""
+
+        d = self.dim
+        kappa = self.Parameters.permeability
+        self._c = sympy.Matrix.eye(d) * kappa
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(
+            Latex(
+                r"$\quad\kappa = $ "
+                + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()
+            )
+        )
+
+        return
+
+    @property
+    def flux(self):
+        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
+        (always uses the `c` form of the tensor). In general cases, the history of the gradients
+        may be required to evaluate the flux.
+        """
+
+        ddu = self.grad_u - self.Parameters.s
+
+        return self._q(ddu)
+
+
 class TransverseIsotropicFlowModel(Constitutive_Model):
     r"""
     ```python

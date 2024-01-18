@@ -337,7 +337,6 @@ class SNES_Scalar(Solver):
     This class is used as a base layer for building solvers which translate from the common
     physical conservation laws into this general mathematical form.
     """
-    instances = 0
 
     @timing.routine_timer_decorator
     def __init__(self,
@@ -345,14 +344,21 @@ class SNES_Scalar(Solver):
                  u_Field  : uw.discretisation.MeshVariable = None,
                  DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
                  DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 degree: int = 2,
                  solver_name: str = "",
-                 verbose    = False):
-
+                 verbose    = False,
+                 ):
 
         super().__init__()
 
         ## Keep track
 
+        ## Todo: some validity checking on the size / type of u_Field supplied
+        if u_Field is None:
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, 
+                                                      varname="Us{}".format(self.instance_number),
+                                                    vtype=uw.VarType.SCALAR, degree=degree, )
+            
         self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
@@ -589,7 +595,7 @@ class SNES_Scalar(Solver):
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
-            
+
         return
 
     @timing.routine_timer_decorator
@@ -918,10 +924,10 @@ class SNES_Vector(Solver):
 
 
         ## Todo: some validity checking on the size / type of u_Field supplied
-        ##if not u_Field:
-        ##     self._u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, name="Uv{}".format(SNES_Scalar.instances),
-        ##                                     vtype=uw.VarType.SCALAR, degree=degree )
-        ## else:
+        if not u_Field:
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, 
+                        num_components=mesh.dim, varname="Uv{}".format(self.instance_number),
+                        vtype=uw.VarType.VECTOR, degree=degree )
 
 
         
@@ -1428,7 +1434,7 @@ class SNES_Stokes_SaddlePt(Solver):
                  pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
                  DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
                  DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
-                 order         : Optional[int] = 2,
+                 degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
                  solver_name   : Optional[str]                           ="stokes_pt_",
                  verbose       : Optional[bool]                           =False,
@@ -1448,14 +1454,14 @@ class SNES_Stokes_SaddlePt(Solver):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
-        self._order = order
+        self._degree = degree
 
         ## Any problem with U,P, just define our own
         if velocityField == None or pressureField == None:
 
             i = self.instance_number
-            self.Unknowns.u = uw.discretisation.MeshVariable(f"U{i}", self.mesh, self.mesh.dim, degree=order, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
-            self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=order-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
+            self.Unknowns.u = uw.discretisation.MeshVariable(f"U{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
+            self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
 
             if self.verbose and uw.mpi.rank == 0:
                 print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")

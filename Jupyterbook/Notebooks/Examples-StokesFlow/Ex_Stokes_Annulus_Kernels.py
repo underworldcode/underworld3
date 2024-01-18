@@ -33,7 +33,7 @@ from underworld3 import function
 import numpy as np
 import sympy
 
-res = 0.1
+res = 0.05
 r_o = 1.0
 r_int = 0.8
 r_i = 0.5
@@ -61,9 +61,8 @@ meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o,
 
 v_soln = uw.discretisation.MeshVariable(r"\mathbf{u}", meshball, 2, degree=2)
 p_soln = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=False)
-p_cont = uw.discretisation.MeshVariable(r"p_c", meshball, 1, degree=1, continuous=True)
-t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=3)
-phi_g = uw.discretisation.MeshVariable(r"\phi", meshball, 1, degree=3)
+p_cont = uw.discretisation.MeshVariable(r"p", meshball, 1, degree=1, continuous=True)
+
 
 
 # +
@@ -86,28 +85,29 @@ Rayleigh = 1.0e5
 
 meshball.dm.view()
 
-if uw.mpi.size == 1:
+# +
+# if uw.mpi.size == 1:
     
-    import pyvista as pv
-    import underworld3.visualisation as vis
+#     import pyvista as pv
+#     import underworld3.visualisation as vis
 
-    pvmesh = vis.mesh_to_pv_mesh(meshball)
+#     pvmesh = vis.mesh_to_pv_mesh(meshball)
 
-    pl = pv.Plotter(window_size=(750, 750))
+#     pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_mesh(pvmesh, "Grey", "wireframe")
+#     pl.add_mesh(pvmesh, "Grey", "wireframe")
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="Greens",
-        edge_color="Grey",
-        show_edges=True,
-        use_transparency=False,
-        clim=[0.66, 1],
-        opacity=0.75,
-    )
+#     pl.add_mesh(
+#         pvmesh,
+#         cmap="Greens",
+#         edge_color="Grey",
+#         show_edges=True,
+#         use_transparency=False,
+#         clim=[0.66, 1],
+#         opacity=0.75,
+#     )
 
-    pl.show(cpos="xy")
+#     pl.show(cpos="xy")
 
 # +
 # Create Stokes object
@@ -120,11 +120,14 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1.0
 stokes.saddle_preconditioner = 1.0
 
+t_init = sympy.sin(5*th) * sympy.exp(-1000.0 * ((r - r_int) ** 2)) 
+
 Gamma = meshball.Gamma
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
-stokes.add_natural_bc(10000 * Gamma, "Internal")
+stokes.add_natural_bc(-t_init * unit_rvec, "Internal")
 
+stokes.bodyforce = sympy.Matrix([0,0])
 # -
 
 
@@ -132,28 +135,12 @@ pressure_solver = uw.systems.Projection(meshball, p_cont)
 pressure_solver.uw_function = p_soln.sym[0]
 pressure_solver.smoothing = 1.0e-3
 
-t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2)) / 3.5
-
-
-# +
-# Write density into a variable for saving
-
-with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(
-        t_init, coords=t_soln.coords, coord_sys=meshball.N
-    )
-    print(t_soln.data.min(), t_soln.data.max())
-
-
 # +
 
-stokes.bodyforce = sympy.Matrix([0,0])
-# This may help the solvers - penalty in the preconditioner
-# stokes.saddle_preconditioner = 1.0
-
-# -
-
+stokes.petsc_options.setValue("ksp_monitor", None)
+stokes.petsc_options.setValue("snes_monitor", None)
 stokes.solve()
+# -
 
 # Pressure at mesh nodes
 pressure_solver.solve()
@@ -179,23 +166,14 @@ if uw.mpi.size == 1:
         pvmesh,
         cmap="coolwarm",
         edge_color="Grey",
-        scalars="P",
+        scalars="T",
         show_edges=True,
         use_transparency=False,
         opacity=1.0,
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.0002)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=2)
 
-    # pl.add_mesh(
-    #     pvmesh,
-    #     cmap="Greys_r",
-    #     edge_color="Grey",
-    #     scalars="M",
-    #     show_edges=True,
-    #     use_transparency=False,
-    #     opacity=0.3,
-    # )
 
     pl.show(cpos="xy")
 # -

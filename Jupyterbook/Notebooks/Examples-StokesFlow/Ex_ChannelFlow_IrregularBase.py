@@ -4,10 +4,12 @@
 
 # +
 import underworld3 as uw
-
 import numpy as np
-
 import sympy
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 import os
 import sys
