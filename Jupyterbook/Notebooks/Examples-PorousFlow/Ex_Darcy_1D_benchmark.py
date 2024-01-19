@@ -82,7 +82,7 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
 darcy.constitutive_model.Parameters.permeability = kFunc
-darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
 darcy.f = 0.0
 
 # set up boundary conditions

@@ -152,11 +152,11 @@ if uw.mpi.rank == 0:
     gmsh.model.geo.synchronize()
 
     gmsh.model.mesh.generate(2)
-    gmsh.write(".meshes/elliptical_mesh.msh")
+    gmsh.write("tmp_elliptical_mesh.msh")
     gmsh.finalize()
 
 elliptical_mesh = uw.discretisation.Mesh(
-        ".meshes/elliptical_mesh.msh",
+        "tmp_elliptical_mesh.msh",
         degree=1,
         qdegree=3,
         useMultipleTags=True,
