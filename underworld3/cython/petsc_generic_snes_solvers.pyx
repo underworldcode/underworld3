@@ -402,7 +402,6 @@ class SNES_Scalar(Solver):
         self.petsc_options["snes_rtol"] = 1.0e-4
         self.petsc_options["mg_levels_ksp_max_it"] = 3
 
-
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
             self.petsc_options["snes_converged_reason"] = None
@@ -413,8 +412,6 @@ class SNES_Scalar(Solver):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-
-        
         self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
@@ -512,7 +509,7 @@ class SNES_Scalar(Solver):
             boundary = bc.boundary
             label = self.dm.getLabel(boundary)
             if not label:
-                if self.verbose == True:
+                if 1 or self.verbose == True:
                     print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
                 continue
 
@@ -815,8 +812,6 @@ class SNES_Scalar(Solver):
 
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-
-
         # solve
         self.snes.solve(None, gvec)
 
@@ -831,6 +826,21 @@ class SNES_Scalar(Solver):
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
+
+        converged = self.snes.getConvergedReason() 
+        iterations = self.snes.getIterationNumber() 
+
+        if not converged and uw.mpi.rank == 0:
+            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
+                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
+                  f"to investigate convergence problems",
+                  flush=True
+            )
+
+        return 
+
 
 
 
@@ -1196,6 +1206,9 @@ class SNES_Vector(Solver):
                 fns_bd_residual += [bc.fns["u_f0"]]
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
+
+                
+
             # Going to leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
 
             # if bc.fn_F is not None:
@@ -1373,6 +1386,21 @@ class SNES_Vector(Solver):
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
+        converged = self.snes.getConvergedReason() 
+        iterations = self.snes.getIterationNumber() 
+
+        if not converged and uw.mpi.rank == 0:
+            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
+                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
+                  f"to investigate convergence problems",
+                  flush=True
+            )
+
+        return 
+
+
 
 ### =================================
 
@@ -1480,15 +1508,22 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
+        if self.verbose == True:
+            self.petsc_options["ksp_monitor"] = None
+            self.petsc_options["snes_converged_reason"] = None
+            self.petsc_options["snes_monitor_short"] = None
+        else:
+            self.petsc_options.delValue("ksp_monitor")
+            self.petsc_options.delValue("snes_monitor")
+            self.petsc_options.delValue("snes_monitor_short")
+            self.petsc_options.delValue("snes_converged_reason")
+
         self._tolerance = 1.0e-4
         self._strategy = "default"
 
-        self.petsc_options["snes_converged_reason"] = None
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["snes_use_ew"] = None
         self.petsc_options["snes_use_ew_version"] = 3
-        # self.petsc_options["ksp_rtol"]  = self._tolerance * 0.001
-        # self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -1642,7 +1677,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.petsc_options["snes_use_ew"] = None
         self.petsc_options["snes_use_ew_version"] = 3
-        self.petsc_options["snes_converged_reason"] = None
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -2390,7 +2424,19 @@ class SNES_Stokes_SaddlePt(Solver):
 
         self.dm.restoreGlobalVec(gvec)
 
-        return self.snes.getConvergedReason() 
+        converged = self.snes.getConvergedReason() 
+        iterations = self.snes.getIterationNumber() 
+
+        if not converged and uw.mpi.rank == 0:
+            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
+                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
+                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
+                  f"to investigate convergence problems",
+                  flush=True
+            )
+
+        return 
 
     @timing.routine_timer_decorator
     def estimate_dt(self):

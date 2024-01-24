@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -61,7 +61,7 @@ r_i = 0.5
 
 Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
-# + tags=[]
+# +
 if problem_size <= 1:
     cell_size = 0.30
 elif problem_size == 2:

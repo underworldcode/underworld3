@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -36,10 +36,11 @@ import vtk
 
 from underworld3 import timing
 
-
 resolution = uw.options.getReal("model_resolution", default=0.033)
 mu = uw.options.getInt("mu", default=0.5)
 maxsteps = uw.options.getInt("max_steps", default=500)
+
+
 
 
 # +

@@ -7,33 +7,47 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # +
-import petsc4py
-from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
+import os
 
 import numpy as np
 import sympy
 
-# options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-# options.getAll()
+import petsc4py
+from petsc4py import PETSc
 
 # +
-Free_Slip = True
-Rayleigh = 1.0e5
+## Command line parameters use -uw_problem_size 0.1, for example
+
+res = uw.options.getReal("resolution", default=0.05)
+Free_Slip = uw.options.getBool("free_slip", default=True)
+restart_step = uw.options.getInt("restart_step", default=0)
+max_steps = uw.options.getInt("max_steps", default=11)
+delta_eta = uw.options.getReal("delta_eta", default=1.0)
+
+viz = False
+# -
+
+uw.options.view()
+
+# +
+Rayleigh = 1.0e7
 H_int = 1.0
 k = 1.0
-res = 0.05
-resI = 0.15
+resI = res * 3
 r_o = 1.0
 r_i = 0.0
 
-expt_name = "Disc_Ra1e5_H1_ii"
+
+# For now, assume restart is from same location !
+expt_name = f"Disc_Ra1e7_H1_deleta_{delta_eta}"
+output_dir = "output"
+
+os.makedirs(output_dir, exist_ok=True  )
+
 # -
 
 meshball = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i,
@@ -52,11 +66,12 @@ y = meshball.N.y
 
 r = sympy.sqrt(x**2 + y**2)  # cf radius_fn which is 0->1
 th = sympy.atan2(y + 1.0e-5, x + 1.0e-5)
+
 # -
 
 
 # check the mesh if in a notebook / serial
-if uw.mpi.size == 1:
+if viz and uw.mpi.size == 1:
     
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -64,8 +79,6 @@ if uw.mpi.size == 1:
     pvmesh = vis.mesh_to_pv_mesh(meshball)
 
     pl = pv.Plotter(window_size=(750, 750))
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
 
     pl.show()
@@ -77,34 +90,36 @@ t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 r_mesh = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
 kappa = uw.discretisation.MeshVariable("kappa", meshball, 1, degree=3, varsymbol=r"\kappa")
 
+# +
+## F-K viscosity function
+
+C = sympy.log(delta_eta)
+viscosity_fn = delta_eta * sympy.exp(-C * 0)
 
 
 # +
 # Create Stokes object
 
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
-                solver_name="stokes", verbose=True)
+                solver_name="stokes", 
+                verbose=False)
 
 # Constant viscosity
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-
-stokes.tolerance = 1.0e-3
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 
 # Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
+stokes.tolerance = 1.0e-6
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Velocity boundary conditions
 
 if Free_Slip:
-
     stokes.add_natural_bc(
-        10000 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "Upper"
+        1000000 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "Upper"
     )
 
 else:
-    surface_fn = 0.0
     stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
 
 
@@ -126,16 +141,13 @@ adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 
 Tgrad = meshball.vector.gradient(t_soln.sym)
 Tslope = sympy.sqrt(Tgrad.dot(Tgrad))
-Tslope_max = 15
+Tslope_max = 25
 
 k_lim = (Tslope/Tslope_max) 
 k_eff = k * sympy.Max(1, k_lim)
 
 adv_diff.constitutive_model.Parameters.diffusivity = k
-
 adv_diff.f = H_int
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
-
 
 
 
@@ -160,40 +172,41 @@ with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evalf(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 # +
-tstats = t_soln.stats()
-print(tstats)
+# If restart, then pull T from there
 
-Tgrad_stats = kappa.stats()
-
-print(Tgrad_stats)
+if restart_step != 0:
+    t_soln.read_timestep(expt_name, "T", restart_step, outputPath=output_dir, verbose=True)
 
 # -
 
 with meshball.access(r_mesh):
     r_mesh.data[:, 0] = uw.function.evalf(r, meshball.data)
 
-# +
-
 stokes.bodyforce = unit_rvec * gravity_fn * Rayleigh * t_soln.fn
 stokes.solve()
-# -
 
+# +
 # Check the diffusion part of the solve converges
-adv_diff.solve(timestep=0.1*stokes.estimate_dt())
+
+dt = 0.00001
+adv_diff.solve(timestep=dt)
 adv_diff.constitutive_model.Parameters.diffusivity = k_eff
-adv_diff.solve(timestep=0.1*stokes.estimate_dt(), zero_init_guess=False)
+adv_diff.solve(timestep=dt, zero_init_guess=False)
+
+# -
 
 calculate_diffusivity.solve()
 
 # +
 # check the mesh if in a notebook / serial
-if uw.mpi.size == 1:
+if viz and uw.mpi.size == 1:
 
     import pyvista as pv
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
-    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym[0])
+    pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, kappa.sym[0])
 
     velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
@@ -205,8 +218,8 @@ if uw.mpi.size == 1:
     pl.add_mesh(
         pvmesh, cmap="coolwarm", edge_color="Black", 
         show_edges=True, scalars="T", 
-        use_transparency=False, opacity=0.5,
-        clim=[0,1],
+        use_transparency=False, opacity=1.0,
+        # clim=[0,1],
     )
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50 / Rayleigh)
@@ -218,7 +231,7 @@ if uw.mpi.size == 1:
     
 def plot_T_mesh(filename):
 
-    if uw.mpi.size == 1:
+    if viz and uw.mpi.size == 1:
 
         import pyvista as pv
         import underworld3.visualisation as vis
@@ -254,55 +267,55 @@ def plot_T_mesh(filename):
         # pl.show()
 # -
 
-ts = 0
+ts = restart_step
 
 # +
 # Convection model / update in time
 
-for step in range(0, 1000): #1000
+delta_t = 5.0e-5
 
-    stokes.solve()
+for step in range(0, max_steps ): #
+
+    stokes.solve(verbose=False, zero_init_guess=False)
 
     calculate_diffusivity.solve()
-    
-    delta_t = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
-    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
-    # stats then loop
+    if step%10 == 0:
+        delta_t = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+        
+    adv_diff.solve(timestep=delta_t, zero_init_guess=False )
+
+    # stats, dt (all collective) print if rank 0, then loop
     tstats = t_soln.stats()
-    # tstats_star = adv_diff.DuDt.psi_star[0].stats()
-
     Tgrad_stats = kappa.stats()
-
-    with meshball.access():    
-        print(f"Flux: min = {adv_diff.Unknowns.DFDt.psi_star[0].data.min()}", 
-              f" max = {adv_diff.Unknowns.DFDt.psi_star[0].data.max()}", )
+    dt_estimate =  adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(ts, delta_t))
-        print(tstats)
-        print("-----")
-        print(Tgrad_stats)
-        print("=====\n")
+        print("Timestep {}, dt {} ({})".format(ts, delta_t, dt_estimate), flush=True)
+        # print(tstats)
+        # print("-----")
+        # print(Tgrad_stats)
+        # print("=====\n")
 
         # print(tstats_star)
 
     if ts % 10 == 0:
         plot_T_mesh(filename="output/{}_step_{}".format(expt_name, ts))
 
-
-#    savefile = "{}_ts_{}.h5".format(expt_name,step)
-#    meshball.save(savefile)
-#     v_soln.save(savefile)
-#     t_soln.save(savefile)
-#     meshball.generate_xdmf(savefile)
+        meshball.write_timestep(
+                expt_name,
+                meshUpdates=True,
+                meshVars=[p_soln, v_soln, t_soln],
+                outputPath=output_dir,
+                index=ts,
+            )
 
     ts += 1
 
 # -
 
 
-if uw.mpi.size == 1:
+if viz and uw.mpi.size == 1:
 
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -319,7 +332,7 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.001, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.002, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     pl.add_points(point_cloud, cmap="coolwarm", 
@@ -330,4 +343,4 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
-
+stokes.petsc_options.view()

@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# # Cylindrical Stokes 
+# # Cartesian Stokes Kernels
 #
 # Mesh with embedded internal surface
 #
@@ -61,12 +61,11 @@ yint = 0.66
 
 cellSize = res
 
-
 if uw.mpi.rank == 0:
     import gmsh
 
     gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 5)
+    gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("KernelBox")
 
     p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, meshSize=cellSize)
@@ -95,9 +94,7 @@ if uw.mpi.rank == 0:
     surface1 = gmsh.model.geo.add_plane_surface([cl1])
     surface2 = gmsh.model.geo.add_plane_surface([cl2])
 
-
     gmsh.model.geo.synchronize()
-
 
     # Add Physical groups for boundaries
     gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
@@ -214,6 +211,7 @@ stress_solver.smoothing = 0.0e-6
 
 stokes.petsc_options.setValue("ksp_monitor", None)
 stokes.petsc_options.setValue("snes_monitor", None)
+stokes.petsc_options.delValue("snes_converged_reason")
 stokes.solve()
 
 # Pressure at mesh nodes
@@ -263,7 +261,7 @@ if uw.mpi.size == 1:
         pvmesh,
         cmap="coolwarm",
         edge_color="Grey",
-        scalars="T",
+        scalars="P",
         show_edges=True,
         use_transparency=False,
         opacity=1.0,
@@ -276,3 +274,6 @@ if uw.mpi.size == 1:
 
 
     pl.show(cpos="xy")
+# -
+
+
