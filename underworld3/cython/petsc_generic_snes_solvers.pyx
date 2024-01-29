@@ -510,6 +510,12 @@ class SNES_Scalar(Solver):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
+            bc_label = mesh.dm.getLabel(boundary)
+            bc_is = bc_label.getStratumIS(value)
+            if bc_is is None:
+                print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
+                continue
+
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
@@ -573,9 +579,10 @@ class SNES_Scalar(Solver):
     def _setup_pointwise_functions(self, verbose=False, debug=False):
         import sympy
 
-        N = self.mesh.N
-        dim = self.mesh.dim
-        cdim = self.mesh.cdim
+        mesh = self.mesh
+        N = mesh.N
+        dim = mesh.dim
+        cdim = mesh.cdim
 
         sympy.core.cache.clear_cache()
 
@@ -624,6 +631,15 @@ class SNES_Scalar(Solver):
         fns_bd_jacobian = []
 
         for index, bc in enumerate(self.natural_bcs):
+
+            boundary = bc.boundary
+            value = mesh.boundaries[bc.boundary].value
+
+            bc_label = mesh.dm.getLabel(boundary)
+            bc_is = bc_label.getStratumIS(value)
+            if bc_is is None:
+                print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
+                continue
 
             if bc.fn_f is not None:
 
@@ -2006,6 +2022,13 @@ class SNES_Stokes_SaddlePt(Solver):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
+            # bc_label = self.mesh.dm.getLabel(boundary)
+            # bc_is = bc_label.getStratumIS(value)
+            # if bc_is is None:
+            #     print(f"{uw.mpi.rank}: Skip setup nbc {boundary}", flush=True)
+            #     continue
+
+
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
@@ -2102,6 +2125,15 @@ class SNES_Stokes_SaddlePt(Solver):
 
         for bc in self.natural_bcs:
 
+            boundary = bc.boundary
+            value = self.mesh.boundaries[bc.boundary].value
+
+            bc_label = self.mesh.dm.getLabel(boundary)
+            bc_is = bc_label.getStratumIS(value)
+            if bc_is is None:
+                print(f"{uw.mpi.rank}: Skip setup nbc solver {boundary}", flush=True)
+                continue
+
             i_bd_res = self.ext_dict.bd_res
             i_bd_jac = self.ext_dict.bd_jac
 
@@ -2109,9 +2141,15 @@ class SNES_Stokes_SaddlePt(Solver):
 
             boundary_id = bc.PETScID
             label_val = bc.boundary_label_val
-            idx0 = 0
 
-            if c_label and label_val != -1:
+            # bc_label = self.mesh.dm.getLabel(boundary)
+            # bc_is = bc_label.getStratumIS(value)
+            # if bc_is is None:
+            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
+            #     continue
+
+
+            if True: #  c_label and label_val != -1:
 
                 if bc.fn_f is not None:
 
