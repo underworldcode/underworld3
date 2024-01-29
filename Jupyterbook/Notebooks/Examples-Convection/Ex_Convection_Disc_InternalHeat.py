@@ -55,6 +55,10 @@ meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o, radiusInner=r_i,r
                               cellSize_Inner=resI, cellSize_Outer=res, cellSize_Internal=0.5*(resI+res), 
                                               centre=False, qdegree=3, )
 
+
+
+
+
 ul = meshball.dm.getLabel("Upper")
 il = meshball.dm.getLabel("Internal")
 
@@ -68,36 +72,24 @@ elif ul_is:
     both_is = ul_is
 else:
     both_is = il_is
-# -
 
+# +
 meshball.dm.createLabel("UpperInternal")
 both_lab = meshball.dm.getLabel("UpperInternal")
 both_lab.setStratumIS(99, both_is)
 
+from enum import Enum
+new_boundaries = Enum(
+    "boundaries",
+    [(bc.name, bc.value) for bc in meshball.boundaries] + [("UpperInternal", 99)],
+)
+
+meshball.boundaries = new_boundaries
+
+
+# -
+
 meshball.dm.view()
-
-# +
-# uw.mpi.barrier()
-
-# lab = meshball.dm.getLabel("Upper")
-# lab_is = lab.getStratumIS(3)
-# if lab_is:
-#    print(f"[{uw.mpi.rank}] - Upper {lab.getStratumIS(3).size}", flush=True)
-# else:
-#    print(f"[{uw.mpi.rank}] - Upper 0", flush=True)
-
-
-# lab = meshball.dm.getLabel("Internal")
-# lab_is = lab.getStratumIS(2)
-# if lab_is:
-#     print(f"[{uw.mpi.rank}] - Internal {lab.getStratumIS(2).size}", flush=True)
-# else:
-#    print(f"[{uw.mpi.rank}] - Internal 0", flush=True)
-
-# uw.mpi.barrier()
-
-
-# exit()
 
 # +
 
@@ -164,17 +156,15 @@ stokes.petsc_options.setValue("snes_monitor", None)
 # Velocity boundary conditions
 
 if Free_Slip:
+    upper = sympy.Piecewise((1.0, r > 0.9), (0.0, True))
+    
     stokes.add_natural_bc(
-        1.0e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperInternal"
+        upper * 1.0e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperInternal"
     )
 
 else:
     stokes.add_dirichlet_bc((0.0, 0.0), "Upper")
 
-if False:
-    stokes.add_natural_bc(
-       1e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "Internal"
-    )
 
 
 # +
@@ -369,7 +359,6 @@ for step in range(0, max_steps ): #
 # -
 
 
-viz=1
 if viz and uw.mpi.size == 1:
 
     import pyvista as pv
@@ -387,7 +376,7 @@ if viz and uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.02, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     pl.add_points(point_cloud, cmap="coolwarm", 
@@ -398,4 +387,4 @@ if viz and uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
-stokes.petsc_options.view()
+

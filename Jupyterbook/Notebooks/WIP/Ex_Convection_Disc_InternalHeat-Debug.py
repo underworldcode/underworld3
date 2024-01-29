@@ -1,6 +1,10 @@
 # # Convection in a disc with internal heating and rigid or free boundaries
 #
 #
+# In this example we merge a section of an internal boundary and ensure it has a zero applied force term. 
+#
+# This does not change the solution but it does change whether there are boundary-free regions for a given decomposition.
+#
 
 # to fix trame issue
 import nest_asyncio
@@ -68,11 +72,21 @@ elif ul_is:
     both_is = ul_is
 else:
     both_is = il_is
-# -
 
+# +
 meshball.dm.createLabel("UpperInternal")
 both_lab = meshball.dm.getLabel("UpperInternal")
 both_lab.setStratumIS(99, both_is)
+
+from enum import Enum
+new_boundaries = Enum(
+    "boundaries",
+    [(bc.name, bc.value) for bc in meshball.boundaries] + [("UpperInternal", 99)],
+)
+
+meshball.boundaries = new_boundaries
+
+# -
 
 meshball.dm.view()
 
@@ -164,17 +178,15 @@ stokes.petsc_options.setValue("snes_monitor", None)
 # Velocity boundary conditions
 
 if Free_Slip:
+    upper = sympy.Piecewise((1.0, r > 0.9), (0.0, True)) 
     stokes.add_natural_bc(
-        1.0e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperInternal"
+        upper * 1.0e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperInternal"
     )
 
 else:
     stokes.add_dirichlet_bc((0.0, 0.0), "Upper")
 
-if False:
-    stokes.add_natural_bc(
-       1e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "Internal"
-    )
+
 
 
 # +
@@ -369,7 +381,6 @@ for step in range(0, max_steps ): #
 # -
 
 
-viz=1
 if viz and uw.mpi.size == 1:
 
     import pyvista as pv
@@ -398,4 +409,4 @@ if viz and uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
-stokes.petsc_options.view()
+

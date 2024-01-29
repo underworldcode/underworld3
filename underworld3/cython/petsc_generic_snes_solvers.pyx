@@ -507,23 +507,8 @@ class SNES_Scalar(Solver):
                 print(" - fn:         {} ".format(bc.fn))
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if 1 or self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label", flush=True)
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
-            else:
-                print(f"{uw.mpi.rank} No values in Natural BC IS")
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -557,21 +542,8 @@ class SNES_Scalar(Solver):
                 print(" - fn:         {} ".format(bc.fn))
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label", flush=True)
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -1035,21 +1007,8 @@ class SNES_Vector(Solver):
                 print(" - fn:         {} ".format(bc.fn))
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -1081,21 +1040,8 @@ class SNES_Vector(Solver):
                 print(" - fn:         {} ".format(bc.fn))
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -2050,28 +1996,15 @@ class SNES_Stokes_SaddlePt(Solver):
 
         for index,bc in enumerate(self.natural_bcs):
 
-            if uw.mpi.rank == 0 and self.verbose:
+            if uw.mpi.rank == 0: #  and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
                 print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn_f))
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -2105,21 +2038,8 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
             boundary = bc.boundary
-            label = self.dm.getLabel(boundary)
-            if not label:
-                if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
-                continue
-
-            iset = label.getNonEmptyStratumValuesIS()
-            if iset:
-                label_values = iset.getIndices()
-                if len(label_values > 0):
-                    value = label_values[0]  # this is only one value in the label ...
-                    ind = value
-                else:
-                    value = -1
-                    ind = -1
+            value = mesh.boundaries[bc.boundary].value
+            ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
