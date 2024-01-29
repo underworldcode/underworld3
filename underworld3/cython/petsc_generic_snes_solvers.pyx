@@ -510,7 +510,7 @@ class SNES_Scalar(Solver):
             label = self.dm.getLabel(boundary)
             if not label:
                 if 1 or self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label", flush=True)
                 continue
 
             iset = label.getNonEmptyStratumValuesIS()
@@ -522,6 +522,8 @@ class SNES_Scalar(Solver):
                 else:
                     value = -1
                     ind = -1
+            else:
+                print(f"{uw.mpi.rank} No values in Natural BC IS")
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -558,7 +560,7 @@ class SNES_Scalar(Solver):
             label = self.dm.getLabel(boundary)
             if not label:
                 if self.verbose == True:
-                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label")
+                    print(f"Discarding bc {boundary} which has no corresponding mesh / dm label", flush=True)
                 continue
 
             iset = label.getNonEmptyStratumValuesIS()
@@ -1577,7 +1579,6 @@ class SNES_Stokes_SaddlePt(Solver):
         self.PF0 = sympy.Matrix.zeros(1, 1)
 
         self.essential_bcs = []
-        self.essential_p_bcs = []
 
         self.natural_bcs = []
         self.bcs = self.essential_bcs
@@ -1596,27 +1597,27 @@ class SNES_Stokes_SaddlePt(Solver):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
-    @timing.routine_timer_decorator
-    def add_essential_p_bc(self, fn, boundary):
-        # switch to numpy arrays
-        # ndmin arg forces an array to be generated even
-        # where comps/indices is a single value.
+    # @timing.routine_timer_decorator
+    # def add_essential_p_bc(self, fn, boundary):
+    #     # switch to numpy arrays
+    #     # ndmin arg forces an array to be generated even
+    #     # where comps/indices is a single value.
 
-        self.is_setup = False
-        import numpy as np
+    #     self.is_setup = False
+    #     import numpy as np
 
-        try:
-            iter(fn)
-        except:
-            fn = (fn,)
+    #     try:
+    #         iter(fn)
+    #     except:
+    #         fn = (fn,)
           
-        components = np.array([0], dtype=np.int32, ndmin=1)
+    #     components = np.array([0], dtype=np.int32, ndmin=1)
 
-        sympy_fn = sympy.Matrix(fn).as_immutable()
+    #     sympy_fn = sympy.Matrix(fn).as_immutable()
 
-        from collections import namedtuple
-        BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+    #     from collections import namedtuple
+    #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+    #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
 
     def _setup_history_terms(self):
@@ -1987,7 +1988,7 @@ class SNES_Stokes_SaddlePt(Solver):
         self.compiled_extensions, self.ext_dict = getext(self.mesh, 
                                        tuple(fns_residual), 
                                        tuple(fns_jacobian), 
-                                       [x.fn for x in self.essential_bcs + self.essential_p_bcs], 
+                                       [x.fn for x in self.essential_bcs], 
                                        tuple(fns_bd_residual), 
                                        tuple(fns_bd_jacobian), 
                                        primary_field_list=prim_field_list, 
@@ -2039,7 +2040,6 @@ class SNES_Stokes_SaddlePt(Solver):
             self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 
         self.dm.createDS()
-
 
         ## This part is done once on the solver dm ... not required every time we update the functions ... 
         ## the values of the natural bcs can be updated
@@ -2178,7 +2178,6 @@ class SNES_Stokes_SaddlePt(Solver):
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
-
         cdef DMLabel c_label
 
         for bc in self.natural_bcs:
@@ -2302,7 +2301,6 @@ class SNES_Stokes_SaddlePt(Solver):
         self.constitutive_model._solver_is_setup = True
 
 
-
     @timing.routine_timer_decorator
     def solve(self,
               zero_init_guess: bool = True,
@@ -2326,7 +2324,9 @@ class SNES_Stokes_SaddlePt(Solver):
             self.is_setup = False
 
         if (not self.is_setup):
-            self.dm = None
+            self.dm = None  # Should be able to avoid nuking this if we 
+                            # can insert new functions in template (surface integrals problematic in 
+                            # the current implementation )
             self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)

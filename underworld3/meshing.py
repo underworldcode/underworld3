@@ -97,7 +97,6 @@ def UnstructuredSimplexBox(
         gmsh.model.add("Box")
 
         if dim == 2:
-
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -308,7 +307,6 @@ def StructuredQuadBox(
         # Create Box Geometry
 
         if dim == 2:
-
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
 
@@ -360,7 +358,6 @@ def StructuredQuadBox(
             gmsh.model.mesh.set_recombine(2, surface)
 
         else:
-
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
 
@@ -1038,7 +1035,7 @@ def AnnulusInternalBoundary(
         gmsh.option.setNumber("General.Verbosity", verbosity)
         gmsh.model.add("AnnulusFS")
 
-        p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+        p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize_Inner)
 
         loops = []
 
