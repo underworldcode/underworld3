@@ -22,7 +22,7 @@ from petsc4py import PETSc
 # +
 ## Command line parameters use -uw_resolution 0.1, for example
 
-res = uw.options.getReal("resolution", default=0.05)
+res = uw.options.getReal("resolution", default=0.1)
 Free_Slip = uw.options.getBool("free_slip", default=True)
 restart_step = uw.options.getInt("restart_step", default=0)
 max_steps = uw.options.getInt("max_steps", default=1)
@@ -42,6 +42,8 @@ resI = res * 3
 r_o = 1.0
 r_i = 0.0
 
+Free_Slip = False
+
 
 # For now, assume restart is from same location !
 expt_name = f"Disc_Ra1e7_H1_deleta_{delta_eta}"
@@ -49,45 +51,19 @@ output_dir = "output"
 
 os.makedirs(output_dir, exist_ok=True  )
 
-# -
-
-meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o, radiusInner=r_i,radiusInternal=0.5,
-                              cellSize_Inner=resI, cellSize_Outer=res, cellSize_Internal=0.5*(resI+res), 
-                                              centre=False, qdegree=3, )
-
-
-
-
-
-ul = meshball.dm.getLabel("Upper")
-il = meshball.dm.getLabel("Internal")
 
 # +
-ul_is = ul.getStratumIS(3)
-il_is = il.getStratumIS(2)
-
-if ul_is and il_is:
-    both_is = ul_is.union(il_is)
-elif ul_is:
-    both_is = ul_is
-else:
-    both_is = il_is
-
-# +
-meshball.dm.createLabel("UpperInternal")
-both_lab = meshball.dm.getLabel("UpperInternal")
-both_lab.setStratumIS(99, both_is)
-
-from enum import Enum
-new_boundaries = Enum(
-    "boundaries",
-    [(bc.name, bc.value) for bc in meshball.boundaries] + [("UpperInternal", 99)],
-)
-
-meshball.boundaries = new_boundaries
-
-
+# meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o, radiusInner=r_i,radiusInternal=0.5,
+#                               cellSize_Inner=resI, cellSize_Outer=res, cellSize_Internal=0.5*(resI+res), 
+#                                               centre=False, qdegree=3, )
 # -
+
+meshball = uw.meshing.AnnulusWithSpokes(radiusOuter=r_o, radiusInner=r_i,
+                                          cellSizeOuter=res,
+                                            cellSizeInner=resI,
+                                           spokes = 3,
+                                           qdegree=3, )
+
 
 meshball.dm.view()
 
@@ -120,6 +96,8 @@ if viz and uw.mpi.size == 1:
     pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
 
     pl.show()
+
+
 
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
@@ -155,11 +133,10 @@ stokes.petsc_options.setValue("snes_monitor", None)
 
 # Velocity boundary conditions
 
-if Free_Slip:
-    upper = sympy.Piecewise((1.0, r > 0.9), (0.0, True))
-    
+if Free_Slip:    
+    bc = sympy.Piecewise((1.0, r > 0.99 * r_o), (0.0, True))
     stokes.add_natural_bc(
-        upper * 1.0e6 * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperInternal"
+        1.0e6 * bc * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperPlus"
     )
 
 else:
@@ -266,7 +243,7 @@ if viz and uw.mpi.size == 1:
         # clim=[0,1],
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50 / Rayleigh)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)

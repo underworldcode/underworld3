@@ -2022,12 +2022,16 @@ class SNES_Stokes_SaddlePt(Solver):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            # bc_label = self.mesh.dm.getLabel(boundary)
-            # bc_is = bc_label.getStratumIS(value)
-            # if bc_is is None:
-            #     print(f"{uw.mpi.rank}: Skip setup nbc {boundary}", flush=True)
-            #     continue
+            bc_label = self.dm.getLabel(boundary)
+            bc_is = bc_label.getStratumIS(value)
+                 
+            self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
+            
+            if bc_is:
+                print(f"{uw.mpi.rank}: Setup nbc {boundary}: {bc_is.getLocalSize()}", flush=True)
+            else:
+                print(f"{uw.mpi.rank}: Setup nbc {boundary}: 0", flush=True)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -2126,28 +2130,17 @@ class SNES_Stokes_SaddlePt(Solver):
         for bc in self.natural_bcs:
 
             boundary = bc.boundary
+            boundary_id = bc.PETScID
+            
             value = self.mesh.boundaries[bc.boundary].value
-
-            bc_label = self.mesh.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
-            if bc_is is None:
-                print(f"{uw.mpi.rank}: Skip setup nbc solver {boundary}", flush=True)
-                continue
+            bc_label = self.dm.getLabel(boundary)
+            
+            label_val = value            
 
             i_bd_res = self.ext_dict.bd_res
             i_bd_jac = self.ext_dict.bd_jac
 
-            c_label = self.dm.getLabel(bc.boundary)
-
-            boundary_id = bc.PETScID
-            label_val = bc.boundary_label_val
-
-            # bc_label = self.mesh.dm.getLabel(boundary)
-            # bc_is = bc_label.getStratumIS(value)
-            # if bc_is is None:
-            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-            #     continue
-
+            c_label = bc_label
 
             if True: #  c_label and label_val != -1:
 

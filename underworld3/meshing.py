@@ -512,7 +512,7 @@ def StructuredQuadBox(
 @timing.routine_timer_decorator
 def SphericalShell(
     radiusOuter: float = 1.0,
-    radiusInner: float = 0.1,
+    radiusInner: float = 0.547,
     cellSize: float = 0.1,
     degree: int = 1,
     qdegree: int = 2,
@@ -991,10 +991,267 @@ def Annulus(
 
 
 @timing.routine_timer_decorator
+def AnnulusWithSpokes(
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.547,
+    cellSizeOuter: float = 0.1,
+    cellSizeInner: float = None,
+    centre: bool = False,
+    spokes: int = 3,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    verbosity=0,
+):
+    class boundaries(Enum):
+        Lower = 10
+        LowerPlus = 11
+        Upper = 20
+        UpperPlus = 21
+        Centre = 1
+        Spokes = 99
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSizeOuter}.msh"
+    else:
+        uw_filename = filename
+
+    if cellSizeInner is None:
+        cellSizeInner = cellSizeOuter
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.model.add("Annulus")
+
+        theta = 2 * np.pi / spokes
+
+        p0 = gmsh.model.geo.add_point(0.00, 0.00, 0.00, meshSize=cellSizeInner)
+
+        loops = []
+        outer_segments = []
+        inner_segments = []
+        spoke_segments = []
+
+        if radiusInner > 0.0:
+            p1 = gmsh.model.geo.add_point(0.0, radiusInner, 0.0, meshSize=cellSizeInner)
+            p2 = gmsh.model.geo.add_point(
+                radiusInner * np.sin(theta),
+                radiusInner * np.cos(theta),
+                0.0,
+                meshSize=cellSizeInner,
+            )
+            c1 = gmsh.model.geo.add_circle_arc(p1, p0, p2)
+
+            inner_segments.append(c1)
+
+        p3 = gmsh.model.geo.add_point(0.0, radiusOuter, 0.0, meshSize=cellSizeOuter)
+        p4 = gmsh.model.geo.add_point(
+            radiusOuter * np.sin(theta),
+            radiusOuter * np.cos(theta),
+            0.0,
+            meshSize=cellSizeOuter,
+        )
+
+        c2 = gmsh.model.geo.add_circle_arc(p3, p0, p4)
+
+        outer_segments.append(c2)
+
+        if radiusInner > 0.0:
+            l1 = gmsh.model.geo.add_line(p1, p3)
+            l2 = gmsh.model.geo.add_line(p2, p4)
+
+            cl1 = gmsh.model.geo.add_curve_loop([c1, l2, -c2, -l1])
+
+        else:
+            l1 = gmsh.model.geo.add_line(p0, p3)
+            l2 = gmsh.model.geo.add_line(p0, p4)
+
+            cl1 = gmsh.model.geo.add_curve_loop([l2, -c2, -l1])
+
+        spoke_segments.append(l1)
+        spoke_segments.append(l2)
+
+        gmsh.model.geo.addPlaneSurface([cl1], tag=-1)
+        loops.append(cl1)
+
+        # Now copy / rotate
+
+        for i in range(1, spokes):
+            new_slice = gmsh.model.geo.copy([(2, cl1)])
+            gmsh.model.geo.rotate(new_slice, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, i * theta)
+            gmsh.model.geo.synchronize()
+
+            _, new_lines = gmsh.model.get_adjacencies(2, new_slice[0][1])
+
+            loops.append(new_slice[0][1])
+
+            if radiusInner > 0:
+                inner_segments.append(new_lines[0])
+                outer_segments.append(new_lines[2])
+                spoke_segments.append(new_lines[1])
+                spoke_segments.append(new_lines[3])
+            else:
+                outer_segments.append(new_lines[1])
+                spoke_segments.append(new_lines[0])
+                spoke_segments.append(new_lines[2])
+
+        gmsh.model.geo.synchronize()
+        # We finally generate and save the mesh:
+
+        gmsh.model.addPhysicalGroup(1, outer_segments, boundaries.Upper.value)
+        gmsh.model.setPhysicalName(1, boundaries.Upper.value, boundaries.Upper.name)
+
+        gmsh.model.addPhysicalGroup(1, inner_segments, boundaries.Lower.value)
+        gmsh.model.setPhysicalName(1, boundaries.Lower.value, boundaries.Lower.name)
+
+        gmsh.model.addPhysicalGroup(1, spoke_segments, boundaries.Spokes.value)
+        gmsh.model.setPhysicalName(1, boundaries.Spokes.value, boundaries.Spokes.name)
+
+        gmsh.model.addPhysicalGroup(2, loops, 30)
+        gmsh.model.setPhysicalName(2, 30, "Elements")
+
+        if radiusInner > 0.0:
+            gmsh.model.remove_entities([(0, p0)])
+
+        gmsh.model.mesh.generate(2)
+
+        gmsh.write(uw_filename)
+
+        # We need to build the plex here in order to make some changes
+        # before the mesh gets built
+
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        # Composite label - upper + wedge slices
+
+        ul = plex_0[1].getLabel(boundaries.Upper.name)
+        sl = plex_0[1].getLabel(boundaries.Spokes.name)
+
+        ul_is = ul.getStratumIS(boundaries.Upper.value)
+        sl_is = sl.getStratumIS(boundaries.Spokes.value)
+
+        new_is = ul_is.union(sl_is)
+
+        plex_0[1].createLabel(boundaries.UpperPlus.name)
+        both_lab = plex_0[1].getLabel(boundaries.UpperPlus.name)
+        both_lab.setStratumIS(boundaries.UpperPlus.value, new_is)
+
+        if radiusInner > 0.0:
+            ll = plex_0[1].getLabel(boundaries.Lower.name)
+            sl = plex_0[1].getLabel(boundaries.Spokes.name)
+
+            ll_is = ll.getStratumIS(boundaries.Lower.value)
+            sl_is = sl.getStratumIS(boundaries.Spokes.value)
+
+            new_is = ll_is.union(sl_is)
+
+            plex_0[1].createLabel(boundaries.LowerPlus.name)
+            both_lab = plex_0[1].getLabel(boundaries.LowerPlus.name)
+            both_lab.setStratumIS(boundaries.LowerPlus.value, new_is)
+
+        ####
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+
+        viewer(plex_0[1])
+
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
+
+    def annulus_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 2)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    def annulus_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
+    new_mesh = Mesh(
+        uw_filename + ".h5",
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        refinement=refinement,
+        refinement_callback=annulus_mesh_refinement_callback,
+        return_coords_to_bounds=annulus_return_coords_to_bounds,
+    )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
+            (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner),
+            (0.0, True),
+        )
+        Upper = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
+            (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter),
+            (0.0, True),
+        )
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
 def AnnulusInternalBoundary(
     radiusOuter: float = 1.5,
     radiusInternal: float = 1.0,
-    radiusInner: float = 0.5,
+    radiusInner: float = 0.547,
     cellSize: float = 0.1,
     cellSize_Outer: float = None,
     cellSize_Inner: float = None,
@@ -1784,21 +2041,27 @@ def SegmentedSphericalSurface2D(
     return new_mesh
 
 
-## THIS IS OUT OF DATE !!
-
-
 @timing.routine_timer_decorator
-def SegmentedSphere(
+def SegmentedSphericalShell(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.547,
-    cellSize: float = 0.05,
+    cellSize: float = 0.1,
     numSegments: int = 6,
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    refinement=None,
     coordinatesNative=False,
     verbosity=0,
 ):
+    class boundaries(Enum):
+        Lower = 20
+        LowerPlus = 21
+        Upper = 30
+        UpperPlus = 31
+        Centre = 1
+        Slices = 40
+
     meshRes = cellSize
     num_segments = numSegments
 
@@ -1934,12 +2197,14 @@ def SegmentedSphere(
 
         outer_faces = [face_o]
         inner_faces = [face_i]
+        wedge_slices = [face_E, face_S, face_W]
 
         # Make volume
 
         wedge_surf = gmsh.model.geo.addSurfaceLoop(
             [face_o, face_i, face_W, face_E, face_S], tag=-1
         )
+
         wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
         wedges = [wedge_vol]
 
@@ -1958,6 +2223,9 @@ def SegmentedSphere(
             wedges.append(new_wedge[0][1])
             outer_faces.append(new_faces[0])
             inner_faces.append(new_faces[1])
+            wedge_slices.append(new_faces[2])
+            wedge_slices.append(new_faces[3])
+            wedge_slices.append(new_faces[4])
 
         mirror_wedge = gmsh.model.geo.copy([(3, 1)])
         gmsh.model.geo.mirror(mirror_wedge, 0.0, 0.0, 1.0, 0.0)
@@ -1967,6 +2235,9 @@ def SegmentedSphere(
         wedges.append(mirror_wedge[0][1])
         outer_faces.append(mirror_faces[0])
         inner_faces.append(mirror_faces[1])
+        wedge_slices.append(mirror_faces[2])
+        wedge_slices.append(mirror_faces[3])
+        wedge_slices.append(mirror_faces[4])
 
         _, mirror_edges_w = gmsh.model.get_adjacencies(2, mirror_faces[2])
         _, mirror_edges_e = gmsh.model.get_adjacencies(2, mirror_faces[3])
@@ -1984,6 +2255,9 @@ def SegmentedSphere(
             wedges.append(new_wedge[0][1])
             outer_faces.append(new_faces[0])
             inner_faces.append(new_faces[1])
+            wedge_slices.append(new_faces[2])
+            wedge_slices.append(new_faces[3])
+            wedge_slices.append(new_faces[4])
 
         gmsh.model.addPhysicalGroup(0, [poleNo], 1)
         gmsh.model.setPhysicalName(0, 1, "PolePtNo")
@@ -2003,11 +2277,14 @@ def SegmentedSphere(
         gmsh.model.addPhysicalGroup(1, [radialS], 11)
         gmsh.model.setPhysicalName(1, 11, "PoleAxisS")
 
-        gmsh.model.addPhysicalGroup(2, outer_faces, 20)
-        gmsh.model.setPhysicalName(2, 20, "Upper")
+        gmsh.model.addPhysicalGroup(2, outer_faces, boundaries.Upper.value)
+        gmsh.model.setPhysicalName(2, boundaries.Upper.value, boundaries.Upper.name)
 
-        gmsh.model.addPhysicalGroup(2, inner_faces, 21)
-        gmsh.model.setPhysicalName(2, 21, "Lower")
+        gmsh.model.addPhysicalGroup(2, inner_faces, boundaries.Lower.value)
+        gmsh.model.setPhysicalName(2, boundaries.Lower.value, boundaries.Lower.name)
+
+        gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
+        gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
         gmsh.model.addPhysicalGroup(3, wedges, 30)
         gmsh.model.setPhysicalName(3, 30, "Elements")
@@ -2046,38 +2323,472 @@ def SegmentedSphere(
                 plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
             )
 
+        # Composite label - upper + wedge slices
+
+        ul = plex_0[1].getLabel(boundaries.Upper.name)
+        sl = plex_0[1].getLabel(boundaries.Slices.name)
+
+        ul_is = ul.getStratumIS(boundaries.Upper.value)
+        sl_is = sl.getStratumIS(boundaries.Slices.value)
+
+        new_is = ul_is.union(sl_is)
+
+        plex_0[1].createLabel(boundaries.UpperPlus.name)
+        both_lab = plex_0[1].getLabel(boundaries.UpperPlus.name)
+        both_lab.setStratumIS(boundaries.UpperPlus.value, new_is)
+
+        # Composite label - lower + wedge slices  (Combine with above to eliminate sl)
+
+        ll = plex_0[1].getLabel(boundaries.Lower.name)
+        sl = plex_0[1].getLabel(boundaries.Slices.name)
+
+        ll_is = ll.getStratumIS(boundaries.Lower.value)
+        sl_is = sl.getStratumIS(boundaries.Slices.value)
+
+        new_is = ll_is.union(sl_is)
+
+        plex_0[1].createLabel(boundaries.LowerPlus.name)
+        both_lab = plex_0[1].getLabel(boundaries.LowerPlus.name)
+        both_lab.setStratumIS(boundaries.LowerPlus.value, new_is)
+
+        ####
+
         viewer = PETSc.ViewerHDF5().create(
             uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
         )
 
         viewer(plex_0[1])
 
-    # # Now do this collectively
-    # plex = petsc4py.PETSc.DMPlex().createFromFile(uw_filename + ".h5")
+    ## Are these needed for native coordinates ?
+    def sphere_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
 
-    # if coordinatesNative:
-    #     xyz_vec = plex.getCoordinates()
-    #     xyz = xyz_vec.array.reshape(-1, 3)
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
 
-    #     rthph = np.empty_like(xyz)
-    #     rthph[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
-    #     rthph[:, 1] = np.arccos((xyz[:, 2]) / (rthph[:, 0] + 1.0e-6))
-    #     rthph[:, 2] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-6) - np.pi
+        ## Note these numbers should not be hard-wired
 
-    #     rthph_vec = xyz_vec.copy()
-    #     rthph_vec.array[...] = rthph.reshape(-1)[...]
-    #     plex.setCoordinates(rthph_vec)
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
 
-    #     uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-    #         plex, [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
-    #     )
+        return coords
+
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
 
     new_mesh = Mesh(
         uw_filename + ".h5",
-        simplex=True,
         degree=degree,
         qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=coordinate_system,
+        return_coords_to_bounds=sphere_return_coords_to_bounds,
     )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
+            (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner),
+            (0.0, True),
+        )
+        Upper = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
+            (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter),
+            (0.0, True),
+        )
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
+def SegmentedSphericalBall(
+    radius: float = 1.0,
+    cellSize: float = 0.1,
+    numSegments: int = 6,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    coordinatesNative=False,
+    verbosity=0,
+):
+    class boundaries(Enum):
+        Upper = 30
+        UpperPlus = 31
+        Centre = 1
+        Slices = 40
+
+    meshRes = cellSize
+    num_segments = numSegments
+
+    if coordinatesNative == True:
+        coordinate_system = CoordinateSystemType.SPHERICAL_NATIVE
+    else:
+        coordinate_system = CoordinateSystemType.SPHERICAL
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+        uw_filename = f".meshes/uw_segmented_ball_ro{radius}_csize{cellSize}_segs{num_segments}.msh"
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        options = PETSc.Options()
+        options["dm_plex_gmsh_multiple_tags"] = None
+        options["dm_plex_gmsh_use_regions"] = None
+        options["dm_plex_gmsh_mark_vertices"] = None
+
+        ## Follow the lead of the cubed sphere and make copies of a segment
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 4)
+        gmsh.model.add("Segmented Sphere 3D")
+
+        centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1, meshSize=meshRes)
+
+        poleNo = gmsh.model.geo.addPoint(0.0, 0.0, radius, tag=-1, meshSize=meshRes)
+        poleSo = gmsh.model.geo.addPoint(0.0, 0.0, -radius, tag=-1, meshSize=meshRes)
+
+        dtheta = 2 * np.pi / num_segments
+
+        r = radius
+        equator_pts_0o = gmsh.model.geo.addPoint(r, 0.0, 0.0, tag=-1, meshSize=meshRes)
+        equator_pts_1o = gmsh.model.geo.addPoint(
+            r * np.cos(dtheta), r * np.sin(dtheta), 0.0, tag=-1, meshSize=meshRes
+        )
+
+        gmsh.model.geo.synchronize()
+
+        # Make edges
+
+        edgeWo = gmsh.model.geo.addCircleArc(poleNo, centre, equator_pts_0o, tag=-1)
+        edgeEqo = gmsh.model.geo.addCircleArc(
+            equator_pts_0o, centre, equator_pts_1o, tag=-1
+        )
+        edgeEo = gmsh.model.geo.addCircleArc(equator_pts_1o, centre, poleNo, tag=-1)
+
+        ## Struts
+
+        radialW = gmsh.model.geo.addLine(equator_pts_0o, centre, tag=-1)
+        radialE = gmsh.model.geo.addLine(equator_pts_1o, centre, tag=-1)
+        radialN = gmsh.model.geo.addLine(poleNo, centre, tag=-1)
+
+        # Make boundaries
+
+        faceLoopo = gmsh.model.geo.addCurveLoop(
+            [edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True
+        )
+        # faceLoopi = gmsh.model.geo.addCurveLoop(
+        #     [edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True
+        # )
+        faceLoopW = gmsh.model.geo.addCurveLoop(
+            [edgeWo, radialW, radialN], tag=-1, reorient=True
+        )
+        faceLoopE = gmsh.model.geo.addCurveLoop(
+            [edgeEo, radialE, radialN], tag=-1, reorient=True
+        )
+        faceLoopS = gmsh.model.geo.addCurveLoop(
+            [edgeEqo, radialW, radialE], tag=-1, reorient=True
+        )
+
+        # Make surfaces
+
+        face_o = gmsh.model.geo.addSurfaceFilling(
+            [
+                faceLoopo,
+            ],
+            tag=-1,
+            sphereCenterTag=centre,
+        )
+        # face_i = gmsh.model.geo.addSurfaceFilling(
+        #     [
+        #         faceLoopi,
+        #     ],
+        #     tag=-1,
+        #     sphereCenterTag=centre,
+        # )
+        face_W = gmsh.model.geo.addSurfaceFilling(
+            [
+                faceLoopW,
+            ],
+            tag=-1,
+        )
+        face_E = gmsh.model.geo.addSurfaceFilling(
+            [
+                faceLoopE,
+            ],
+            tag=-1,
+        )
+        face_S = gmsh.model.geo.addSurfaceFilling(
+            [
+                faceLoopS,
+            ],
+            tag=-1,
+        )
+
+        outer_faces = [face_o]
+        wedge_slices = [face_E, face_S, face_W]
+
+        # Make volume
+
+        wedge_surf = gmsh.model.geo.addSurfaceLoop(
+            [face_o, face_W, face_E, face_S], tag=-1
+        )
+
+        wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
+        wedges = [wedge_vol]
+
+        gmsh.model.geo.synchronize()
+
+        # Make copies
+
+        for i in range(1, num_segments):
+            new_wedge = gmsh.model.geo.copy([(3, 1)])
+            gmsh.model.geo.rotate(new_wedge, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, i * dtheta)
+
+            gmsh.model.geo.synchronize()
+
+            _, new_faces = gmsh.model.get_adjacencies(3, new_wedge[0][1])
+
+            wedges.append(new_wedge[0][1])
+            outer_faces.append(new_faces[0])
+            wedge_slices.append(new_faces[1])
+            wedge_slices.append(new_faces[2])
+            wedge_slices.append(new_faces[3])
+
+        mirror_wedge = gmsh.model.geo.copy([(3, 1)])
+        gmsh.model.geo.mirror(mirror_wedge, 0.0, 0.0, 1.0, 0.0)
+
+        gmsh.model.geo.synchronize()
+        _, mirror_faces = gmsh.model.get_adjacencies(3, mirror_wedge[0][1])
+        wedges.append(mirror_wedge[0][1])
+        outer_faces.append(mirror_faces[0])
+        wedge_slices.append(mirror_faces[1])
+        wedge_slices.append(mirror_faces[2])
+        wedge_slices.append(mirror_faces[3])
+
+        _, mirror_edges_w = gmsh.model.get_adjacencies(2, mirror_faces[2])
+        _, mirror_edges_e = gmsh.model.get_adjacencies(2, mirror_faces[3])
+
+        radialS = tuple(set(mirror_edges_e).intersection(set(mirror_edges_w)))[0]
+
+        for i in range(1, num_segments):
+            new_wedge = gmsh.model.geo.copy(mirror_wedge)
+            gmsh.model.geo.rotate(new_wedge, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, i * dtheta)
+
+            gmsh.model.geo.synchronize()
+
+            _, new_faces = gmsh.model.get_adjacencies(3, new_wedge[0][1])
+
+            wedges.append(new_wedge[0][1])
+            outer_faces.append(new_faces[0])
+            wedge_slices.append(new_faces[1])
+            wedge_slices.append(new_faces[2])
+            wedge_slices.append(new_faces[3])
+
+        gmsh.model.addPhysicalGroup(0, [poleNo], 1)
+        gmsh.model.setPhysicalName(0, 1, "PolePtNo")
+
+        gmsh.model.addPhysicalGroup(0, [poleSo], 3)
+        gmsh.model.setPhysicalName(0, 3, "PolePtSo")
+
+        gmsh.model.addPhysicalGroup(1, [radialN], 10)
+        gmsh.model.setPhysicalName(1, 10, "PoleAxisN")
+
+        gmsh.model.addPhysicalGroup(1, [radialS], 11)
+        gmsh.model.setPhysicalName(1, 11, "PoleAxisS")
+
+        gmsh.model.addPhysicalGroup(2, outer_faces, boundaries.Upper.value)
+        gmsh.model.setPhysicalName(2, boundaries.Upper.value, boundaries.Upper.name)
+
+        gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
+        gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
+
+        gmsh.model.addPhysicalGroup(3, wedges, 30)
+        gmsh.model.setPhysicalName(3, 30, "Elements")
+
+        # gmsh.model.remove_entities([(0, centre)])
+
+        gmsh.model.mesh.generate(3)
+
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+        # We need to build the plex here in order to make some changes
+        # before the mesh gets built
+        plex_0 = gmsh2dmplex(
+            uw_filename,
+            useMultipleTags=True,
+            useRegions=True,
+            markVertices=True,
+            comm=PETSc.COMM_SELF,
+        )
+
+        if coordinatesNative:
+            xyz_vec = plex_0[1].getCoordinates()
+            xyz = xyz_vec.array.reshape(-1, 3)
+
+            rthph = np.empty_like(xyz)
+            rthph[:, 0] = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
+            rthph[:, 1] = np.arccos((xyz[:, 2]) / (rthph[:, 0] + 1.0e-6))
+            rthph[:, 2] = np.arctan2(xyz[:, 1], xyz[:, 0] + 1.0e-6) - np.pi
+
+            rthph_vec = xyz_vec.copy()
+            rthph_vec.array[...] = rthph.reshape(-1)[...]
+            plex_0[1].setCoordinates(rthph_vec)
+
+            uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
+                plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
+            )
+
+        # Composite label - upper + wedge slices
+
+        ul = plex_0[1].getLabel(boundaries.Upper.name)
+        sl = plex_0[1].getLabel(boundaries.Slices.name)
+
+        ul_is = ul.getStratumIS(boundaries.Upper.value)
+        sl_is = sl.getStratumIS(boundaries.Slices.value)
+
+        new_is = ul_is.union(sl_is)
+
+        plex_0[1].createLabel(boundaries.UpperPlus.name)
+        both_lab = plex_0[1].getLabel(boundaries.UpperPlus.name)
+        both_lab.setStratumIS(boundaries.UpperPlus.value, new_is)
+
+        # # Composite label - lower + wedge slices  (Combine with above to eliminate sl)
+
+        # ll = plex_0[1].getLabel(boundaries.Lower.name)
+        # sl = plex_0[1].getLabel(boundaries.Slices.name)
+
+        # ll_is = ll.getStratumIS(boundaries.Lower.value)
+        # sl_is = sl.getStratumIS(boundaries.Slices.value)
+
+        # new_is = ll_is.union(sl_is)
+
+        # plex_0[1].createLabel(boundaries.LowerPlus.name)
+        # both_lab = plex_0[1].getLabel(boundaries.LowerPlus.name)
+        # both_lab.setStratumIS(boundaries.LowerPlus.value, new_is)
+
+        ####
+
+        viewer = PETSc.ViewerHDF5().create(
+            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
+        )
+
+        viewer(plex_0[1])
+
+    ## Are these needed for native coordinates ?
+    def sphere_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        ## Note these numbers should not be hard-wired
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    new_mesh = Mesh(
+        uw_filename + ".h5",
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
+        coordinate_system_type=coordinate_system,
+        return_coords_to_bounds=sphere_return_coords_to_bounds,
+    )
+
+    class boundary_normals(Enum):
+        Upper = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
+            (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter),
+            (0.0, True),
+        )
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
 
     return new_mesh

@@ -91,7 +91,7 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = uw.options.getInt("problem_size", default=3)
+problem_size = uw.options.getInt("problem_size", default=1)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
 grid_type = uw.options.getString("grid_type", default="simplex")
 
@@ -99,7 +99,7 @@ grid_type = uw.options.getString("grid_type", default="simplex")
 # +
 visuals = 1
 output_dir = "output"
-grid_type = "cubed_sphere"
+grid_type = "solid_ball"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
@@ -133,15 +133,15 @@ timing.reset()
 timing.start()
 
 # +
-if "simplex" in grid_type:
-    meshball = uw.meshing.SphericalShell(
-        radiusInner=r_i,
-        radiusOuter=r_o,
+if "ball" in grid_type:
+    meshball = uw.meshing.SegmentedSphericalBall(
+        radius=r_o,
         cellSize=cell_size,
+        numSegments=5,
         qdegree=2,
         refinement=grid_refinement,
     )
-else:
+elif "cubed" in grid_type:
     meshball = uw.meshing.CubedSphere(
         radiusInner=r_i,
         radiusOuter=r_o,
@@ -149,9 +149,45 @@ else:
         refinement=grid_refinement,
         qdegree=2,
     )
+else:
+    meshball = uw.meshing.SegmentedSphericalShell(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        cellSize=cell_size,
+        numSegments=5,
+        qdegree=2,
+        refinement=grid_refinement,
+    )
 
 meshball.dm.view()
 # -
+if uw.mpi.size == 1:
+
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0), invert=True, crinkle=True)
+
+    pl = pv.Plotter(window_size=[1000, 1000])
+    pl.add_axes()
+
+    pl.add_mesh(
+        clipped,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        show_scalar_bar = False,
+        opacity=1.0,
+    )
+
+    pl.show(cpos="xy")
+
+
+0/0
+
 stokes = uw.systems.Stokes(
     meshball,
     verbose=False,
@@ -257,9 +293,11 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # thermal buoyancy force
 
-Gamma = meshball.Gamma
-stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
-stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
+Gamma = meshball.CoordinateSystem.unit_e_0
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "UpperPlus")
+
+if not "ball" in grid_type:
+    stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "LowerPlus")
 
 stokes.bodyforce = unit_rvec * Rayleigh * gravity_fn * t_forcing_fn 
 
@@ -337,7 +375,7 @@ if uw.mpi.size == 1:
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 0, 1), invert=True)
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()

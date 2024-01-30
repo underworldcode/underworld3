@@ -175,7 +175,7 @@ class Mesh(Stateful, uw_object):
                 )
             elif ext.lower() == ".h5":
                 self.sf0, self.dm = _from_plexh5(
-                    plex_or_meshfile, PETSc.COMM_SELF, return_sf=True
+                    plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
                 )
 
             else:

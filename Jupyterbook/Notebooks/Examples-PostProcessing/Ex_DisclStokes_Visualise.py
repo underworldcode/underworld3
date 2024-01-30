@@ -20,7 +20,7 @@ checkpoint_dir = "/Users/lmoresi/+Simulations/InnerCore/ConvectionDisk"
 checkpoint_base = f"Disc_Ra1e7_H1_deleta_1000.0"
 meshfile = os.path.join(checkpoint_dir, checkpoint_base) + ".mesh.00000.h5"
 
-step = 3000
+step = 5000
 
 
 # +
