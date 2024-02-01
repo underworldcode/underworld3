@@ -269,36 +269,36 @@ class Constitutive_Model(uw_object):
 
 class ViscousFlowModel(Constitutive_Model):
     r"""
-    ```python
-    class ViscousFlowModel(Constitutive_Model)
-    ...
-    ```
-    ### Example
+    ### Viscous Flow Model
 
-    ```python
-    viscous_model = ViscousFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    ### Formulation
+    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
 
-    $$
-    \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-    $$
-
-    where $ \eta $ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
     relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
     constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
+    in `viscous_model.c`.
 
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
-    ---
+
     """
+
+    #     ```python
+    # class ViscousFlowModel(Constitutive_Model)
+    # ...
+    # ```
+    # ### Example
+
+    # ```python
+    # viscous_model = ViscousFlowModel(dim)
+    # viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
+    # solver.constititutive_model = viscous_model
+    # ```
+
+    # ```python
+    # tau = viscous_model.flux(gradient_matrix)
+    # ```
 
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are

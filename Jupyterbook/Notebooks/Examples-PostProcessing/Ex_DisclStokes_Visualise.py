@@ -14,13 +14,10 @@ import sympy
 
 # ls -trl /Users/lmoresi/+Simulations/InnerCore/ConvectionDisk | tail
 
-# +
-# checkpoint_dir = "../Examples-Convection/output"
+###### checkpoint_dir = "../Examples-Convection/output"
 checkpoint_dir = "/Users/lmoresi/+Simulations/InnerCore/ConvectionDisk"
 checkpoint_base = f"Disc_Ra1e7_H1_deleta_1000.0"
-meshfile = os.path.join(checkpoint_dir, checkpoint_base) + ".mesh.00000.h5"
-
-step = 5000
+meshfile = os.path.join(checkpoint_dir, checkpoint_base) + ".mesh.05100.h5"
 
 
 # +
@@ -37,65 +34,88 @@ th = sympy.atan2(y + 1.0e-5, x + 1.0e-5)
 v_soln = uw.discretisation.MeshVariable("U", discmesh, discmesh.dim, degree=2)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", discmesh, 1, degree=2)
 flux = uw.discretisation.MeshVariable(r"dTdz", discmesh, 1, degree=2)
+
+# +
+# v_soln.read_timestep(checkpoint_base, "U", step, outputPath=checkpoint_dir)
+# t_soln.read_timestep(checkpoint_base, "T", step, outputPath=checkpoint_dir)
 # -
 
-v_soln.read_timestep(checkpoint_base, "U", step, outputPath=checkpoint_dir)
-t_soln.read_timestep(checkpoint_base, "T", step, outputPath=checkpoint_dir)
 
+steps = range(200,6650,10)
 
 # +
 import mpi4py
 import pyvista as pv
 import underworld3.visualisation as vis
 
-pvmesh = vis.mesh_to_pv_mesh(discmesh)
-pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym[0])
-pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
-
-velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-
-# point sources at cell centres
-skip = 1
-points = np.zeros((discmesh._centroids[::skip].shape[0], 3))
-points[:, 0] = discmesh._centroids[::skip, 0]
-points[:, 1] = discmesh._centroids[::skip, 1]
-point_cloud = pv.PolyData(points)
-
-pvstream = pvmesh.streamlines_from_source(
-    point_cloud,
-    vectors="V",
-    integration_direction="both",
-    max_time=0.5,
-)
-
 pl = pv.Plotter(window_size=[1000, 1000])
 
-pl.add_mesh(
-    pvmesh,
-    cmap="coolwarm",
-    edge_color="Grey",
-    show_edges=True,
-    scalars="T",
-    use_transparency=False,
-    opacity=1.0,
-)
+for step in steps:
 
-pl.add_mesh(pvstream, opacity=0.4, show_scalar_bar=False)
-# pl.add_mesh(pvmesh, "Black", "wireframe",  opacity=0.1)
+    try:
+        v_soln.read_timestep(checkpoint_base, "U", step, outputPath=checkpoint_dir)
+        t_soln.read_timestep(checkpoint_base, "T", step, outputPath=checkpoint_dir)
+    except:
+        continue
 
-pl.add_points(point_cloud, color="White", point_size=3.0, opacity=0.25)
+    pl.clear()
 
-pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.001, show_scalar_bar=True)
-
+    pvmesh = vis.mesh_to_pv_mesh(discmesh)
+    pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym[0])
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
     
-# pl.remove_scalar_bar("V")
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    
+    # point sources at cell centres
+    skip = 3
+    points = np.zeros((discmesh._centroids[::skip].shape[0], 3))
+    points[:, 0] = discmesh._centroids[::skip, 0]
+    points[:, 1] = discmesh._centroids[::skip, 1]
+    point_cloud = pv.PolyData(points)
+    
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud,
+        vectors="V",
+        integration_direction="both",
+        max_time=1,
+        surface_streamlines=True,
+    )
+    
+    
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Grey",
+        show_edges=False,
+        scalars="T",
+        use_transparency=False,
+        opacity=1.0,
+    )
+    
+    pl.add_mesh(pvstream, opacity=0.4, show_scalar_bar=False)
+    pl.add_mesh(pvmesh, "Black", "wireframe",  opacity=0.1)
+    
+    pl.add_points(point_cloud, color="White", point_size=3.0, opacity=0.25)
+    
+    # pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.001, show_scalar_bar=True)
+    
+        
+    # pl.remove_scalar_bar("V")
+    
+    imagefile = os.path.join(checkpoint_dir, checkpoint_base) + f"{step}.png"
+    
+    pl.screenshot(filename=imagefile, window_size=(1000, 1000), return_img=False)
 
-imagefile = os.path.join(checkpoint_dir, checkpoint_base) + f"{step}.png"
 
-pl.screenshot(filename=imagefile, window_size=(1000, 1000), return_img=False)
-# OR
+
+# -
 pl.show()
+
+uw.systems.Stokes.view()
+
+
+
 # +
 ## Calculate heat flux, evaluate at surface — proxy for boundary layer thickness
 
@@ -164,7 +184,7 @@ imagefile = os.path.join(checkpoint_dir, checkpoint_base) + f"{step}.png"
 
 pl.screenshot(filename=imagefile, window_size=(1000, 1000), return_img=False)
 # OR
-pl.show()
+
 # -
 
 

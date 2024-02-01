@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# Stokes flow in a Spherical Domain
+# # Stokes flow in a Spherical Domain
 #
 #
 # ## Mathematical formulation

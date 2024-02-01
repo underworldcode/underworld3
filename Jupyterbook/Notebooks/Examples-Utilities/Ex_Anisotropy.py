@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -349,16 +349,22 @@ C_IJm_HW[4,4] = 2 * (eta0 - delta_eta)  # xz
 C_IJm_HW[5,5] = 2 * eta0  # xy
 
 display(C_IJm_HW)
+# -
 
+# ## Rotation (symbolic)
+#
+# Compute the rotation (of the non-isotropic part) 
 
+# +
 C_ijkl_HW = uw.maths.tensor.mandel_to_rank4(C_IJm_HW - C_IJm, 3)
 display(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW, 3)) 
 
 C_ijkl_HW_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, C_ijkl_HW))
-sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW_R, 3)) + C_IJm
+C_IJm_HW_R = sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW_R, 3)) + C_IJm
 
-# display(C_IJm_HW_R)
+display(C_IJm_HW_R)
 
+# +
 ## Maybe this can be simplified if we use the unit vector relationships among n0,n1,n2
 
 C_IJm_HW_R_s1 = C_IJm_HW_R.subs(n[0]**2+n[1]**2+n[2]**2,1)

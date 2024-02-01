@@ -86,30 +86,6 @@ Rayleigh = 1.0e5
 meshball.dm.view()
 
 # +
-# if uw.mpi.size == 1:
-    
-#     import pyvista as pv
-#     import underworld3.visualisation as vis
-
-#     pvmesh = vis.mesh_to_pv_mesh(meshball)
-
-#     pl = pv.Plotter(window_size=(750, 750))
-
-#     pl.add_mesh(pvmesh, "Grey", "wireframe")
-
-#     pl.add_mesh(
-#         pvmesh,
-#         cmap="Greens",
-#         edge_color="Grey",
-#         show_edges=True,
-#         use_transparency=False,
-#         clim=[0.66, 1],
-#         opacity=0.75,
-#     )
-
-#     pl.show(cpos="xy")
-
-# +
 # Create Stokes object
 
 stokes = Stokes(
@@ -135,12 +111,9 @@ pressure_solver = uw.systems.Projection(meshball, p_cont)
 pressure_solver.uw_function = p_soln.sym[0]
 pressure_solver.smoothing = 1.0e-3
 
-# +
-
 stokes.petsc_options.setValue("ksp_monitor", None)
 stokes.petsc_options.setValue("snes_monitor", None)
 stokes.solve()
-# -
 
 # Pressure at mesh nodes
 pressure_solver.solve()
@@ -159,7 +132,25 @@ if uw.mpi.size == 1:
 
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_cont.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_init)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+
+    skip = 3
+    points = np.zeros((meshball._centroids[::skip].shape[0], 3))
+    points[:, 0] = meshball._centroids[::skip, 0]
+    points[:, 1] = meshball._centroids[::skip, 1]
+    point_cloud = pv.PolyData(points)
+
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", 
+        integration_direction="both", 
+        integrator_type=2,
+        surface_streamlines=True,
+        initial_step_length=0.01,
+        max_time=0.25,
+        max_steps=500
+    )
    
+
     pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
@@ -170,9 +161,11 @@ if uw.mpi.size == 1:
         show_edges=True,
         use_transparency=False,
         opacity=1.0,
+        show_scalar_bar=False
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=2)
+    # pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=2)
+    pl.add_mesh(pvstream, opacity=0.3, show_scalar_bar=False)
 
 
     pl.show(cpos="xy")

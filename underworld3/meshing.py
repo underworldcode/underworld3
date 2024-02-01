@@ -830,6 +830,7 @@ def Annulus(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.547,
     cellSize: float = 0.1,
+    cellSizeOuter: float = None,
     cellSizeInner: float = None,
     centre: bool = False,
     degree: int = 1,
@@ -856,6 +857,9 @@ def Annulus(
     if cellSizeInner is None:
         cellSizeInner = cellSize
 
+    if cellSizeOuter is None:
+        cellSizeOuter = cellSize
+
     if uw.mpi.rank == 0:
         import gmsh
 
@@ -880,8 +884,8 @@ def Annulus(
 
             loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize)
-        p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSize)
+        p4 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSizeOuter)
+        p5 = gmsh.model.geo.add_point(-radiusOuter, 0.0, 0.0, meshSize=cellSizeOuter)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -1872,8 +1876,20 @@ def RegionalSphericalBox(
     )
 
     class boundary_normals(Enum):
-        Lower = new_mesh.CoordinateSystem.unit_e_0
-        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Lower = sympy.UnevaluatedExpr(
+            new_mesh.CoordinateSystem.unit_e_0
+        ) * sympy.UnevaluatedExpr(
+            sympy.Piecewise(
+                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
+            )
+        )
+        Upper = sympy.UnevaluatedExpr(
+            new_mesh.CoordinateSystem.unit_e_0
+        ) * sympy.UnevaluatedExpr(
+            sympy.Piecewise(
+                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
+            )
+        )
 
     new_mesh.boundary_normals = boundary_normals
 
@@ -2423,13 +2439,19 @@ def SegmentedSphericalShell(
     )
 
     class boundary_normals(Enum):
-        Lower = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
-            (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner),
-            (0.0, True),
+        Lower = sympy.UnevaluatedExpr(
+            new_mesh.CoordinateSystem.unit_e_0
+        ) * sympy.UnevaluatedExpr(
+            sympy.Piecewise(
+                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
+            )
         )
-        Upper = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
-            (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter),
-            (0.0, True),
+        Upper = sympy.UnevaluatedExpr(
+            new_mesh.CoordinateSystem.unit_e_0
+        ) * sympy.UnevaluatedExpr(
+            sympy.Piecewise(
+                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
+            )
         )
         Centre = None
 
@@ -2783,9 +2805,12 @@ def SegmentedSphericalBall(
     )
 
     class boundary_normals(Enum):
-        Upper = new_mesh.CoordinateSystem.unit_e_0 * sympy.Piecewise(
-            (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter),
-            (0.0, True),
+        Upper = sympy.UnevaluatedExpr(
+            new_mesh.CoordinateSystem.unit_e_0
+        ) * sympy.UnevaluatedExpr(
+            sympy.Piecewise(
+                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radius), (0.0, True)
+            )
         )
         Centre = None
 

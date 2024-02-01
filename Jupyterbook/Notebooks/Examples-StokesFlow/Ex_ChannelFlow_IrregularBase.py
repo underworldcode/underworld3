@@ -221,7 +221,7 @@ terrain_mesh = uw.discretisation.Mesh(
         useMultipleTags=True,
         useRegions=True,
         markVertices=True,
-        boundaries=None,
+        boundaries=boundaries,
         coordinate_system_type=None,
         refinement=0,
         refinement_callback=None,
@@ -324,7 +324,9 @@ if uw.mpi.size == 1:
     velocity_points = vis.meshVariable_to_pv_cloud(v)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.1), normal=(0.0, 0, 1), invert=False)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.1), normal=(0.0, 0, 1), invert=True)
+    clipped2 = pvmesh.clip(origin=(0.0, 0.0, 0.4), normal=(0.0, 0, 1), invert=False)
+    clipped2.point_data["V"] = vis.vector_fn_to_pv_points(clipped2, v.sym)
 
     points = np.zeros((terrain_mesh._centroids.shape[0], 3))
     points[:, 0] = terrain_mesh._centroids[:, 0]
@@ -359,17 +361,20 @@ if uw.mpi.size == 1:
     pl.add_axes()
 
     pl.add_mesh(pvmesh,'Grey', 'wireframe', opacity=0.25)
-    # pl.add_mesh(clipped,'white', show_edges=False, opacity=0.75)
+    pl.add_mesh(clipped2,'white', show_edges=False, opacity=0.5)
     # pl.add_mesh(pvmesh, 'white', show_edges=True, opacity=0.5)
 
-    # pl.add_mesh(pvstream)
-    pl.add_mesh(pvstream2)
+    pl.add_mesh(pvstream)
+    # pl.add_mesh(pvstream2)
 
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-                           show_scalar_bar = False, opacity=1
-                           ,
-                           mag=100, )
+    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+    #                        show_scalar_bar = False, opacity=1,
+    #                        mag=100, )
+    
+    arrows = pl.add_arrows(clipped2.points, clipped2.point_data["V"], 
+                           show_scalar_bar = False, opacity=1,
+                           mag=33, )
 
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)

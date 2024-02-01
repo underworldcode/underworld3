@@ -18,8 +18,6 @@
 #
 # This allows us to introduce an internal force integral
 
-
-
 # to fix trame issue
 import nest_asyncio
 nest_asyncio.apply()
@@ -256,7 +254,7 @@ if uw.mpi.size == 1:
         max_steps=500
     )
    
-    pl = pv.Plotter(window_size=(750, 750))
+    pl = pv.Plotter(title="Stokes Greens Functions", window_size=(750, 750))
 
 
     pl.add_mesh(
@@ -270,12 +268,21 @@ if uw.mpi.size == 1:
         show_scalar_bar=False,
     )
 
-    pl.add_mesh(pvstream, opacity=0.15, show_scalar_bar=False)
-
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["SyyV"], mag=-1)
+    pl.add_mesh(pvstream, opacity=0.3, show_scalar_bar=False)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["SyyV"], mag=-1, show_scalar_bar=False)
 
 
     pl.show(cpos="xy")
 # -
+stokes.view()
+
+
+stokes.constitutive_model.view()
+
+stokes.constitutive_model.C
+
+stokes.constitutive_model.c
+
+
 
 

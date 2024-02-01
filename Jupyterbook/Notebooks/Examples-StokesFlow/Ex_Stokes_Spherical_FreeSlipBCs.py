@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# Stokes flow in a Spherical Domain
+# # Stokes flow in a Spherical Domain
 #
 #
 # ## Mathematical formulation
@@ -91,7 +91,7 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = uw.options.getInt("problem_size", default=1)
+problem_size = uw.options.getInt("problem_size", default=3)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
 grid_type = uw.options.getString("grid_type", default="simplex")
 
@@ -99,7 +99,7 @@ grid_type = uw.options.getString("grid_type", default="simplex")
 # +
 visuals = 1
 output_dir = "output"
-grid_type = "solid_ball"
+grid_type = "simplex_sphere"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
@@ -186,7 +186,7 @@ if uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 
-0/0
+
 
 stokes = uw.systems.Stokes(
     meshball,
@@ -348,16 +348,6 @@ meshball.write_timestep(
 )
 
 
-# savefile = "output/stokesSphere_orig.h5"
-# meshball.save(savefile)
-# # v_soln.save(savefile)
-# # p_soln.save(savefile)
-# meshball.generate_xdmf(savefile)
-# meshball.write_checkpoint("output/stokesSphere",
-#                           meshUpdates=True,
-#                           meshVars=[p_soln,v_soln],
-#                           index=0)
-
 
 # +
 # OR
@@ -369,40 +359,74 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)    
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 0, 1), invert=True)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 1, 0), invert=True)
+    clipped.point_data["V"] = vis.vector_fn_to_pv_points(clipped, v_soln.sym)
+    
+    clippedv = velocity_points.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 1, 0), invert=True)
+    clippedv.point_data["V"] = vis.vector_fn_to_pv_points(clippedv, v_soln.sym)
 
-    pl = pv.Plotter(window_size=[1000, 1000])
+    skip = 7
+    points = np.zeros((meshball._centroids[::skip].shape[0], 3))
+    points[:, 0] = meshball._centroids[::skip, 0]
+    points[:, 1] = meshball._centroids[::skip, 1]
+    points[:, 2] = meshball._centroids[::skip, 2]
+    point_cloud = pv.PolyData(points)
+
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", 
+        integration_direction="forward", 
+        integrator_type=45,
+        surface_streamlines=False,
+        initial_step_length=0.01,
+        max_time=1.0,
+        max_steps=1000
+    )
+
+    pl = pv.Plotter(window_size=[1000, 750])
     pl.add_axes()
 
     pl.add_mesh(
         clipped,
-        cmap="coolwarm",
+        cmap="Reds",
+        # cmap="coolwarm",
         edge_color="Black",
-        show_edges=True,
+        show_edges=False,
         scalars="T",
         use_transparency=False,
         show_scalar_bar = False,
-        opacity=1.0,
+        opacity=1,
     )
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
+    
+    pl.add_mesh(pvstream)
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-                           show_scalar_bar = False,
-                           mag=50/Rayleigh, )
+    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+    #                        show_scalar_bar = False, 
+    #                        mag=50/Rayleigh, )    
+    
+    arrows = pl.add_arrows(clippedv.points, clippedv.point_data["V"], 
+                           show_scalar_bar = False, 
+                           mag=100/Rayleigh, )
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
 
 # -
+
+
+pl.screenshot("snapshot.png", window_size=(2000,2000), return_img=False)
+
+# ! open snapshot.png
 
 

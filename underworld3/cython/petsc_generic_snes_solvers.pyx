@@ -477,7 +477,7 @@ class SNES_Scalar(Solver):
         options.setValue("private_{}_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
         options.setValue("private_{}_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "private_{}_".format(self.petsc_options_prefix), PETSc.COMM_WORLD,)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "private_{}_".format(self.petsc_options_prefix), PETSc.COMM_SELF,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.is_setup = False
@@ -999,7 +999,7 @@ class SNES_Vector(Solver):
 
  
  
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
 
@@ -1987,7 +1987,7 @@ class SNES_Stokes_SaddlePt(Solver):
         
             options = PETSc.Options()
             options.setValue("private_{}_u_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
-            self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+            self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
             self.petsc_fe_u.setName("velocity")
             self.petsc_fe_u_id = self.dm.getNumFields()
             self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
@@ -1996,7 +1996,7 @@ class SNES_Stokes_SaddlePt(Solver):
             options.setValue("private_{}_p_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), p_continous)
             options.setValue("private_{}_p_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
-            self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "private_{}_p_".format(self.petsc_options_prefix), PETSc.COMM_WORLD)
+            self.petsc_fe_p = PETSc.FE().createDefault(mesh.dim,    1, mesh.isSimplex, mesh.qdegree, "private_{}_p_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
             self.petsc_fe_p.setName("pressure")
             self.petsc_fe_p_id = self.dm.getNumFields()
             self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
@@ -2012,7 +2012,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
         for index,bc in enumerate(self.natural_bcs):
 
-            if uw.mpi.rank == 0: #  and self.verbose:
+            if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
                 print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
@@ -2026,12 +2026,6 @@ class SNES_Stokes_SaddlePt(Solver):
             bc_is = bc_label.getStratumIS(value)
                  
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
-
-            
-            if bc_is:
-                print(f"{uw.mpi.rank}: Setup nbc {boundary}: {bc_is.getLocalSize()}", flush=True)
-            else:
-                print(f"{uw.mpi.rank}: Setup nbc {boundary}: 0", flush=True)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  

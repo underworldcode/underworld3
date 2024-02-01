@@ -42,8 +42,6 @@ resI = res * 3
 r_o = 1.0
 r_i = 0.0
 
-Free_Slip = False
-
 
 # For now, assume restart is from same location !
 expt_name = f"Disc_Ra1e7_H1_deleta_{delta_eta}"
@@ -51,17 +49,11 @@ output_dir = "output"
 
 os.makedirs(output_dir, exist_ok=True  )
 
-
-# +
-# meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o, radiusInner=r_i,radiusInternal=0.5,
-#                               cellSize_Inner=resI, cellSize_Outer=res, cellSize_Internal=0.5*(resI+res), 
-#                                               centre=False, qdegree=3, )
 # -
 
-meshball = uw.meshing.AnnulusWithSpokes(radiusOuter=r_o, radiusInner=r_i,
-                                          cellSizeOuter=res,
+meshball = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i,
+                                            cellSizeOuter=res,
                                             cellSizeInner=resI,
-                                           spokes = 3,
                                            qdegree=3, )
 
 
@@ -134,15 +126,19 @@ stokes.petsc_options.setValue("snes_monitor", None)
 # Velocity boundary conditions
 
 if Free_Slip:    
-    bc = sympy.Piecewise((1.0, r > 0.99 * r_o), (0.0, True))
+    GammaN = meshball.Gamma  # boundary_normals["Upper"].value
+    # bc = sympy.Piecewise((1.0, r > 0.99 * r_o), (0.0, True))
     stokes.add_natural_bc(
-        1.0e6 * bc * unit_rvec.dot(v_soln.sym) * unit_rvec.T, "UpperPlus"
+        1.0e6 * GammaN.dot(v_soln.sym) * GammaN.T, "Upper"
     )
 
 else:
     stokes.add_dirichlet_bc((0.0, 0.0), "Upper")
 
+# -
 
+
+meshball.Gamma
 
 # +
 # Create adv_diff object
@@ -363,5 +359,7 @@ if viz and uw.mpi.size == 1:
     pl.add_mesh(pvmesh, cmap="coolwarm", scalars="T", opacity=0.75)
 
     pl.show(cpos="xy")
+
+
 
 
