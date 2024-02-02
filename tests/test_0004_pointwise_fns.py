@@ -1,6 +1,6 @@
-## Testing the ability to compile and load pointwise functions
-## in the various parts of the solver chain (pretty simple checks
-## since we haven't validated the solvers yet
+# Testing the ability to compile and load pointwise functions
+# in the various parts of the solver chain (pretty simple checks
+# since we haven't validated the solvers yet
 
 import pytest
 import sympy
@@ -47,6 +47,8 @@ def test_build_functions():
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
+    print(f"mesh.N.x -> {type(mesh.N.x)}")
+
     with uw.utilities.CaptureStdout(split=False) as captured_setup_solver:
         stokes._setup_pointwise_functions(
             verbose=True,
@@ -57,9 +59,9 @@ def test_build_functions():
 
     counter = len(stokes.ext_dict)
 
-    # print("============", flush=True)
-    # print(captured_setup_solver, flush=True)
-    # print("============", flush=True)
+    print("============", flush=True)
+    print(captured_setup_solver, flush=True)
+    print("============", flush=True)
 
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0004_0")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0004_0/cy_ext.h")
@@ -120,6 +122,10 @@ def test_build_boundary_functions():
         stokes._setup_discretisation(verbose=True)
         stokes._setup_solver(verbose=True)
 
+    # print("============", flush=True)
+    # print(captured_setup_solver, flush=True)
+    # print("============", flush=True)
+
     counter = len(stokes.ext_dict)
 
     # Solver JIT (incompressibility constraint)
@@ -138,24 +144,22 @@ def test_build_boundary_functions():
     )
 
     # Compilation (number of equations)
-    assert r"Equation count - 20" in captured_setup_solver
+    assert r"Equation count - 23" in captured_setup_solver
 
     # Compilation (number of equations)
-    assert r"Processing JIT   19" in captured_setup_solver
+    assert r"Processing JIT   22" in captured_setup_solver
 
     # Compilation (finds jacobians etc in the boundary weak form)
     # assert r"boundary_jacobian_g0" in captured_setup_solver
     # assert r"boundary_residual_f0" in captured_setup_solver
     # assert r"boundary_jacobian_preconditioner_g0" in captured_setup_solver
 
-    print(captured_setup_solver)
-
     del stokes
 
     return
 
 
-## Check if the functions are actually executed. For this we have to capture the
+# # Check if the functions are actually executed. For this we have to capture the
 # stdout from the C calls and I'm not sure how to do that.
 
 
@@ -243,6 +247,8 @@ def teardown_function():
     del os.environ["UW_JITNAME"]
 
 
+# +
 # Run the script in test mode
+
 # test_build_functions()
 # test_build_boundary_functions()

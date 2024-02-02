@@ -16,6 +16,23 @@ from underworld3.cython import petsc_discretisation
 import underworld3.timing as timing
 
 
+## Introduce these two specific types of coordinate tracking vector objects
+
+from sympy.vector import CoordSys3D
+
+
+# class MeshBasisVec(CoordSys3D):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         return
+
+
+# class MeshSurfaceNormalVec(CoordSys3D):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         return
+
+
 @timing.routine_timer_decorator
 def _from_gmsh(
     filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True
@@ -128,6 +145,7 @@ class Mesh(Stateful, uw_object):
         refinement_callback=None,
         return_coords_to_bounds=None,
         boundaries=None,
+        boundary_normals=None,
         name=None,
         *args,
         **kwargs,
@@ -157,7 +175,7 @@ class Mesh(Stateful, uw_object):
                 )
             elif ext.lower() == ".h5":
                 self.sf0, self.dm = _from_plexh5(
-                    plex_or_meshfile, PETSc.COMM_SELF, return_sf=True
+                    plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
                 )
 
             else:
@@ -173,6 +191,7 @@ class Mesh(Stateful, uw_object):
 
         self.filename = filename
         self.boundaries = boundaries
+        self.boundary_normals = boundary_normals
 
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
@@ -235,10 +254,14 @@ class Mesh(Stateful, uw_object):
             self.dm.setName(f"uw_{self.name}")
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
+        # A unique set of vectors / names for each mesh instance
+
         from sympy.vector import CoordSys3D
 
-        # A unique set of vectors / names for each mesh instance
         self._N = CoordSys3D(f"N")
+
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
 
         self._N.x._latex_form = r"\mathrm{\xi_0}"
         self._N.y._latex_form = r"\mathrm{\xi_1}"
@@ -247,12 +270,28 @@ class Mesh(Stateful, uw_object):
         self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
         self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
 
+        self._Gamma = CoordSys3D(r"\Gamma")
+
+        self._Gamma.x._latex_form = r"\Gamma_x"
+        self._Gamma.y._latex_form = r"\Gamma_y"
+        self._Gamma.z._latex_form = r"\Gamma_z"
+
         # Now add the appropriate coordinate system for the mesh's natural geometry
         # This step will usually over-write the defaults we just defined
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
 
-        # Tidy some of this printing without changing the
-        # underlying vector names (as these are part of the code generation system)
+        # This was in the _jit extension but ... if
+        # not here then the tests fail sometimes (caching ?)
+
+        self._N.x._ccodestr = "petsc_x[0]"
+        self._N.y._ccodestr = "petsc_x[1]"
+        self._N.z._ccodestr = "petsc_x[2]"
+
+        # Surface integrals also have normal vector information as petsc_n
+
+        self._Gamma.x._ccodestr = "petsc_n[0]"
+        self._Gamma.y._ccodestr = "petsc_n[1]"
+        self._Gamma.z._ccodestr = "petsc_n[2]"
 
         try:
             self.isSimplex = self.dm.isSimplex()
@@ -386,7 +425,7 @@ class Mesh(Stateful, uw_object):
             PETSc.COMM_WORLD,
         )
 
-        if PETSc.Sys.getVersion() <= (3,20,1): 
+        if PETSc.Sys.getVersion() <= (3, 20, 1):
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
@@ -604,6 +643,20 @@ class Mesh(Stateful, uw_object):
         return self._N
 
     @property
+    def Gamma_N(self) -> sympy.vector.CoordSys3D:
+        """
+        The mesh coordinate system.
+        """
+        return self._Gamma
+
+    @property
+    def Gamma(self) -> sympy.vector.CoordSys3D:
+        """
+        The mesh coordinate system.
+        """
+        return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
+
+    @property
     def X(self) -> sympy.Matrix:
         return self._CoordinateSystem.X
 
@@ -651,7 +704,7 @@ class Mesh(Stateful, uw_object):
         outputPath: Optional[str] = "",
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
-        meshUpdates: bool = True,
+        meshUpdates: bool = False,
     ):
         """
         Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
@@ -661,7 +714,7 @@ class Mesh(Stateful, uw_object):
 
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
-        # options.setValue("viewer_hdf5_collective", True)
+        options.setValue("viewer_hdf5_collective", False)
 
         import os
 
@@ -732,8 +785,8 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import generateXdmf
 
         ### save mesh vars
-        fname = f"./{outputPath}{'step_'}{index:05d}.h5"
-        xfname = f"./{outputPath}{'step_'}{index:05d}.xdmf"
+        fname = f"./{outputPath}{'_step_'}{index:05d}.h5"
+        xfname = f"./{outputPath}{'_step_'}{index:05d}.xdmf"
         #### create petsc viewer
         viewer = PETSc.ViewerHDF5().createHDF5(
             fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
@@ -828,6 +881,7 @@ class Mesh(Stateful, uw_object):
             correspond to the timestep (for example).
 
         """
+
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
@@ -1549,6 +1603,19 @@ class _MeshVariable(Stateful, uw_object):
         self._setup_ds()
 
         return
+
+    def clone(self, name, varsymbol):
+        newMeshVariable = _MeshVariable(
+            varname=name,
+            mesh=self.mesh,
+            size=self.shape,
+            vtype=self.vtype,
+            degree=self.degree,
+            continuous=self.continuous,
+            varsymbol=varsymbol,
+        )
+
+        return newMeshVariable
 
     def __getitem__(self, indices):
         if not isinstance(indices, tuple):

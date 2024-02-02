@@ -61,7 +61,6 @@ m3_args = (mesh3, v31, v32, p31)
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_check_meshes(mesh, v1, v2, p):
-
     assert mesh is not None
     assert v1 is not None
     assert v2 is not None
@@ -70,7 +69,6 @@ def test_check_meshes(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_check_mesh_X(mesh, v1, v2, p):
-
     assert mesh1.X.shape == (1, 2)
     assert mesh3.X.shape == (1, 3)
 
@@ -86,7 +84,6 @@ def test_ijk(mesh, v1, v2, p):
 
 @pytest.mark.xfail(raises=AttributeError)
 def test_no_ijk():
-
     # This object should not exist - Attribute error
     v13.ijk
 
@@ -96,7 +93,6 @@ def test_no_ijk():
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_dot(mesh, v1, v2, p):
-
     v1_dot_v2 = v1.sym.dot(v2.sym)
 
     v1_dot_v2_explicit = 0.0
@@ -111,7 +107,6 @@ def test_mesh_vector_dot(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_div(mesh, v1, v2, p):
-
     div_v = mesh.vector.divergence(v2.sym)
 
     div_v_explicit = 0.0
@@ -128,7 +123,6 @@ def test_mesh_vector_div(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_grad(mesh, v1, v2, p):
-
     grad_p = mesh.vector.gradient(p.sym)
 
     for i, coord in enumerate(mesh.X):
@@ -147,7 +141,6 @@ def test_mesh_vector_grad(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_curl(mesh, v1, v2, p):
-
     curl_v = mesh.vector.curl(v1.sym)
     curl_v_sym = sympy.vector.curl(v1.fn)
 
@@ -162,7 +155,6 @@ def test_mesh_vector_curl(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_jacobian(mesh, v1, v2, p):
-
     jac_v = mesh.vector.jacobian(v1.sym)
     jac_v_sym = v1.sym.jacobian(mesh.X)
 
@@ -177,7 +169,6 @@ def test_mesh_vector_jacobian(mesh, v1, v2, p):
 
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_add(mesh, v1, v2, p):
-
     v1_plus_v2 = v1.sym + v2.sym
     v1_plus_v2_explicit = 0.0 * v1.sym
     for i in range(mesh.dim):
@@ -334,5 +325,4 @@ display(mesh3.vector.curl(G))
 # -
 
 G
-
 G[1]

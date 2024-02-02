@@ -5,14 +5,14 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-# Stokes flow in a Spherical Domain
+# # Stokes flow in a Spherical Domain
 #
 #
 # ## Mathematical formulation
@@ -91,8 +91,7 @@ else:
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-
-problem_size = uw.options.getInt("problem_size", default=2)
+problem_size = uw.options.getInt("problem_size", default=3)
 grid_refinement = uw.options.getInt("grid_refinement", default=0)
 grid_type = uw.options.getString("grid_type", default="simplex")
 
@@ -100,6 +99,7 @@ grid_type = uw.options.getString("grid_type", default="simplex")
 # +
 visuals = 1
 output_dir = "output"
+grid_type = "simplex_sphere"
 
 # Some gmsh issues, so we'll use a pre-built one
 r_o = 1.0
@@ -109,21 +109,23 @@ Rayleigh = 1.0e6  # Doesn't actually matter to the solution pattern,
 
 # +
 if problem_size <= 1:
-    cell_size = 0.33
+    els = 3
 elif problem_size == 2:
-    cell_size = 0.15
+    els = 6
 elif problem_size == 3:
-    cell_size = 0.05
+    els = 12
 elif problem_size == 4:
+    els = 50
     cell_size = 0.02
 elif problem_size == 5:  # Pretty extreme to mesh this on proc0
-    cell_size = 0.015
+    els = 66
 elif problem_size >= 6:  # should consider refinement (or prebuild)
-    cell_size = 0.01
+    els = 100
 
+cell_size = 1/els
 res = cell_size
 
-expt_name = f"Stokes_Sphere_free_slip_{cell_size}"
+expt_name = f"Stokes_Sphere_free_slip_{els}"
 
 from underworld3 import timing
 
@@ -131,25 +133,60 @@ timing.reset()
 timing.start()
 
 # +
-if "simplex" in grid_type:
-    meshball = uw.meshing.SphericalShell(
-        radiusInner=r_i,
-        radiusOuter=r_o,
+if "ball" in grid_type:
+    meshball = uw.meshing.SegmentedSphericalBall(
+        radius=r_o,
         cellSize=cell_size,
+        numSegments=5,
         qdegree=2,
         refinement=grid_refinement,
     )
-else:
+elif "cubed" in grid_type:
     meshball = uw.meshing.CubedSphere(
         radiusInner=r_i,
         radiusOuter=r_o,
-        numElements=3,
+        numElements=els,
         refinement=grid_refinement,
         qdegree=2,
+    )
+else:
+    meshball = uw.meshing.SegmentedSphericalShell(
+        radiusInner=r_i,
+        radiusOuter=r_o,
+        cellSize=cell_size,
+        numSegments=5,
+        qdegree=2,
+        refinement=grid_refinement,
     )
 
 meshball.dm.view()
 # -
+if uw.mpi.size == 1:
+
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(meshball)
+
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0), invert=True, crinkle=True)
+
+    pl = pv.Plotter(window_size=[1000, 1000])
+    pl.add_axes()
+
+    pl.add_mesh(
+        clipped,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        show_scalar_bar = False,
+        opacity=1.0,
+    )
+
+    pl.show(cpos="xy")
+
+
+
 
 stokes = uw.systems.Stokes(
     meshball,
@@ -170,37 +207,19 @@ stokes.penalty = 0.0
 # gravity will vary linearly from zero at the centre
 # of the sphere to (say) 1 at the surface
 
-
 # Some useful coordinate stuff
 
 x, y, z = meshball.CoordinateSystem.N
 ra, l1, l2 = meshball.CoordinateSystem.R
 
-
-## Mesh Variables for T and radial coordinate
-
-meshr = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
-
-with meshball.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), meshball.data, meshball.N
-    )  # cf radius_fn which is 0->1
-
-## 
+## Mesh Variables for T ## 
 
 radius_fn = sympy.sqrt(
     meshball.rvec.dot(meshball.rvec)
 )  # normalise by outer radius if not 1.0
+
 unit_rvec = meshball.X / (radius_fn)
 gravity_fn = radius_fn
-
-
-hw = 1000.0 / res
-surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
-
-base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 
 ## Buoyancy (T) field
 
@@ -225,28 +244,19 @@ with meshball.access(t_soln):
 # that we are not adding anything to excite these modes in the forcing terms.
 
 orientation_wrt_z = sympy.atan2(y + 1.0e-10, x + 1.0e-10)
-v_rbm_z_x = -meshr.fn * sympy.sin(orientation_wrt_z)
-v_rbm_z_y = meshr.fn * sympy.cos(orientation_wrt_z)
+v_rbm_z_x = -ra * sympy.sin(orientation_wrt_z)
+v_rbm_z_y = ra * sympy.cos(orientation_wrt_z)
 v_rbm_z = sympy.Matrix([v_rbm_z_x, v_rbm_z_y, 0]).T
 
 orientation_wrt_x = sympy.atan2(z + 1.0e-10, y + 1.0e-10)
-v_rbm_x_y = -meshr.fn * sympy.sin(orientation_wrt_x)
-v_rbm_x_z = meshr.fn * sympy.cos(orientation_wrt_x)
+v_rbm_x_y = -ra * sympy.sin(orientation_wrt_x)
+v_rbm_x_z = ra * sympy.cos(orientation_wrt_x)
 v_rbm_x = sympy.Matrix([0, v_rbm_x_y, v_rbm_x_z]).T
 
 orientation_wrt_y = sympy.atan2(z + 1.0e-10, x + 1.0e-10)
-v_rbm_y_x = -meshr.fn * sympy.sin(orientation_wrt_y)
-v_rbm_y_z = meshr.fn * sympy.cos(orientation_wrt_y)
+v_rbm_y_x = -ra * sympy.sin(orientation_wrt_y)
+v_rbm_y_z = ra * sympy.cos(orientation_wrt_y)
 v_rbm_y = sympy.Matrix([v_rbm_y_x, 0, v_rbm_y_z]).T
-
-
-# +
-I = uw.maths.Integral(meshball, surface_fn_a)
-s_norm = I.evaluate()
-I.fn = base_fn_a
-
-b_norm = I.evaluate()
-s_norm, b_norm
 
 
 # +
@@ -254,9 +264,6 @@ s_norm, b_norm
 
 stokes.tolerance = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options[
-    "snes_max_it"
-] = 1  # for timing cases only - force 1 snes iteration for all examples
 
 stokes.petsc_options["snes_type"] = "newtonls"
 stokes.petsc_options["ksp_type"] = "fgmres"
@@ -285,19 +292,14 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # thermal buoyancy force
-buoyancy_force = Rayleigh * gravity_fn * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
 
-# Free slip condition by penalizing radial velocity at the surface (non-linear term)
-free_slip_penalty_upper = v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
-free_slip_penalty_lower = v_soln.sym.dot(unit_rvec) * unit_rvec * base_fn
+Gamma = meshball.CoordinateSystem.unit_e_0
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "UpperPlus")
 
-stokes.bodyforce = unit_rvec * buoyancy_force
-stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
+if not "ball" in grid_type:
+    stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "LowerPlus")
 
-# -
-
-stokes._setup_pointwise_functions()
-stokes._setup_discretisation()
+stokes.bodyforce = unit_rvec * Rayleigh * gravity_fn * t_forcing_fn 
 
 # +
 timing.reset()
@@ -309,7 +311,6 @@ stokes.solve(zero_init_guess=True)
 # Note: we should remove the rigid body rotation nullspace
 # This should be done during the solve, but it is also reasonable to
 # remove it from the force terms and solution to prevent it growing if present
-
 
 I0 = uw.maths.Integral(meshball, v_rbm_y.dot(v_rbm_y))
 norm = I0.evaluate()
@@ -336,15 +337,16 @@ print(
 timing.print_table()
 
 # +
-# savefile = "output/stokesSphere_orig.h5"
-# meshball.save(savefile)
-# # v_soln.save(savefile)
-# # p_soln.save(savefile)
-# meshball.generate_xdmf(savefile)
-# meshball.write_checkpoint("output/stokesSphere",
-#                           meshUpdates=True,
-#                           meshVars=[p_soln,v_soln],
-#                           index=0)
+outdir="output"
+
+meshball.write_timestep(
+    expt_name,
+    meshUpdates=True,
+    meshVars=[p_soln, v_soln],
+    outputPath=outdir,
+    index=0,
+)
+
 
 
 # +
@@ -357,41 +359,74 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)    
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 1, 0), invert=True)
+    clipped.point_data["V"] = vis.vector_fn_to_pv_points(clipped, v_soln.sym)
+    
+    clippedv = velocity_points.clip(origin=(0.0, 0.0, 0.0), normal=(0.0, 1, 0), invert=True)
+    clippedv.point_data["V"] = vis.vector_fn_to_pv_points(clippedv, v_soln.sym)
 
-    pl = pv.Plotter(window_size=[1000, 1000])
+    skip = 7
+    points = np.zeros((meshball._centroids[::skip].shape[0], 3))
+    points[:, 0] = meshball._centroids[::skip, 0]
+    points[:, 1] = meshball._centroids[::skip, 1]
+    points[:, 2] = meshball._centroids[::skip, 2]
+    point_cloud = pv.PolyData(points)
+
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", 
+        integration_direction="forward", 
+        integrator_type=45,
+        surface_streamlines=False,
+        initial_step_length=0.01,
+        max_time=1.0,
+        max_steps=1000
+    )
+
+    pl = pv.Plotter(window_size=[1000, 750])
     pl.add_axes()
 
     pl.add_mesh(
         clipped,
-        cmap="coolwarm",
+        cmap="Reds",
+        # cmap="coolwarm",
         edge_color="Black",
-        show_edges=True,
+        show_edges=False,
         scalars="T",
         use_transparency=False,
         show_scalar_bar = False,
-        opacity=1.0,
+        opacity=1,
     )
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
     #               use_transparency=False, opacity=1.0)
 
+    
+    pl.add_mesh(pvstream)
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-                           show_scalar_bar = False,
-                           mag=50/Rayleigh, )
+    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+    #                        show_scalar_bar = False, 
+    #                        mag=50/Rayleigh, )    
+    
+    arrows = pl.add_arrows(clippedv.points, clippedv.point_data["V"], 
+                           show_scalar_bar = False, 
+                           mag=100/Rayleigh, )
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
     pl.show(cpos="xy")
 
-stokes._uu_G0
 # -
+
+
+pl.screenshot("snapshot.png", window_size=(2000,2000), return_img=False)
+
+# ! open snapshot.png
 
 

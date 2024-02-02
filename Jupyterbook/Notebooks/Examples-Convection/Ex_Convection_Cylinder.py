@@ -8,9 +8,10 @@
 #
 # (Note, we keep all the pieces from previous increments of this problem to ensure that we don't break something along the way)
 
+# +
 # to fix trame issue
-import nest_asyncio
-nest_asyncio.apply()
+# import nest_asyncio
+# nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -21,12 +22,6 @@ from underworld3.systems import Stokes
 from underworld3 import function
 
 import numpy as np
-
-# options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-# options.getAll()
 # -
 
 meshball = uw.meshing.Annulus(
@@ -66,6 +61,10 @@ swarm = uw.swarm.Swarm(mesh=meshball)
 T1 = uw.swarm.SwarmVariable("Tminus1", swarm, 1)
 X1 = uw.swarm.SwarmVariable("Xminus1", swarm, 2)
 swarm.populate(fill_param=3)
+
+
+
+
 
 
 # +
@@ -298,7 +297,7 @@ def plot_T_mesh(filename):
 
 expt_name = "output/Cylinder_Ra1e6i"
 
-for step in range(0, 250):
+for step in range(0, 50):
     stokes.solve()
     delta_t = 5.0 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t)
@@ -316,14 +315,15 @@ for step in range(0, 250):
                                    meshVars=[v_soln, t_soln], 
                                    outputPath=expt_name)
 
-# -
 
 
+# +
 # savefile = "output_conv/convection_cylinder.h5".format(step)
 # meshball.save(savefile)
 # v_soln.save(savefile)
 # t_soln.save(savefile)
 # meshball.generate_xdmf(savefile)
+# -
 
 
 if uw.mpi.size == 1:
@@ -343,7 +343,7 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00002, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00005, opacity=0.75)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     pl.add_points(
@@ -351,10 +351,10 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         render_points_as_spheres=True,
         point_size=7.5,
-        opacity=0.25,
+        opacity=0.75,
     )
 
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+    pl.add_mesh(pvmesh, scalars="T", cmap="coolwarm", opacity=1)
 
     pl.show(cpos="xy")
 

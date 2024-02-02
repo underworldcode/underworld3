@@ -123,7 +123,7 @@ class Constitutive_Model(uw_object):
     @property
     def grad_u(self):
         mesh = self.Unknowns.u.mesh
-
+        # return mesh.vector.gradient(self.Unknowns.u.sym)
         return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
@@ -269,36 +269,36 @@ class Constitutive_Model(uw_object):
 
 class ViscousFlowModel(Constitutive_Model):
     r"""
-    ```python
-    class ViscousFlowModel(Constitutive_Model)
-    ...
-    ```
-    ### Example
+    ### Viscous Flow Model
 
-    ```python
-    viscous_model = ViscousFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    ### Formulation
+    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
 
-    $$
-    \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-    $$
-
-    where $ \eta $ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
+    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
     any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
     relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
     constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
+    in `viscous_model.c`.
 
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
-    ---
+
     """
+
+    #     ```python
+    # class ViscousFlowModel(Constitutive_Model)
+    # ...
+    # ```
+    # ### Example
+
+    # ```python
+    # viscous_model = ViscousFlowModel(dim)
+    # viscous_model.material_properties = viscous_model.Parameters(viscosity=viscosity_fn)
+    # solver.constititutive_model = viscous_model
+    # ```
+
+    # ```python
+    # tau = viscous_model.flux(gradient_matrix)
+    # ```
 
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
@@ -366,10 +366,12 @@ class ViscousFlowModel(Constitutive_Model):
     @property
     def grad_u(self):
         mesh = self.Unknowns.u.mesh
-        ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
-        edot = (ddu + ddu.T) / 2
 
-        return edot
+        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
+
+        # ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
+        # edot = (ddu + ddu.T) / 2
+        # return edot
 
     def _build_c_tensor(self):
         """For this constitutive law, we expect just a viscosity function"""
@@ -1154,6 +1156,102 @@ class DiffusionModel(Constitutive_Model):
         )
 
         return
+
+
+class DarcyFlowModel(Constitutive_Model):
+    r"""
+    ```python
+    class DarcyFlowModel(Constitutive_Model)
+    ...
+    ```
+    ```python
+    diffusion_model = DiffusionModel(dim)
+    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
+    scalar_solver.constititutive_model = diffusion_model
+    ```
+    $$q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)$$
+
+    where $\kappa$ is the permeability, a scalar constant, `sympy` function, `underworld` mesh variable or
+    any valid combination of those types. $s$ is the body force 'source' of pressure gradients.
+
+    Access the constitutive model using:
+
+    ```python
+    flux = darcy_flow_model.flux
+    ```
+    ---
+    """
+
+    class _Parameters:
+        """Any material properties that are defined by a constitutive relationship are
+        collected in the parameters which can then be defined/accessed by name in
+        individual instances of the class.
+        """
+
+        def __init__(
+            inner_self,
+            _owning_model,
+            diffusivity: Union[float, sympy.Function] = 1,
+        ):
+            inner_self._diffusivity = diffusivity
+            inner_self._owning_model = _owning_model
+
+        @property
+        def permeability(inner_self):
+            return inner_self._permeability
+
+        @permeability.setter
+        def permeability(inner_self, value: Union[float, sympy.Function]):
+            inner_self._permeability = value
+            inner_self._reset()
+
+        @property
+        def s(inner_self):
+            return inner_self._s
+
+        @s.setter
+        def s(inner_self, value: sympy.Matrix):
+            inner_self._s = value
+            inner_self._reset()
+
+    @property
+    def K(self):
+        return self.Parameters.permeability
+
+    def _build_c_tensor(self):
+        """For this constitutive law, we expect just a diffusivity function"""
+
+        d = self.dim
+        kappa = self.Parameters.permeability
+        self._c = sympy.Matrix.eye(d) * kappa
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(
+            Latex(
+                r"$\quad\kappa = $ "
+                + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()
+            )
+        )
+
+        return
+
+    @property
+    def flux(self):
+        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
+        (always uses the `c` form of the tensor). In general cases, the history of the gradients
+        may be required to evaluate the flux.
+        """
+
+        ddu = self.grad_u - self.Parameters.s
+
+        return self._q(ddu)
 
 
 class TransverseIsotropicFlowModel(Constitutive_Model):

@@ -7,22 +7,22 @@ import pytest
 # ### Set up variables of the model
 
 # +
-res = 24
+res = 10
 
 
 nsteps = 1
 
 
-kappa = 1.0 # diffusive constant
+kappa = 1.0  # diffusive constant
 
-velocity = 1/res #/res
+velocity = 1 / res  # /res
 
 ### min and max temps
-tmin = 0.5 # temp min
-tmax = 1.0 # temp max
+tmin = 0.5  # temp min
+tmax = 1.0  # temp max
 
 ### Thickness of hot pipe in centre of box
-pipe_thickness = 0.4 
+pipe_thickness = 0.4
 
 
 # ### Set up the mesh
@@ -32,16 +32,20 @@ ymin, ymax = 0, 1
 
 ### Quads
 meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=3,
+    elementRes=(int(res), int(res)),
+    minCoords=(xmin, ymin),
+    maxCoords=(xmax, ymax),
+    qdegree=3,
 )
 
 unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1/res, regular=False, qdegree=3, refinement=1
+    cellSize=1 / res, regular=False, qdegree=3, refinement=1
 )
 
 unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1/res, regular=True, qdegree=3, refinement=1
+    cellSize=1 / res, regular=True, qdegree=3, refinement=1
 )
+
 
 @pytest.mark.parametrize(
     "mesh",
@@ -51,7 +55,6 @@ unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
         unstructured_quad_box_regular,
     ],
 )
-
 def test_advDiff_boxmesh(mesh):
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
@@ -72,7 +75,7 @@ def test_advDiff_boxmesh(mesh):
     # - Constitutive model (Diffusivity)
     # - Boundary conditions
     # - Internal velocity
-    # - Initial temperature distribution 
+    # - Initial temperature distribution
 
     adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
     adv_diff.constitutive_model.Parameters.diffusivity = kappa
@@ -83,11 +86,10 @@ def test_advDiff_boxmesh(mesh):
     # adv_diff.add_dirichlet_bc(0., "Left")
     # adv_diff.add_dirichlet_bc(0., "Right")
 
-
     with mesh.access(v):
         # initialise fields
         # v.data[:,0] = -1*v.coords[:,1]
-        v.data[:,1] =  velocity
+        v.data[:, 1] = velocity
 
     with mesh.access(T):
         T.data[...] = tmin
@@ -98,7 +100,6 @@ def test_advDiff_boxmesh(mesh):
             (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
             & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
         ] = tmax
-
 
     # ### Create points to sample the UW results
     ### y coords to sample
@@ -117,7 +118,6 @@ def test_advDiff_boxmesh(mesh):
     ### get the initial temp profile
     T_orig = uw.function.evaluate(T.sym[0], sample_points)
 
-
     #### 1D diffusion function
     #### To compare UW results with a numerical results
 
@@ -129,54 +129,50 @@ def test_advDiff_boxmesh(mesh):
 
         dx = sample_points[1] - sample_points[0]
 
-        dt_dif = (dx**2 / k)
-        dt_adv = (dx/velocity)
+        dt_dif = dx**2 / k
+        dt_adv = dx / velocity
 
         dt = 0.5 * min(dt_dif, dt_adv)
 
-
         if time > 0:
-
-            """ determine number of its """
+            """determine number of its"""
             nts = math.ceil(time / dt)
-        
+
             """ get dt of 1D model """
             final_dt = time / nts
 
-        
             for i in range(nts):
                 qT = -k * np.diff(T) / dx
                 dTdt = -np.diff(qT) / dx
                 T[1:-1] += dTdt * final_dt
 
-        
-
         return T
 
+    model_time = 0.0
 
-    model_time = 0.
-    
     #### Solve
     dt = adv_diff.estimate_dt()
 
-    print(f'dt: {dt}\n')
-    
+    print(f"dt: {dt}\n")
+
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)
 
     model_time += dt
 
-
     ### compare UW and 1D numerical solution
     T_UW = uw.function.evalf(T.sym[0], sample_points)
 
-
     T_1D_model = diffusion_1D(
-        sample_points=sample_points[:, 1], T0=T_orig.copy(), diffusivity=kappa, vel=velocity, time_1D=model_time
+        sample_points=sample_points[:, 1],
+        T0=T_orig.copy(),
+        diffusivity=kappa,
+        vel=velocity,
+        time_1D=model_time,
     )
 
     #### 1D numerical advection
-    new_y = sample_points[:,1] + (velocity*model_time)
+    new_y = sample_points[:, 1] + (velocity * model_time)
 
     ### some issues with the projection of data onto the sample points so high rtol
     assert np.allclose(T_UW, T_1D_model, rtol=0.2)
@@ -184,9 +180,7 @@ def test_advDiff_boxmesh(mesh):
     del mesh
     del adv_diff
 
+
 del meshStructuredQuadBox
 del unstructured_quad_box_irregular
-del unstructured_quad_box_regular,
-
-
-
+del (unstructured_quad_box_regular,)

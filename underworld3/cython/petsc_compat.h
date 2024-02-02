@@ -33,68 +33,76 @@ PetscErrorCode DMSetAuxiliaryVec_UW(DM dm, DMLabel label, PetscInt value, PetscI
 
 // copy paste function signitures from $PETSC_DIR/include/petscds.h - would be nice to automate this.
 #define UW_SIG_F0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
-
 #define UW_SIG_G0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
 
 PetscErrorCode UW_PetscDSSetBdTerms(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
                                     PetscInt f, PetscInt g, PetscInt part,
-                                    PetscInt idx0, void (*bcFunc_f0)(UW_SIG_F0),
-                                    PetscInt idx1, void (*bcFunc_f1)(UW_SIG_F0),
-                                    PetscInt idxg0, void (*bcFunc_g0)(UW_SIG_G0),
-                                    PetscInt idxg1, void (*bcFunc_g1)(UW_SIG_G0),
-                                    PetscInt idxg2, void (*bcFunc_g2)(UW_SIG_G0),
-                                    PetscInt idxg3, void (*bcFunc_g3)(UW_SIG_G0))
+                                    void (*bcFunc_f0)(UW_SIG_F0),
+                                    void (*bcFunc_f1)(UW_SIG_F0),
+                                    void (*bcFunc_g0)(UW_SIG_G0),
+                                    void (*bcFunc_g1)(UW_SIG_G0),
+                                    void (*bcFunc_g2)(UW_SIG_G0),
+                                    void (*bcFunc_g3)(UW_SIG_G0))
 
 {
     PetscWeakForm wf;
 
+    int idx0 = 0;
+    int idx1 = 0;
+
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, label_val, f, part, idx0, bcFunc_f0, idx1, bcFunc_f1));
-    PetscCall(PetscWeakFormSetIndexBdJacobian(wf, label, label_val, f, g, part, idxg0, bcFunc_g0, idxg1, bcFunc_g1, idxg2, bcFunc_g2, idxg3, bcFunc_g3));
-    PetscCall(PetscWeakFormSetIndexBdJacobianPreconditioner(wf, label, label_val, f, g, part, idxg0, bcFunc_g0, idxg1, bcFunc_g1, idxg2, bcFunc_g2, idxg3, bcFunc_g3));
+    // PetscCall(PetscDSGetWeakForm(ds, &wf));
+    PetscCall(PetscWeakFormAddBdResidual(wf, label, label_val, f, part, bcFunc_f0, bcFunc_f1));
+    // PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, label_val, f, part, idx0, bcFunc_f0, idx1, bcFunc_f1));
+    //  PetscCall(PetscWeakFormAddBdJacobian(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
+    //  PetscCall(PetscWeakFormAddBdJacobianPreconditioner(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
 
     return 1;
 }
 
-PetscErrorCode UW_PetscDSSetBdResidual(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
-                                       PetscInt f, PetscInt part,
-                                       PetscInt idx0, void (*bcFunc_f0)(UW_SIG_F0),
-                                       PetscInt idx1, void (*bcFunc_f1)(UW_SIG_F0))
+// These use the older interface :
+
+PetscErrorCode
+UW_PetscDSSetBdResidual(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
+                        PetscInt f, PetscInt part,
+                        void (*bcFunc_f0)(UW_SIG_F0),
+                        void (*bcFunc_f1)(UW_SIG_F0))
 {
 
     PetscWeakForm wf;
+
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, label_val, f, part, idx0, bcFunc_f0, 0, NULL));
+    PetscCall(PetscWeakFormAddBdResidual(wf, label, label_val, f, part, bcFunc_f0, bcFunc_f1));
 
     return 1;
 }
 
 PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
                                        PetscInt f, PetscInt g, PetscInt part,
-                                       PetscInt idx0, void (*bcFunc_g0)(UW_SIG_G0),
-                                       PetscInt idx1, void (*bcFunc_g1)(UW_SIG_G0),
-                                       PetscInt idx2, void (*bcFunc_g2)(UW_SIG_G0),
-                                       PetscInt idx3, void (*bcFunc_g3)(UW_SIG_G0))
+                                       void (*bcFunc_g0)(UW_SIG_G0),
+                                       void (*bcFunc_g1)(UW_SIG_G0),
+                                       void (*bcFunc_g2)(UW_SIG_G0),
+                                       void (*bcFunc_g3)(UW_SIG_G0))
 {
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormSetIndexBdJacobian(wf, label, label_val, f, g, part, idx0, bcFunc_g0, idx1, bcFunc_g1, idx2, bcFunc_g2, idx3, bcFunc_g3));
+    PetscCall(PetscWeakFormAddBdJacobian(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
 
     return 1;
 }
 
 PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
                                                      PetscInt f, PetscInt g, PetscInt part,
-                                                     PetscInt idx0, void (*bcFunc_g0)(UW_SIG_G0),
-                                                     PetscInt idx1, void (*bcFunc_g1)(UW_SIG_G0),
-                                                     PetscInt idx2, void (*bcFunc_g2)(UW_SIG_G0),
-                                                     PetscInt idx3, void (*bcFunc_g3)(UW_SIG_G0))
+                                                     void (*bcFunc_g0)(UW_SIG_G0),
+                                                     void (*bcFunc_g1)(UW_SIG_G0),
+                                                     void (*bcFunc_g2)(UW_SIG_G0),
+                                                     void (*bcFunc_g3)(UW_SIG_G0))
 {
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormSetIndexBdJacobianPreconditioner(wf, label, label_val, f, g, part, idx0, bcFunc_g0, idx1, bcFunc_g1, idx2, bcFunc_g2, idx3, bcFunc_g3));
+    PetscCall(PetscWeakFormAddBdJacobianPreconditioner(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
 
     return 1;
 }

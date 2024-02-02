@@ -18,6 +18,7 @@
 
 # to fix trame issue
 import nest_asyncio
+
 nest_asyncio.apply()
 
 # +
@@ -103,7 +104,6 @@ nodal_vorticity_from_v.smoothing = 0.0
 
 
 navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-
 navier_stokes.constitutive_model.Parameters.viscosity = 1.0
 
 
@@ -133,7 +133,6 @@ nodal_vorticity_from_v.solve()
 
 # check the mesh if in a notebook / serial
 if uw.mpi.size == 1:
-    
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -142,8 +141,10 @@ if uw.mpi.size == 1:
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-    
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(
+        velocity_points, v_soln.sym
+    )
+
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
@@ -154,38 +155,49 @@ if uw.mpi.size == 1:
     centroid_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
-                                                centroid_cloud,
-                                                vectors="V",
-                                                integration_direction="both",
-                                                surface_streamlines=True,
-                                                max_time=0.25,
-                                            )
-
+        centroid_cloud,
+        vectors="V",
+        integration_direction="both",
+        surface_streamlines=True,
+        max_time=0.25,
+    )
 
     pl = pv.Plotter(window_size=(1000, 750))
 
     pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1)
     pl.add_mesh(pvstream, opacity=0.33)
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1.0e-2, opacity=0.75)
+    pl.add_arrows(
+        velocity_points.points,
+        velocity_points.point_data["V"],
+        mag=1.0e-2,
+        opacity=0.75,
+    )
     # pl.add_points(
-    #     point_cloud,
+    #     passive_swarm_points,
     #     color="Black",
     #     render_points_as_spheres=True,
-    #     point_size=0.5,
-    #     opacity=0.33,
+    #     point_size=5,
+    #     opacity=0.5,
     # )
 
-    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.75)
+    pl.camera.SetPosition(0.75, 0.2, 1.5)
+    pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
+    pl.camera.SetClippingRange(1.0, 8.0)
 
-    # pl.remove_scalar_bar("T")
-    # pl.remove_scalar_bar("mag")
+    # pl.remove_scalar_bar("Omega")
+    pl.remove_scalar_bar("mag")
+    pl.remove_scalar_bar("V")
 
-    pl.show()
+    # pl.camera_position = "xz"
+    pl.screenshot(
+        filename="{}.png".format(filename),
+        window_size=(2560, 1280),
+        return_img=False,
+    )
 
 
 def plot_V_mesh(filename):
     if uw.mpi.size == 1:
-        
         import pyvista as pv
         import underworld3.visualisation as vis
 
@@ -195,8 +207,10 @@ def plot_V_mesh(filename):
         pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
         velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-        
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(
+            velocity_points, v_soln.sym
+        )
+
         points = vis.swarm_to_pv_cloud(swarm)
         point_cloud = pv.PolyData(points)
 
@@ -216,7 +230,12 @@ def plot_V_mesh(filename):
 
         pl = pv.Plotter()
 
-        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01, opacity=0.75)
+        pl.add_arrows(
+            velocity_points.points,
+            velocity_points.point_data["V"],
+            mag=0.01,
+            opacity=0.75,
+        )
 
         # pl.add_points(
         #     point_cloud,
@@ -266,7 +285,7 @@ ts = 0
 # Time evolution model / update in time
 
 
-for step in range(0, 2): #250
+for step in range(0, 2):  # 250
     delta_t = 5.0 * navier_stokes.estimate_dt()
     navier_stokes.solve(timestep=delta_t)
 
@@ -286,5 +305,3 @@ for step in range(0, 2): #250
 
     ts += 1
 # -
-
-

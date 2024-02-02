@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -271,7 +271,7 @@ p_null = uw.discretisation.MeshVariable(r"P2", mesh1, 1, degree=1, continuous=Tr
 edot = uw.discretisation.MeshVariable(
     r"\dot\varepsilon", mesh1, 1, degree=1, continuous=True
 )
-visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=True)
+visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=False)
 stress = uw.discretisation.MeshVariable(r"\sigma", mesh1, 1, degree=1, continuous=True)
 
 # + [markdown] magic_args="[markdown]"
@@ -324,6 +324,7 @@ if True and uw.mpi.size == 1:
     #     use_transparency=False,
     #     opacity=0.5,
     # )
+    
     pl.add_points(
         point_cloud,
         cmap="coolwarm",
@@ -464,7 +465,7 @@ if uw.mpi.rank == 0:
 # +
 
 C0 = 150
-for i in range(1): #10
+for i in range(1,10,2):
     mu = 0.75
     C = C0 + (1.0 - i / 9) * 15.0
     if uw.mpi.rank == 0:
@@ -475,7 +476,7 @@ for i in range(1): #10
     viscosity_Y = tau_y / (2 * stokes.Unknowns.Einv2 + 1.0 / 1000)
     viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
 
-    stokes.constitutive_model.Parameters.viscosity = viscosity
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
     stokes.saddle_preconditioner = 1 / viscosity
 
     # +
@@ -494,9 +495,7 @@ for i in range(1): #10
         print(f"Completed: Mu - {mu}, C = {C}", flush=True)
 # -
 
-stokes.constitutive_model
 
-stokes._uu_G3
 
 # %%
 viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
@@ -508,6 +507,8 @@ stress_calc.uw_function = (
 strain_rate_calc.solve()
 viscosity_calc.solve()
 stress_calc.solve()
+
+stress.stats()
 
 ## Save data ...
 savefile = f"output/notched_beam_mesh_{problem_size}"
@@ -545,7 +546,7 @@ if uw.mpi.size == 1:
     pl.add_mesh(
         pvmesh,
         cmap="RdYlGn",
-        scalars="edot",
+        scalars="eta",
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
@@ -553,15 +554,17 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=False,
-        point_size=5,
-        opacity=0.1,
-    )
+    # pl.add_points(
+    #     point_cloud,
+    #     cmap="coolwarm",
+    #     render_points_as_spheres=False,
+    #     point_size=5,
+    #     opacity=0.1,
+    # )
 
     pl.show(cpos="xy")
+
+0/0
 
 # +
 # %%

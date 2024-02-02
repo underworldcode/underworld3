@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.15.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -339,10 +339,13 @@ timing.print_table(display_fraction=0.999)
 
 
 # +
-# check the mesh if in a notebook / serial
+import underworld3 as uw
+import pyvista as pv
+import underworld3.visualisation
 
-if uw.mpi.size == 1:
-    import pyvista as pv
+pl = pv.Plotter(window_size=(1000, 750))
+
+def plot_V_mesh(filename):
     import underworld3 as uw
     import underworld3.visualisation as vis
 
@@ -353,7 +356,7 @@ if uw.mpi.size == 1:
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    pl = pv.Plotter(window_size=(1000, 750))
+    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
 
     # point sources at cell centres for streamlines
 
@@ -365,8 +368,6 @@ if uw.mpi.size == 1:
     pvstream = pvmesh.streamlines_from_source(
         point_cloud, vectors="V", integration_direction="forward", max_steps=10
     )
-
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,
@@ -420,21 +421,31 @@ def plot_V_mesh(filename):
         pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
         pl.add_mesh(pvstream)
 
-        pl.add_points(
-            point_cloud,
-            color="Black",
-            render_points_as_spheres=True,
-            point_size=5,
-            opacity=0.5,
-        )
+    pl.add_points(
+        passive_swarm_points,
+        color="Black",
+        render_points_as_spheres=True,
+        point_size=5,
+        opacity=0.5,
+    )
 
-        pl.camera.SetPosition(0.75, 0.2, 1.5)
-        pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
-        pl.camera.SetClippingRange(1.0, 8.0)
 
-        # pl.remove_scalar_bar("Omega")
-        pl.remove_scalar_bar("mag")
-        pl.remove_scalar_bar("V")
+    pl.camera.SetPosition(0.75, 0.2, 1.5)
+    pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
+    pl.camera.SetClippingRange(1.0, 8.0)
+
+    # pl.remove_scalar_bar("Omega")
+    pl.remove_scalar_bar("mag")
+    pl.remove_scalar_bar("V")
+
+    # pl.camera_position = "xz"
+    pl.screenshot(
+        filename="{}.png".format(filename),
+        window_size=(2560, 1280),
+        return_img=False,
+    )
+
+    pl.clear()
 
         # pl.camera_position = "xz"
         pl.screenshot(
@@ -445,6 +456,8 @@ def plot_V_mesh(filename):
 
 
 # -
+
+
 
 ts = 0
 elapsed_time = 0.0
@@ -472,7 +485,7 @@ for step in range(0, 1): #1500
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}, dt_s {}".format(ts, delta_t, delta_t_cfl))
 
-    if ts % 5 == 0:
+    if ts % 10 == 0:
         nodal_vorticity_from_v.solve()
         plot_V_mesh(filename=f"{outdir}/{expt_name}.{ts:05d}")
 
@@ -498,7 +511,7 @@ for step in range(0, 1): #1500
 # +
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if 0 and uw.mpi.size == 1:
 
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -549,11 +562,17 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=1.0,
     )
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+    
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
     pl.add_mesh(pvstream)
 
-    # pl.remove_scalar_bar("mag")
+    pl.add_points(
+        passive_swarm_points,
+        color="Black",
+        render_points_as_spheres=True,
+        point_size=5,
+        opacity=0.5,
+    )
 
     pl.show()
 

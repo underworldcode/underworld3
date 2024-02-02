@@ -31,5 +31,5 @@ def parse_cmd_line_options():
 
 import os as _os
 
-if "UW_CMD_LINE_ARGS_DISABLE" not in _os.environ:
-    parse_cmd_line_options()
+# if "UW_CMD_LINE_ARGS_DISABLE" not in _os.environ:
+#     parse_cmd_line_options()

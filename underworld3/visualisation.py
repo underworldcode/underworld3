@@ -4,10 +4,10 @@
 def mesh_to_pv_mesh(mesh):
     """Initialise pyvista engine from existing mesh"""
 
-    # Required in notebooks
-    import nest_asyncio
+    # # Required in notebooks
+    # import nest_asyncio
 
-    nest_asyncio.apply()
+    # nest_asyncio.apply()
 
     import os
     import shutil
@@ -15,7 +15,7 @@ def mesh_to_pv_mesh(mesh):
     import pyvista as pv
 
     pv.global_theme.background = "white"
-    pv.global_theme.antialiasing = True
+    pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "client"
     pv.global_theme.smooth_shading = True
     pv.global_theme.smooth_shading = True
@@ -23,11 +23,10 @@ def mesh_to_pv_mesh(mesh):
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     with tempfile.TemporaryDirectory() as tmp:
-        
-        if type(mesh)==str: # reading msh file directly
+        if type(mesh) == str:  # reading msh file directly
             vtk_filename = os.path.join(tmp, "tmpMsh.msh")
             shutil.copyfile(mesh, vtk_filename)
-        else: # reading mesh by creating vtk 
+        else:  # reading mesh by creating vtk
             vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
             mesh.vtk(vtk_filename)
 

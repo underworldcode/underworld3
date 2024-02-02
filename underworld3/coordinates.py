@@ -68,7 +68,6 @@ class CoordinateSystem:
         mesh,
         system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN,
     ):
-
         self.mesh = mesh
         self.coordinate_type = system
 
@@ -353,7 +352,7 @@ class CoordinateSystem:
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
 
-            self._X = self._N.copy()
+            self._X = self._N  # .copy()
             self._x = self._X
 
             self._xRotN = sympy.eye(self.mesh.dim)
@@ -422,6 +421,13 @@ class CoordinateSystem:
     def unit_k(self) -> sympy.Matrix:
         if self.mesh.dim == 3:
             return self._xRotN[2, :]
+        else:
+            return None
+
+    # Should validate on dim
+    def unit_ijk(self, dirn) -> sympy.Matrix:
+        if dirn <= self.mesh.dim:
+            return self._xRotN[dirn, :]
         else:
             return None
 

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -47,7 +47,7 @@ viscosityRatio = 1.0
 
 r_layer = 0.7
 r_o = 1.0
-r_i = 0.5
+r_i = 0.54
 
 res = 0.25
 
@@ -94,13 +94,6 @@ with swarm.access(material):
 
 x, y, z = mesh.CoordinateSystem.X
 ra, l1, l2 = mesh.CoordinateSystem.xR
-
-hw = 1000.0 / res
-surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
-
-base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
 
 
 # +
@@ -191,17 +184,18 @@ stokes.petsc_options["ksp_monitor"] = None
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
+Gamma = mesh.Gamma
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
+
 # buoyancy (magnitude)
 buoyancy = Rayleigh * density  # * (1 - surface_fn) * (1 - base_fn)
 
 unit_vec_r = mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]
 
 # Free slip condition by penalizing radial velocity at the surface (non-linear term)
-free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn
-free_slip_penalty_lower = v_soln.sym.dot(unit_vec_r) * unit_vec_r * base_fn
 
 stokes.bodyforce = -unit_vec_r * buoyancy
-stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
 stokes.saddle_preconditioner = 1 / viscosity
 
@@ -234,7 +228,6 @@ if uw.mpi.size == 1 and render:
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
-    # pvmesh.point_data["visc"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(viscosity))
     pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
     pvmesh.point_data["V"] = 10.0 * vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)/vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()
 
@@ -268,15 +261,15 @@ if uw.mpi.size == 1 and render:
 
     pl = pv.Plotter(window_size=(1000, 1000))
 
-    pl.add_mesh(pvmesh, "Gray", "wireframe")
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.5)
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
-    pl.add_mesh(pvstream, opacity=1.0)
+    pl.add_mesh(pvstream, opacity=1.0, cmap="RdGy_r",)
     # pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
 
-    pl.add_mesh(contours, opacity=0.75, color="Yellow")
+    # pl.add_mesh(contours, opacity=1, color="Blue")
 
-    # pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.3)
+    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=10, opacity=0.3)
     # pl.add_points(pdata)
 
     pl.show(cpos="xz")
@@ -293,7 +286,6 @@ def plot_mesh(filename):
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
-    # pvmesh.point_data["visc"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(viscosity))
     pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
     pvmesh.point_data["V"] = 10.0 * vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)/vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()
     print(f"Vscale {vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()}")
@@ -373,7 +365,7 @@ for step in range(0, 10):
     swarm.advection(v_soln.sym, delta_t)
 
     if t_step < 10 or t_step % 5 == 0:
-        plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        # plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
         mesh.petsc_save_checkpoint(index=t_step, meshVars=[v_soln], outputPath='./output/')
 

@@ -67,9 +67,9 @@ def test_stokes_sphere(mesh):
 
     # Some useful coordinate stuff
 
-    hw = 1000.0 / res
-    surface_fn = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-    base_fn = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
+    # hw = 1000.0 / res
+    # surface_fn = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
+    # base_fn = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
 
     ## Buoyancy (T) field
 
@@ -85,7 +85,6 @@ def test_stokes_sphere(mesh):
 
     stokes.tolerance = 1.0e-2
     stokes.petsc_options["ksp_monitor"] = None
-    # stokes.petsc_options["snes_max_it"] = 1 # for timing cases only - force 1 snes iteration for all examples
 
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.petsc_options["ksp_type"] = "fgmres"
@@ -99,18 +98,20 @@ def test_stokes_sphere(mesh):
     stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
     stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
 
-    buoyancy_force = 1.0e6 * t_forcing_fn * (1 - surface_fn) * (1 - base_fn)
+    buoyancy_force = 1.0e6 * t_forcing_fn
 
     # Free slip condition by penalizing radial velocity at the surface (non-linear term)
-    free_slip_penalty_upper = u.sym.dot(unit_rvec) * unit_rvec * surface_fn
-    free_slip_penalty_lower = u.sym.dot(unit_rvec) * unit_rvec * base_fn
+    # free_slip_penalty_upper = u.sym.dot(unit_rvec) * unit_rvec * surface_fn
+    # free_slip_penalty_lower = u.sym.dot(unit_rvec) * unit_rvec * base_fn
 
     stokes.bodyforce = unit_rvec * buoyancy_force
-    stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
+
+    Gamma = mesh.Gamma
+
+    stokes.add_natural_bc(10000 * Gamma.dot(u.sym) *  Gamma, "Upper")
+    stokes.add_natural_bc(10000 * Gamma.dot(u.sym) *  Gamma, "Lower")
 
     stokes.solve()
-
-    stokes.dm.ds.view()
 
     assert stokes.snes.getConvergedReason() > 0
 
@@ -120,7 +121,7 @@ def test_stokes_sphere(mesh):
     return
 
 
-test_stokes_sphere(cubed_sphere)
+# test_stokes_sphere(cubed_sphere)
 
 
 del annulus

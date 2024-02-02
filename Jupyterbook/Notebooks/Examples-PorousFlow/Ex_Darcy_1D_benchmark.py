@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -35,55 +35,35 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=3
 )
 
-# mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
-#                                       minCoords=(minX,minY),
-#                                       maxCoords=(maxX,maxY),)
-
-
-p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=3)
-v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 
 # x and y coordinates
 x = mesh.N.x
 y = mesh.N.y
-
-# +
-
-if uw.mpi.size == 1:
-    # plot the mesh
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(mesh)
-
-    pl = pv.Plotter(window_size=(750, 750))
-    
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        use_transparency=False,
-    )
-
-    pl.show(cpos="xy")
 # -
 
+test = uw.systems.SNES_Scalar(mesh)
+
+# +
 # Create Darcy Solver
-darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_soln, v_Field=v_soln)
-darcy.petsc_options.delValue("ksp_monitor")
+darcy = uw.systems.SteadyStateDarcy(mesh)
+
+p_soln = darcy.Unknowns.u
+v_soln = darcy.v
+
+
+
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
-darcy.constitutive_model = uw.constitutive_models.DiffusionModel
-darcy.constitutive_model.Parameters.diffusivity = 1
+
+darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
+darcy.constitutive_model.Parameters.permeability = 1
 
 
 # +
 # Groundwater pressure boundary condition on the bottom wall
 
 max_pressure = 0.5
-initialPressure = -1.0 * y * max_pressure
 
 # +
 # set up two materials
@@ -101,20 +81,18 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 # A smooth version
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
-darcy.constitutive_model.Parameters.diffusivity = kFunc
+darcy.constitutive_model.Parameters.permeability = kFunc
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
 darcy.f = 0.0
-darcy.s = sympy.Matrix([0, -1]).T
 
 # set up boundary conditions
 darcy.add_dirichlet_bc(0.0, "Top")
 darcy.add_dirichlet_bc(-1.0 * minY * max_pressure, "Bottom")
 
-# Zero pressure gradient at sides / base (implied bc)
+# # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.petsc_options["snes_rtol"] = 1.0e-6
-darcy._v_projector.smoothing = 1.0e-6
-darcy._v_projector.add_dirichlet_bc(0.0, "Left", 0)
-darcy._v_projector.add_dirichlet_bc(0.0, "Right", 0)
+# darcy._v_projector.petsc_options["snes_rtol"] = 1.0e-6
+
 # -
 # Solve time
 darcy.solve()
@@ -161,9 +139,9 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    pl.add_mesh(pvstream, line_width=10.0)
+    pl.add_mesh(pvstream, line_width=1.0)
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.005, opacity=0.75)
+    # pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.005, opacity=0.75)
 
     pl.show(cpos="xy")
 
@@ -174,7 +152,7 @@ ycoords = np.linspace(minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY)
 xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
+pressure_interp = uw.function.evalf(p_soln.sym[0], xy_coords)
 
 
 # +
@@ -225,5 +203,11 @@ ax1.plot(
 ax1.grid("on")
 ax1.legend()
 # -
+darcy.view()
+
+
+darcy.darcy_flux
+
+
 
 
