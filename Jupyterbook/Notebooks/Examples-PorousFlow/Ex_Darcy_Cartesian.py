@@ -149,13 +149,13 @@ if uw.mpi.size == 1 and uw.is_notebook:
                 pvmesh,
                 cmap="coolwarm",
                 edge_color="Black",
-                show_edges=False,
+                show_edges=True,
                 scalars="P",
                 use_transparency=False,
                 opacity=1.0,
             )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.25, opacity=0.5)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.5, opacity=0.5)
     pl.add_mesh(pvstream, line_width=1.0)
     pl.show(cpos="xy")
 

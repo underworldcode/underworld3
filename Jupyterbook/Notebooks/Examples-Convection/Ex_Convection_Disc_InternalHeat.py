@@ -51,7 +51,7 @@ os.makedirs(output_dir, exist_ok=True  )
 
 # -
 
-meshball = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i,
+meshball = uw.meshing.AnnulusWithSpokes(radiusOuter=r_o, radiusInner=r_i,
                                             cellSizeOuter=res,
                                             cellSizeInner=resI,
                                            qdegree=3, )

@@ -1113,9 +1113,6 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
         restore_points_func: Callable = None,
         verbose=False,
     ):
-        if solver_name == "":
-            solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
-
         ## Parent class will set up default values etc
         super().__init__(
             mesh,
@@ -1126,6 +1123,9 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             solver_name,
             verbose,
         )
+
+        if solver_name == "":
+            solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
 
         if isinstance(V_fn, uw.discretisation._MeshVariable):
             self._V_fn = V_fn.sym
@@ -1407,9 +1407,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         restore_points_func: Callable = None,
         verbose=False,
     ):
-        if solver_name == "":
-            solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
-
         ## Parent class will set up default values etc
         super().__init__(
             mesh,
@@ -1420,6 +1417,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             solver_name,
             verbose,
         )
+
+        if solver_name == "":
+            solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
 
         if isinstance(V_fn, uw.discretisation._MeshVariable):
             self._V_fn = V_fn.sym
@@ -1455,6 +1455,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 order=order,
                 smoothing=0.0,
             )
+
         else:
             # validation
             if order is None:

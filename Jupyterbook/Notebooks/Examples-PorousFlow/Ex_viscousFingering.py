@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -76,7 +76,7 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-from scipy.interpolate import griddata, interp1d
+# from scipy.interpolate import griddata, interp1d
 
 import matplotlib.pyplot as plt
 
@@ -133,17 +133,19 @@ scaling_coefficients
 minX, maxX = 0, nd(10 * u.meter)
 minY, maxY = 0, nd(10 * u.meter)
 
+elements = 25
+
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=maxY / 50, qdegree=5
+    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=maxY / elements, qdegree=5
 )
 
 vizmesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.5 * maxY / 50, qdegree=1
+    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.5 * maxY / elements, qdegree=1
 )
 
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
-mat = uw.discretisation.MeshVariable("mat", mesh, 1, degree=5)
+mat = uw.discretisation.MeshVariable("mat", mesh, 1, degree=3, continuous=True)
 
 # x and y coordinates
 x = mesh.N.x
@@ -201,12 +203,14 @@ material = swarm.add_variable(name="M", size=1, proxy_degree=mat.degree)
 conc = swarm.add_variable(name="C", size=1, proxy_degree=mat.degree)
 
 swarm.populate(fill_param=4)
-# -
 
-adv_diff = uw.systems.AdvDiffusion(
+# +
+adv_diff = uw.systems.AdvDiffusionSLCN(
     mesh=mesh, u_Field=mat, V_fn=v_soln, #DuDt=conc.sym[0]
 )
+
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
+# -
 
 # ### Random material distribution along the interface
 
@@ -325,12 +329,15 @@ darcy.solve()
 time = 0
 step = 0
 
+
 # +
 finish_time = 0.01 * u.year
 
-while time < nd(finish_time):
+# while time < nd(finish_time):
+
+for iteration in range(0, 20):
     if uw.mpi.rank == 0:
-        print(f"\n\nstep: {step}, time: {dim(time, u.year)}\n\n")
+        print(f"\n\nstep: {step}, time: {dim(time, u.year)}")
 
     if step % 5 == 0:
         mesh.write_timestep(
@@ -378,6 +385,9 @@ while time < nd(finish_time):
     step += 1
     time += dt
 
+    if time > nd(finish_time):
+        break
+
 
 # -
 
@@ -389,9 +399,10 @@ if uw.mpi.size == 1:
 
     pvmesh = vis.mesh_to_pv_mesh(vizmesh)
     pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
     
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln_ckpt)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym)/vis.vector_fn_to_pv_points(velocity_points, v_soln_ckpt.sym).max()
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)/vis.vector_fn_to_pv_points(velocity_points, v_soln.sym).max()
     
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
@@ -402,16 +413,16 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh, style="surface", cmap="coolwarm", edge_color="Grey",
-    #             show_edges=False, use_transparency=False, opacity=1)
+    pl.add_mesh(pvmesh, style="surface", cmap="coolwarm", edge_color="Grey", scalars="P",
+                show_edges=False, use_transparency=False, opacity=1)
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=250, opacity=1)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1250, opacity=1)
 
     pl.add_points(
         point_cloud,
         cmap="coolwarm",
         render_points_as_spheres=False,
-        point_size=5,
+        point_size=2,
         opacity=0.66,
     )
 
