@@ -17,18 +17,23 @@ class CoordinateSystemType(Enum):
     """
 
     CARTESIAN = 0
-    CYLINDRICAL2D = 1  # Cyl2D and Polar are equivalent here
-    POLAR = 1  #
-    CYLINDRICAL2D_NATIVE = 2  # Cyl2D and Polar are equivalent here
-    POLAR_NATIVE = 2  #
-    CYLINDRICAL3D = 3  # (Not really used for anything)
-    CYLINDRICAL3D_NATIVE = 4  # (Not really used for anything)
-    SPHERICAL = 5
-    SPHERICAL_NATIVE = 6
-    SPHERICAL_NATIVE_RTP = 6
+    CYLINDRICAL2D = 10  # Cyl2D and Polar are equivalent here
+    POLAR = 10  #
+    CYLINDRICAL2D_NATIVE = 11  # Cyl2D and Polar are equivalent here
+    POLAR_NATIVE = 11  #
+    ROTOR2D = 20
+    ROTOR2D_NATIVE = 21
+
+    CYLINDRICAL3D = 100  # (Not really used for anything)
+    CYLINDRICAL3D_NATIVE = 101  # (Not really used for anything)
+    SPHERICAL = 200
+    SPHERICAL_NATIVE = 201
+    SPHERICAL_NATIVE_RTP = 201
     # SPHERICAL_NATIVE_RLONLAT = 7
-    SPHERE_SURFACE_NATIVE = 8  # theta / phi only R = 1 ...
-    # SPHERE_SURFACE_NATIVE_RLONLAT = 8  # theta / phi only R = 1 ...
+    SPHERE_SURFACE_NATIVE = 301  # theta / phi only R = 1 ...
+    # SPHERE_SURFACE_NATIVE_RLONLAT = 302  # theta / phi only R = 1 ...
+    ROTOR3D = 400
+    ROTOR3D_NATIVE = 401
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,

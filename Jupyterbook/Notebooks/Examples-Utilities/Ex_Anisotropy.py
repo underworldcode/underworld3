@@ -455,7 +455,7 @@ uw.maths.tensor.rank4_to_mandel(C_ijkl_ORTHO_R, 3)
 # print(sympy.latex(uw.maths.tensor.rank4_to_mandel(C_ijkl_ORTHO_R, 3)))
 
 
-# +
+# + jupyter={"outputs_hidden": true}
 
 xi_0 = sympy.symbols(r"\xi_0")
 xi_1 = sympy.symbols(r"\xi_1")
@@ -487,5 +487,8 @@ uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)
 print(sympy.latex(uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)))
 
 # -
+display(C_ijkl_BC_R)
+
+
 
 

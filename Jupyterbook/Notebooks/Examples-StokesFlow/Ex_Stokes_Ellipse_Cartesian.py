@@ -36,7 +36,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 # +
 
 free_slip_upper = True
-free_slip_lower = False
+free_slip_lower = True
 
 # Define the problem size
 #      1 - ultra low res for automatic checking
@@ -58,7 +58,7 @@ if uw_testing_level:
         pass
 
 r_o = 1.0
-r_i = 0.33
+r_i = 0.5
 
 if problem_size <= 1:
     res = 0.5
@@ -76,8 +76,8 @@ elif problem_size >= 6:
 
 cellSizeOuter = res
 cellSizeInner = res/2
-ellipticityOuter = 3.0
-ellipticityInner = 0.5
+ellipticityOuter = 1.5
+ellipticityInner = 1.0
 
 radiusOuter = r_o
 radiusInner = r_i
@@ -171,7 +171,10 @@ elliptical_mesh = uw.discretisation.Mesh(
 
 x,y = elliptical_mesh.X
 
+# -
 
+
+x
 
 # +
 # Analytic expression for surface normals
@@ -185,7 +188,7 @@ Gamma_N_Inner = Gamma_N_Inner / sympy.sqrt(Gamma_N_Inner.dot(Gamma_N_Inner))
 # +
 # check the mesh if in a notebook / serial and look at the surface normals (check them)
 
-if 0 and uw.mpi.size == 1:
+if 1 and uw.mpi.size == 1:
     
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -212,7 +215,10 @@ v_soln = uw.discretisation.MeshVariable(r"U", elliptical_mesh, 2, degree=2, cont
 p_soln = uw.discretisation.MeshVariable(r"P", elliptical_mesh, 1, degree=1, continuous=True, varsymbol=r"\mathbf{p}")
 t_soln = uw.discretisation.MeshVariable(r"T", elliptical_mesh, 1, degree=3, varsymbol="\Delta T")
 
+# -
 
+
+v_soln.sym
 
 # +
 # Create a density structure / buoyancy force
@@ -230,7 +236,10 @@ gravity_fn = 1  # radius_fn / r_o
 Rayleigh = 1.0e5
 
 hw = 10000.0 / res
+# -
 
+
+elliptical_mesh.Gamma
 
 # +
 # Create Stokes object
@@ -243,7 +252,6 @@ stokes.penalty = 1.0
 # Surface normals provided by DMPLEX
 
 Gamma = elliptical_mesh.Gamma
-
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Outer")
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Inner")
 
@@ -290,7 +298,7 @@ stokes._setup_pointwise_functions(verbose=False)
 stokes._setup_discretisation(verbose=False)
 
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
-t_init = sympy.sin(2 * sympy.atan2(y,x))
+t_init = sympy.cos(4 * sympy.atan2(y,x))
 
 # +
 # Write density into a variable for saving
@@ -309,7 +317,10 @@ stokes.bodyforce = unit_rvec * buoyancy_force
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_monitor"] = None
 stokes.tolerance = 1.0e-4
+# -
 
+
+buoyancy_force
 
 # +
 from underworld3 import timing
@@ -360,7 +371,7 @@ if uw.mpi.size == 1:
                 use_transparency=False,
                 opacity=0.75,
                )
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.000005)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1e-4)
     
     pl.add_mesh(pvstream)
 

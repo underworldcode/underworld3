@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -17,7 +17,6 @@
 
 # to fix trame issue
 import nest_asyncio
-
 nest_asyncio.apply()
 
 # +
@@ -26,16 +25,10 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3 import timing
-
 import numpy as np
 import sympy
 
 from IPython.display import display
-
-import nest_asyncio
-
-nest_asyncio.apply()
-
 import os
 
 os.environ["UW_TIMING_ENABLE"] = "1"
@@ -86,6 +79,8 @@ meshball_xyz_tmp = uw.meshing.Annulus(
 
 
 # +
+## We don't have the native coordinates built in to this mesh
+
 xy_vec = meshball_xyz_tmp.dm.getCoordinates()
 xy = xy_vec.array.reshape(-1, 2)
 
@@ -99,10 +94,17 @@ rtheta_vec.array[...] = rtheta.reshape(-1)[...]
 dmplex.setCoordinates(rtheta_vec)
 # del meshball_xyz_tmp
 
+from enum import Enum
+class boundaries(Enum):
+    Lower = 1
+    Upper = 2
+    Centre = 10
 
 meshball = uw.meshing.Mesh(
     dmplex,
+    boundaries = boundaries,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+    
     qdegree=3,
 )
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
@@ -111,7 +113,7 @@ uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
 meshball.dm.view()
 
 meshball_xyz = uw.meshing.Annulus(
-    radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=5
+    radiusOuter=r_o, radiusInner=r_i, cellSize=res, qdegree=3
 )
 
 display(meshball_xyz.CoordinateSystem.type)
@@ -134,7 +136,6 @@ r, t = meshball.CoordinateSystem.R
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("Pc", meshball, 1, degree=2)
-
 
 v_soln_xy = uw.discretisation.MeshVariable("Uxy", meshball_xyz, 2, degree=2)
 p_soln_xy = uw.discretisation.MeshVariable(
@@ -165,7 +166,7 @@ stokes = uw.systems.Stokes(
     meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes"
 )
 
-stokes.tolerance = 1.0e-3
+stokes.tolerance = 1.0e-6
 stokes.petsc_options["snes_monitor"] = None
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
@@ -181,9 +182,11 @@ else:
     stokes.add_dirichlet_bc(0.0, "Upper", 0)
 
 stokes.add_dirichlet_bc(0.0, "Lower", 0)
-stokes.add_dirichlet_bc(0.0, "Lower", 1)
+# stokes.add_dirichlet_bc(0.0, "Lower", 1)
 # -
 
+
+stokes.view()
 
 # #### Strain rate in Cylindrical (2D) geometry is this:
 #
@@ -224,15 +227,18 @@ else:
     print("Free slip !")
     penalty = 100000
     stokes_xy.add_natural_bc(
-            penalty * unit_rvec_xy.dot(v_soln_xy.sym) * unit_rvec, "Upper"
+            penalty * unit_rvec_xy.dot(v_soln_xy.sym) * unit_rvec_xy, "Upper"
+        )
+    stokes_xy.add_natural_bc(
+            penalty * unit_rvec_xy.dot(v_soln_xy.sym) * unit_rvec_xy, "Lower"
         )
 
-stokes_xy.add_dirichlet_bc([0.0, 0.0], "Lower")
+# stokes_xy.add_dirichlet_bc([0.0, 0.0], "Lower")
+# -
 
-# +
-# pressure_solver = uw.systems.Projection(meshball, p_cont)
-# pressure_solver.uw_function = p_soln.sym[0]
-# pressure_solver.smoothing = 1.0e-3
+unit_rvec_xy
+
+penalty * unit_rvec_xy.dot(v_soln_xy.sym) * unit_rvec_xy
 
 # +
 # t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
@@ -240,12 +246,15 @@ t_init = sympy.cos(4 * th)
 stokes.bodyforce = sympy.Matrix([Rayleigh * t_init, 0])
 
 # ----
-
 t_init_xy = sympy.cos(4 * meshball_xyz.CoordinateSystem.xR[1])
 unit_rvec = meshball_xyz.CoordinateSystem.unit_e_0
 stokes_xy.bodyforce = Rayleigh * t_init_xy * unit_rvec
 
 # -
+
+stokes_xy.bodyforce
+
+
 
 with meshball_xyz.access(r_xy):
     r_xy.data[:, 0] = uw.function.evaluate(
@@ -261,8 +270,6 @@ timing.print_table()
 timing.start()
 
 stokes_xy.solve(zero_init_guess=True)
-
-
 
 timing.print_table()
 
@@ -322,7 +329,5 @@ pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
 pl.camera.SetClippingRange(1.0, 8.0)
 
 pl.show()
-
-# -
 
 

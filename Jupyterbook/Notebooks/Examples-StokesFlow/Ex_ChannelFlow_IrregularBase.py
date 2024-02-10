@@ -18,6 +18,11 @@ if uw.mpi.size == 1:
     import matplotlib.pyplot as plt 
 
 
+
+resolution = 0.05
+
+
+
 # +
 ## This is adapted from terrain mesh example provided
 ## in the gmsh examples.
@@ -52,12 +57,15 @@ def tag(i, j):
     return (N + 1) * i + j + 1
 
 for i in range(N + 1):
+    X = float(i) / N
     for j in range(N + 1):
+        Y = float(j) / N
+        
         nodes.append(tag(i, j))
         coords.extend([
-            2 * float(i) / N,
-            float(j) / N, 
-            0.1 * math.sin(20 * float(i + j) / N)
+            2 * X,
+            Y, 
+            0.05 * math.sin(20 * (X + 0.1 * Y)) * math.cos(sympy.pi * Y) - 0.1 * math.sin(sympy.pi * Y)
         ])
         if i > 0 and j > 0:
             tris.extend([tag(i - 1, j - 1), tag(i, j - 1), tag(i - 1, j)])
@@ -112,30 +120,16 @@ gmsh.model.mesh.createGeometry()
 # one volume on top; beware that only built-in CAD entities can be hybrid,
 # i.e. have discrete entities on their boundary: OpenCASCADE does not support
 # this feature
-# p1 = gmsh.model.geo.addPoint(0, 0, -0.5)
-# p2 = gmsh.model.geo.addPoint(1, 0, -0.5)
-# p3 = gmsh.model.geo.addPoint(1, 1, -0.5)
-# p4 = gmsh.model.geo.addPoint(0, 1, -0.5)
 
 p5 = gmsh.model.geo.addPoint(0, 0, 0.5)
 p6 = gmsh.model.geo.addPoint(2, 0, 0.5)
 p7 = gmsh.model.geo.addPoint(2, 1, 0.5)
 p8 = gmsh.model.geo.addPoint(0, 1, 0.5)
 
-# c1 = gmsh.model.geo.addLine(p1, p2)
-# c2 = gmsh.model.geo.addLine(p2, p3)
-# c3 = gmsh.model.geo.addLine(p3, p4)
-# c4 = gmsh.model.geo.addLine(p4, p1)
-
 c5 = gmsh.model.geo.addLine(p5, p6)
 c6 = gmsh.model.geo.addLine(p6, p7)
 c7 = gmsh.model.geo.addLine(p7, p8)
 c8 = gmsh.model.geo.addLine(p8, p5)
-
-# c10 = gmsh.model.geo.addLine(p1, 1)
-# c11 = gmsh.model.geo.addLine(p2, 2)
-# c12 = gmsh.model.geo.addLine(p3, 3)
-# c13 = gmsh.model.geo.addLine(p4, 4)
 
 c14 = gmsh.model.geo.addLine(1, p5)
 c15 = gmsh.model.geo.addLine(2, p6)
@@ -148,18 +142,6 @@ c17 = gmsh.model.geo.addLine(4, p8)
 
 ll2 = gmsh.model.geo.addCurveLoop([c5, c6, c7, c8])
 s2 = gmsh.model.geo.addPlaneSurface([ll2])
-
-# # lower
-# ll3 = gmsh.model.geo.addCurveLoop([c1, c11, -1, -c10])
-# s3 = gmsh.model.geo.addPlaneSurface([ll3])
-# ll4 = gmsh.model.geo.addCurveLoop([c2, c12, -2, -c11])
-# s4 = gmsh.model.geo.addPlaneSurface([ll4])
-# ll5 = gmsh.model.geo.addCurveLoop([c3, c13, 3, -c12])
-# s5 = gmsh.model.geo.addPlaneSurface([ll5])
-# ll6 = gmsh.model.geo.addCurveLoop([c4, c10, 4, -c13])
-# s6 = gmsh.model.geo.addPlaneSurface([ll6])
-# sl1 = gmsh.model.geo.addSurfaceLoop([s1, s3, s4, s5, s6, 1])
-# v1 = gmsh.model.geo.addVolume([sl1])
 
 # upper
 ll7 = gmsh.model.geo.addCurveLoop([c5, -c15, -1, c14])
@@ -184,7 +166,6 @@ gmsh.model.addPhysicalGroup(2, [s10], boundaries.Left.value, name=boundaries.Lef
 
 gmsh.model.addPhysicalGroup(2, [topo], boundaries.Lower.value, name=boundaries.Lower.name,)
 
-
 gmsh.model.addPhysicalGroup(3, [v2], 666666, "Elements")
 
 
@@ -202,8 +183,8 @@ if transfinite:
         gmsh.model.mesh.setSmoothing(s[0], s[1], 100)
     gmsh.model.mesh.setTransfiniteVolume(v2)
 else:
-    gmsh.option.setNumber('Mesh.MeshSizeMin', 0.075)
-    gmsh.option.setNumber('Mesh.MeshSizeMax', 0.075)
+    gmsh.option.setNumber('Mesh.MeshSizeMin', resolution)
+    gmsh.option.setNumber('Mesh.MeshSizeMax', resolution)
 
 gmsh.model.mesh.generate(3)
 gmsh.write('.meshes/tmp_terrain.msh')
@@ -251,7 +232,6 @@ p = stokes.Unknowns.p
 
 stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Left") 
 stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Right") 
-
 stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Front") 
 stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Back") 
 
@@ -260,7 +240,9 @@ stokes.add_essential_bc( [sympy.oo, sympy.oo, 0.0 ], "Upper")
 
 ## Free slip base
 Gamma = terrain_mesh.Gamma
-stokes.add_natural_bc(10000 * Gamma.dot(v.sym) *  Gamma, "Lower")
+height_mask = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
+stokes.add_natural_bc(10000 * Gamma.dot(v.sym) *  Gamma * height_mask, "Lower")
+stokes.add_natural_bc(10000 * v.sym * (1-height_mask), "Lower")
 
 ## Buoyancy
 
@@ -270,6 +252,8 @@ stokes.bodyforce = -sympy.Matrix([[sympy.sin(theta), 0.0, 0.0*sympy.cos(theta)]]
 
 
 Gamma.dot(v.sym)
+
+
 
 # +
 # Stokes settings
@@ -300,7 +284,6 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
 stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
 # # # mg, multiplicative - very robust ... similar to gamg, additive
-
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
 # stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
@@ -324,24 +307,31 @@ if uw.mpi.size == 1:
     velocity_points = vis.meshVariable_to_pv_cloud(v)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
 
-    clipped = pvmesh.clip(origin=(0.0, 0.0, 0.1), normal=(0.0, 0, 1), invert=True)
-    clipped2 = pvmesh.clip(origin=(0.0, 0.0, 0.4), normal=(0.0, 0, 1), invert=False)
+    clipped = pvmesh.clip(origin=(0.0, 0.0, -0.09), normal=(0.0, 0, 1), invert=True)
+    clipped.point_data["V"] = vis.vector_fn_to_pv_points(clipped, v.sym)
+
+    clipped2 = pvmesh.clip(origin=(0.0, 0.0, -0.05), normal=(0.0, 0, 1), invert=True)
     clipped2.point_data["V"] = vis.vector_fn_to_pv_points(clipped2, v.sym)
+    
+    clipped3 = pvmesh.clip(origin=(0.0, 0.0, 0.4), normal=(0.0, 0, 1), invert=False)
+    clipped3.point_data["V"] = vis.vector_fn_to_pv_points(clipped3, v.sym)
 
-    points = np.zeros((terrain_mesh._centroids.shape[0], 3))
-    points[:, 0] = terrain_mesh._centroids[:, 0]
-    points[:, 1] = terrain_mesh._centroids[:, 1]
-    points[:, 2] = terrain_mesh._centroids[:, 2]
 
-    point_cloud = pv.PolyData(points[np.logical_and(points[:, 2] < 0.125, points[:, 2] > 0.075)]  )
+    skip = 50
+    points = np.zeros((terrain_mesh._centroids[::skip].shape[0], 3))
+    points[:, 0] = terrain_mesh._centroids[::skip, 0]
+    points[:, 1] = terrain_mesh._centroids[::skip, 1]
+    points[:, 2] = terrain_mesh._centroids[::skip, 2]
+
+    point_cloud = pv.PolyData(points[np.logical_and(points[:, 0] < 2.0, points[:, 0] > 0.0)]  )
 
     pvstream = pvmesh.streamlines_from_source(
         point_cloud, vectors="V", 
         integration_direction="forward", 
         integrator_type=45,
         surface_streamlines=False,
-        initial_step_length=0.01,
-        max_time=1.0,
+        initial_step_length=0.1,
+        max_time=0.5,
         max_steps=1000
     )
 
@@ -353,28 +343,28 @@ if uw.mpi.size == 1:
         integrator_type=45,
         surface_streamlines=False,
         initial_step_length=0.01,
-        max_time=1.0,
+        max_time=0.5,
         max_steps=1000
     )
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
 
-    pl.add_mesh(pvmesh,'Grey', 'wireframe', opacity=0.25)
-    pl.add_mesh(clipped2,'white', show_edges=False, opacity=0.5)
+    pl.add_mesh(pvmesh,'Grey', 'wireframe', opacity=0.1)
+    pl.add_mesh(clipped,'Blue', show_edges=False, opacity=0.25)
     # pl.add_mesh(pvmesh, 'white', show_edges=True, opacity=0.5)
 
-    pl.add_mesh(pvstream)
-    # pl.add_mesh(pvstream2)
+    #pl.add_mesh(pvstream)
+    pl.add_mesh(pvstream2)
 
 
-    # arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
-    #                        show_scalar_bar = False, opacity=1,
-    #                        mag=100, )
-    
     arrows = pl.add_arrows(clipped2.points, clipped2.point_data["V"], 
                            show_scalar_bar = False, opacity=1,
-                           mag=33, )
+                           mag=100, )
+    
+    # arrows = pl.add_arrows(clipped3.points, clipped3.point_data["V"], 
+    #                        show_scalar_bar = False, opacity=1,
+    #                        mag=33, )
 
 
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
@@ -385,5 +375,5 @@ if uw.mpi.size == 1:
 
 
 # -
-
+terrain_mesh.data[:,2].min()
 

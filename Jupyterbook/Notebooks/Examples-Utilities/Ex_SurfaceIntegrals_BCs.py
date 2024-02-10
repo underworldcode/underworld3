@@ -1,4 +1,4 @@
-# ## Surface integral / natural boundary tests
+# ## Surface integral / natural boundary conditions 
 #
 #
 
@@ -140,8 +140,16 @@ stokes1.add_natural_bc( [0.,0.], "Top")              # Top is open (still)
 
 stokes1.bodyforce = sympy.Matrix([0, sympy.sin(x*sympy.pi)])
 
-stokes1.solve(verbose=False, debug=False, zero_init_guess=True, picard=3, _force_setup=False)
+# -
 
+
+stokes1._setup_pointwise_functions()
+stokes1._setup_discretisation()
+stokes1._setup_problem_description()
+
+# +
+
+stokes1.solve(verbose=False, debug=False, zero_init_guess=True, picard=0, _force_setup=False)
 # -
 
 

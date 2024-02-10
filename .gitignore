@@ -77,6 +77,10 @@ ignore*msh
 tmp*vtk
 tmp*msh
 
+# Docker build artefacts
+
+docker/underworld3_components
+
 # Other
 *DS_Store
 Jupyterbook/.DS_Store

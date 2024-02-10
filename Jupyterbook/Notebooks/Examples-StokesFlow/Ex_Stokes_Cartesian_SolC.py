@@ -63,8 +63,6 @@ mesh = mesh1
 # -
 
 
-mesh.dm.view()
-
 stokes = uw.systems.Stokes(mesh, verbose=True)
 
 # +
@@ -77,9 +75,9 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
 # -
-x,y = mesh.X
+mesh.vector.divergence(v.sym)
 
-mesh.get_min_radius()
+x,y = mesh.X
 
 # +
 # options = PETSc.Options()
@@ -105,7 +103,7 @@ stokes.bodyforce = sympy.Matrix(
 # +
 # This is the other way to impose no vertical flow
 
-stokes.add_natural_bc(   [0.0,1e5*v.sym[1]], "Top")              # Top "free slip / penalty"
+# stokes.add_natural_bc(   [0.0,1e5*v.sym[1]], "Top")              # Top "free slip / penalty"
 
 
 # +
@@ -113,7 +111,7 @@ stokes.add_natural_bc(   [0.0,1e5*v.sym[1]], "Top")              # Top "free sli
 # note with petsc we always need to provide a vector of correct cardinality.
 
 stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
-# stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0, 0.0), "Top")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
@@ -217,11 +215,13 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 # -
 
 
+stokes.constitutive_model.Parameters.shear_viscosity_0
+
 stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
 
 stokes._setup_pointwise_functions()
 stokes._setup_discretisation()
-stokes._u_f1
+stokes._uu_G3
 
 # +
 timing.reset()
@@ -230,6 +230,9 @@ timing.start()
 stokes.solve(zero_init_guess=True)
 
 timing.print_table(display_fraction=0.999)
+# -
+
+stokes.constitutive_model.Parameters.shear_viscosity_0
 
 # +
 # check the mesh if in a notebook / serial
@@ -240,7 +243,7 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
     pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
     velocity_points = vis.meshVariable_to_pv_cloud(v)
