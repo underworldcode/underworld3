@@ -60,6 +60,7 @@ mesh2 = uw.meshing.StructuredQuadBox(
 )
 
 mesh = mesh1
+x,y = mesh.X
 # -
 
 
@@ -74,19 +75,23 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
 T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, varsymbol=r"{T_2}")
-# -
-mesh.vector.divergence(v.sym)
 
-x,y = mesh.X
+# -
+v0 = stokes.Unknowns.u.clone("V0", r"{v_0}")
+v1 = stokes.Unknowns.u.clone("V1", r"{v_1}")
+
+
 
 # +
 # options = PETSc.Options()
 # options.getAll()
-# -
+
+# +
 
 eta_0 = 1.0
 x_c = 0.5
 f_0 = 1.0
+# -
 
 
 stokes.penalty = 100.0
@@ -108,10 +113,9 @@ stokes.bodyforce = sympy.Matrix(
 
 # +
 # free slip.
-# note with petsc we always need to provide a vector of correct cardinality.
 
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
 stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
-stokes.add_dirichlet_bc((0.0, 0.0), "Top")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
 # -
@@ -219,20 +223,32 @@ stokes.constitutive_model.Parameters.shear_viscosity_0
 
 stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
 
-stokes._setup_pointwise_functions()
-stokes._setup_discretisation()
-stokes._uu_G3
-
 # +
 timing.reset()
 timing.start()
-
 stokes.solve(zero_init_guess=True)
-
 timing.print_table(display_fraction=0.999)
+
+# Save this solution
+
+with mesh.access(v0):
+    v0.data[...] = v.data[...]
+
+# +
+
+
+# reset and re-do with natural bcs
+
+stokes._reset()
+stokes.tolerance = 1.0e-6
+stokes.add_natural_bc([0.0,1e6*v.sym[1]], "Top") 
+stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
+stokes.solve()
 # -
 
-stokes.constitutive_model.Parameters.shear_viscosity_0
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -244,10 +260,14 @@ if uw.mpi.size == 1:
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
+    pvmesh.point_data["V0"] = vis.vector_fn_to_pv_points(pvmesh, v0.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
+    pvmesh.point_data["dV"] = pvmesh.point_data["V"] - pvmesh.point_data["V0"]
     pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
 
     velocity_points = vis.meshVariable_to_pv_cloud(v)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
+    velocity_points.point_data["V0"] = vis.vector_fn_to_pv_points(velocity_points, v0.sym)
+    velocity_points.point_data["dV"] = velocity_points.point_data["V"] - velocity_points.point_data["V0"]
 
     pl = pv.Plotter(window_size=(1000, 750))
 
@@ -261,7 +281,7 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=30.0, opacity=1, show_scalar_bar=False)
+    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["dV"], mag=1000000.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
 
@@ -292,4 +312,8 @@ except ImportError:
 
 # %%
 # -
+
+
+
+
 

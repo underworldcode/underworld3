@@ -510,11 +510,9 @@ class SNES_Scalar(Solver):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = mesh.dm.getLabel(boundary)
+            bc_label = self.dm.getLabel(boundary)
             bc_is = bc_label.getStratumIS(value)
-            if bc_is is None:
-                print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-                continue
+            self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -725,6 +723,10 @@ class SNES_Scalar(Solver):
                 ext.fns_jacobian[i_jac[self._G2]], 
                 ext.fns_jacobian[i_jac[self._G3]], 
                 )
+
+        ## Now add the boundary residual / jacobian terms
+
+
 
         # Rebuild this lot
 
@@ -997,8 +999,6 @@ class SNES_Vector(Solver):
         options.setValue("private_{}_u_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
         options.setValue("private_{}_u_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
- 
- 
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
@@ -1025,6 +1025,11 @@ class SNES_Vector(Solver):
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
             ind = value
+
+            bc_label = self.dm.getLabel(boundary)
+            bc_is = bc_label.getStratumIS(value)
+            self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
+
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -1169,8 +1174,6 @@ class SNES_Vector(Solver):
 
                 fns_bd_residual += [bc.fns["u_f0"]]
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
-
-
                 
 
             # Going to leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
@@ -1248,6 +1251,64 @@ class SNES_Vector(Solver):
                 ext.fns_jacobian[i_jac[self._G2]], 
                 ext.fns_jacobian[i_jac[self._G3]], 
                 )
+
+        ## SNES VECTOR ADD Boundary terms
+
+        cdef DMLabel c_label
+ 
+        for bc in self.natural_bcs:
+
+            boundary = bc.boundary
+            boundary_id = bc.PETScID
+            
+            value = self.mesh.boundaries[bc.boundary].value
+            bc_label = self.dm.getLabel(boundary)
+            
+            label_val = value            
+
+            i_bd_res = self.ext_dict.bd_res
+            i_bd_jac = self.ext_dict.bd_jac
+
+            c_label = bc_label
+
+            if True: #  c_label and label_val != -1:
+                if bc.fn_f is not None:
+
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
+                                    NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                    ) 
+
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
+                                    )
+
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
+                                    )
+                                
+
+        if verbose:
+            print(f"Weak form (DS)", flush=True)
+            UW_PetscDSViewWF(ds.ds)
+            print(f"=============", flush=True)
+
+            print(f"Weak form(s) (Natural Boundaries)", flush=True)
+            for boundary in self.natural_bcs:
+                UW_PetscDSViewBdWF(ds.ds, boundary.PETScID)
+
+
+
+
 
         # Rebuild this lot
 
@@ -2024,7 +2085,6 @@ class SNES_Stokes_SaddlePt(Solver):
 
             bc_label = self.dm.getLabel(boundary)
             bc_is = bc_label.getStratumIS(value)
-                 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
