@@ -17,20 +17,21 @@ The development branch has similar documentation:
 
 Refer to the Dockerfile for uw3 build instructions.  
 
-For development, building inplace will probably be preferable.  Remove
-any existing installations using `clean.sh` then run
-
+To install from the repository
 ```shell
-python3 setup.py develop 
+pip install .
 ```
 
 The in-place `pip` installation may be helpful for developers (after the above)
+
 
 ```shell
 pip install -e .
 ```
 
-For in place usage, you will usually need to set an appropriate PYTHONPATH to 
-include the underworld build directory.
+To clean the git repository or all files ... be careful.
+```shell
+./clean.sh
+```
 
 

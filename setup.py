@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-# $ pip install -e . or just python setup.py build_ext
+
+# Usage:
+#  $ pip install . 
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
