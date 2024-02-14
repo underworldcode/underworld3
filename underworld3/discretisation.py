@@ -456,7 +456,12 @@ class Mesh(Stateful, uw_object):
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
         self._index = None
-        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
+        (
+            self._min_size,
+            self._radii,
+            self._centroids,
+            self._search_lengths,
+        ) = self._get_mesh_sizes()
 
         return
 
@@ -1041,7 +1046,12 @@ class Mesh(Stateful, uw_object):
             )
 
         # Use the "OK" version above to find these lengths
-        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
+        (
+            self._min_size,
+            self._radii,
+            self._centroids,
+            self._search_lengths,
+        ) = self._get_mesh_sizes()
 
         ## Now, we can use this information to rebuild the index more carefully
         """
@@ -1066,7 +1076,7 @@ class Mesh(Stateful, uw_object):
             )
 
         # update these
-        self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
+        self._min_sizes, self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
         """
         return
 
@@ -1164,16 +1174,20 @@ class Mesh(Stateful, uw_object):
         # Create index if required
         self._build_kd_tree_index()
 
-        (
-            sizes,
-            centroids,
-        ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        # (
+        #     sizes,
+        #     centroids,
+        # ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+
+        centroids = self._get_coords_for_basis(0, False)
 
         import numpy as np
 
         cStart, cEnd = self.dm.getHeightStratum(0)
         pStart, pEnd = self.dm.getDepthStratum(0)
-        cell_length = np.empty_like(sizes)
+        cell_length = np.empty(centroids.shape[0])
+        cell_min_r = np.empty(centroids.shape[0])
+        cell_r = np.empty(centroids.shape[0])
 
         for cell in range(cEnd - cStart):
             cell_num_points = self.dm.getConeSize(cell)
@@ -1183,8 +1197,10 @@ class Mesh(Stateful, uw_object):
             _, distsq, _ = self._index.find_closest_point(cell_coords)
 
             cell_length[cell] = np.sqrt(distsq.max())
+            cell_r[cell] = np.sqrt(distsq.mean())
+            cell_min_r[cell] = np.sqrt(distsq.min())
 
-        return sizes, centroids, cell_length
+        return cell_min_r, cell_r, centroids, cell_length
 
     # ==========
 
@@ -1199,14 +1215,16 @@ class Mesh(Stateful, uw_object):
 
         """
 
-        (
-            sizes,
-            centroids,
-        ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        # (
+        #     sizes,
+        #     centroids,
+        # ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+
+        centroids = self._get_coords_for_basis(0, False)
 
         return centroids
 
-    def get_min_radius(self) -> float:
+    def get_min_radius_old(self) -> float:
         """
         This method returns the global minimum distance from any cell centroid to a face.
         It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
@@ -1222,6 +1240,24 @@ class Mesh(Stateful, uw_object):
             self._min_radius = petsc_fvm_get_min_radius(self)
 
         return self._min_radius
+
+    def get_min_radius(self) -> float:
+        """
+        This method returns the global minimum distance from any cell centroid to a face.
+        It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
+        returns zero.
+        """
+
+        ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+        ## does not obtain the minimum radius for the mesh.
+
+        import numpy as np
+
+        all_min_radii = uw.utilities.gather_data(
+            np.array((self._radii.min(),)), bcast=True
+        )
+
+        return all_min_radii.min()
 
     # def get_boundary_subdm(self) -> PETSc.DM:
     #     """
@@ -1333,7 +1369,9 @@ def MeshVariable(
         ## (if not accessed, then this will not be necessary and may break)
 
         mesh.update_lvec()
-        existing_data = mesh.lvec.copy()
+
+        old_gvec = mesh.dm.getGlobalVec()
+        mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
 
     new_meshVariable = _MeshVariable(
         varname, mesh, num_components, vtype, degree, continuous, varsymbol
@@ -1342,21 +1380,37 @@ def MeshVariable(
     if mesh._accessed:
         ## Recreate the mesh variable dm and restore the data
 
+        dm0 = mesh.dm
         dm1 = mesh.dm.clone()
-        mesh.dm.copyFields(dm1)
+        dm0.copyFields(dm1)
+        dm1.createDS()
+
+        # print(f"{uw.mpi.rank}: Here 1", flush=True)
+
+        mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
+
+        mesh._lvec.destroy()
+        mesh._lvec = dm1.createLocalVec()
+        new_gvec = dm1.getGlobalVec()
+        new_gvec_sub = new_gvec.getSubVector(mdm_is)
+
+        # Copy the array data and push to gvec
+        new_gvec_sub.array[...] = old_gvec.array[...]
+        new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
+
+        # print(f"{uw.mpi.rank}: Here 2", flush=True)
+
+        # Copy the data to mesh._lvec and delete gvec
+        dm1.globalToLocal(new_gvec, mesh._lvec)
+
+        dm1.restoreGlobalVec(new_gvec)
+        dm0.restoreGlobalVec(old_gvec)
+
+        # destroy old dm
+        dm0.destroy
+
+        # Set new dm on mesh
         mesh.dm = dm1
-        mesh.dm.clearDS()
-        mesh.dm.createDS()
-        # mesh.dm.setUp()
-
-        mdm_is, _ = mesh.dm.createSubDM(range(0, mesh.dm.getNumFields() - 1))
-
-        mesh._lvec = mesh.dm.createLocalVec()
-        vsub1 = mesh._lvec.getSubVector(mdm_is)
-        vsub1.array[...] = existing_data.array[...]
-        mesh._lvec.restoreSubVector(mdm_is, vsub1)
-
-        # mesh.dm = mesh.dm
 
     return new_meshVariable
 

@@ -32,6 +32,7 @@ meshQuad = uw.meshing.StructuredQuadBox(
         maxCoords=(maxX, maxY), qdegree=3)
 
 meshTri = uw.meshing.UnstructuredSimplexBox(
+        regular=True,
         cellSize=1/2, 
         minCoords=(minX, minY), 
         maxCoords=(maxX, maxY), qdegree=3)
@@ -197,7 +198,10 @@ p3 = stokes3.Unknowns.p
 stokes3.add_essential_bc( [0.,0.], "Bottom")         # no slip on the base
 stokes3.add_essential_bc( [0.,sympy.oo], "Left")     # free slip Left/Right
 stokes3.add_essential_bc( [0.,sympy.oo], "Right")    # free slip Left/Right
-stokes3.add_natural_bc(   [0.,1000000*v3.sym[1]], "Top")              # Top "free slip / penalty"
+# stokes3.add_natural_bc(   [0.,1000000*v3.sym[1]], "Top")              # Top "free slip / penalty"
+
+Gamma = mesh.Gamma # sympy.Piecewise((mesh.Gamma, x < 0.5), mesh.CoordinateSystem.unit_j
+stokes3.add_natural_bc( 1.0e6 *  Gamma.dot(v3.sym) * Gamma, "Top")              # Top "free slip / penalty"
 
 stokes3.bodyforce = sympy.Matrix([0, sympy.sin(x*sympy.pi)])
 
@@ -208,12 +212,7 @@ stokes3.solve(verbose=False, debug=False, zero_init_guess=True, picard=2)
 
 
 JacViewer(stokes3)
-JacDiffViewer(stokes3, stokes0)
-
-
-stokes3.solve(verbose=True, debug=True, zero_init_guess=True, picard=2)
-JacViewer(stokes3)
-JacDiffViewer(stokes3, stokes0)
+# JacDiffViewer(stokes3, stokes0)
 
 
 # +

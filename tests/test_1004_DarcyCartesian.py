@@ -49,6 +49,12 @@ meshSimplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_Darcy_boxmesh_noG(mesh):
+    # Reset the mesh if it still has things lying around from earlier tests
+    mesh.dm.clearDS()
+    mesh.dm.clearFields()
+    mesh.nuke_coords_and_rebuild()
+    mesh.dm.createDS()
+
     p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
     v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 
@@ -123,13 +129,9 @@ def test_Darcy_boxmesh_noG(mesh):
 
     # print(pressure_analytic_noG)
     # print(pressure_interp)
-    
 
     # ### Compare analytical and numerical solution
     assert np.allclose(pressure_analytic_noG, pressure_interp, atol=1e-2)
-
-
-    
 
 
 # +
@@ -173,6 +175,12 @@ meshSimplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_Darcy_boxmesh_G(mesh):
+    # Reset the mesh if it still has things lying around from earlier tests
+    mesh.dm.clearDS()
+    mesh.dm.clearFields()
+    mesh.nuke_coords_and_rebuild()
+    mesh.dm.createDS()
+
     p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
     v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 
@@ -189,7 +197,6 @@ def test_Darcy_boxmesh_G(mesh):
     darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
     darcy.petsc_options["snes_rtol"] = 1.0e-6
     darcy.petsc_options["snes_monitor"] = None
-    darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 
     # #### Set up the hydraulic conductivity layout
     ### Groundwater pressure boundary condition on the bottom wall
@@ -245,7 +252,6 @@ def test_Darcy_boxmesh_G(mesh):
         ],
     )
 
-    
     # ### Compare analytical and numerical solution
     assert np.allclose(pressure_analytic, pressure_interp, atol=1e-1)
 
@@ -253,7 +259,3 @@ def test_Darcy_boxmesh_G(mesh):
 # -
 
 test_Darcy_boxmesh_G(meshSimplex_box_irregular)
-
-
-
-

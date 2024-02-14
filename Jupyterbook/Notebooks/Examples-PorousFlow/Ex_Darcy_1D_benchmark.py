@@ -50,8 +50,6 @@ darcy = uw.systems.SteadyStateDarcy(mesh)
 p_soln = darcy.Unknowns.u
 v_soln = darcy.v
 
-
-
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
@@ -82,7 +80,7 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 # kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
 darcy.constitutive_model.Parameters.permeability = kFunc
-darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
+darcy.constitutive_model.Parameters.s = -sympy.Matrix([0, 1]).T
 darcy.f = 0.0
 
 # set up boundary conditions

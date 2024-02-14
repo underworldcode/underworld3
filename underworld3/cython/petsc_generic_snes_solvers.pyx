@@ -138,7 +138,18 @@ class Solver(uw_object):
 
         self.natural_bcs = []
         self.essential_bcs = []
-        self.dm = None
+
+        if self.snes is not None:
+            self.snes.destroy()
+            self.snes = None
+
+        if self.dm is not None:
+            for coarse_dm in self.dm_hierarchy:
+                coarse_dm.destroy()
+
+            self.dm = None
+            self.dm_hierarchy = [None]
+
         self._is_setup = False
 
         return
@@ -1030,7 +1041,6 @@ class SNES_Vector(Solver):
             bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
-
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
 
@@ -1306,10 +1316,6 @@ class SNES_Vector(Solver):
             for boundary in self.natural_bcs:
                 UW_PetscDSViewBdWF(ds.ds, boundary.PETScID)
 
-
-
-
-
         # Rebuild this lot
 
         for coarse_dm in self.dm_hierarchy:
@@ -1547,8 +1553,8 @@ class SNES_Stokes_SaddlePt(Solver):
         self._strategy = "default"
 
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["snes_use_ew"] = None
-        self.petsc_options["snes_use_ew_version"] = 3
+        self.petsc_options["snes_ksp_ew"] = None
+        self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -1680,8 +1686,8 @@ class SNES_Stokes_SaddlePt(Solver):
     def tolerance(self, value):
         self._tolerance = value
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["snes_use_ew"] = None
-        self.petsc_options["snes_use_ew_version"] = 3
+        self.petsc_options["snes_ksp_ew"] = None
+        self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
         self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1  # rule of thumb
@@ -1699,8 +1705,8 @@ class SNES_Stokes_SaddlePt(Solver):
 
         # All strategies: reset to preferred
 
-        self.petsc_options["snes_use_ew"] = None
-        self.petsc_options["snes_use_ew_version"] = 3
+        self.petsc_options["snes_ksp_ew"] = None
+        self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"

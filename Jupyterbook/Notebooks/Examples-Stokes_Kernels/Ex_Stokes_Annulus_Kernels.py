@@ -66,12 +66,27 @@ norm_v = uw.discretisation.MeshVariable("N", meshball, 2, degree=1, varsymbol=r"
 p_soln = uw.discretisation.MeshVariable("p", meshball, 1, degree=1, continuous=True)
 p_cont = uw.discretisation.MeshVariable("pc", meshball, 1, degree=1, continuous=True)
 
+# with meshball.access(norm_v):
+#     norm_v.data[:,0] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[0], norm_v.coords)
+#     norm_v.data[:,1] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[1], norm_v.coords)
+
+
+# +
+projection = uw.systems.Vector_Projection(meshball, norm_v)
+projection.uw_function = sympy.Matrix([[0,0]])
+projection.smoothing = 1.0e-3
+
+# Point in a consistent direction wrt vertical 
+GammaNorm = meshball.Gamma.dot(meshball.CoordinateSystem.unit_e_0) / sympy.sqrt(meshball.Gamma.dot(meshball.Gamma))
+
+projection.add_natural_bc(meshball.Gamma * GammaNorm, "Upper")
+projection.add_natural_bc(meshball.Gamma * GammaNorm, "Lower")
+projection.add_natural_bc(meshball.Gamma * GammaNorm, "Internal")
+
+projection.solve(verbose=False, debug=False)
+
 with meshball.access(norm_v):
-    norm_v.data[:,0] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[0], norm_v.coords)
-    norm_v.data[:,1] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[1], norm_v.coords)
-    
-
-
+    norm_v.data[:,:] /= np.sqrt(norm_v.data[:,0]**2 + norm_v.data[:,1]**2).reshape(-1,1)
 
 
 
@@ -90,13 +105,13 @@ x, y = meshball.CoordinateSystem.X
 r, th = meshball.CoordinateSystem.xR
 
 # Null space in velocity (constant v_theta) expressed in x,y coordinates
-v_theta_fn_xy = r * meshball.CoordinateSystem.rRotN * sympy.Matrix((0,1))
+v_theta_fn_xy = r * meshball.CoordinateSystem.rRotN.T * sympy.Matrix((0,1))
 
 Rayleigh = 1.0e5
 # -
 
 
-v_theta_fn_xy
+
 
 meshball.dm.view()
 
@@ -120,6 +135,8 @@ t_init = sympy.sin(5*th) * sympy.exp(-1000.0 * ((r - r_int) ** 2))
 
 
 # +
+## First solve with known normals
+
 stokes.bodyforce = sympy.Matrix([0,0])
 Gamma = meshball.CoordinateSystem.unit_e_0
 
@@ -136,9 +153,6 @@ else:
     stokes.add_essential_bc((0.0,0.0), "Lower")
 
 stokes.solve()
-with meshball.access(v_soln1):
-    v_soln1.data[...] = v_soln.data[...]
-
 
 
 
@@ -147,11 +161,18 @@ with meshball.access(v_soln1):
 
 I0 = uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_soln.sym))
 norm = I0.evaluate()
-I0.fn = v_soln.sym.dot(v_soln.sym)
-vnorm = np.sqrt(I0.evaluate())
+I0.fn = v_theta_fn_xy.dot(v_theta_fn_xy)
+vnorm = I0.evaluate()
 
+print(norm/vnorm, vnorm)
 
-print(norm, vnorm)
+with meshball.access(v_soln):
+    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
+    v_soln.data[...] -= dv 
+
+with meshball.access(v_soln1):
+    v_soln1.data[...] = v_soln.data[...]
+
 # -
 
 pressure_solver = uw.systems.Projection(meshball, p_cont)
@@ -159,6 +180,8 @@ pressure_solver.uw_function = p_soln.sym[0]
 pressure_solver.smoothing = 1.0e-3
 
 # +
+## Now solve with normals from nodal projection
+
 stokes._reset()
 
 stokes.bodyforce = sympy.Matrix([0,0])
@@ -184,13 +207,20 @@ stokes.solve()
 
 I0 = uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_soln.sym))
 norm = I0.evaluate()
-I0.fn = v_soln.sym.dot(v_soln.sym)
-vnorm = np.sqrt(I0.evaluate())
 
-print(norm, vnorm)
+with meshball.access(v_soln):
+    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
+    v_soln.data[...] -= dv 
 
+print(norm/vnorm, vnorm)
 # -9.662093930530614e-09 0.024291704747453444
+
+norm = I0.evaluate()
 # -
+
+I0 = uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_soln.sym))
+norm = I0.evaluate()
+print(norm/vnorm)
 
 # Pressure at mesh nodes
 pressure_solver.solve()
@@ -246,8 +276,8 @@ if uw.mpi.size == 1:
         show_scalar_bar=True
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1)
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V0"], mag=1, color="Black")
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V0"], mag=3, color="Black")
     pl.add_mesh(pvstream, opacity=0.3, show_scalar_bar=False)
 
 
@@ -256,5 +286,7 @@ if uw.mpi.size == 1:
 
 vsol_rms = np.sqrt(velocity_points.point_data["V"][:, 0] ** 2 + velocity_points.point_data["V"][:, 1] ** 2).mean()
 vsol_rms
+
+r * sympy.Matrix([-sympy.sin(th), sympy.cos(th)])
 
 
