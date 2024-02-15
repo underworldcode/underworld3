@@ -353,8 +353,8 @@ class SNES_Scalar(Solver):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
-                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DuDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
+                 DFDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
                  degree: int = 2,
                  solver_name: str = "",
                  verbose    = False,
@@ -877,8 +877,8 @@ class SNES_Vector(Solver):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
-                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DuDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
+                 DFDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
                  degree     = 2,
                  solver_name: str = "",
                  verbose    = False):
@@ -1491,8 +1491,8 @@ class SNES_Stokes_SaddlePt(Solver):
                  mesh          : underworld3.discretisation.Mesh,
                  velocityField : Optional[underworld3.discretisation.MeshVariable] = None,
                  pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
-                 DuDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
-                 DFDt          : Union[SemiLagrange_Updater, Lagrangian_Updater] = None,
+                 DuDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
+                 DFDt          : Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt] = None,
                  degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
                  solver_name   : Optional[str]                           ="stokes_pt_",
@@ -1651,7 +1651,7 @@ class SNES_Stokes_SaddlePt(Solver):
 
 
     def _setup_history_terms(self):
-        self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
+        self.Unknowns.DuDt = uw.swarm.uw.swarm.SemiLagrange_D_Dt(
                     self.mesh,
                     self.u.sym,
                     self.u.sym,
@@ -1665,7 +1665,7 @@ class SNES_Stokes_SaddlePt(Solver):
                     smoothing=0.0,
                 )
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
+        self.Unknowns.DFDt = uw.swarm.uw.swarm.SemiLagrange_D_Dt(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
