@@ -44,7 +44,7 @@ free_slip_lower = True
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size = 3
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -174,7 +174,7 @@ x,y = elliptical_mesh.X
 # -
 
 
-x
+elliptical_mesh.dm.view()
 
 # +
 # Analytic expression for surface normals
@@ -186,60 +186,46 @@ Gamma_N_Inner = Gamma_N_Inner / sympy.sqrt(Gamma_N_Inner.dot(Gamma_N_Inner))
 
 
 # +
-# check the mesh if in a notebook / serial and look at the surface normals (check them)
-
-if 1 and uw.mpi.size == 1:
-    
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(elliptical_mesh)
-
-    pl = pv.Plotter(window_size=(750, 750))
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
-
-    pvmesh.point_data["Gamma"] = vis.vector_fn_to_pv_points(pvmesh, Gamma_N_Outer, dim=2)
-    pvmesh.point_data["Gamma2"] = vis.vector_fn_to_pv_points(pvmesh, Gamma_N_Inner, dim=2)
-
-    pl.add_arrows(pvmesh.points,pvmesh.point_data["Gamma"], mag=0.1, color="Red")
-    pl.add_arrows(pvmesh.points,pvmesh.point_data["Gamma2"], mag=0.1, color="Blue")
-
-    pl.show()
-
-# +
-# Test that the second one is skipped
-
-v_soln = uw.discretisation.MeshVariable(r"U", elliptical_mesh, 2, degree=2, continuous=True, varsymbol=r"\mathbf{u}")
-p_soln = uw.discretisation.MeshVariable(r"P", elliptical_mesh, 1, degree=1, continuous=True, varsymbol=r"\mathbf{p}")
-t_soln = uw.discretisation.MeshVariable(r"T", elliptical_mesh, 1, degree=3, varsymbol="\Delta T")
-
-# -
-
-
-v_soln.sym
-
-# +
-# Create a density structure / buoyancy force
-# gravity will vary linearly from zero at the centre
-# of the sphere to (say) 1 at the surface
+# Some geometry things
 
 x, y = elliptical_mesh.CoordinateSystem.X
 
 radius_fn = sympy.sqrt(x**2+y**2)
 unit_rvec = elliptical_mesh.CoordinateSystem.X / radius_fn
-gravity_fn = 1  # radius_fn / r_o
 
 # Some useful coordinate stuff
 
-Rayleigh = 1.0e5
 
-hw = 10000.0 / res
-# -
+# +
+# Test that the second one is skipped
+
+v_soln = uw.discretisation.MeshVariable("U", elliptical_mesh, 2, degree=2, continuous=True, varsymbol=r"\mathbf{u}")
+v_soln_1 = uw.discretisation.MeshVariable("U1", elliptical_mesh, 2, degree=2, continuous=True, varsymbol=r"{\mathbf{u}^[1]}")
+v_soln_0 = uw.discretisation.MeshVariable("U0", elliptical_mesh, 2, degree=2, continuous=True, varsymbol=r"{\mathbf{u}^[0]}")
+p_soln = uw.discretisation.MeshVariable("P", elliptical_mesh, 1, degree=1, continuous=True, varsymbol=r"\mathbf{p}")
 
 
-elliptical_mesh.Gamma
+
+# +
+n_vect = uw.discretisation.MeshVariable("Gamma", elliptical_mesh, 2, degree=2, varsymbol="{\Gamma_N}")
+
+projection = uw.systems.Vector_Projection(elliptical_mesh, n_vect)
+projection.uw_function = sympy.Matrix([[0,0]])
+
+# r.dot(Gamma) Ensure consistent orientation (not needed for mesh boundary surfaces)
+
+GammaNorm = unit_rvec.dot(elliptical_mesh.Gamma) / sympy.sqrt(elliptical_mesh.Gamma.dot(elliptical_mesh.Gamma))
+
+projection.add_natural_bc(elliptical_mesh.Gamma * GammaNorm, "Outer")
+projection.add_natural_bc(elliptical_mesh.Gamma * GammaNorm, "Inner")
+
+projection.solve()
+
+# Ensure n_vect are unit vectors 
+with elliptical_mesh.access(n_vect):
+    n_vect.data[:,:] /= np.sqrt(n_vect.data[:,0]**2 + n_vect.data[:,1]**2).reshape(-1,1)
+
+
 
 # +
 # Create Stokes object
@@ -248,6 +234,9 @@ stokes = Stokes(elliptical_mesh, velocityField=v_soln, pressureField=p_soln, sol
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 stokes.penalty = 1.0
+stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
+
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 # Surface normals provided by DMPLEX
 
@@ -255,82 +244,56 @@ Gamma = elliptical_mesh.Gamma
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Outer")
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Inner")
 
-# Or, use the analytic version instead
-
-# stokes.add_natural_bc(10000 * Gamma_N_Outer.dot(v_soln.sym) *  Gamma_N_Outer, "Outer")
-# stokes.add_natural_bc(10000 * Gamma_N_Inner.dot(v_soln.sym) *  Gamma_N_Inner, "Inner")
-    
-stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
-
-
 
 # +
-
-stokes.petsc_options["snes_type"] = "newtonls"
-stokes.petsc_options["ksp_type"] = "fgmres"
-
-# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
-stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
-
-# gasm is super-fast ... but mg seems to be bulletproof
-# gamg is toughest wrt viscosity
-
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "kaskade")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-# # # mg, multiplicative - very robust ... similar to gamg, additive
-
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-# -
-
-
-stokes._setup_pointwise_functions(verbose=False)
-stokes._setup_discretisation(verbose=False)
-
-# t_init = 10.0 * sympy.exp(-5.0 * (x**2 + (y - 0.5) ** 2))
 t_init = sympy.cos(4 * sympy.atan2(y,x))
 
-# +
-# Write density into a variable for saving
-
-with elliptical_mesh.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(
-        t_init, coords=t_soln.coords, coord_sys=elliptical_mesh.N
-    )
-
-
-# +
-
-buoyancy_force = Rayleigh * gravity_fn * t_init
-
-stokes.bodyforce = unit_rvec * buoyancy_force
+stokes.bodyforce = unit_rvec * t_init
 stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options["snes_monitor"] = None
-stokes.tolerance = 1.0e-4
-# -
+stokes.tolerance = 1.0e-6
 
-
-buoyancy_force
 
 # +
 from underworld3 import timing
 
 timing.reset()
 timing.start()
-# +
+
 stokes.solve(zero_init_guess=True, debug=False)
 
+with elliptical_mesh.access(v_soln_1):
+    v_soln_1.data[...] = v_soln.data[...]
+
 timing.print_table()
+# +
+# Create Stokes object
+
+stokes._reset()
+
+# Surface normals (computed)
+
+stokes.add_natural_bc(10000 * n_vect.sym.dot(v_soln.sym) * n_vect.sym, "Outer")
+stokes.add_natural_bc(10000 * n_vect.sym.dot(v_soln.sym) * n_vect.sym, "Inner")
+    
+
+stokes.solve(zero_init_guess=False)
+
+with elliptical_mesh.access(v_soln_0):
+    v_soln_0.data[...] = v_soln.data[...]
+
+
+# +
+# Create Stokes object
+
+stokes._reset()
+
+# Surface normals (computed analytically)
+stokes.add_natural_bc(10000 * Gamma_N_Outer.dot(v_soln.sym) *  Gamma_N_Outer, "Outer")
+stokes.add_natural_bc(10000 * Gamma_N_Inner.dot(v_soln.sym) *  Gamma_N_Inner, "Inner")
+    
+stokes.solve(zero_init_guess=False)
+
 # +
 # check the mesh if in a notebook / serial
 
@@ -341,8 +304,15 @@ if uw.mpi.size == 1:
 
     pvmesh = vis.mesh_to_pv_mesh(elliptical_mesh)
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    velocity_points.point_data["Va"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+    velocity_points.point_data["Vn"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_1.sym)
+    velocity_points.point_data["Vp"] = vis.vector_fn_to_pv_points(velocity_points, v_soln_0.sym)
+    velocity_points.point_data["dVn"] = velocity_points.point_data["Vn"] - velocity_points.point_data["Va"]
+    velocity_points.point_data["dVp"] = velocity_points.point_data["Vp"] - velocity_points.point_data["Va"]
+
+    
+    pvmesh.point_data["Va"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    pvmesh.point_data["Vn"] = vis.vector_fn_to_pv_points(pvmesh, v_soln_0.sym)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_init)
 
     points = np.zeros((elliptical_mesh._centroids.shape[0], 3))
@@ -351,7 +321,7 @@ if uw.mpi.size == 1:
     point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud, vectors="V", 
+        point_cloud, vectors="Va", 
         integration_direction="forward", 
         integrator_type=2,
         surface_streamlines=True,
@@ -371,7 +341,10 @@ if uw.mpi.size == 1:
                 use_transparency=False,
                 opacity=0.75,
                )
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1e-4)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["Va"], mag=3, color="Green")
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["Vn"], mag=3, color="Black")
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["Vp"], mag=3, color="Blue")
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["dVp"], mag=1000, color="Yellow")
     
     pl.add_mesh(pvstream)
 

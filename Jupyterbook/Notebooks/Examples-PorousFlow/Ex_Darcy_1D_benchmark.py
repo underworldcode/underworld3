@@ -39,9 +39,6 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 # x and y coordinates
 x = mesh.N.x
 y = mesh.N.y
-# -
-
-test = uw.systems.SNES_Scalar(mesh)
 
 # +
 # Create Darcy Solver
@@ -50,15 +47,17 @@ darcy = uw.systems.SteadyStateDarcy(mesh)
 p_soln = darcy.Unknowns.u
 v_soln = darcy.v
 
-
-
 darcy.petsc_options[
     "snes_rtol"
 ] = 1.0e-6  # Needs to be smaller than the contrast in properties
 
 darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 darcy.constitutive_model.Parameters.permeability = 1
+# -
 
+
+p_soln_0 = p_soln.clone("P_no_g", r"{p_\textrm{no g}}")
+v_soln_0 = v_soln.clone("V_no_g", r"{v_\textrm{no g}}")
 
 # +
 # Groundwater pressure boundary condition on the bottom wall
@@ -79,7 +78,6 @@ k2 = 1.0e-4
 kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 
 # A smooth version
-# kFunc = k2 + (k1-k2) * (0.5 + 0.5 * sympy.tanh(100.0*(y-interfaceY)))
 
 darcy.constitutive_model.Parameters.permeability = kFunc
 darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
@@ -89,13 +87,23 @@ darcy.f = 0.0
 darcy.add_dirichlet_bc(0.0, "Top")
 darcy.add_dirichlet_bc(-1.0 * minY * max_pressure, "Bottom")
 
-# # Zero pressure gradient at sides / base (implied bc)
-
-# darcy._v_projector.petsc_options["snes_rtol"] = 1.0e-6
-
 # -
 # Solve time
 darcy.solve()
+with mesh.access(p_soln_0, v_soln_0):
+    p_soln_0.data[...] = p_soln.data[...]
+    v_soln_0.data[...] = v_soln.data[...]
+
+
+# +
+# now switch on gravity
+
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
+darcy.solve()
+
+# -
+
+
 
 if uw.mpi.size == 1:
 
@@ -153,6 +161,7 @@ xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
 pressure_interp = uw.function.evalf(p_soln.sym[0], xy_coords)
+pressure_interp_0 = uw.function.evalf(p_soln_0.sym[0], xy_coords)
 
 
 # +
@@ -190,6 +199,7 @@ import matplotlib.pyplot as plt
 fig = plt.figure()
 ax1 = fig.add_subplot(111, xlabel="Pressure", ylabel="Depth")
 ax1.plot(pressure_interp, ycoords, linewidth=3, label="Numerical solution")
+ax1.plot(pressure_interp_0, ycoords, linewidth=3, label="Numerical solution (no G)")
 ax1.plot(
     pressure_analytic, ycoords, linewidth=3, linestyle="--", label="Analytic solution"
 )

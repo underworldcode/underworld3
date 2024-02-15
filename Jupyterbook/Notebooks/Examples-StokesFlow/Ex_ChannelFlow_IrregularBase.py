@@ -19,7 +19,13 @@ if uw.mpi.size == 1:
 
 
 
-resolution = 0.05
+elements = 20
+resolution = 1/elements
+
+outputPath = f"./output/ChannelFlow3D"
+expt_name = f"WigglyBottom_{elements}"
+
+os.makedirs(outputPath, exist_ok=True)
 
 
 
@@ -42,11 +48,13 @@ import math
 import sys
 
 gmsh.initialize()
+gmsh.option.setNumber('General.Verbosity', 1)
+
 gmsh.model.add("terrain")
 
 # create the terrain surface from N x N input data points (here simulated using
 # a simple function):
-N = 100
+N = 200
 coords = []  # x, y, z coordinates of all the points
 nodes = []  # tags of corresponding nodes
 tris = []  # connectivities (node tags) of triangle elements
@@ -213,13 +221,26 @@ x,y,z = terrain_mesh.X
 
 # -
 
-terrain_mesh.dm.view()
+
 
 # +
-outputPath = f'./output/terrain_mesh_stokes'
+n_vect = uw.discretisation.MeshVariable("Gamma", terrain_mesh, vtype=uw.VarType.VECTOR,
+                                        degree=2, varsymbol="{\Gamma_N}")
 
-if uw.mpi.rank==0:      
-    os.makedirs(outputPath, exist_ok=True)
+projection = uw.systems.Vector_Projection(terrain_mesh, n_vect)
+projection.uw_function = sympy.Matrix([[0,0,0]])
+
+GammaNorm = 1 / sympy.sqrt(terrain_mesh.Gamma.dot(terrain_mesh.Gamma))
+
+projection.add_natural_bc(terrain_mesh.Gamma * GammaNorm, "Lower")
+projection.smoothing = 1.0e-6
+projection.solve(verbose=False)
+# projection._reset()
+
+# Ensure n_vect are unit vectors 
+with terrain_mesh.access(n_vect):
+    n_vect.data[:,:] /= np.sqrt(n_vect.data[:,0]**2 + n_vect.data[:,1]**2).reshape(-1,1)
+
 
 # +
 stokes = uw.systems.Stokes(terrain_mesh, solver_name="stokes_terrain")
@@ -234,61 +255,40 @@ stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Left")
 stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Right") 
 stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Front") 
 stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Back") 
-
 stokes.add_essential_bc( [sympy.oo, sympy.oo, 0.0 ], "Upper") 
-# stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Upper") 
 
-## Free slip base
-Gamma = terrain_mesh.Gamma
+## Free slip base (conditional)
+Gamma = n_vect.sym # terrain_mesh.Gamma
 height_mask = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
-stokes.add_natural_bc(10000 * Gamma.dot(v.sym) *  Gamma * height_mask, "Lower")
-stokes.add_natural_bc(10000 * v.sym * (1-height_mask), "Lower")
+
+nbc = 10000 *  sympy.simplify( (1-height_mask) * v.sym + 
+                   height_mask * Gamma.dot(v.sym) *  Gamma
+                )
+
+stokes.add_natural_bc(nbc, "Lower")
 
 ## Buoyancy
 
 theta = 2 * sympy.pi / 180
 stokes.bodyforce = -sympy.Matrix([[sympy.sin(theta), 0.0, 0.0*sympy.cos(theta)]])
+
+stokes.petsc_options.setValue("ksp_monitor", None)
+stokes.petsc_options.setValue("snes_monitor", None)
+
+stokes.solve()
 # -
 
 
-Gamma.dot(v.sym)
 
 
+terrain_mesh.write_timestep(
+    expt_name,
+    meshUpdates=True,
+    meshVars=[p, v],
+    outputPath=outputPath,
+    index=0,
+)
 
-# +
-# Stokes settings
-
-stokes.tolerance = 1.0e-3
-stokes.petsc_options["ksp_monitor"] = None
-stokes.petsc_options["snes_monitor"] = None
-
-stokes.petsc_options["snes_type"] = "newtonls"
-stokes.petsc_options["ksp_type"] = "fgmres"
-
-# stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
-
-stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
-
-# gasm is super-fast ... but mg seems to be bulletproof
-# gamg is toughest wrt viscosity
-
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
-stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-# # # mg, multiplicative - very robust ... similar to gamg, additive
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
-# stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-stokes.solve()
 
 # +
 ## Visualise the mesh
@@ -317,7 +317,7 @@ if uw.mpi.size == 1:
     clipped3.point_data["V"] = vis.vector_fn_to_pv_points(clipped3, v.sym)
 
 
-    skip = 50
+    skip = 10
     points = np.zeros((terrain_mesh._centroids[::skip].shape[0], 3))
     points[:, 0] = terrain_mesh._centroids[::skip, 0]
     points[:, 1] = terrain_mesh._centroids[::skip, 1]
@@ -375,5 +375,4 @@ if uw.mpi.size == 1:
 
 
 # -
-terrain_mesh.data[:,2].min()
 
