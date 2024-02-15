@@ -6,9 +6,9 @@ dependencies:
   - numpy
   - mpich-mpicc
   - mpich-mpicxx
-  - cython=0.29.*
-  - petsc=3.18.*
-  - petsc4py=3.18.*
+  - cython=3.*
+  - petsc=3.20*
+  - petsc4py=3.20*
   - mpi4py
   - h5py
   - gmsh
