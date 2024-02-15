@@ -69,6 +69,8 @@ class CaptureStdout(UserString, redirect_stdout):
 
 # A couple of useful h5 tricks
 def h5_scan(filename):
+    import h5py
+
     h5file = h5py.File(filename)
     entities = []
     h5file.visit(entities.append)
@@ -134,7 +136,7 @@ def gather_data(val, bcast=False):
     comm.barrier()
 
     if bcast == True:
-        #### make swarm coords available on all processors
+        #### make available on all processors
         val_global = comm.bcast(val_global, root=0)
 
     comm.barrier()

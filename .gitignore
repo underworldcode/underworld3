@@ -25,7 +25,7 @@ examples/c_examples/CartesianStokes/stokes
 build
 keep
 old
-underworld3.egg-info/*
+**/underworld3.egg-info/*
 keep/*
 *.swp
 nohup.out

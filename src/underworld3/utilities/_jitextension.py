@@ -49,7 +49,29 @@ def debugging_text(randstr, fn, fn_type, eqn_no):
     debug_str = f"/* {fn} */\n"
     debug_str += f"/* Size = {object_size} */\n"
     debug_str += f'FILE *fp; fp = fopen( "{randstr}_debug.txt", "a" );\n'
-    debug_str += f'fprintf(fp,"{fn_type} - equation {eqn_no} at (%6e, %6e, %.6e) -> ", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2]);\n'
+    debug_str += f'fprintf(fp,"{fn_type} - equation {eqn_no} at (%.2e, %.2e, %.2e) -> ", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2]);\n'
+    debug_str += f'fprintf(fp,"{formatstr}\\n", {outstr});\n'
+    debug_str += f"fclose(fp);"
+
+    return debug_str
+
+
+def debugging_text_bd(randstr, fn, fn_type, eqn_no):
+    try:
+        object_size = len(fn.flat())
+    except:
+        object_size = 1
+
+    outstr = "out[0]"
+    for i in range(1, object_size):
+        outstr += f", out[{i}]"
+
+    formatstr = "%6e, " * object_size
+
+    debug_str = f"/* {fn} */\n"
+    debug_str += f"/* Size = {object_size} */\n"
+    debug_str += f'FILE *fp; fp = fopen( "{randstr}_debug.txt", "a" );\n'
+    debug_str += f'fprintf(fp,"{fn_type} - equation {eqn_no} X / N (%.2e, %.2e, %.2e / %2.e, %2.e, %.2e ) -> ", petsc_x[0], petsc_x[1], dim==2 ? 0.0: petsc_x[2], petsc_n[0], petsc_n[1], dim==2 ? 0.0: petsc_n[2]);\n'
     debug_str += f'fprintf(fp,"{formatstr}\\n", {outstr});\n'
     debug_str += f"fclose(fp);"
 
@@ -524,7 +546,7 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_residual_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "bdres", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdres", fn_counter)
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], bd_residual_sig, eqn[1], debug_str if debug else ""
         )
@@ -534,7 +556,7 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "bdjac", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdjac", fn_counter)
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
             randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str if debug else ""
         )
