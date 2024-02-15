@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-# $ pip install -e . or just python setup.py build_ext
+
+# Usage:
+#  $ pip install . 
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
@@ -82,6 +84,7 @@ def configure():
 
 
 conf = configure()
+prefix = "./src/underworld3"
 
 extra_compile_args = ["-O3", "-g"]
 # extra_compile_args = ['-O0', '-g']
@@ -89,7 +92,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_discretisation",
         sources=[
-            "underworld3/cython/petsc_discretisation.pyx",
+            "src/underworld3/cython/petsc_discretisation.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -97,7 +100,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_maths",
         sources=[
-            "underworld3/cython/petsc_maths.pyx",
+            "src/underworld3/cython/petsc_maths.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -105,7 +108,7 @@ extensions = [
     Extension(
         "underworld3.kdtree",
         sources=[
-            "underworld3/kdtree.pyx",
+            "src/underworld3/kdtree.pyx",
         ],
         extra_compile_args=extra_compile_args + ["-std=c++11"],
         language="c++",
@@ -114,7 +117,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_types",
         sources=[
-            "underworld3/cython/petsc_types.pyx",
+            "src/underworld3/cython/petsc_types.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -122,7 +125,7 @@ extensions = [
     Extension(
         "underworld3.cython.generic_solvers",
         sources=[
-            "underworld3/cython/petsc_generic_snes_solvers.pyx",
+            "src/underworld3/cython/petsc_generic_snes_solvers.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -130,8 +133,8 @@ extensions = [
     Extension(
         "underworld3.function._function",
         sources=[
-            "underworld3/function/_function.pyx",
-            "underworld3/function/petsc_tools.c",
+            "src/underworld3/function/_function.pyx",
+            "src/underworld3/function/petsc_tools.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -139,8 +142,8 @@ extensions = [
     Extension(
         "underworld3.function.analytic",
         sources=[
-            "underworld3/function/analytic.pyx",
-            "underworld3/function/AnalyticSolNL.c",
+            "src/underworld3/function/analytic.pyx",
+            "src/underworld3/function/AnalyticSolNL.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
