@@ -3,7 +3,7 @@ from xmlrpc.client import Boolean
 import sympy
 from sympy import sympify
 
-from typing import Optional
+from typing import Optional, Union
 from petsc4py import PETSc
 
 import underworld3
