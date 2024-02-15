@@ -9,18 +9,23 @@ import sympy
 
 # to fix trame issue
 import nest_asyncio
+
 nest_asyncio.apply()
 
 import os
 import sys
 
 if uw.mpi.size == 1:
-    import matplotlib.pyplot as plt 
+    import matplotlib.pyplot as plt
 
 
+elements = 10
+resolution = 1 / elements
 
-resolution = 0.05
+outputPath = f"./output/ChannelFlow3D"
+expt_name = f"WigglyBottom_{elements}"
 
+os.makedirs(outputPath, exist_ok=True)
 
 
 # +
@@ -29,13 +34,16 @@ resolution = 0.05
 
 from enum import Enum
 
+
 class boundaries(Enum):
     Upper = 1
     Lower = 2
-    Left  = 3
+    Left = 3
     Right = 4
     Front = 5
-    Back  = 6
+    Back = 6
+    All_Boundaries = 1001  # Petsc Boundary Label
+
 
 import gmsh
 import math
@@ -56,17 +64,21 @@ lin = [[], [], [], []]  # connectivities of boundary line elements
 def tag(i, j):
     return (N + 1) * i + j + 1
 
+
 for i in range(N + 1):
     X = float(i) / N
     for j in range(N + 1):
         Y = float(j) / N
-        
+
         nodes.append(tag(i, j))
-        coords.extend([
-            2 * X,
-            Y, 
-            0.05 * math.sin(20 * (X + 0.1 * Y)) * math.cos(sympy.pi * Y) - 0.1 * math.sin(sympy.pi * Y)
-        ])
+        coords.extend(
+            [
+                2 * X,
+                Y,
+                0.05 * math.sin(20 * (X + 0.1 * Y)) * math.cos(sympy.pi * Y)
+                - 0.1 * math.sin(sympy.pi * Y),
+            ]
+        )
         if i > 0 and j > 0:
             tris.extend([tag(i - 1, j - 1), tag(i, j - 1), tag(i - 1, j)])
             tris.extend([tag(i, j - 1), tag(i, j), tag(i - 1, j)])
@@ -158,19 +170,49 @@ v2 = gmsh.model.geo.addVolume([sl2])
 
 gmsh.model.geo.synchronize()
 
-gmsh.model.addPhysicalGroup(2, [s2], boundaries.Upper.value, name=boundaries.Upper.name,)
-gmsh.model.addPhysicalGroup(2, [s7], boundaries.Front.value, name=boundaries.Front.name,)
-gmsh.model.addPhysicalGroup(2, [s8], boundaries.Right.value, name=boundaries.Right.name,)
-gmsh.model.addPhysicalGroup(2, [s9], boundaries.Back.value, name=boundaries.Back.name,)
-gmsh.model.addPhysicalGroup(2, [s10], boundaries.Left.value, name=boundaries.Left.name,)
+gmsh.model.addPhysicalGroup(
+    2,
+    [s2],
+    boundaries.Upper.value,
+    name=boundaries.Upper.name,
+)
+gmsh.model.addPhysicalGroup(
+    2,
+    [s7],
+    boundaries.Front.value,
+    name=boundaries.Front.name,
+)
+gmsh.model.addPhysicalGroup(
+    2,
+    [s8],
+    boundaries.Right.value,
+    name=boundaries.Right.name,
+)
+gmsh.model.addPhysicalGroup(
+    2,
+    [s9],
+    boundaries.Back.value,
+    name=boundaries.Back.name,
+)
+gmsh.model.addPhysicalGroup(
+    2,
+    [s10],
+    boundaries.Left.value,
+    name=boundaries.Left.name,
+)
 
-gmsh.model.addPhysicalGroup(2, [topo], boundaries.Lower.value, name=boundaries.Lower.name,)
+gmsh.model.addPhysicalGroup(
+    2,
+    [topo],
+    boundaries.Lower.value,
+    name=boundaries.Lower.name,
+)
 
 gmsh.model.addPhysicalGroup(3, [v2], 666666, "Elements")
 
 
 # set this to True to build a fully hex mesh
-#transfinite = True
+# transfinite = True
 transfinite = False
 
 if transfinite:
@@ -183,11 +225,11 @@ if transfinite:
         gmsh.model.mesh.setSmoothing(s[0], s[1], 100)
     gmsh.model.mesh.setTransfiniteVolume(v2)
 else:
-    gmsh.option.setNumber('Mesh.MeshSizeMin', resolution)
-    gmsh.option.setNumber('Mesh.MeshSizeMax', resolution)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", resolution)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", resolution)
 
 gmsh.model.mesh.generate(3)
-gmsh.write('.meshes/tmp_terrain.msh')
+gmsh.write(".meshes/tmp_terrain.msh")
 
 # gmsh.fltk.run()
 
@@ -196,29 +238,50 @@ gmsh.finalize()
 
 # +
 terrain_mesh = uw.discretisation.Mesh(
-        ".meshes/tmp_terrain.msh",
-        degree=1,
-        qdegree=3,
-        useMultipleTags=True,
-        useRegions=True,
-        markVertices=True,
-        boundaries=boundaries,
-        coordinate_system_type=None,
-        refinement=0,
-        refinement_callback=None,
-        return_coords_to_bounds=None,
-    )
+    ".meshes/tmp_terrain.msh",
+    degree=1,
+    qdegree=3,
+    useMultipleTags=True,
+    useRegions=True,
+    markVertices=True,
+    boundaries=boundaries,
+    coordinate_system_type=None,
+    refinement=0,
+    refinement_callback=None,
+    return_coords_to_bounds=None,
+)
 
-x,y,z = terrain_mesh.X
+x, y, z = terrain_mesh.X
 
 # -
 
-terrain_mesh.dm.view()
-
 # +
-outputPath = f'./output/terrain_mesh_stokes'
+n_vect = uw.discretisation.MeshVariable(
+    "Gamma", terrain_mesh, vtype=uw.VarType.VECTOR, degree=2, varsymbol="{\Gamma_N}"
+)
 
-if uw.mpi.rank==0:      
+projection = uw.systems.Vector_Projection(terrain_mesh, n_vect)
+projection.uw_function = sympy.Matrix([[0, 0, 0]])
+
+GammaNorm = 1 / sympy.sqrt(terrain_mesh.Gamma.dot(terrain_mesh.Gamma))
+
+projection.add_natural_bc(terrain_mesh.Gamma * GammaNorm, "Lower")
+projection.smoothing = 1.0e-6
+projection.solve(verbose=False)
+
+# Ensure n_vect are unit vectors
+with terrain_mesh.access(n_vect):
+    n_vect.data[:, :] /= np.sqrt(
+        n_vect.data[:, 0] ** 2 + n_vect.data[:, 1] ** 2 + n_vect.data[:, 2] ** 2
+    ).reshape(-1, 1)
+
+# -
+
+with terrain_mesh.access(n_vect):
+    print(n_vect.data.max())
+
+
+if uw.mpi.rank == 0:
     os.makedirs(outputPath, exist_ok=True)
 
 # +
@@ -230,30 +293,38 @@ stokes.penalty = 1.0
 v = stokes.Unknowns.u
 p = stokes.Unknowns.p
 
-stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Left") 
-stokes.add_essential_bc( [sympy.oo, 0.0, 0.0 ], "Right") 
-stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Front") 
-stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Back") 
+stokes.add_essential_bc([sympy.oo, 0.0, 0.0], "Left")
+stokes.add_essential_bc([sympy.oo, 0.0, 0.0], "Right")
+stokes.add_essential_bc([0.0, 0.0, 0.0], "Front")
+stokes.add_essential_bc([0.0, 0.0, 0.0], "Back")
+stokes.add_essential_bc([sympy.oo, sympy.oo, 0.0], "Upper")
 
-stokes.add_essential_bc( [sympy.oo, sympy.oo, 0.0 ], "Upper") 
-# stokes.add_essential_bc( [0.0, 0.0, 0.0 ], "Upper") 
+## Free slip base (conditional)
+Gamma = n_vect.sym  # terrain_mesh.Gamma
+bc_mask0 = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
+bc_mask1 = sympy.Piecewise((1.0, -0.09 < z), (0.0, True))
+bc_mask2 = sympy.Piecewise((1.0, z < 0.0), (0.0, True))
 
-## Free slip base
-Gamma = terrain_mesh.Gamma
-height_mask = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
-stokes.add_natural_bc(10000 * Gamma.dot(v.sym) *  Gamma * height_mask, "Lower")
-stokes.add_natural_bc(10000 * v.sym * (1-height_mask), "Lower")
+nbc = 10000 * sympy.simplify(
+    bc_mask0 * Gamma.dot(v.sym) * Gamma + (bc_mask1 * bc_mask2) * v.sym
+)
+
+stokes.add_natural_bc(nbc, "Lower")
 
 ## Buoyancy
 
 theta = 2 * sympy.pi / 180
-stokes.bodyforce = -sympy.Matrix([[sympy.sin(theta), 0.0, 0.0*sympy.cos(theta)]])
+stokes.bodyforce = -sympy.Matrix([[sympy.sin(theta), 0.0, 0.0 * sympy.cos(theta)]])
 # -
 
 
-Gamma.dot(v.sym)
-
-
+terrain_mesh.write_timestep(
+    expt_name,
+    meshUpdates=True,
+    meshVars=[p, v],
+    outputPath=outputPath,
+    index=0,
+)
 
 # +
 # Stokes settings
@@ -297,7 +368,6 @@ stokes.solve()
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -312,10 +382,9 @@ if uw.mpi.size == 1:
 
     clipped2 = pvmesh.clip(origin=(0.0, 0.0, -0.05), normal=(0.0, 0, 1), invert=True)
     clipped2.point_data["V"] = vis.vector_fn_to_pv_points(clipped2, v.sym)
-    
+
     clipped3 = pvmesh.clip(origin=(0.0, 0.0, 0.4), normal=(0.0, 0, 1), invert=False)
     clipped3.point_data["V"] = vis.vector_fn_to_pv_points(clipped3, v.sym)
-
 
     skip = 50
     points = np.zeros((terrain_mesh._centroids[::skip].shape[0], 3))
@@ -323,57 +392,62 @@ if uw.mpi.size == 1:
     points[:, 1] = terrain_mesh._centroids[::skip, 1]
     points[:, 2] = terrain_mesh._centroids[::skip, 2]
 
-    point_cloud = pv.PolyData(points[np.logical_and(points[:, 0] < 2.0, points[:, 0] > 0.0)]  )
+    point_cloud = pv.PolyData(
+        points[np.logical_and(points[:, 0] < 2.0, points[:, 0] > 0.0)]
+    )
 
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud, vectors="V", 
-        integration_direction="forward", 
+        point_cloud,
+        vectors="V",
+        integration_direction="forward",
         integrator_type=45,
         surface_streamlines=False,
         initial_step_length=0.1,
         max_time=0.5,
-        max_steps=1000
+        max_steps=1000,
     )
 
-    point_cloud2 = pv.PolyData(points[np.logical_and(points[:, 2] < 0.5, points[:, 2] > 0.45)]  )
+    point_cloud2 = pv.PolyData(
+        points[np.logical_and(points[:, 2] < 0.5, points[:, 2] > 0.45)]
+    )
 
     pvstream2 = pvmesh.streamlines_from_source(
-        point_cloud2, vectors="V", 
-        integration_direction="forward", 
+        point_cloud2,
+        vectors="V",
+        integration_direction="forward",
         integrator_type=45,
         surface_streamlines=False,
         initial_step_length=0.01,
         max_time=0.5,
-        max_steps=1000
+        max_steps=1000,
     )
 
     pl = pv.Plotter(window_size=[1000, 1000])
     pl.add_axes()
 
-    pl.add_mesh(pvmesh,'Grey', 'wireframe', opacity=0.1)
-    pl.add_mesh(clipped,'Blue', show_edges=False, opacity=0.25)
+    pl.add_mesh(pvmesh, "Grey", "wireframe", opacity=0.1)
+    pl.add_mesh(clipped, "Blue", show_edges=False, opacity=0.25)
     # pl.add_mesh(pvmesh, 'white', show_edges=True, opacity=0.5)
 
-    #pl.add_mesh(pvstream)
+    # pl.add_mesh(pvstream)
     pl.add_mesh(pvstream2)
 
+    arrows = pl.add_arrows(
+        clipped2.points,
+        clipped2.point_data["V"],
+        show_scalar_bar=False,
+        opacity=1,
+        mag=100,
+    )
 
-    arrows = pl.add_arrows(clipped2.points, clipped2.point_data["V"], 
-                           show_scalar_bar = False, opacity=1,
-                           mag=100, )
-    
-    # arrows = pl.add_arrows(clipped3.points, clipped3.point_data["V"], 
+    # arrows = pl.add_arrows(clipped3.points, clipped3.point_data["V"],
     #                        show_scalar_bar = False, opacity=1,
     #                        mag=33, )
 
-
     # pl.screenshot(filename="sphere.png", window_size=(1000, 1000), return_img=False)
     # OR
-    
+
     pl.show(cpos="xy")
 
 
-
 # -
-terrain_mesh.data[:,2].min()
-

@@ -55,6 +55,7 @@ uw_*.msh
 *.xdmf
 *.vtk
 *.pbin
+.meshes/*
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -77,12 +78,13 @@ ignore*msh
 tmp*vtk
 tmp*msh
 
-# Docker build artefacts
-
-docker/underworld3_components
 
 # Other
 *DS_Store
 Jupyterbook/.DS_Store
 Jupyterbook/Notebooks/.DS_Store
 Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png
+*.msh
+*.msh
+Jupyterbook/Notebooks/Examples-StokesFlow/.meshes/elliptical_mesh.msh
+Jupyterbook/Notebooks/Examples-StokesFlow/.meshes/EllipticalDomain.msh
