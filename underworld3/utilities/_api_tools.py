@@ -43,7 +43,14 @@ class counted_metaclass(type):
 
 class uw_object_counter(object, metaclass=counted_metaclass):
     def __init__(self):
+        try:
+            self.__class__.mro()[1]._total_instances += 1
+        except AttributeError:
+            pass
+            # print(f"{self.__class__.mro()[1]} is not a uw_object")
+
         super().__init__()
+
         self.__class__._total_instances += 1
         self.instance_number = self.__class__._total_instances
 

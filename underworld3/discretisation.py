@@ -422,7 +422,7 @@ class Mesh(Stateful, uw_object):
             self.isSimplex,
             self.qdegree,
             "meshproj_{}_".format(self.mesh_instances),
-            PETSc.COMM_WORLD,
+            PETSc.COMM_SELF,
         )
 
         if PETSc.Sys.getVersion() <= (3, 20, 1):
@@ -982,7 +982,7 @@ class Mesh(Stateful, uw_object):
             self.isSimplex,
             self.qdegree,
             "coordinterp_",
-            PETSc.COMM_WORLD,
+            PETSc.COMM_SELF,
         )
 
         dmnew.setField(0, dmfe)
@@ -1795,7 +1795,7 @@ class _MeshVariable(Stateful, uw_object):
             self.mesh.isSimplex,
             self.mesh.qdegree,
             "coordinterp_",
-            PETSc.COMM_WORLD,
+            PETSc.COMM_SELF,
         )
 
         dmnew.setField(0, dmfe)
@@ -2028,7 +2028,7 @@ class _MeshVariable(Stateful, uw_object):
             self.mesh.isSimplex,
             self.mesh.qdegree,
             name0 + "_",
-            PETSc.COMM_WORLD,
+            PETSc.COMM_SELF,
         )
 
         self.field_id = self.mesh.dm.getNumFields()
