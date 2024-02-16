@@ -1,9 +1,9 @@
 import sys
-import petsc4py as _petsc4py
+from mpi4py import MPI  # for initialising MPI
 
+import petsc4py as _petsc4py
 _petsc4py.init(sys.argv)
 
-from mpi4py import MPI  # for initialising MPI
 from petsc4py import PETSc
 
 # pop the default petsc Signal handler to let petsc errors appear in python
