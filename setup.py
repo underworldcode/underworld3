@@ -84,7 +84,6 @@ def configure():
 
 
 conf = configure()
-prefix = "./src/underworld3"
 
 extra_compile_args = ["-O3", "-g"]
 # extra_compile_args = ['-O0', '-g']
