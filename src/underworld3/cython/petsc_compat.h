@@ -47,8 +47,8 @@ PetscErrorCode UW_PetscDSSetBdTerms(PetscDS ds, DMLabel label, PetscInt label_va
 {
     PetscWeakForm wf;
 
-    int idx0 = 0;
-    int idx1 = 0;
+    // int idx0 = 0;
+    // int idx1 = 0;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
     // PetscCall(PetscDSGetWeakForm(ds, &wf));
