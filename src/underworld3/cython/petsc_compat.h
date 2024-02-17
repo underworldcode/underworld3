@@ -138,3 +138,4 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
     return DMPlexSetSNESLocalFEM(dm, flag, ctx);
 #endif
 }
+

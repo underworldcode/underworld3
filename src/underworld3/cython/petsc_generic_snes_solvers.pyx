@@ -1335,6 +1335,7 @@ class SNES_Vector(Solver):
         cdef DM dm = self.dm
         UW_DMPlexSetSNESLocalFEM(dm.dm, PETSC_FALSE, NULL)
 
+
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
 

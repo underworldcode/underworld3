@@ -91,6 +91,7 @@ def mem_footprint():
 
 
 def gather_data(val, bcast=False, dtype="float64"):
+
     """
     gather values on root (bcast=False) or all (bcast = True) processors
     Parameters:
@@ -112,6 +113,7 @@ def gather_data(val, bcast=False, dtype="float64"):
         else:
             val_local = np.array([np.nan], dtype=dtype)
 
+
     comm.barrier()
 
     ### Collect local array sizes using the high-level mpi4py gather
@@ -119,6 +121,7 @@ def gather_data(val, bcast=False, dtype="float64"):
 
     if rank == 0:
         val_global = np.zeros((sum(sendcounts)), dtype=dtype)
+
     else:
         val_global = None
 
