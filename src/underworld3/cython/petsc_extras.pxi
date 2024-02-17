@@ -42,6 +42,9 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode UW_PetscDSSetBdTerms   (PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*, void*, void* )
     PetscErrorCode UW_PetscDSViewWF(PetscDS)     
     PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)     
+
+    PetscErrorCode UW_DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
+
     
     # PetscErrorCode UW_PetscVecConcatenate(PetscInt, PetscVec[], PetscVec *)
     # PetscErrorCode DMAddBoundary(PetscDM, DMBoundaryConditionType, const char name[], DMLabel label, PetscInt Nv, PetscInt values[], PetscInt field, PetscInt Nc, PetscInt comps[], void (*)(), void (*)(), void *ctx, PetscInt *bd)
@@ -49,7 +52,8 @@ cdef extern from "petsc_compat.h":
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
-    PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
+    # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
+
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)

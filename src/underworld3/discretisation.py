@@ -76,7 +76,9 @@ def _from_gmsh(
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
     if uw.mpi.rank == 0:
-        plex_0 = PETSc.DMPlex().createFromFile(filename, comm=PETSc.COMM_SELF)
+        plex_0 = PETSc.DMPlex().createFromFile(
+            filename, interpolate=True, comm=PETSc.COMM_SELF
+        )
 
         plex_0.setName("uw_mesh")
         plex_0.markBoundaryFaces("All_Boundaries", 1001)

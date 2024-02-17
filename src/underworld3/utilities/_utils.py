@@ -90,7 +90,7 @@ def mem_footprint():
     return python_process.memory_info().rss // 1000000
 
 
-def gather_data(val, bcast=False):
+def gather_data(val, bcast=False, dtype="float64"):
     """
     gather values on root (bcast=False) or all (bcast = True) processors
     Parameters:
@@ -110,7 +110,7 @@ def gather_data(val, bcast=False):
         if len(val > 0):
             val_local = np.ascontiguousarray(val.copy())
         else:
-            val_local = np.array([np.nan], dtype="float64")
+            val_local = np.array([np.nan], dtype=dtype)
 
     comm.barrier()
 
@@ -118,7 +118,7 @@ def gather_data(val, bcast=False):
     sendcounts = np.array(comm.gather(len(val_local), root=0))
 
     if rank == 0:
-        val_global = np.zeros((sum(sendcounts)), dtype="float64")
+        val_global = np.zeros((sum(sendcounts)), dtype=dtype)
     else:
         val_global = None
 
