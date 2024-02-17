@@ -133,9 +133,8 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 {
 
 #if PETSC_VERSION_LE(3, 20, 4)
-    return DMPlexSetSNESLocalFEM(dm, flag, ctx, NULL);
+    return DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL);
 #else
-    return DMPlexSetSNESLocalFEM(dm, flag, ctx);
+    return DMPlexSetSNESLocalFEM(dm, flag, NULL);
 #endif
 }
-
