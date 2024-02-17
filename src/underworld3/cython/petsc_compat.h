@@ -129,11 +129,12 @@ PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
     return 1;
 }
 
-// PetscErrorCode UW_PetscVecConcatenate(PetscInt nx, Vec inputVecs[], Vec *outputVec)
-// {
-//     IS *x_is;
+PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
+{
 
-//     PetscErrorCode VecConcatenate(nx, inputVecs, outputVec, &x_is);
-
-//     return 1;
-// }
+#if PETSC_VERSION_LE(3, 20, 4)
+    return DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL);
+#else
+    return DMPlexSetSNESLocalFEM(dm, flag, NULL);
+#endif
+}
