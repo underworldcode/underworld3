@@ -57,13 +57,20 @@ jobs:
         run: |
           pytest tests/test_00??*py
           pytest tests/test_0[1-9]??*py
-          pytest tests/test_1000*py 
-          # Note: test_1001 will not work with petsc 3.20.4 or below 
+
+          # Poisson solver tests
+          pytest tests/test_100[0-9]*py
+
+          # Stokes solver tests
+          # Note: test_1011 will not work with petsc 3.20.4 or below 
           # (boundary integral bugs). Drop it until conda-forge catches up
-          pytest tests/test_1001*py
-          pytest tests/test_1002*py
-          pytest tests/test_1004*py
-          pytest tests/test_1003*py 
-          # This one has a PETSc interpolation issue
-          # That needs to be investigated
-          # pytest tests/test_1010*py
+
+          pytest tests/test_1010*py
+          # pytest tests/test_1011*py
+          pytest tests/test_1050*py
+
+          # Advection/Diffusion solvers
+          pytest tests/test_1100*py
+          
+          # An interpolation bug in this one
+          # pytest tests/test_1110*py

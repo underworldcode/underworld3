@@ -7,7 +7,8 @@ dependencies:
   - mpich-mpicc
   - mpich-mpicxx
   - cython
-  - petsc=3.18.0
+  - petsc>=3.20.4
+  - petsc4py>=3.20.4 
   - mpi4py
   - h5py
   - gmsh
