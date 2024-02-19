@@ -1316,9 +1316,9 @@ class Mesh(Stateful, uw_object):
 
 def MeshVariable(
     varname: Union[str, list],
-    mesh: "underworld.mesh.Mesh",
+    mesh: "Mesh",
     num_components: Union[int, tuple] = None,
-    vtype: Optional["underworld.VarType"] = None,
+    vtype: Optional["uw.VarType"] = None,
     degree: int = 1,
     continuous: bool = True,
     varsymbol: Union[str, list] = None,

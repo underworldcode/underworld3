@@ -124,7 +124,7 @@ cdef class KDTree:
 
     @timing.routine_timer_decorator
     def find_closest_n_points(self, 
-                  const int nCount                    :   numpy.int,
+                  const int nCount                    :   numpy.int64,
                   const double[: ,::1] coords not None:   numpy.ndarray):
         """
         Find the n points closest to the provided coordinates. 
