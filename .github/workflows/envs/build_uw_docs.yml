@@ -12,6 +12,6 @@ dependencies:
   - mpi4py
   - h5py
   - gmsh
-  - pdoc3
+  - pdoc>=14
   - pip
 
