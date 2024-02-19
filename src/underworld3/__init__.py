@@ -1,7 +1,30 @@
+"""## Underworld3 Python package
+
+
+`Underworld3` is a finite element, particle-in-cell geodynamics code that produces 
+mathematically self-describing models through an interface with `sympy`
+
+Underworld3 builds upon the `PETSc` parallel finite element and solver package, using their
+`petsc4py` library. 
+
+A common pattern for building `underworld3` models is to develop python scripts in notebook-friendly form
+(e.g. with `jupytext`) which are thoroughly documented through markdown descriptions. `underworld` objects 
+are similarly documented so that their underlying algorithmic and mathemcical structure can be examined in 
+a notebook.
+
+`python` scripts built this way will also be compatible with `mpirun` for parallel execution.
+
+
+.. include:: ../README.md
+
+
+"""
+
 import sys
 from mpi4py import MPI  # for initialising MPI
 
 import petsc4py as _petsc4py
+
 _petsc4py.init(sys.argv)
 
 from petsc4py import PETSc
@@ -14,19 +37,10 @@ PETSc.Sys.popErrorHandler()
 
 # PETSc.Log().begin()
 
-from enum import Enum as _Enum
-
-
-class VarType(_Enum):
-    SCALAR = 1
-    VECTOR = 2
-    MATRIX = 3
-    NVECTOR = 4  ## Nvector can be a MATRIX
-    COMPOSITE = 5
-    TENSOR = 6  ## dim x dim tensor, otherwise use MATRIX
-    SYM_TENSOR = 7
-    OTHER = 9  # add as required
-
+# Bundle these utils
+from ._var_types import *
+from .utilities._petsc_tools import *
+from .utilities._nb_tools import *
 
 # Needed everywhere
 from underworld3.utilities import _api_tools
@@ -64,28 +78,28 @@ _libdirs = _OD()
 _incdirs = _OD({_np.get_include(): None})
 
 
-def _is_notebook() -> bool:
-    """
-    Function to determine if the python environment is a Notebook or not.
+# def _is_notebook() -> bool:
+#     """
+#     Function to determine if the python environment is a Notebook or not.
 
-    Returns 'True' if executing in a notebook, 'False' otherwise
+#     Returns 'True' if executing in a notebook, 'False' otherwise
 
-    Script taken from https://stackoverflow.com/a/39662359/8106122
-    """
+#     Script taken from https://stackoverflow.com/a/39662359/8106122
+#     """
 
-    try:
-        shell = get_ipython().__class__.__name__
-        if shell == "ZMQInteractiveShell":
-            return True  # Jupyter notebook or qtconsole
-        elif shell == "TerminalInteractiveShell":
-            return False  # Terminal running IPython
-        else:
-            return False  # Other type (?)
-    except NameError:
-        return False  # Probably standard Python interpreter
+#     try:
+#         shell = get_ipython().__class__.__name__
+#         if shell == "ZMQInteractiveShell":
+#             return True  # Jupyter notebook or qtconsole
+#         elif shell == "TerminalInteractiveShell":
+#             return False  # Terminal running IPython
+#         else:
+#             return False  # Other type (?)
+#     except NameError:
+#         return False  # Probably standard Python interpreter
 
 
-is_notebook = _is_notebook()
+# is_notebook = _is_notebook()
 
 
 ## -------------------------------------------------------------
@@ -110,15 +124,3 @@ __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
 
 
 ## Add an options dictionary for arbitrary underworld things
-
-options = PETSc.Options("uw_")
-
-
-def require_dirs(ListOfDirs):
-    """
-    List of directories required by this run
-    """
-    import os
-
-    for dir in ListOfDirs:
-        os.makedirs(dir, exist_ok=True)

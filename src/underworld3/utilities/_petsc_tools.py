@@ -1,4 +1,19 @@
+from petsc4py import PETSc
+
 ## I think we should deprecate this since PETSc already does this for us
+
+options = PETSc.Options("uw_")
+"""Expose petsc options on the command line as -uw_XXX"""
+
+
+def require_dirs(ListOfDirs):
+    """
+    List of directories required by this run
+    """
+    import os
+
+    for dir in ListOfDirs:
+        os.makedirs(dir, exist_ok=True)
 
 
 def parse_cmd_line_options():
@@ -30,6 +45,3 @@ def parse_cmd_line_options():
 
 
 import os as _os
-
-# if "UW_CMD_LINE_ARGS_DISABLE" not in _os.environ:
-#     parse_cmd_line_options()

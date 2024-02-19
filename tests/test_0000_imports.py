@@ -47,7 +47,7 @@ def test_underworld_systems_import():
 
 
 def test_underworld_tools_import():
-    import underworld3.utilities.tools
+    import underworld3.utilities._petsc_tools
 
 
 def test_underworld_kdtree_import():

@@ -427,7 +427,10 @@ class Mesh(Stateful, uw_object):
             PETSc.COMM_SELF,
         )
 
-        if PETSc.Sys.getVersion() <= (3, 20, 4):
+        if (
+            PETSc.Sys.getVersion() <= (3, 20, 4)
+            and PETSc.Sys.getVersionInfo()["release"] == True
+        ):
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
