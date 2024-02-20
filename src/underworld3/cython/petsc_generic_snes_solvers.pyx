@@ -15,7 +15,7 @@ from underworld3.utilities._api_tools import class_or_instance_method
 
 include "petsc_extras.pxi"
 
-class Solver(uw_object):
+class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
         - `SNES_Scalar`
@@ -332,7 +332,7 @@ class Solver(uw_object):
 ## Specific to dimensionality
 
 
-class SNES_Scalar(Solver):
+class SNES_Scalar(SolverBaseClass):
     r"""
     The `SNES_Scalar` solver class provides functionality for solving the scalar conservation problem in the unknown $u$:
 
@@ -852,7 +852,7 @@ class SNES_Scalar(Solver):
 # LM: this is probably not something we need ... The petsc interface is
 # general enough to have one class to handle Vector and Scalar
 
-class SNES_Vector(Solver):
+class SNES_Vector(SolverBaseClass):
     r"""
     The `SNES_Vector` solver class provides functionality for solving the vector conservation problem in the unknown $\mathbf{u}$:
 
@@ -1436,7 +1436,7 @@ class SNES_Vector(Solver):
 
 ### =================================
 
-class SNES_Stokes_SaddlePt(Solver):
+class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
     The `SNES_Stokes` solver class provides functionality for solving the *constrained* vector
     conservation problem in the unknown $\mathbf{u}$ with the constraint parameter $\mathrm{p}$:
@@ -1463,7 +1463,7 @@ class SNES_Stokes_SaddlePt(Solver):
     physical conservation laws into this general mathematical form.
     """
 
-    class _Unknowns(Solver._Unknowns):
+    class _Unknowns(SolverBaseClass._Unknowns):
         '''Extend the unknowns with the constraint parameter'''
 
         def __init__(inner_self, owning_solver):

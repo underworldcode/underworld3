@@ -446,7 +446,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
 
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, 'numpy' )
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )  
+    # Leave out modules. This is equivalent to SYMPY_DECIDE and can then include scipy if available
 
     # 5. Eval generated lambda expression
     coords_list = [ coords[:,i] for i in range(dim) ]
@@ -617,7 +618,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     # elif isinstance(subbedexpr, sympy.vector.Dyadic):
     #     subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
 
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, 'numpy' )
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
 
     # 5. Eval generated lambda expression
     coords_list = [ coords[:,i] for i in range(dim) ]
