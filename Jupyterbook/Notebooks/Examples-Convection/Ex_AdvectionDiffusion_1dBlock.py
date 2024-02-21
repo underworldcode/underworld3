@@ -25,6 +25,15 @@
 #
 # ## Analytic solution
 #
+# $$
+# T(x,t) =
+# \frac{\operatorname{erf}{\left(\frac{- \mathrm{x} + v \left(t + {t_0}\right) + \frac{{\delta}}{2} + {x_0}}{2 \sqrt{\kappa \left(t + {t_0}\right)}} \right)}}{2} + \frac{\operatorname{erf}{\left(\frac{\mathrm{x} - v \left(t + {t_0}\right) + \frac{{\delta}}{2} - {x_0}}{2 \sqrt{\kappa \left(t + {t_0}\right)}} \right)}}{2}
+# $$
+#
+# Where $x,y$ describe the coordinate frame, $v$ is the horizontal velocity that advects the temperature, $\delta$ is the width of the temperature anomaly, $x_0$ is the initial midpoint of the temperature anomaly. $\kappa$ is the thermal diffusivity, $t_0$ is the time at which we turn on the horizontal velocity. 
+#
+# Note: this solution is derived from the diffusion of a step which is applied to the leading and trailing edges of the block. The solution is valid while the diffusion fronts from each interface remain independent of each other. (This is ill-defined from the problem, but the most obvious test is to look a the time that the block temperature drops below 1 to the tolerance of the solver).
+#
 
 
 
@@ -98,9 +107,6 @@ else:
     )
 
 
-# ### triangles
-
-
 # ### Create mesh variables
 # To be used in the solver
 
@@ -116,6 +122,9 @@ vs = sympy.symbols("v")
 
 Ts =  ( sympy.erf( (x0 + delta/2  - x+(vs*(ts+t0)))  / (2*sympy.sqrt(ks*(ts+t0)))) + sympy.erf( (-x0 + delta/2 + x-((ts+t0)*vs))  / (2*sympy.sqrt(ks*(ts+t0)))) ) / 2
 Ts
+# -
+
+sympy.print_latex(Ts)
 
 
 # +
@@ -168,19 +177,7 @@ steps = int(dt // (10*adv_diff.estimate_dt()))
 # ### Create points to sample the UW results
 
 # +
-### y coords to sample
-sample_x = np.linspace(xmin, xmax, 201) ### get the x coords from the mesh
-
-### x coords to sample
-sample_y = np.zeros_like(sample_x) 
-
-sample_points = np.empty((sample_x.shape[0], 2))
-sample_points[:, 0] = sample_x
-sample_points[:, 1] = sample_y + 0.5 ###  across centre of box
-
-# +
 ### get the initial temp profile
-T_orig = uw.function.evalf(T.sym, sample_points)
 
 with mesh.access(T):
     T.data[:,0] = uw.function.evalf(Ts0, T.coords)
@@ -191,57 +188,19 @@ step = 0
 model_time = 0.0
 
 # +
-# adv_diff.petsc_options["snes_rtol"] = 1.0e-9
-# adv_diff.petsc_options["ksp_rtol"] = 1.0e-9
-# adv_diff.petsc_options["snes_max_it"] = 100
-
 adv_diff.petsc_options["snes_monitor_short"] = None
 
 if uw.mpi.size == 1:
     adv_diff.petsc_options['pc_type'] = 'lu'
     
+# -
 
-# +
 while model_time < dt:    
     adv_diff.solve(timestep=dt/steps, zero_init_guess=False)
     model_time += dt/steps
     step += 1
     print(f"Timestep: {step}")
     
-    
-
-
-# +
-#     start = track_time()
-#     ### print some stuff
-#     if uw.mpi.rank == 0:
-#         print(f"Step: {str(step).rjust(3)}, time: {model_time:6.5f}\n")
-
-    
-    
-#     dt = adv_diff.estimate_dt()
-
-#     ### finish at the set final time
-#     if model_time + dt > final_time:
-#         dt = final_time - model_time
-
-#     # print(f'dt: {dt}\n')
-
-    
-#     ### diffuse through underworld
-#     adv_diff.solve(timestep=dt)
-
-#     step += 1
-#     model_time += dt
-
-#     end = track_time()
-
-#     solve_time = end - start
-#     if uw.mpi.rank == 0:
-#         print(f'solve time: {solve_time}\n')
-# -
-
-model_time
 
 # %%
 if uw.mpi.size == 1:
@@ -293,127 +252,9 @@ if uw.mpi.size == 1:
 
         # return vsol
 
-0/0
-
 T_points.point_data["dT"].max()
 
 T_points.point_data["Ta"].max()
 
-# ### Check the results
 #
-# Compare numerical and analytic results.
-
-#
-#
-
-with mesh.access(T_a):
-    x = T_a.coords[:,0]
-    T_a.data[:,0] = 0.5 * ( special.erf( (final_x  - x+(u*t))  / (2*np.sqrt(kappa*t))) + special.erf( (-start_x + x-(u*t))  / (2*np.sqrt(kappa*t))) )
-
-
-def L1_norm_integration(solver, analytical_sol):
-    numeric_solution   = solver.u.sym[0]
-    analytic_solution  = analytical_sol.sym[0]
-
-    I = uw.maths.Integral(solver.mesh, sympy.Abs(numeric_solution-analytic_solution))
-
-    return I
-
-
-# +
-### Create columns of file if it doesn't exist
-try:
-    with open(f'{outputPath}AdvDiff_kappa={kappa}_Tdeg={Tdegree}_Vdeg={Vdegree}_simplex={mesh.isSimplex}.txt', 'x') as f:
-        f.write(f'Tdegree,Vdegree,res,cell size,L1_norm')
-except:
-    pass
-
-
-
-### Append the data
-with open(f'{outputPath}AdvDiff_kappa={kappa}_Tdeg={Tdegree}_Vdeg={Vdegree}_simplex={mesh.isSimplex}.txt', 'a') as f:
-    f.write(f'\n{Tdegree},{Vdegree},{res},{mesh.get_min_radius()},{L1_norm_integration(adv_diff, T_a).evaluate()}')
-# -
-
-
-
-# +
-# analytical_solution = 0.5 * ( special.erf( (final_x  - x+(u*t))  / (2*np.sqrt(kappa*t))) + special.erf( (-start_x + x-(u*t))  / (2*np.sqrt(kappa*t))) )
-
-# +
-# with mesh.access(T, l1_norm):
-    
-#     x_coords = T.coords[:,0]
-#     y_coords = T.coords[:,1]
-    
-#     analytical_solution = 0.5 * ( special.erf( (final_x  - x_coords+(u*t))  / (2*np.sqrt(kappa*t))) + special.erf( (-start_x + x_coords-(u*t))  / (2*np.sqrt(kappa*t))) )
-
-#     numerical_solution  = np.copy(T.data[:,0])
-
-#     l1_calc = np.abs(numerical_solution - analytical_solution)
-
-#     l1_norm.data[:,0] = l1_calc
-
-# +
-# if uw.mpi.rank == 0:
-#     ### save coords and l1 norm
-#     np.savez(f'{outputPath}l1_norm-D={kappa}-Tdeg={Tdegree}', x_coords, y_coords, l1_calc)
-
-# +
-# if uw.mpi.size == 1:
-#     plt.scatter(x_coords, y_coords, c=l1_calc)
-
-# +
-# x = sample_points[:, 0]
-# u = velocity
-# t = final_time
-# start_x = 0.5 - (pipe_thickness/2)
-# final_x = 0.5 + (pipe_thickness/2)
-
-
-# T_UW_profile = uw.function.evalf(T.sym[0], sample_points)
-
-# T_a_profile = 0.5 * ( special.erf( (final_x  - x+(u*t))  / (2*np.sqrt(kappa*t)))
-# + special.erf( (-start_x + x-(u*t))  / (2*np.sqrt(kappa*t))) )
- 
-
-
-# +
-# if uw.mpi.size == 1:
-#     plt.plot(x, T_UW_profile, ls='-')
-#     plt.plot(x, T_a_profile, ls=':', c='r')
-
-# +
-# if uw.mpi.rank == 0:
-#     ### save the analytical and numerical profile
-#     np.savez(f'{outputPath}1D_profile-D={kappa}-Tdeg={Tdegree}', x, T_a_profile, T_UW_profile)
-
-
-
-
-# +
-# """compare analytical and UW solutions"""
-# if uw.mpi.size == 1:
-#     from matplotlib import rc
-#     # Set the global font to be DejaVu Sans, size 10 (or any other sans-serif font of your choice!)
-#     rc('font',**{'family':'sans-serif','sans-serif':['Helvetica'],'size':10})
-    
-#     # Set the font used for MathJax
-#     rc('mathtext',**{'default':'regular'})
-#     rc('figure',**{'figsize':(8,6)})
-    
-#     ### profile from UW
-#     plt.plot(sample_points[:, 0], T_UW_profile, ls="-", c="red", label="UW numerical solution")
-#     ### analytical solution
-#     plt.plot(x, T_anal_profile, ls=":", c="k", label="1D analytical solution")
-    
-    
-#     plt.title(f'time: {round(model_time, 5)}', fontsize=8)
-#     plt.legend()
-
-#     # plt.savefig(f'benchmark_figs/AdvDiff_HP_benchmark-kappa={kappa}-degree={Tdegree}.pdf')
-# -
-
-
-# + active=""
 #
