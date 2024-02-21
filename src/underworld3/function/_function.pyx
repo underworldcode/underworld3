@@ -453,17 +453,36 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     coords_list = [ coords[:,i] for i in range(dim) ]
     results = lambfn( coords_list, interpolated_results.values() )
 
-    # Truncated out middle index for vector results
-    if isinstance(results,np.ndarray):
-        results = results.T
-        if len(results.shape)==3 and results.shape[1]==1:
-            results = results[:,0,:]
 
-    # Making this explicit while hunting for leaks
-    for array_item in interpolated_results.values():
-        del array_item
+    # Check shape of original expression 
 
-    del interpolated_results
+    try:
+        shape = expr.shape
+    except AttributeError:
+        shape = (1,)
+
+    try:
+        results_shape = results.shape
+    except AttributeError:
+        results_shape = (1,)
+
+    # If passed a constant / constant matrix, then the result will not span the coordinates 
+    # and we'll need to address that explicitly
+    if shape == results_shape:
+        results_new = np.zeros((coords.shape[0], *shape))
+        results_new[...] = results
+        results = results_new.squeeze()
+
+    else:
+        results = np.moveaxis(results, -1, 0).squeeze()
+
+
+    # # Truncated out middle index for vector results
+    # if isinstance(results,np.ndarray):
+    #     results = results.T
+    #     if len(results.shape)==3 and results.shape[1]==1:
+    #         results = results[:,0,:]
+
 
     # 6. Return results
     return results
@@ -624,8 +643,39 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
     coords_list = [ coords[:,i] for i in range(dim) ]
     results = lambfn( coords_list, interpolated_results.values() )
 
+
+    # Check shape of original expression 
+
+    try:
+        shape = expr.shape
+    except AttributeError:
+        shape = (1,)
+
+    try:
+        results_shape = results.shape
+    except AttributeError:
+        results_shape = (1,)
+
+    # If passed a constant / constant matrix, then the result will not span the coordinates 
+    # and we'll need to address that explicitly
+    if shape == results_shape:
+        results_new = np.zeros((coords.shape[0], *shape))
+        results_new[...] = results
+        results = results_new.squeeze()
+
+    else:
+        results = np.moveaxis(results, -1, 0).squeeze()
+
+    # Constant results are a special case (evaluate to a single value)
+
     # 6. Return results
-    return results.reshape(-1)
+
+
+
+
+
+    return results
+
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
