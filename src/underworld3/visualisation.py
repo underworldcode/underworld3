@@ -130,8 +130,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     coords = pv_mesh.points[:, 0:dim]
     vector_values = np.zeros_like(pv_mesh.points)
 
-    for i in range(0, dim):
-        vector_values[:, i] = uw.function.evalf(uw_fn[i], coords)
+    vector_values[:, 0:dim] = uw.function.evalf(uw_fn, coords)
 
     return vector_values
 
