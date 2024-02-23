@@ -76,6 +76,13 @@ cdef class KDTree:
         """
         self.index.build_index()
 
+    def kdtree_points(self):
+        """
+        Returns a view of the points used to define the kd-tree
+        """
+        
+        return np.array(self.points)
+
 
     @timing.routine_timer_decorator
     def find_closest_point(self, 

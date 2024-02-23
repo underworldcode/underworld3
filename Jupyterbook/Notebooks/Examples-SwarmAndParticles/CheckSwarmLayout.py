@@ -17,8 +17,9 @@ import numpy as np
 n_els = 2
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), 
-    cellSize=1 / n_els, qdegree=2, refinement=2
+    cellSize=1 / n_els, qdegree=2, refinement=0
 )
+mesh.dm.view()
 
 
 # %%
@@ -29,7 +30,7 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 # %%
 swarm = uw.swarm.Swarm(mesh=mesh)
 swarm.populate_petsc(
-    fill_param=5,
+    fill_param=2,
     layout = SwarmPICLayout.GAUSS
 )
 
@@ -91,5 +92,15 @@ if uw.mpi.size == 1:
 
     pl.show()
 
+
+# %%
+with swarm.access():
+    print(swarm.data.shape)
+
+# %%
+14*6
+
+# %%
+mesh._centroids.shape
 
 # %%

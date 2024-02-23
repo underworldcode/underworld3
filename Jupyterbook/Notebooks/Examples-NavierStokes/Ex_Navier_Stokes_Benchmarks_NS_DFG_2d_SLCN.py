@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -72,7 +72,7 @@ elif model == 2:
 
 elif model == 3:
     U0 = 1.5
-    expt_name = f"NS_benchmark_DFG2d_SLCN_2iii_{resolution}"
+    expt_name = f"NS_benchmark_DFG2d_SLCN_2_{resolution}"
 
 elif model == 4:
     U0 = 3.75
@@ -89,6 +89,17 @@ os.makedirs(f"{outdir}", exist_ok=True)
 
 # +
 import pygmsh
+from enum import Enum
+
+## NOTE: stop using pygmsh, then we can just define boundary labels ourselves and not second guess pygmsh
+
+class boundaries(Enum):
+    bottom = 1
+    right = 2
+    top = 3
+    left  = 4
+    inclusion = 5
+    All_Boundaries = 1001 
 
 # Mesh a 2D pipe with a circular hole
 
@@ -100,7 +111,6 @@ width = 2.2
 height = 0.41
 radius = 0.05
 centre = (0.2, 0.2)
-
 
 def pipemesh_mesh_refinement_callback(dm):
     r_p = radius
@@ -147,11 +157,11 @@ if uw.mpi.rank == 0:
             mesh_size=csize,
         )
 
-        geom.add_physical(domain.surface.curve_loop.curves[0], label="bottom")
-        geom.add_physical(domain.surface.curve_loop.curves[1], label="right")
-        geom.add_physical(domain.surface.curve_loop.curves[2], label="top")
-        geom.add_physical(domain.surface.curve_loop.curves[3], label="left")
-        geom.add_physical(inclusion.curve_loop.curves, label="inclusion")
+        geom.add_physical(domain.surface.curve_loop.curves[0], label=boundaries.bottom.name)
+        geom.add_physical(domain.surface.curve_loop.curves[1], label=boundaries.right.name)
+        geom.add_physical(domain.surface.curve_loop.curves[2], label=boundaries.top.name)
+        geom.add_physical(domain.surface.curve_loop.curves[3], label=boundaries.left.name)
+        geom.add_physical(inclusion.curve_loop.curves, label=boundaries.inclusion.name)
         geom.add_physical(domain.surface, label="Elements")
 
         geom.generate_mesh(dim=2, verbose=False)
@@ -164,6 +174,7 @@ pipemesh = uw.discretisation.Mesh(
     useRegions=True,
     refinement=refinement,
     refinement_callback=pipemesh_mesh_refinement_callback,
+    boundaries=boundaries,
     qdegree=3,
 )
 pipemesh.dm.view()
@@ -293,6 +304,8 @@ if model == 2:  # Steady state !
     )
 
 # -
+
+
 navier_stokes.view()
 
 # +
@@ -330,7 +343,7 @@ timing.reset()
 timing.start()
 
 navier_stokes.solve(
-    timestep=10, verbose=False, _force_setup=True
+    timestep=10, verbose=True, 
 )  # Stokes-like initial flow
 
 nodal_vorticity_from_v.solve()
@@ -339,52 +352,51 @@ timing.print_table(display_fraction=0.999)
 
 
 # +
-import underworld3 as uw
-import pyvista as pv
-import underworld3.visualisation
+# import underworld3 as uw
+# import pyvista as pv
+# import underworld3.visualisation
 
-pl = pv.Plotter(window_size=(1000, 750))
+# pl = pv.Plotter(window_size=(1000, 750))
 
-def plot_V_mesh(filename):
-    import underworld3 as uw
-    import underworld3.visualisation as vis
+# import underworld3 as uw
+# import underworld3.visualisation as vis
 
-    pvmesh = vis.mesh_to_pv_mesh(pipemesh)
-    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
-    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
+# pvmesh = vis.mesh_to_pv_mesh(pipemesh)
+# pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+# pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+# velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+# velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
+# passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
 
-    # point sources at cell centres for streamlines
+# # point sources at cell centres for streamlines
 
-    points = np.zeros((pipemesh._centroids.shape[0], 3))
-    points[:, 0] = pipemesh._centroids[:, 0]
-    points[:, 1] = pipemesh._centroids[:, 1]
-    point_cloud = pv.PolyData(points)
+# points = np.zeros((pipemesh._centroids.shape[0], 3))
+# points[:, 0] = pipemesh._centroids[:, 0]
+# points[:, 1] = pipemesh._centroids[:, 1]
+# point_cloud = pv.PolyData(points)
 
-    pvstream = pvmesh.streamlines_from_source(
-        point_cloud, vectors="V", integration_direction="forward", max_steps=10
-    )
+# pvstream = pvmesh.streamlines_from_source(
+#     point_cloud, vectors="V", integration_direction="forward", max_steps=10
+# )
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="Vmag",
-        use_transparency=False,
-        opacity=1.0,
-    )
+# pl.add_mesh(
+#     pvmesh,
+#     cmap="coolwarm",
+#     edge_color="Black",
+#     show_edges=True,
+#     scalars="Vmag",
+#     use_transparency=False,
+#     opacity=1.0,
+# )
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-    # pl.add_mesh(pvstream)
+#     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
+#     # pl.add_mesh(pvstream)
 
-    # pl.remove_scalar_bar("mag")
+#     # pl.remove_scalar_bar("mag")
 
-    pl.show()
+# pl.show()
 
 
 # +
@@ -413,58 +425,63 @@ def plot_V_mesh(filename):
         points[:, 0] = pipemesh._centroids[:, 0]
         points[:, 1] = pipemesh._centroids[:, 1]
         point_cloud = pv.PolyData(points)
+
+        passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
     
         pvstream = pvmesh.streamlines_from_source(
-            point_cloud, vectors="V", integration_direction="forward", max_steps=10
+            point_cloud, vectors="V", integration_direction="forward", max_steps=10, 
+        )
+
+        pl.add_mesh(
+            pvmesh,
+            cmap="coolwarm",
+            edge_color="Black",
+            show_edges=True,
+            scalars="Omega",
+            use_transparency=False,
+            opacity=1.0,
+            show_scalar_bar=False,
+        )
+
+        
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+                      mag=0.025 / U0, opacity=0.75, 
+                      show_scalar_bar=False)
+        
+        pl.add_mesh(pvstream, show_scalar_bar=False)
+
+        pl.add_points(
+            passive_swarm_points,
+            color="Black",
+            render_points_as_spheres=True,
+            point_size=5,
+            opacity=0.5,
         )
     
-        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
-        pl.add_mesh(pvstream)
-
-    pl.add_points(
-        passive_swarm_points,
-        color="Black",
-        render_points_as_spheres=True,
-        point_size=5,
-        opacity=0.5,
-    )
-
-
-    pl.camera.SetPosition(0.75, 0.2, 1.5)
-    pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
-    pl.camera.SetClippingRange(1.0, 8.0)
-
-    # pl.remove_scalar_bar("Omega")
-    pl.remove_scalar_bar("mag")
-    pl.remove_scalar_bar("V")
-
-    # pl.camera_position = "xz"
-    pl.screenshot(
-        filename="{}.png".format(filename),
-        window_size=(2560, 1280),
-        return_img=False,
-    )
-
-    pl.clear()
-
+    
+        pl.camera.SetPosition(0.75, 0.2, 1.5)
+        pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
+        pl.camera.SetClippingRange(1.0, 8.0)
+    
+    
         # pl.camera_position = "xz"
         pl.screenshot(
             filename="{}.png".format(filename),
             window_size=(2560, 1280),
             return_img=False,
         )
+    
+        pl.clear()
+    
 
 
 # -
-
-
-
 ts = 0
 elapsed_time = 0.0
 dt_ns = 0.0025
 
 
-for step in range(0, 1): #1500
+for step in range(0, 50): #1500
     delta_t_cfl = navier_stokes.estimate_dt()
     delta_t = dt_ns  # min(delta_t_swarm, dt_ns)
 

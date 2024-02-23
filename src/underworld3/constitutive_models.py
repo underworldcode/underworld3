@@ -17,6 +17,8 @@ import underworld3.cython
 from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
+from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
+from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
 
 class Constitutive_Model(uw_object):
@@ -133,7 +135,7 @@ class Constitutive_Model(uw_object):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
@@ -146,7 +148,7 @@ class Constitutive_Model(uw_object):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False

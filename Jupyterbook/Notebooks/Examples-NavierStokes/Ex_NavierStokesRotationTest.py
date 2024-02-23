@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -18,8 +18,9 @@
 
 # to fix trame issue
 import nest_asyncio
-
 nest_asyncio.apply()
+
+
 
 # +
 import petsc4py
@@ -32,16 +33,10 @@ from underworld3.systems import NavierStokesSLCN
 from underworld3 import function
 
 import numpy as np
-
-options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-# options.getAll()
+import sympy
 
 
 # +
-import meshio
 
 meshball = uw.meshing.Annulus(
     radiusOuter=1.0, radiusInner=0.5, cellSize=0.05, qdegree=3
@@ -73,11 +68,6 @@ v_x = -1.0 * r * theta_dot * sympy.sin(th)  # * y # to make a convergent / diver
 v_y = r * theta_dot * sympy.cos(th)  # * y
 # -
 
-swarm = uw.swarm.Swarm(mesh=meshball)
-v_star = uw.swarm.SwarmVariable("Vs", swarm, meshball.dim, proxy_degree=3)
-swarm.populate(fill_param=3)
-
-
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
 vorticity = uw.discretisation.MeshVariable(
@@ -94,6 +84,8 @@ navier_stokes = NavierStokesSLCN(
 )
 
 
+
+
 nodal_vorticity_from_v = uw.systems.Projection(meshball, vorticity)
 nodal_vorticity_from_v.uw_function = meshball.vector.curl(v_soln.sym)
 nodal_vorticity_from_v.smoothing = 0.0
@@ -102,17 +94,14 @@ nodal_vorticity_from_v.smoothing = 0.0
 # +
 # Constant visc
 
-
 navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 navier_stokes.constitutive_model.Parameters.viscosity = 1.0
-
 
 # Constant visc
 
 navier_stokes.rho = 250
 navier_stokes.penalty = 0.1
 navier_stokes.bodyforce = sympy.Matrix([0, 0])
-# navier_stokes.bodyforce = unit_rvec * 1.0e-16
 
 # Velocity boundary conditions
 navier_stokes.add_dirichlet_bc((v_x, v_y), "Upper", (0, 1))
@@ -121,6 +110,8 @@ navier_stokes.add_dirichlet_bc((0.0, 0.0), "Lower", (0, 1))
 expt_name = f"Cylinder_NS_rho_{navier_stokes.rho}"
 
 # -
+
+navier_stokes.Unknowns.DuDt
 
 with meshball.access(v_soln):
     v_soln.data[...] = 0.0
@@ -145,8 +136,6 @@ if uw.mpi.size == 1:
         velocity_points, v_soln.sym
     )
 
-    points = vis.swarm_to_pv_cloud(swarm)
-    point_cloud = pv.PolyData(points)
 
     # point sources at cell centres
     points = np.zeros((meshball._centroids.shape[0], 3))
@@ -164,7 +153,7 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(1000, 750))
 
-    pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.1)
+    pl.add_mesh(pvmesh, cmap="RdBu", scalars="Omega", opacity=0.5, show_edges=True)
     pl.add_mesh(pvstream, opacity=0.33)
     pl.add_arrows(
         velocity_points.points,
@@ -172,13 +161,7 @@ if uw.mpi.size == 1:
         mag=1.0e-2,
         opacity=0.75,
     )
-    # pl.add_points(
-    #     passive_swarm_points,
-    #     color="Black",
-    #     render_points_as_spheres=True,
-    #     point_size=5,
-    #     opacity=0.5,
-    # )
+
 
     pl.camera.SetPosition(0.75, 0.2, 1.5)
     pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
@@ -188,12 +171,7 @@ if uw.mpi.size == 1:
     pl.remove_scalar_bar("mag")
     pl.remove_scalar_bar("V")
 
-    # pl.camera_position = "xz"
-    pl.screenshot(
-        filename="{}.png".format(filename),
-        window_size=(2560, 1280),
-        return_img=False,
-    )
+    pl.show()
 
 
 def plot_V_mesh(filename):
@@ -211,8 +189,6 @@ def plot_V_mesh(filename):
             velocity_points, v_soln.sym
         )
 
-        points = vis.swarm_to_pv_cloud(swarm)
-        point_cloud = pv.PolyData(points)
 
         # point sources at cell centres
         points = np.zeros((meshball._centroids.shape[0], 3))
@@ -278,24 +254,16 @@ def plot_V_mesh(filename):
 
         # pl.show()
 
-
 ts = 0
 
 # +
 # Time evolution model / update in time
 
-
-for step in range(0, 2):  # 250
-    delta_t = 5.0 * navier_stokes.estimate_dt()
-    navier_stokes.solve(timestep=delta_t)
+for step in range(0, 50):  # 250
+    delta_t = 3.0 * navier_stokes.estimate_dt()
+    navier_stokes.solve(timestep=delta_t, zero_init_guess=False)
 
     nodal_vorticity_from_v.solve()
-
-    with swarm.access(v_star):
-        v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-
-    # advect swarm
-    swarm.advection(v_soln.fn, delta_t)
 
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(ts, delta_t))
@@ -305,3 +273,7 @@ for step in range(0, 2):  # 250
 
     ts += 1
 # -
+
+
+
+

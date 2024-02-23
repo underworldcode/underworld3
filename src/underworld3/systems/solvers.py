@@ -8,6 +8,11 @@ import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 from underworld3 import VarType
 import underworld3.timing as timing
+from underworld3.utilities._api_tools import uw_object
+
+
+from .ddt import SemiLagrangian as SemiLagrangian_DDt
+from .ddt import Lagrangian as Lagrangian_DDt
 
 
 # class UW_Scalar_Temple(SNES_Scalar):
@@ -446,7 +451,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DFDt
 
     @DFDt.setter
-    def DFDt(self, DFDt: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt]):
+    def DFDt(self, DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt]):
         self._DFDt = DFDt
 
     ### add property for DuDt to be updated by the user if they wish
@@ -455,7 +460,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         return self._DuDt
 
     @DuDt.setter
-    def DuDt(self, DuDt: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt]):
+    def DuDt(self, DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt]):
         self._DuDt = DuDt
 
     # @property
@@ -941,9 +946,6 @@ class SNES_Tensor_Projection(SNES_Projection):
         solver_name: str = "",
         verbose=False,
     ):
-        if solver_name == "":
-            solver_name = "TProj{}_".format(self.instance_number)
-
         self.t_field = tensor_Field
 
         super().__init__(
@@ -955,6 +957,9 @@ class SNES_Tensor_Projection(SNES_Projection):
             solver_name=solver_name,
             verbose=verbose,
         )
+
+        if solver_name == "":
+            solver_name = "TProj{}_".format(self.instance_number)
 
         return
 
@@ -1146,7 +1151,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
 
         ### Setup the history terms
 
-        self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
+        self.Unknowns.DuDt = SemiLagrangian_DDt(
             self.mesh,
             u_Field.sym,
             self._V_fn,
@@ -1160,7 +1165,7 @@ class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
             smoothing=0.0,
         )
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
+        self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
             sympy.Matrix(
                 [[0] * self.mesh.dim]
@@ -1401,7 +1406,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         V_fn: Union[
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
-        DuDt: uw.swarm.Lagrangian_D_Dt = None,
+        DuDt: Lagrangian_DDt = None,
         order: int = 1,
         solver_name: str = "",
         restore_points_func: Callable = None,
@@ -1442,7 +1447,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### by default - it's the template / skeleton
 
         if DuDt is None:
-            self.Unknowns.DuDt = uw.swarm.SemiLagrange_D_Dt(
+            self.Unknowns.DuDt = SemiLagrangian_DDt(
                 self.mesh,
                 u_Field.sym,
                 self._V_fn,
@@ -1469,7 +1474,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             self.Unknowns.DuDt = DuDt
 
-        self.Unknowns.DFDt = uw.swarm.SemiLagrange_D_Dt(
+        self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
             sympy.Matrix(
                 [[0] * self.mesh.dim]
@@ -1696,7 +1701,7 @@ class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
         V_fn: Union[
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
-        DuDt: uw.swarm.Lagrangian_D_Dt,
+        DuDt: Lagrangian_DDt,
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
@@ -2110,7 +2115,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
@@ -2122,7 +2127,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False
@@ -2384,7 +2389,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DuDt = DuDt_value
         self._solver_is_setup = False
@@ -2396,7 +2401,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[uw.swarm.SemiLagrange_D_Dt, uw.swarm.Lagrangian_D_Dt],
+        DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
         self._DFDt = DFDt_value
         self._solver_is_setup = False

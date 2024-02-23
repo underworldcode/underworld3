@@ -40,7 +40,7 @@ t_soln_dt = uw.discretisation.MeshVariable("Tdt", meshball, 1, degree=3)
 t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 
 
-DTdt = uw.swarm.Lagrangian_D_Dt(
+DTdt = uw.systems.Lagrangian_DDt(
         meshball,
         psi_fn = t_soln.sym,
         V_fn = v_soln.sym,
@@ -251,7 +251,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         render_points_as_spheres=False,
         scalars="Ts",
-        point_size=3,
+        point_size=10,
         opacity=0.66,
     )
 

@@ -23,12 +23,6 @@ import numpy as np
 import sympy
 
 options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-# options["dm_plex_check_all"] = None
-
-# import os
-# os.environ["SYMPY_USE_CACHE"]="no"
 
 # options.getAll()
 # -
@@ -95,8 +89,6 @@ adv_diff = uw.systems.AdvDiffusion(
     order=2,
 )
 
-
-type(adv_diff.Unknowns)
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel(adv_diff.Unknowns)
 adv_diff.constitutive_model.Parameters.diffusivity = k

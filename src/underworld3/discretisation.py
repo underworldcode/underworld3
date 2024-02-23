@@ -460,7 +460,8 @@ class Mesh(Stateful, uw_object):
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
-        self._index = None
+        self._build_kd_tree_index()
+
         (
             self._min_size,
             self._radii,
@@ -1169,22 +1170,15 @@ class Mesh(Stateful, uw_object):
 
         return cells
 
-    def _get_mesh_sizes(self):
+    def _get_mesh_sizes(self, verbose=False):
         """
         Obtain the (local) mesh radii and centroids using
         This routine is called when the mesh is built / rebuilt
 
         """
 
-        # Create index if required
-        self._build_kd_tree_index()
-
-        # (
-        #     sizes,
-        #     centroids,
-        # ) = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
-
         centroids = self._get_coords_for_basis(0, False)
+        centroids_kd_tree = uw.kdtree.KDTree(centroids)
 
         import numpy as np
 
@@ -1199,7 +1193,7 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            _, distsq, _ = self._index.find_closest_point(cell_coords)
+            _, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
