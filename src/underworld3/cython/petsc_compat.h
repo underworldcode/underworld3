@@ -132,7 +132,7 @@ PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
 PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 {
 
-#if PETSC_VERSION_LE(3, 20, 4)
+#if PETSC_VERSION_LE(3, 20, 5)
     return DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL);
 #else
     return DMPlexSetSNESLocalFEM(dm, flag, NULL);
