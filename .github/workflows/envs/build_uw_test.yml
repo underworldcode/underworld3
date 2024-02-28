@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
+  - mpmath<=1.3
   - numpy
   - mpich-mpicc
   - mpich-mpicxx
