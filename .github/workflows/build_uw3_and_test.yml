@@ -42,7 +42,7 @@ jobs:
       - name: Build UW3 
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
+          export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
