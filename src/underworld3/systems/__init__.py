@@ -21,10 +21,9 @@ from .solvers import (
 from .solvers import SNES_AdvectionDiffusion_SLCN as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
-# from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
-from .solvers import SNES_NavierStokes_Swarm as NavierStokesSwarm
+from .solvers import SNES_NavierStokes as NavierStokesSwarm
 from .solvers import SNES_NavierStokes_SLCN as NavierStokesSLCN
-from .solvers import SNES_NavierStokes_Swarm as NavierStokesSwarm
+from .solvers import SNES_NavierStokes as NavierStokes
 
 
 from .ddt import Lagrangian as Lagrangian_DDt

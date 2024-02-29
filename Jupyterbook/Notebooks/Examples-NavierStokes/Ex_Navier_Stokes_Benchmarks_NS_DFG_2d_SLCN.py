@@ -55,9 +55,9 @@ import sympy
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc
 
-resolution = uw.options.getReal("model_resolution", default=15)
+resolution = uw.options.getReal("model_resolution", default=30)
 refinement = uw.options.getInt("model_refinement", default=0)
-model = uw.options.getInt("model_number", default=3)
+model = uw.options.getInt("model_number", default=4)
 maxsteps = uw.options.getInt("max_steps", default=1000)
 restart_step = uw.options.getInt("restart_step", default=-1)
 
@@ -80,7 +80,7 @@ elif model == 4:
 
 elif model == 5:
     U0 = 15
-    expt_name = f"NS_test_Re_1000_SLCN_{resolution}"
+    expt_name = f"NS_test_Re_1000i_SLCN_{resolution}"
 # -
 
 outdir = f"output/output_res_{resolution}"
@@ -134,6 +134,14 @@ def pipemesh_mesh_refinement_callback(dm):
 
     return
 
+## Restore inflow samples to inflow points
+def pipemesh_return_coords_to_bounds(coords):
+    lefty_troublemakers = coords[:, 0] < 0.0
+    coords[lefty_troublemakers, 0] = 0.0001
+
+    return coords
+
+  
 
 if uw.mpi.rank == 0:
     # Generate local mesh on boss process
@@ -174,22 +182,13 @@ pipemesh = uw.discretisation.Mesh(
     useRegions=True,
     refinement=refinement,
     refinement_callback=pipemesh_mesh_refinement_callback,
+    return_coords_to_bounds= pipemesh_return_coords_to_bounds,
     boundaries=boundaries,
     qdegree=3,
 )
+
 pipemesh.dm.view()
 
-## Restore inflow samples to inflow points
-
-
-def pipemesh_return_coords_to_bounds(coords):
-    lefty_troublemakers = coords[:, 0] < 0.0
-    coords[lefty_troublemakers, 0] = 0.0001
-
-    return coords
-
-
-pipemesh.return_coords_to_bounds = pipemesh_return_coords_to_bounds
 
 # Some useful coordinate stuff
 
@@ -308,6 +307,8 @@ if model == 2:  # Steady state !
 
 navier_stokes.view()
 
+navier_stokes.constitutive_model.flux
+
 # +
 navier_stokes.petsc_options["snes_monitor"] = None
 navier_stokes.petsc_options["ksp_monitor"] = None
@@ -343,60 +344,18 @@ timing.reset()
 timing.start()
 
 navier_stokes.solve(
-    timestep=10, verbose=True, 
+    timestep=10, verbose=False, 
 )  # Stokes-like initial flow
 
 nodal_vorticity_from_v.solve()
 
 timing.print_table(display_fraction=0.999)
+# -
 
 
-# +
-# import underworld3 as uw
-# import pyvista as pv
-# import underworld3.visualisation
 
-# pl = pv.Plotter(window_size=(1000, 750))
 
-# import underworld3 as uw
-# import underworld3.visualisation as vis
 
-# pvmesh = vis.mesh_to_pv_mesh(pipemesh)
-# pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
-# pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
-
-# velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-# velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-
-# passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
-
-# # point sources at cell centres for streamlines
-
-# points = np.zeros((pipemesh._centroids.shape[0], 3))
-# points[:, 0] = pipemesh._centroids[:, 0]
-# points[:, 1] = pipemesh._centroids[:, 1]
-# point_cloud = pv.PolyData(points)
-
-# pvstream = pvmesh.streamlines_from_source(
-#     point_cloud, vectors="V", integration_direction="forward", max_steps=10
-# )
-
-# pl.add_mesh(
-#     pvmesh,
-#     cmap="coolwarm",
-#     edge_color="Black",
-#     show_edges=True,
-#     scalars="Vmag",
-#     use_transparency=False,
-#     opacity=1.0,
-# )
-
-#     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-#     # pl.add_mesh(pvstream)
-
-#     # pl.remove_scalar_bar("mag")
-
-# pl.show()
 
 
 # +
@@ -473,17 +432,21 @@ def plot_V_mesh(filename):
     
         pl.clear()
     
-
-
 # -
+
+
 ts = 0
 elapsed_time = 0.0
-dt_ns = 0.0025
+dt_ns = 0.01
+delta_t_cfl = 5 * navier_stokes.estimate_dt()
+delta_t = min(delta_t_cfl, dt_ns)
 
 
-for step in range(0, 50): #1500
-    delta_t_cfl = navier_stokes.estimate_dt()
-    delta_t = dt_ns  # min(delta_t_swarm, dt_ns)
+for step in range(0, 250): #1500
+    delta_t_cfl = 2 * navier_stokes.estimate_dt()
+
+    if step % 10 == 0:
+        delta_t = min(delta_t_cfl, dt_ns)
 
     navier_stokes.solve(timestep=dt_ns, zero_init_guess=False)
 
@@ -500,7 +463,7 @@ for step in range(0, 50): #1500
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}, dt_s {}".format(ts, delta_t, delta_t_cfl))
+        print("Timestep {}, t {}, dt {}, dt_s {}".format(ts, elapsed_time, delta_t, delta_t_cfl))
 
     if ts % 10 == 0:
         nodal_vorticity_from_v.solve()
@@ -528,7 +491,7 @@ for step in range(0, 50): #1500
 # +
 # check the mesh if in a notebook / serial
 
-if 0 and uw.mpi.size == 1:
+if 1 and uw.mpi.size == 1:
 
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -550,6 +513,9 @@ if 0 and uw.mpi.size == 1:
     points[:, 0] = pipemesh._centroids[:, 0]
     points[:, 1] = pipemesh._centroids[:, 1]
     point_cloud = pv.PolyData(points)
+
+    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
+
 
     pvstream = pvmesh.streamlines_from_source(
         point_cloud, vectors="V", integration_direction="forward", max_steps=10
@@ -575,7 +541,7 @@ if 0 and uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="Vmag",
+        scalars="Omega",
         use_transparency=False,
         opacity=1.0,
     )
@@ -601,5 +567,7 @@ if 0 and uw.mpi.size == 1:
 # +
 # navier_stokes._u_f1
 # -
+
+
 
 

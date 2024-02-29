@@ -965,7 +965,7 @@ class Swarm(Stateful, uw_object):
 
         if self.recycle_rate > 1:
             with self.access():
-                # Actually, this is a mesh-local quantity, so let's just
+                # This is a mesh-local quantity, so let's just
                 # store it on the mesh in an ad_hoc fashion for now
 
                 self.mesh.particle_X_orig = self.particle_coordinates.data.copy()
@@ -991,7 +991,7 @@ class Swarm(Stateful, uw_object):
                 all_local_coords[...]
                 + (0.33 / (1 + fill_param))
                 * (np.random.random(size=all_local_coords.shape) - 0.5)
-                * 2.0
+                * 0.00001
                 * self.mesh._search_lengths[all_local_cells]  # typical cell size
             )
             cellid[:] = all_local_cells[:, 0]
@@ -1760,7 +1760,7 @@ class Swarm(Stateful, uw_object):
             # print(f"particle coords -> {coords.shape}")
             # print(f"remeshed points  -> {num_remeshed_points}")
 
-            perturbation = (
+            perturbation = 0.00001 * (
                 (0.33 / (1 + self.fill_param))
                 * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
                 * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)

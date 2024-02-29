@@ -19,7 +19,7 @@ if uw.mpi.size == 1:
 
 
 
-elements = 20
+elements = 7
 resolution = 1/elements
 
 outputPath = f"./output/ChannelFlow3D"
@@ -42,6 +42,7 @@ class boundaries(Enum):
     Right = 4
     Front = 5
     Back  = 6
+    All_Boundaries = 1001 # Petsc Boundary Label
 
 import gmsh
 import math
@@ -176,25 +177,10 @@ gmsh.model.addPhysicalGroup(2, [topo], boundaries.Lower.value, name=boundaries.L
 
 gmsh.model.addPhysicalGroup(3, [v2], 666666, "Elements")
 
-
-# set this to True to build a fully hex mesh
-#transfinite = True
-transfinite = False
-
-if transfinite:
-    NN = 30
-    for c in gmsh.model.getEntities(1):
-        gmsh.model.mesh.setTransfiniteCurve(c[1], NN)
-    for s in gmsh.model.getEntities(2):
-        gmsh.model.mesh.setTransfiniteSurface(s[1])
-        gmsh.model.mesh.setRecombine(s[0], s[1])
-        gmsh.model.mesh.setSmoothing(s[0], s[1], 100)
-    gmsh.model.mesh.setTransfiniteVolume(v2)
-else:
-    gmsh.option.setNumber('Mesh.MeshSizeMin', resolution)
-    gmsh.option.setNumber('Mesh.MeshSizeMax', resolution)
-
+gmsh.option.setNumber('Mesh.MeshSizeMin', resolution)
+gmsh.option.setNumber('Mesh.MeshSizeMax', resolution)
 gmsh.model.mesh.generate(3)
+
 gmsh.write('.meshes/tmp_terrain.msh')
 
 # gmsh.fltk.run()
@@ -212,16 +198,32 @@ terrain_mesh = uw.discretisation.Mesh(
         markVertices=True,
         boundaries=boundaries,
         coordinate_system_type=None,
-        refinement=0,
+        refinement=1,
         refinement_callback=None,
         return_coords_to_bounds=None,
     )
 
 x,y,z = terrain_mesh.X
 
+# +
+l = terrain_mesh.dm.getLabel("Lower")
+i = l.getStratumSize(2)
+ii = uw.utilities.gather_data(np.array([float(i)]))
+
+if uw.mpi.rank == 0:
+    print(f"Nodes in LOWER by rank: {ii.astype(int)}", flush=True)
+
+uw.mpi.barrier()
 # -
 
 
+
+
+
+
+0/0
+
+terrain_mesh.dm.view()
 
 # +
 n_vect = uw.discretisation.MeshVariable("Gamma", terrain_mesh, vtype=uw.VarType.VECTOR,
@@ -235,11 +237,16 @@ GammaNorm = 1 / sympy.sqrt(terrain_mesh.Gamma.dot(terrain_mesh.Gamma))
 projection.add_natural_bc(terrain_mesh.Gamma * GammaNorm, "Lower")
 projection.smoothing = 1.0e-6
 projection.solve(verbose=False)
-# projection._reset()
 
 # Ensure n_vect are unit vectors 
 with terrain_mesh.access(n_vect):
-    n_vect.data[:,:] /= np.sqrt(n_vect.data[:,0]**2 + n_vect.data[:,1]**2).reshape(-1,1)
+    n_vect.data[:,:] /= np.sqrt(n_vect.data[:,0]**2 + n_vect.data[:,1]**2 + n_vect.data[:,2]**2).reshape(-1,1)
+
+# -
+
+with terrain_mesh.access(n_vect):
+    print(n_vect.data.max(), flush=True)
+
 
 
 # +
@@ -259,10 +266,13 @@ stokes.add_essential_bc( [sympy.oo, sympy.oo, 0.0 ], "Upper")
 
 ## Free slip base (conditional)
 Gamma = n_vect.sym # terrain_mesh.Gamma
-height_mask = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
+bc_mask0 = sympy.Piecewise((1.0, z < -0.09), (0.0, True))
+bc_mask1 = sympy.Piecewise((1.0, -0.09 < z ), (0.0, True))
+bc_mask2 = sympy.Piecewise((1.0, z < 0.0 ), (0.0, True))
 
-nbc = 10000 *  sympy.simplify( (1-height_mask) * v.sym + 
-                   height_mask * Gamma.dot(v.sym) *  Gamma
+nbc = 10000 *  sympy.simplify( 
+                bc_mask0 * Gamma.dot(v.sym) *  Gamma +
+                (bc_mask1 * bc_mask2)  * v.sym 
                 )
 
 stokes.add_natural_bc(nbc, "Lower")
@@ -277,8 +287,6 @@ stokes.petsc_options.setValue("snes_monitor", None)
 
 stokes.solve()
 # -
-
-
 
 
 terrain_mesh.write_timestep(
@@ -375,4 +383,6 @@ if uw.mpi.size == 1:
 
 
 # -
+
+
 

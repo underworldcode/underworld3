@@ -6,7 +6,7 @@ import sympy
 
 
 # ### Set up variables of the model
-res = 20
+res = 15
 
 # ### Set up the mesh
 minX, maxX = -1.0, 0.0
@@ -65,9 +65,9 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     # #### Set up the Darcy solver
     darcy = uw.systems.SteadyStateDarcy(mesh, p_soln, v_soln)
     darcy.petsc_options.delValue("ksp_monitor")
-    darcy.petsc_options[
-        "snes_rtol"
-    ] = 1.0e-6  # Needs to be smaller than the contrast in properties
+    darcy.petsc_options["snes_rtol"] = (
+        1.0e-6  # Needs to be smaller than the contrast in properties
+    )
     darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 
     # #### Set up the hydraulic conductivity layout

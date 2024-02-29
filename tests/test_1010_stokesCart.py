@@ -187,9 +187,3 @@ def test_stokes_boxmesh_bc_failure():
     del stokes
 
     return
-
-
-del structured_quad_box
-del unstructured_quad_box_regular
-del unstructured_quad_box_irregular
-del unstructured_quad_box_irregular_3D

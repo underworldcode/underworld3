@@ -40,6 +40,7 @@ class SemiLagrangian(uw_object):
         bcs=[],
         order=1,
         smoothing=0.0,
+        under_relaxation=0.0,
     ):
         super().__init__()
 
@@ -278,6 +279,12 @@ class SemiLagrangian(uw_object):
         return am
 
 
+## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but
+## sets up the swarm for itself. This does not have much use - the swarm version
+## is slower, more cumbersome, and less stable / accurate. The only reason to use
+## it is if there is an existing swarm that we can re-purpose.
+
+
 class Lagrangian(uw_object):
     r"""Swarm-based Lagrangian History Manager:
 
@@ -507,6 +514,7 @@ class Lagrangian_Swarm(uw_object):
         bcs=[],
         order=1,
         smoothing=0.0,
+        step_averaging=2,
     ):
         super().__init__()
 
@@ -515,6 +523,7 @@ class Lagrangian_Swarm(uw_object):
         self.psi_fn = psi_fn
         self.verbose = verbose
         self.order = order
+        self.step_averaging = step_averaging
 
         psi_star = []
         self.psi_star = psi_star
@@ -583,14 +592,20 @@ class Lagrangian_Swarm(uw_object):
             i = self.order - (h + 1)
 
             # copy the information down the chain
-            print(f"Lagrange order = {self.order}")
-            print(f"Lagrange copying {i-1} to {i}")
+            if verbose:
+                print(f"Lagrange swarm order = {self.order}", flush=True)
+                print(
+                    f"Mesh interpolant order = {self.psi_star[0]._meshVar.degree}",
+                    flush=True,
+                )
+                print(f"Lagrange swarm copying {i-1} to {i}", flush=True)
 
             with self.swarm.access(self.psi_star[i]):
                 self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        # Now update the swarm variable
+        phi = 1 / self.step_averaging
 
+        # Now update the swarm variable
         if evalf:
             psi_star_0 = self.psi_star[0]
             with self.swarm.access(psi_star_0):
@@ -599,8 +614,9 @@ class Lagrangian_Swarm(uw_object):
                         updated_psi = uw.function.evalf(
                             self.psi_fn[i, j], self.swarm.data
                         )
-                        psi_star_0[i, j].data[:] = updated_psi
-
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
         else:
             psi_star_0 = self.psi_star[0]
             with self.swarm.access(psi_star_0):
@@ -609,7 +625,11 @@ class Lagrangian_Swarm(uw_object):
                         updated_psi = uw.function.evaluate(
                             self.psi_fn[i, j], self.swarm.data
                         )
-                        psi_star_0[i, j].data[:] = updated_psi
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
+
+        return
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
@@ -639,6 +659,9 @@ class Lagrangian_Swarm(uw_object):
                     - self.psi_star[2].sym / 3
                 )
 
+            bdf0 /= self.step_averaging
+
+        # This is actually calculated over several steps so scaling is required
         return bdf0
 
     def adams_moulton_flux(self, order=None):

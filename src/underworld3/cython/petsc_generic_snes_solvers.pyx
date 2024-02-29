@@ -1650,6 +1650,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
+    ## Why is this here - this is not "generic" at all ??
 
     def _setup_history_terms(self):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
@@ -2373,6 +2374,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         
         else:
             self.atol = 0.0
+
+        
 
         # Picard solves if requested
 

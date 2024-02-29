@@ -581,7 +581,8 @@ class SNES_VE_Stokes(SNES_Stokes):
     r"""
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
-    (or near-incompressibility) constraint.
+    (or near-incompressibility) constraint and with a flux history
+    term included to allow for viscoelastic modelling.
 
     $$
     \nabla \cdot
@@ -644,7 +645,9 @@ class SNES_VE_Stokes(SNES_Stokes):
         mesh: uw.discretisation.Mesh,
         velocityField: Optional[uw.discretisation.MeshVariable] = None,
         pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         degree: Optional[int] = 2,
+        order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
@@ -654,7 +657,7 @@ class SNES_VE_Stokes(SNES_Stokes):
             velocityField,
             pressureField,
             None,
-            None,
+            DFDt,
             degree,
             p_continuous,
             solver_name,
@@ -668,7 +671,6 @@ class SNES_VE_Stokes(SNES_Stokes):
         self._order = order
         # User-facing operations are matrices / vectors by preference
 
-        # self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
         self._Estar = None
 
         # scalar 2nd invariant (incompressible)
@@ -681,11 +683,24 @@ class SNES_VE_Stokes(SNES_Stokes):
 
         self._setup_problem_description = self.stokes_problem_description
 
-        self._setup_history_terms()
-
         # this attrib records if we need to re-setup
         self.is_setup = False
         self._constitutive_model = None
+
+        if self.Unknowns.DFDt is None:
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                vtype=uw.VarType.SYM_TENSOR,
+                degree=self.u.degree - 1,
+                continuous=True,
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                verbose=self.verbose,
+                bcs=None,
+                order=self._order,
+                smoothing=0.0,
+            )
 
         return
 
@@ -1372,18 +1387,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
-      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
-        Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
 
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
 
     """
 
@@ -2049,16 +2053,40 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
         self._constraints = sympy.Matrix((self.div_u,))
 
-        ### sets up DuDt and DFDt ... got to call it ... not a property any more !!
-        self._setup_history_terms()
+        ### sets up DuDt and DFDt ...
+
+        self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            self.u.sym,
+            self.u.sym,
+            vtype=uw.VarType.VECTOR,
+            degree=self.u.degree,
+            continuous=self.u.continuous,
+            varsymbol=self.u.symbol,
+            verbose=self.verbose,
+            bcs=self.essential_bcs,
+            order=self._order,
+            smoothing=0.0,
+        )
+
+        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self.u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=self._order,
+            smoothing=0.0,
+        )
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_slcn_problem_description
 
         return
-
-    def navier_stokes_swarm_problem_description(self):
-        dim = self.mesh.dim
 
     def navier_stokes_slcn_problem_description(self):
         N = self.mesh.N
@@ -2204,7 +2232,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
-        # Update SemiLagrange Flux terms
+        # Update SemiLagrange Flux terms (May need to update to match pre-post solve pattern)
         self.Unknowns.DuDt.update(timestep, verbose=verbose)
         self.Unknowns.DFDt.update(timestep, verbose=verbose)
 
@@ -2222,7 +2250,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
 
 
 # This one is already updated to work with the Lagrange D_Dt
-class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
+class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     r"""
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
@@ -2292,6 +2320,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
         mesh: uw.discretisation.Mesh,
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         rho: Optional[float] = 0.0,
         restore_points_func: Callable = None,
         order: Optional[int] = 2,
@@ -2304,8 +2334,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
             mesh,
             velocityField,
             pressureField,
-            None,
-            None,
+            DuDt,
+            DFDt,
             order,
             p_continuous,
             solver_name,
@@ -2319,11 +2349,20 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
         self._first_solve = True
 
         self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_slcn_problem_description
+        self._setup_problem_description = self.navier_stokes_problem_description
 
         self._order = order
-
         self._penalty = 0.0
+
+        self._constitutive_model = None
+
+        # These are unique to the advection solver
+        self.delta_t = 0.0
+        self.is_setup = False
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._setup_problem_description = self.navier_stokes_problem_description
+
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
 
         self._constitutive_model = None
@@ -2334,11 +2373,48 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
         self._constraints = sympy.Matrix((self.div_u,))
 
         ### sets up DuDt and DFDt
-        self._setup_history_terms()
+        ## ._setup_history_terms()
+
+        # If DuDt is not provided, then we can build a SLCN version
+        if self.Unknowns.DuDt is None:
+            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                self.u.sym,
+                self.u.sym,
+                vtype=uw.VarType.VECTOR,
+                degree=self.u.degree,
+                continuous=self.u.continuous,
+                varsymbol=self.u.symbol,
+                verbose=self.verbose,
+                bcs=self.essential_bcs,
+                order=self._order,
+                smoothing=0.0,
+            )
+
+        # F (at least for N-S) is a nodal point variable so there is no benefit
+        # to treating it as a swarm variable. We'll define and use our own SL tracker
+        # as we do in the SLCN version. We'll leave the option for an over-ride.
+
+        if self.Unknowns.DFDt is None:
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                vtype=uw.VarType.SYM_TENSOR,
+                degree=self.u.degree - 1,
+                continuous=True,
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                verbose=self.verbose,
+                bcs=None,
+                order=self._order,
+                smoothing=0.0,
+            )
+
+        ## Add in the history terms provided ...
 
         return
 
-    def navier_stokes_slcn_problem_description(self):
+    def navier_stokes_problem_description(self):
         # f0 residual term
         self._u_f0 = (
             self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
@@ -2384,51 +2460,51 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
 
     @property
     def DuDt(self):
-        return self._DuDt
+        return self.Unknowns.DuDt
 
     @DuDt.setter
     def DuDt(
         self,
         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
-        self._DuDt = DuDt_value
+        self.Unknowns.DuDt = DuDt_value
         self._solver_is_setup = False
 
     @property
     def DFDt(self):
-        return self._DFDt
+        return self.Unknowns.DFDt
 
     @DFDt.setter
     def DFDt(
         self,
         DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
-        self._DFDt = DFDt_value
+        self.Unknowns.DFDt = DFDt_value
         self._solver_is_setup = False
 
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
+    # @property
+    # def constitutive_model(self):
+    #     return self._constitutive_model
 
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.u)
-            ### update history terms using setters
-            self._constitutive_model.flux_dt = self.DFDt
-            self._constitutive_model.DuDt = self.DuDt
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
+    # @constitutive_model.setter
+    # def constitutive_model(self, model):
+    #     ### checking if it's an instance
+    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### checking if it's a class
+    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+    #         self._constitutive_model = model(self.u)
+    #         ### update history terms using setters
+    #         self._constitutive_model.flux_dt = self.DFDt
+    #         self._constitutive_model.DuDt = self.DuDt
+    #     ### Raise an error if it's neither
+    #     else:
+    #         raise RuntimeError(
+    #             "constitutive_model must be a valid class or instance of a valid class"
+    #         )
 
     @property
     def constraints(self):
@@ -2476,6 +2552,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
         timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
+        evalf=False,
     ):
         """
         Generates solution to constructed system.
@@ -2495,7 +2572,7 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self.is_setup = False
-            self._DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -2503,8 +2580,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
             self._setup_solver(verbose)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update(timestep, verbose=verbose)
-        self.DFDt.update(timestep, verbose=verbose)
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
 
         super().solve(
             zero_init_guess,
@@ -2512,6 +2589,8 @@ class SNES_NavierStokes_Swarm(SNES_Stokes_SaddlePt):
             verbose=verbose,
             picard=0,
         )
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
