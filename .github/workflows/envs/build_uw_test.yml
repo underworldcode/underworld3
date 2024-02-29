@@ -6,6 +6,7 @@ dependencies:
   - mpmath<=1.3
   - mesalib
   - numpy
+  - scipy
   - mpich-mpicc
   - mpich-mpicxx
   - cython=3.*
@@ -13,6 +14,7 @@ dependencies:
   - petsc4py>=3.20.4
   - mpi4py
   - h5py
+  - sympy
   - gmsh
   - pytest
   - ipython # needed for "display" functionality (should be optional !)
