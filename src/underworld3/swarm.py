@@ -366,6 +366,13 @@ class SwarmVariable(Stateful, uw_object):
 
         import numpy as np
 
+        with self.swarm.access():
+            data_size = self.data.shape
+
+        # What to do if there are no particles
+        if data_size[0] == 0:
+            return np.zeros((new_coords.shape[0], data_size[1]))
+
         if nnn is None:
             nnn = self.swarm.mesh.dim + 1
 

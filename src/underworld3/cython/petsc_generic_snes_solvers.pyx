@@ -2125,6 +2125,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 print(" - component: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
+                print(flush=True)
 
 
             boundary = bc.boundary

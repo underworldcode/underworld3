@@ -422,22 +422,7 @@ class ViscousFlowModel(Constitutive_Model):
 
 class ViscoPlasticFlowModel(ViscousFlowModel):
     r"""
-    ```python
-    class ViscoPlasticFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    viscoplastic_model = ViscoPlasticFlowModel(dim)
-    viscoplastic_model.Parameters(
-            viscosity: Union[float, sympy.Function] = sympy.sympify(1),
-            yield_stress: Union[float, sympy.Function] = None,
-            min_viscosity: Union[float, sympy.Function] = sympy.oo,
-            yield_stress_min: Union[float, sympy.Function] = sympy.oo,
-            edot_II_fn: sympy.Function = None,
-            epsilon_edot_II: float = None,
-        )
-    solver.constititutive_model = viscoplastic_model
-    ```
+
     $$
     \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
     $$
@@ -459,9 +444,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     The Mandel constitutive matrix is available in `viscoplastic_model.C` and the rank 4 tensor form is
     in `viscoplastic_model.c`.  Apply the constitutive model using:
 
-    ```python
-    tau = viscoplastic_model.flux(gradient_matrix)
-    ```
     ---
     """
 
@@ -640,28 +622,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
-    ```python
-    class ViscoElasticFlowModel(Constitutive_Model)
-    ...
-    ```
-
-    ### Example
-
-    ```python
-    viscoelastic_model = ViscoElasticPlasticFlowModel(u=velocity_variable)
-    viscoelastic_model.Parameters(
-            shear_viscosity_0: Union[float, sympy.Function] = 1,
-            shear_viscosity_min: Union[float, sympy.Function] = sympy.oo,
-            shear_modulus: Union[float, sympy.Function] = sympy.oo,
-            dt_elastic: Union[float, sympy.Function] = sympy.oo,
-            yield_stress: Union[float, sympy.Function] = sympy.oo,
-            yield_stress_min: Union[float, sympy.Function] = sympy.oo,
-            strainrate_inv_II: sympy.Function = None,
-            stress_star: sympy.Function = None,
-            strainrate_inv_II_min: float = 0
-        )
-    solver.constititutive_model = viscoelastic_model
-    ```
 
     ### Formulation
 
@@ -677,10 +637,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
     in `viscous_model.c`.  Apply the constitutive model using:
 
-    ```python
-    tau = viscous_model.flux()
-    ```
-    ---
     """
 
     class _Parameters:
