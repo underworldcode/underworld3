@@ -502,9 +502,9 @@ document.write(`
 <span class="c1"># These can be set when launching the script as</span>
 <span class="c1"># mpirun python3 scriptname -uw_resolution=0.1 etc</span>
 
-<span class="n">resolution</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getReal</span><span class="p">(</span><span class="s2">&quot;model_resolution&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">15</span><span class="p">)</span>
+<span class="n">resolution</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getReal</span><span class="p">(</span><span class="s2">&quot;model_resolution&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
 <span class="n">refinement</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_refinement&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-<span class="n">model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_number&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_number&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 <span class="n">maxsteps</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;max_steps&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
 <span class="n">restart_step</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;restart_step&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
 </pre></div>
@@ -531,7 +531,7 @@ document.write(`
 
 <span class="k">elif</span> <span class="n">model</span> <span class="o">==</span> <span class="mi">5</span><span class="p">:</span>
     <span class="n">U0</span> <span class="o">=</span> <span class="mi">15</span>
-    <span class="n">expt_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;NS_test_Re_1000_SLCN_</span><span class="si">{</span><span class="n">resolution</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="n">expt_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;NS_test_Re_1000i_SLCN_</span><span class="si">{</span><span class="n">resolution</span><span class="si">}</span><span class="s2">&quot;</span>
 </pre></div>
 </div>
 </div>
@@ -593,6 +593,14 @@ document.write(`
 
     <span class="k">return</span>
 
+<span class="c1">## Restore inflow samples to inflow points</span>
+<span class="k">def</span> <span class="nf">pipemesh_return_coords_to_bounds</span><span class="p">(</span><span class="n">coords</span><span class="p">):</span>
+    <span class="n">lefty_troublemakers</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.0</span>
+    <span class="n">coords</span><span class="p">[</span><span class="n">lefty_troublemakers</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0001</span>
+
+    <span class="k">return</span> <span class="n">coords</span>
+
+  
 
 <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
     <span class="c1"># Generate local mesh on boss process</span>
@@ -633,22 +641,13 @@ document.write(`
     <span class="n">useRegions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">refinement</span><span class="o">=</span><span class="n">refinement</span><span class="p">,</span>
     <span class="n">refinement_callback</span><span class="o">=</span><span class="n">pipemesh_mesh_refinement_callback</span><span class="p">,</span>
+    <span class="n">return_coords_to_bounds</span><span class="o">=</span> <span class="n">pipemesh_return_coords_to_bounds</span><span class="p">,</span>
     <span class="n">boundaries</span><span class="o">=</span><span class="n">boundaries</span><span class="p">,</span>
     <span class="n">qdegree</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
 <span class="p">)</span>
+
 <span class="n">pipemesh</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">view</span><span class="p">()</span>
 
-<span class="c1">## Restore inflow samples to inflow points</span>
-
-
-<span class="k">def</span> <span class="nf">pipemesh_return_coords_to_bounds</span><span class="p">(</span><span class="n">coords</span><span class="p">):</span>
-    <span class="n">lefty_troublemakers</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.0</span>
-    <span class="n">coords</span><span class="p">[</span><span class="n">lefty_troublemakers</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0001</span>
-
-    <span class="k">return</span> <span class="n">coords</span>
-
-
-<span class="n">pipemesh</span><span class="o">.</span><span class="n">return_coords_to_bounds</span> <span class="o">=</span> <span class="n">pipemesh_return_coords_to_bounds</span>
 
 <span class="c1"># Some useful coordinate stuff</span>
 
@@ -788,6 +787,13 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">navier_stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">flux</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">navier_stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;snes_monitor&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="n">navier_stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
@@ -826,63 +832,12 @@ document.write(`
 <span class="n">timing</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
 
 <span class="n">navier_stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span>
-    <span class="n">timestep</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> 
+    <span class="n">timestep</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> 
 <span class="p">)</span>  <span class="c1"># Stokes-like initial flow</span>
 
 <span class="n">nodal_vorticity_from_v</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
 
 <span class="n">timing</span><span class="o">.</span><span class="n">print_table</span><span class="p">(</span><span class="n">display_fraction</span><span class="o">=</span><span class="mf">0.999</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># import underworld3 as uw</span>
-<span class="c1"># import pyvista as pv</span>
-<span class="c1"># import underworld3.visualisation</span>
-
-<span class="c1"># pl = pv.Plotter(window_size=(1000, 750))</span>
-
-<span class="c1"># import underworld3 as uw</span>
-<span class="c1"># import underworld3.visualisation as vis</span>
-
-<span class="c1"># pvmesh = vis.mesh_to_pv_mesh(pipemesh)</span>
-<span class="c1"># pvmesh.point_data[&quot;V&quot;] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)</span>
-<span class="c1"># pvmesh.point_data[&quot;Vmag&quot;] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))</span>
-
-<span class="c1"># velocity_points = vis.meshVariable_to_pv_cloud(v_soln)</span>
-<span class="c1"># velocity_points.point_data[&quot;V&quot;] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)</span>
-
-<span class="c1"># passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)</span>
-
-<span class="c1"># # point sources at cell centres for streamlines</span>
-
-<span class="c1"># points = np.zeros((pipemesh._centroids.shape[0], 3))</span>
-<span class="c1"># points[:, 0] = pipemesh._centroids[:, 0]</span>
-<span class="c1"># points[:, 1] = pipemesh._centroids[:, 1]</span>
-<span class="c1"># point_cloud = pv.PolyData(points)</span>
-
-<span class="c1"># pvstream = pvmesh.streamlines_from_source(</span>
-<span class="c1">#     point_cloud, vectors=&quot;V&quot;, integration_direction=&quot;forward&quot;, max_steps=10</span>
-<span class="c1"># )</span>
-
-<span class="c1"># pl.add_mesh(</span>
-<span class="c1">#     pvmesh,</span>
-<span class="c1">#     cmap=&quot;coolwarm&quot;,</span>
-<span class="c1">#     edge_color=&quot;Black&quot;,</span>
-<span class="c1">#     show_edges=True,</span>
-<span class="c1">#     scalars=&quot;Vmag&quot;,</span>
-<span class="c1">#     use_transparency=False,</span>
-<span class="c1">#     opacity=1.0,</span>
-<span class="c1"># )</span>
-
-<span class="c1">#     # pl.add_mesh(pvmesh,&#39;Black&#39;, &#39;wireframe&#39;, opacity=0.75)</span>
-<span class="c1">#     # pl.add_mesh(pvstream)</span>
-
-<span class="c1">#     # pl.remove_scalar_bar(&quot;mag&quot;)</span>
-
-<span class="c1"># pl.show()</span>
 </pre></div>
 </div>
 </div>
@@ -962,7 +917,6 @@ document.write(`
     
         <span class="n">pl</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
     
-
 </pre></div>
 </div>
 </div>
@@ -971,16 +925,20 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ts</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="n">elapsed_time</span> <span class="o">=</span> <span class="mf">0.0</span>
-<span class="n">dt_ns</span> <span class="o">=</span> <span class="mf">0.0025</span>
+<span class="n">dt_ns</span> <span class="o">=</span> <span class="mf">0.01</span>
+<span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">5</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
+<span class="n">delta_t</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delta_t_cfl</span><span class="p">,</span> <span class="n">dt_ns</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">50</span><span class="p">):</span> <span class="c1">#1500</span>
-    <span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
-    <span class="n">delta_t</span> <span class="o">=</span> <span class="n">dt_ns</span>  <span class="c1"># min(delta_t_swarm, dt_ns)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">250</span><span class="p">):</span> <span class="c1">#1500</span>
+    <span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">step</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">delta_t</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delta_t_cfl</span><span class="p">,</span> <span class="n">dt_ns</span><span class="p">)</span>
 
     <span class="n">navier_stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">timestep</span><span class="o">=</span><span class="n">dt_ns</span><span class="p">,</span> <span class="n">zero_init_guess</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
@@ -997,7 +955,7 @@ document.write(`
             <span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.195</span><span class="p">]</span> <span class="o">+</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">((</span><span class="n">npoints</span><span class="p">,</span> <span class="mi">2</span><span class="p">)))</span>
 
     <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Timestep </span><span class="si">{}</span><span class="s2">, dt </span><span class="si">{}</span><span class="s2">, dt_s </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">ts</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">delta_t_cfl</span><span class="p">))</span>
+        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Timestep </span><span class="si">{}</span><span class="s2">, t </span><span class="si">{}</span><span class="s2">, dt </span><span class="si">{}</span><span class="s2">, dt_s </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">ts</span><span class="p">,</span> <span class="n">elapsed_time</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">delta_t_cfl</span><span class="p">))</span>
 
     <span class="k">if</span> <span class="n">ts</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">nodal_vorticity_from_v</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
@@ -1030,7 +988,7 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># check the mesh if in a notebook / serial</span>
 
-<span class="k">if</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<span class="k">if</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
 
     <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
     <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
@@ -1052,6 +1010,9 @@ document.write(`
     <span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
     <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
     <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+
+    <span class="n">passive_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
+
 
     <span class="n">pvstream</span> <span class="o">=</span> <span class="n">pvmesh</span><span class="o">.</span><span class="n">streamlines_from_source</span><span class="p">(</span>
         <span class="n">point_cloud</span><span class="p">,</span> <span class="n">vectors</span><span class="o">=</span><span class="s2">&quot;V&quot;</span><span class="p">,</span> <span class="n">integration_direction</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">max_steps</span><span class="o">=</span><span class="mi">10</span>
@@ -1077,7 +1038,7 @@ document.write(`
         <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
         <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
         <span class="n">show_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-        <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;Vmag&quot;</span><span class="p">,</span>
+        <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;Omega&quot;</span><span class="p">,</span>
         <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="n">opacity</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
     <span class="p">)</span>

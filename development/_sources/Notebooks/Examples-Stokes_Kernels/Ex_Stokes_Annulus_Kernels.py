@@ -51,6 +51,8 @@ import os
 os.environ["SYMPY_USE_CACHE"] = "no"
 # -
 
+
+
 meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o, 
                                               radiusInternal=r_int, 
                                               radiusInner=r_i, 
@@ -60,18 +62,9 @@ meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=r_o,
                                               filename="tmp_fixedstarsMesh.msh")
 
 
-v_soln = uw.discretisation.MeshVariable("V0", meshball, 2, degree=2, varsymbol=r"{v_0}")
-v_soln1 = uw.discretisation.MeshVariable("V1", meshball, 2, degree=2, varsymbol=r"{v_1}")
-norm_v = uw.discretisation.MeshVariable("N", meshball, 2, degree=1, varsymbol=r"{\hat{n}}")
-p_soln = uw.discretisation.MeshVariable("p", meshball, 1, degree=1, continuous=True)
-p_cont = uw.discretisation.MeshVariable("pc", meshball, 1, degree=1, continuous=True)
-
-# with meshball.access(norm_v):
-#     norm_v.data[:,0] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[0], norm_v.coords)
-#     norm_v.data[:,1] = uw.function.evaluate(meshball.CoordinateSystem.unit_e_0[1], norm_v.coords)
-
-
 # +
+norm_v = uw.discretisation.MeshVariable("N", meshball, 2, degree=1, varsymbol=r"{\hat{n}}")
+
 projection = uw.systems.Vector_Projection(meshball, norm_v)
 projection.uw_function = sympy.Matrix([[0,0]])
 projection.smoothing = 1.0e-3
@@ -109,11 +102,10 @@ v_theta_fn_xy = r * meshball.CoordinateSystem.rRotN.T * sympy.Matrix((0,1))
 
 Rayleigh = 1.0e5
 # -
-
-
-
-
-meshball.dm.view()
+v_soln = uw.discretisation.MeshVariable("V0", meshball, 2, degree=2, varsymbol=r"{v_0}")
+v_soln1 = uw.discretisation.MeshVariable("V1", meshball, 2, degree=2, varsymbol=r"{v_1}")
+p_soln = uw.discretisation.MeshVariable("p", meshball, 1, degree=1, continuous=True)
+p_cont = uw.discretisation.MeshVariable("pc", meshball, 1, degree=1, continuous=True)
 
 # +
 # Create Stokes object
@@ -185,7 +177,7 @@ pressure_solver.smoothing = 1.0e-3
 stokes._reset()
 
 stokes.bodyforce = sympy.Matrix([0,0])
-# Gamma = meshball.Gamma / sympy.sqrt(meshball.Gamma.dot(meshball.Gamma))
+Gamma = meshball.Gamma / sympy.sqrt(meshball.Gamma.dot(meshball.Gamma))
 Gamma = norm_v.sym
 
 stokes.add_natural_bc(-t_init * unit_rvec, "Internal")
@@ -200,7 +192,7 @@ if free_slip_lower:
 else:
     stokes.add_essential_bc((0.0,0.0), "Lower")
 
-stokes.solve()
+stokes.solve(zero_init_guess=False)
 
 # +
 # Null space evaluation
@@ -278,6 +270,7 @@ if uw.mpi.size == 1:
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3)
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V0"], mag=3, color="Black")
+    # pl.add_arrows(velocity_points.points, velocity_points.point_data["dV"], mag=100, color="Black")
     pl.add_mesh(pvstream, opacity=0.3, show_scalar_bar=False)
 
 
@@ -286,7 +279,3 @@ if uw.mpi.size == 1:
 
 vsol_rms = np.sqrt(velocity_points.point_data["V"][:, 0] ** 2 + velocity_points.point_data["V"][:, 1] ** 2).mean()
 vsol_rms
-
-r * sympy.Matrix([-sympy.sin(th), sympy.cos(th)])
-
-

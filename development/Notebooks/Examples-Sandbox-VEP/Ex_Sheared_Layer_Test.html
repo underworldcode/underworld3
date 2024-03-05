@@ -697,8 +697,8 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span>   
-<span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">material</span><span class="p">,</span> <span class="n">strain</span><span class="p">),</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
-    <span class="n">strain</span><span class="o">.</span><span class="n">data</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">strain_rate_inv2_p</span><span class="o">.</span><span class="n">rbf_interpolate</span><span class="p">(</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
+<span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">material</span><span class="p">,</span> <span class="n">strain_p</span><span class="p">),</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
+    <span class="n">strain_p</span><span class="o">.</span><span class="n">data</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">strain_rate_inv2_p</span><span class="o">.</span><span class="n">rbf_interpolate</span><span class="p">(</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
     <span class="n">strain_array</span> <span class="o">=</span> <span class="n">strain_rate_inv2_p</span><span class="o">.</span><span class="n">rbf_interpolate</span><span class="p">(</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -707,12 +707,12 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span>   
-<span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">strain</span><span class="p">,</span> <span class="n">material</span><span class="p">),</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
+<span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">strain_p</span><span class="p">,</span> <span class="n">material</span><span class="p">),</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
     <span class="n">XX</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]</span>
     <span class="n">YY</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span><span class="mi">1</span><span class="p">]</span>
     <span class="n">mask</span> <span class="o">=</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="p">(</span><span class="n">YY</span> <span class="o">*</span> <span class="mi">2</span><span class="p">)</span><span class="o">**</span><span class="mi">8</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span>  <span class="p">(</span><span class="mi">2</span><span class="o">*</span><span class="n">XX</span><span class="o">/</span><span class="mi">3</span><span class="p">)</span><span class="o">**</span><span class="mi">6</span><span class="p">)</span>
     <span class="n">material</span><span class="o">.</span><span class="n">data</span><span class="p">[(</span><span class="n">XX</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="n">YY</span><span class="o">**</span><span class="mi">2</span> <span class="o">&lt;</span> <span class="mf">0.01</span><span class="p">),</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span>
-    <span class="n">strain</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">(</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">*</span> <span class="n">mask</span>
+    <span class="n">strain_p</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">(</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">*</span> <span class="n">mask</span>
 </pre></div>
 </div>
 </div>
@@ -742,17 +742,31 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscoElasticPlasticFlowModel</span><span class="p">(</span><span class="n">mesh1</span><span class="o">.</span><span class="n">dim</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscoElasticPlasticFlowModel</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">bg_viscosity</span> <span class="o">=</span> <span class="n">viscosity_L</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">sigma_star_fn</span> <span class="o">=</span> 
-<span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span>
+<span class="c1"># stokes.constitutive_model.Parameters.sigma_star_fn </span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">sigma_star_fn</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">viscosity</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">shear_modulus</span> <span class="o">=</span> <span class="mf">1.0</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">dt_elastic</span> <span class="o">=</span> <span class="mf">0.1</span>
 </pre></div>
 </div>
 </div>
@@ -784,13 +798,13 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">nodal_strain_rate_inv2</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Projection</span><span class="p">(</span>
     <span class="n">mesh1</span><span class="p">,</span> <span class="n">strain_rate_inv2</span><span class="p">,</span> <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;edot_II&quot;</span>
 <span class="p">)</span>
-<span class="n">nodal_strain_rate_inv2</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span>
+<span class="n">nodal_strain_rate_inv2</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span>
 <span class="n">nodal_strain_rate_inv2</span><span class="o">.</span><span class="n">smoothing</span> <span class="o">=</span> <span class="mf">1.0e-3</span>
 <span class="n">nodal_strain_rate_inv2</span><span class="o">.</span><span class="n">petsc_options</span><span class="o">.</span><span class="n">delValue</span><span class="p">(</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">)</span>
 
 <span class="n">nodal_tau_inv2</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Projection</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">dev_stress_inv2</span><span class="p">,</span> <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;stress_II&quot;</span><span class="p">)</span>
 <span class="n">nodal_tau_inv2</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span>
+    <span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span>
 <span class="p">)</span>
 <span class="n">nodal_tau_inv2</span><span class="o">.</span><span class="n">smoothing</span> <span class="o">=</span> <span class="mf">1.0e-3</span>
 <span class="n">nodal_tau_inv2</span><span class="o">.</span><span class="n">petsc_options</span><span class="o">.</span><span class="n">delValue</span><span class="p">(</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">)</span>
@@ -801,7 +815,7 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <span class="n">yield_stress_calc</span><span class="o">.</span><span class="n">petsc_options</span><span class="o">.</span><span class="n">delValue</span><span class="p">(</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">)</span>
 
 <span class="n">nodal_visc_calc</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Projection</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">node_viscosity</span><span class="p">,</span> <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;visc&quot;</span><span class="p">)</span>
-<span class="n">nodal_visc_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span>
+<span class="n">nodal_visc_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">viscosity</span>
 <span class="n">nodal_visc_calc</span><span class="o">.</span><span class="n">smoothing</span> <span class="o">=</span> <span class="mf">1.0e-3</span>
 <span class="n">nodal_visc_calc</span><span class="o">.</span><span class="n">petsc_options</span><span class="o">.</span><span class="n">delValue</span><span class="p">(</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">)</span>
 </pre></div>
@@ -839,15 +853,9 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># linear solve first</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_terms</span><span class="p">()</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">_setup_pointwise_functions</span><span class="p">()</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_discretisation</span><span class="p">()</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_solver</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>

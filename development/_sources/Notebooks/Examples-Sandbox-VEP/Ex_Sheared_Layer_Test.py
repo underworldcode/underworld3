@@ -215,17 +215,17 @@ with mesh1.access(): #strain_rate_inv2_p):
 
 # +
    
-with swarm.access(material, strain), mesh1.access():
-    strain.data[:] = strain_rate_inv2_p.rbf_interpolate(swarm.particle_coordinates.data)
+with swarm.access(material, strain_p), mesh1.access():
+    strain_p.data[:] = strain_rate_inv2_p.rbf_interpolate(swarm.particle_coordinates.data)
     strain_array = strain_rate_inv2_p.rbf_interpolate(swarm.particle_coordinates.data)
 # +
    
-with swarm.access(strain, material), mesh1.access():
+with swarm.access(strain_p, material), mesh1.access():
     XX = swarm.particle_coordinates.data[:,0]
     YY = swarm.particle_coordinates.data[:,1]
     mask = (1.0 - (YY * 2)**8) * (1 -  (2*XX/3)**6)
     material.data[(XX**2 + YY**2 < 0.01), 0] = 1
-    strain.data[:,0] = 0.0 * np.random.random(swarm.particle_coordinates.data.shape[0]) * mask
+    strain_p.data[:,0] = 0.0 * np.random.random(swarm.particle_coordinates.data.shape[0]) * mask
 # -
 
 
@@ -252,12 +252,19 @@ viscosity_L = sympy.Piecewise(
 # -
 
 
-stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(mesh1.dim)
-stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
-stokes.constitutive_model.Parameters.sigma_star_fn = 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
-stokes.constitutive_model.Parameters.sigma_star_fn
+
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
+# stokes.constitutive_model.Parameters.sigma_star_fn 
+
+
+stokes.constitutive_model.viscosity
+
+stokes.constitutive_model
+
+stokes.constitutive_model.Parameters.shear_modulus = 1.0
+stokes.constitutive_model.Parameters.dt_elastic = 0.1
 
 stokes.constitutive_model
 
@@ -270,13 +277,13 @@ sigma_projector.uw_function = stokes.stress_1d
 nodal_strain_rate_inv2 = uw.systems.Projection(
     mesh1, strain_rate_inv2, solver_name="edot_II"
 )
-nodal_strain_rate_inv2.uw_function = stokes._Einv2
+nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
 nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
 nodal_tau_inv2 = uw.systems.Projection(mesh1, dev_stress_inv2, solver_name="stress_II")
 nodal_tau_inv2.uw_function = (
-    2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+    2 * stokes.constitutive_model.viscosity * stokes.Unknowns.Einv2
 )
 nodal_tau_inv2.smoothing = 1.0e-3
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
@@ -287,7 +294,7 @@ yield_stress_calc.smoothing = 1.0e-3
 yield_stress_calc.petsc_options.delValue("ksp_monitor")
 
 nodal_visc_calc = uw.systems.Projection(mesh1, node_viscosity, solver_name="visc")
-nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+nodal_visc_calc.uw_function = stokes.constitutive_model.viscosity
 nodal_visc_calc.smoothing = 1.0e-3
 nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
@@ -321,10 +328,9 @@ stokes.add_dirichlet_bc((0.0), "Right", (1))
 # -
 
 
-# linear solve first
-stokes._setup_terms()
-
-stokes.constitutive_model.Parameters.viscosity
+stokes._setup_pointwise_functions()
+stokes._setup_discretisation()
+stokes._setup_solver()
 
 stokes.solve()
 

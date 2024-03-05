@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.2
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -53,9 +53,11 @@ print(f"Memory usage = {python_process.memory_info().rss//1000000} Mb", flush=Tr
 # mpirun python3 scriptname -uw_resolution=0.1 etc
 
 resolution = uw.options.getReal("model_resolution", default=16)
+refinement = uw.options.getInt("model_refinement", default=0)
 model = uw.options.getInt("model_number", default=3)
 maxsteps = uw.options.getInt("max_steps", default=1000)
 restart_step = uw.options.getInt("restart_step", default=-1)
+
 
 # +
 if model == 1:
@@ -79,7 +81,7 @@ elif model == 5:
     expt_name = f"NS_test_Re_1000_{resolution}"
 # -
 
-outdir = "output_swarm_{resolution}"
+outdir = f"output_swarm_{resolution}"
 os.makedirs(".meshes", exist_ok=True)
 os.makedirs(f"{outdir}", exist_ok=True)
 
@@ -96,6 +98,54 @@ width = 2.2
 height = 0.41
 radius = 0.05
 
+from enum import Enum
+
+## NOTE: stop using pygmsh, then we can just define boundary labels ourselves and not second guess pygmsh
+
+class boundaries(Enum):
+    bottom = 1
+    right = 2
+    top = 3
+    left  = 4
+    inclusion = 5
+    All_Boundaries = 1001 
+
+def pipemesh_mesh_refinement_callback(dm):
+    r_p = radius
+
+    # print(f"Refinement callback - spherical", flush=True)
+
+    c2 = dm.getCoordinatesLocal()
+    coords = c2.array.reshape(-1, 2) - centre
+
+    R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2).reshape(-1, 1)
+
+    pipeIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+        dm, "inclusion"
+    )
+
+    coords[pipeIndices] *= r_p / R[pipeIndices]
+    coords = coords + centre
+
+    c2.array[...] = coords.reshape(-1)
+    dm.setCoordinatesLocal(c2)
+
+    return
+
+## Restore inflow samples to inflow points
+def pipemesh_return_coords_to_bounds(coords):
+    lefty_troublemakers = coords[:, 0] < 0.0
+    far_right = coords[:, 0] > 2.2
+    too_low = coords[:, 1] < 0.0
+    too_high = coords[:, 1] > 0.41
+
+    coords[lefty_troublemakers, 0] = 0.0001
+    coords[far_right, 0] = 2.2 - 0.0001
+
+    coords[too_low, 1] = 0.0001
+    coords[too_high, 1] = 0.41 - 0.0001
+
+    return coords
 
 if uw.mpi.rank == 0:
     # Generate local mesh on boss process
@@ -131,8 +181,13 @@ pipemesh = uw.discretisation.Mesh(
     markVertices=True,
     useMultipleTags=True,
     useRegions=True,
+    refinement=refinement,
+    refinement_callback=pipemesh_mesh_refinement_callback,
+    return_coords_to_bounds= pipemesh_return_coords_to_bounds,
+    boundaries=boundaries,
     qdegree=3,
 )
+
 pipemesh.dm.view()
 
 
@@ -185,45 +240,24 @@ St = uw.discretisation.MeshVariable(
 
 
 # +
-swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=20)
-v_star = uw.swarm.SwarmVariable(
-    "Vdt_p",
-    swarm,
-    pipemesh.dim,
-    proxy_degree=2,
-    proxy_continuous=True,
-    varsymbol=r"{v^{*}}",
-)
+swarm = uw.swarm.Swarm(mesh=pipemesh, recycle_rate=6)
 
-v_star_star = uw.swarm.SwarmVariable(
-    "V2dt_p",
-    swarm,
-    pipemesh.dim,
-    proxy_degree=2,
-    proxy_continuous=True,
-    varsymbol=r"{v^{**}}",
-)
-
-stress_star_p = uw.swarm.SwarmVariable(
-    r"stress_p",
-    swarm,
-    (2, 2),
-    vtype=uw.VarType.SYM_TENSOR,
-    proxy_continuous=True,
-    proxy_degree=2,
-    varsymbol=r"{\sigma^{*}_{p}}",
+DvDt = uw.systems.ddt.Lagrangian_Swarm(
+    swarm, 
+    v_soln.sym, 
+    uw.VarType.VECTOR,
+    degree=2,
+    order=2,
+    verbose=False,
+    continuous=True,
 )
 
 
-swarm.populate(fill_param=3)
+swarm.populate(fill_param=4)
+
+# -
 
 
-DFDt = uw.swarm.Lagrangian_Updater(swarm, St.sym, [stress_star_p], dt_physical=0.01)
-
-
-DvDt = uw.swarm.Lagrangian_Updater(
-    swarm, v_soln.sym, [v_star, v_star_star], dt_physical=0.01, verbose=True
-)
 
 
 # +
@@ -231,7 +265,6 @@ passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
 passive_swarm.populate(
     fill_param=1,
 )
-
 
 # add new points at the inflow
 npoints = 50
@@ -252,20 +285,18 @@ nodal_vorticity_from_v.petsc_options.delValue("ksp_monitor")
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
 
-
 navier_stokes = uw.systems.NavierStokes(
     pipemesh,
     velocityField=v_soln,
     pressureField=p_soln,
-    DvDt=DvDt,
-    rho=1.0,
+    DuDt=DvDt,
+    rho=1000.0,
     verbose=False,
     solver_name="navier_stokes",
+    order=2,
 )
 
-navier_stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-    v_soln
-)
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 # Constant visc
 
@@ -281,13 +312,17 @@ surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 
 # Velocity boundary conditions
 
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "inclusion", (0, 1))
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "top", (0, 1))
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom", (0, 1))
-navier_stokes.add_dirichlet_bc((Vb, 0.0), "left", (0, 1))
+navier_stokes.add_dirichlet_bc(
+    (0.0, 0.0),
+    "inclusion",
+)
+navier_stokes.add_dirichlet_bc((0.0, 0.0), "top")
+navier_stokes.add_dirichlet_bc((0.0, 0.0), "bottom")
+navier_stokes.add_dirichlet_bc((Vb, 0.0), "left")
 
-navier_stokes._setup_pointwise_functions()
-navier_stokes.tolerance = 1.0e-4
+navier_stokes.tolerance = 1.0e-3
+navier_stokes.delta_t = 10.0  # stokes-like at the beginning
+
 
 if model == 2:  # Steady state !
     # remove the d/dt term ... replace the time dependence with the
@@ -299,26 +334,31 @@ if model == 2:  # Steady state !
     )
 
 # -
-navier_stokes.solve(timestep=10.0)  # Stokes-like initial flow
-nodal_vorticity_from_v.solve()
+navier_stokes.Unknowns.DuDt.update_pre_solve(0.0)
 
 # +
-stress_projection = uw.systems.Tensor_Projection(
-    pipemesh, tensor_Field=St, scalar_Field=work
-)
-stress_projection.uw_function = navier_stokes.stress_deviator
-stress_projection.solve()
+   
+navier_stokes.solve(timestep=10.0, verbose=False)  # Stokes-like initial flow
+nodal_vorticity_from_v.solve()
 
-with swarm.access(stress_star_p), pipemesh.access():
-    stress_star_p.data[:, 0] = uw.function.evaluate(
-        St.sym_1d[0], swarm.particle_coordinates.data
-    )
-    stress_star_p.data[:, 1] = uw.function.evaluate(
-        St.sym_1d[1], swarm.particle_coordinates.data
-    )
-    stress_star_p.data[:, 2] = uw.function.evaluate(
-        St.sym_1d[2], swarm.particle_coordinates.data
-    )
+
+# +
+# stress_projection = uw.systems.Tensor_Projection(
+#     pipemesh, tensor_Field=St, scalar_Field=work
+# )
+# stress_projection.uw_function = navier_stokes.stress_deviator
+# stress_projection.solve()
+
+# with swarm.access(stress_star_p), pipemesh.access():
+#     stress_star_p.data[:, 0] = uw.function.evaluate(
+#         St.sym_1d[0], swarm.particle_coordinates.data
+#     )
+#     stress_star_p.data[:, 1] = uw.function.evaluate(
+#         St.sym_1d[1], swarm.particle_coordinates.data
+#     )
+#     stress_star_p.data[:, 2] = uw.function.evaluate(
+#         St.sym_1d[2], swarm.particle_coordinates.data
+#     )
 
 
 # +
@@ -344,11 +384,8 @@ if uw.mpi.size == 1:
     points[:, 1] = pipemesh._centroids[:, 1]
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        spoints = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        spoints[:, 0] = swarm.particle_coordinates.data[:, 0]
-        spoints[:, 1] = swarm.particle_coordinates.data[:, 1]
-        spoint_cloud = pv.PolyData(spoints)
+    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
+    active_swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
 
     pvstream = pvmesh.streamlines_from_source(
         point_cloud, vectors="V", integration_direction="forward", max_steps=10
@@ -359,10 +396,10 @@ if uw.mpi.size == 1:
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.025 / U0, opacity=0.75)
 
     pl.add_points(
-        spoint_cloud,
+        active_swarm_points,
         color="Black",
         render_points_as_spheres=False,
-        point_size=5,
+        point_size=3,
         opacity=0.66,
     )
 
@@ -384,126 +421,123 @@ if uw.mpi.size == 1:
     pl.show()
 # +
 
+if uw.mpi.size == 1:
+    pl = pv.Plotter(window_size=(1000, 750))
+
+
 def plot_V_mesh(filename):
+
     if uw.mpi.size == 1:
         
         import pyvista as pv
         import underworld3.visualisation as vis
-
+    
         pvmesh = vis.mesh_to_pv_mesh(pipemesh)
         pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
         pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
         pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
-        pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
     
         velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
         velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-
-        ## Plotting into existing pl (memory leak in pyvista)
-        pl = pv.Plotter(window_size=(1000, 750))
-        
-
-        points = vis.swarm(passive_swarm)
-        point_cloud = pv.PolyData(points)
-
+    
+    
+        # point sources at cell centres for streamlines
+    
         points = np.zeros((pipemesh._centroids.shape[0], 3))
         points[:, 0] = pipemesh._centroids[:, 0]
         points[:, 1] = pipemesh._centroids[:, 1]
-        c_point_cloud = pv.PolyData(points)
+        point_cloud = pv.PolyData(points)
 
-        spoints = vis.swarm_to_pv_cloud(swarm)
-        spoint_cloud = pv.PolyData(spoints)
-
-        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.033 / U0, opacity=0.5)
-
+        passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
+        active_swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+    
         pvstream = pvmesh.streamlines_from_source(
-            c_point_cloud, vectors="V", integration_direction="both", max_time=0.25
+            point_cloud, vectors="V", integration_direction="forward", max_steps=10, 
         )
-
-        # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.75)
-
-        # pl.add_points(
-        #     spoint_cloud,
-        #     color="Grey",
-        #     render_points_as_spheres=True,
-        #     point_size=3,
-        #     opacity=0.5,
-        # )
 
         pl.add_mesh(
             pvmesh,
             cmap="coolwarm",
             edge_color="Black",
-            show_edges=False,
+            show_edges=True,
             scalars="Omega",
             use_transparency=False,
-            opacity=0.5,
+            opacity=1.0,
+            show_scalar_bar=False,
         )
 
-        pl.add_mesh(pvstream)
+        
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], 
+                      mag=0.025 / U0, opacity=0.75, 
+                      show_scalar_bar=False)
+        
+        pl.add_mesh(pvstream, show_scalar_bar=False)
 
         pl.add_points(
-            point_cloud,
+            passive_swarm_points,
             color="Black",
             render_points_as_spheres=True,
             point_size=5,
             opacity=0.5,
         )
+    
 
+        pl.add_points(
+            active_swarm_points,
+            color="DarkGreen",
+            render_points_as_spheres=True,
+            point_size=2,
+            opacity=0.25,
+        )
+    
+
+        
         pl.camera.SetPosition(0.75, 0.2, 1.5)
         pl.camera.SetFocalPoint(0.75, 0.2, 0.0)
         pl.camera.SetClippingRange(1.0, 8.0)
-
-        pl.remove_scalar_bar("Omega")
-        pl.remove_scalar_bar("mag")
-        pl.remove_scalar_bar("V")
-
+    
+    
         # pl.camera_position = "xz"
         pl.screenshot(
             filename="{}.png".format(filename),
             window_size=(2560, 1280),
             return_img=False,
         )
+    
+        pl.clear()
+    
+# -
+
+
 
 # +
 ts = 0
 elapsed_time = 0.0
-dt_ns = 1.0e-2
+dt_ns = 0.01
+delta_t_cfl = 5 * navier_stokes.estimate_dt()
+delta_t = min(delta_t_cfl, dt_ns)
 
-DvDt.dt_physical = dt_ns
-DFDt.dt_physical = dt_ns
-
-DvDt.update(dt=dt_ns / 3)
-DFDt.update(dt=dt_ns / 3)
+navier_stokes.DuDt.update(delta_t)
 # -
 
 
-for step in range(0, maxsteps):
-    delta_t_swarm = navier_stokes.estimate_dt()
-    delta_t = 0.33 * dt_ns  # min(delta_t_swarm, dt_ns)
+for step in range(0, 251): #1500
+    delta_t_cfl = 5 * navier_stokes.estimate_dt()
 
-    print(
-        f"Memory usage [1] = {python_process.memory_info().rss//1000000} Mb", flush=True
-    )
+    if step % 10 == 0:
+        delta_t = min(delta_t_cfl, dt_ns)
 
     navier_stokes.solve(timestep=dt_ns, zero_init_guess=False)
-
-    stress_projection.solve()
-
-    # Update swarm variables before advection
-    # v_star_update_dt.update(dt=dt_ns, evalf=False)
-
-    DvDt.update(dt=delta_t, evalf=False)
-    DFDt.update(dt=delta_t, evalf=False)
-
-    # update integration swarm
-    swarm.advection(v_soln.sym, delta_t, corrector=False, evalf=False)
 
     # update passive swarm
     passive_swarm.advection(v_soln.sym, delta_t, order=2, corrector=False, evalf=False)
 
+    # update material point swarm
+    swarm.advection(v_soln.sym, delta_t, order=2, corrector=False, evalf=False)
+
+    
     # add new points at the inflow
-    npoints = 50
+    npoints = 200
     passive_swarm.dm.addNPoints(npoints)
     with passive_swarm.access(passive_swarm.particle_coordinates):
         for i in range(npoints):
@@ -512,7 +546,7 @@ for step in range(0, maxsteps):
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}, dt_s {}".format(ts, delta_t, delta_t_swarm))
+        print("Timestep {}, t {}, dt {}, dt_s {}".format(ts, elapsed_time, delta_t, delta_t_cfl))
 
     if ts % 10 == 0:
         nodal_vorticity_from_v.solve()
@@ -524,15 +558,6 @@ for step in range(0, maxsteps):
             meshVars=[p_soln, v_soln, vorticity, St],
             outputPath=outdir,
             index=ts,
-        )
-
-        swarm.write_timestep(
-            expt_name,
-            "active_swarm",
-            swarmVars=[v_star, v_star_star, stress_star_p],
-            outputPath=outdir,
-            index=ts,
-            force_sequential=True,
         )
 
         passive_swarm.write_timestep(
@@ -547,4 +572,78 @@ for step in range(0, maxsteps):
     elapsed_time += delta_t
     ts += 1
 
-# ls -trl output_res_033/ | tail -20
+# +
+# check the mesh if in a notebook / serial
+
+if 1 and uw.mpi.size == 1:
+
+    import pyvista as pv
+    import underworld3.visualisation as vis
+
+    pvmesh = vis.mesh_to_pv_mesh(pipemesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
+    pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+
+    ustar = navier_stokes.Unknowns.DuDt.psi_star[0].sym
+    pvmesh.point_data["Vs"] = vis.scalar_fn_to_pv_points(pvmesh, ustar.dot(ustar))
+
+    # point sources at cell centres
+    points = np.zeros((pipemesh._centroids.shape[0], 3))
+    points[:, 0] = pipemesh._centroids[:, 0]
+    points[:, 1] = pipemesh._centroids[:, 1]
+    point_cloud = pv.PolyData(points)
+
+    passive_swarm_points = uw.visualisation.swarm_to_pv_cloud(passive_swarm)
+    active_swarm_points = uw.visualisation.swarm_to_pv_cloud(swarm)
+
+
+    pvstream = pvmesh.streamlines_from_source(
+        point_cloud, vectors="V", integration_direction="forward", max_steps=10
+    )
+
+    points = vis.swarm_to_pv_cloud(passive_swarm)
+    point_cloud = pv.PolyData(points)
+
+    pl0 = pv.Plotter(window_size=(1000, 750))
+
+
+    pl0.add_points(
+        passive_swarm_points,
+        color="DarkGreen",
+        render_points_as_spheres=False,
+        point_size=3,
+        opacity=0.66,
+    )
+
+    pl0.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="Omega",
+        use_transparency=False,
+        opacity=1.0,
+    )
+    
+    pl0.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.03 / U0, opacity=0.75)
+    pl0.add_mesh(pvstream)
+
+    pl0.add_points(
+        active_swarm_points,
+        color="Black",
+        render_points_as_spheres=True,
+        point_size=3,
+        opacity=0.5,
+    )
+
+    pl0.show()
+# -
+
+
+
+

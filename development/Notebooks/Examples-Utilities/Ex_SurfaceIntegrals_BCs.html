@@ -514,7 +514,7 @@ stokes0.bodyforce = sympy.Matrix([0, sympy.sin(x*sympy.pi)])
 ### see the SNES output
 stokes0.petsc_options[&quot;snes_converged_reason&quot;] = None
 stokes0.petsc_options[&quot;snes_monitor_short&quot;] = None
-stokes0.tolerance = 1.0e-4
+stokes0.tolerance = 1.0e-6
 
 stokes0.solve()
 </pre></div>
@@ -566,8 +566,8 @@ def JacDiffViewer(stokes_solver1, stokes_solver2):
     JmaxD = np.abs(Jm1-Jm2).max()
     JPmaxD = np.abs(JPm1-JPm2).max()
 
-    print(f&quot;Jac: min {(Jm1-Jm2).min()} / max {(Jm1-Jm2).max()}&quot;) 
-    print(f&quot;JacP: min {(JPm1-JPm2).min()} / max {(JPm1-JPm2).max()}&quot;) 
+    print(f&quot;Jac: min {(Jm1-Jm2).min()} / max {(Jm1-Jm2).max()}&quot;, flush=True) 
+    print(f&quot;JacP: min {(JPm1-JPm2).min()} / max {(JPm1-JPm2).max()}&quot;, flush=True) 
     
     ax.imshow(Jm1-Jm2,  vmin=-JmaxD, vmax=JmaxD, cmap=&quot;coolwarm&quot;)
     ax2.imshow(JPm1-JPm2, vmin=-JPmaxD, vmax=JPmaxD,  cmap=&quot;coolwarm&quot;)
@@ -590,7 +590,7 @@ p1 = stokes1.Unknowns.p
 
 stokes1.petsc_options[&quot;snes_converged_reason&quot;] = None
 stokes1.petsc_options[&quot;snes_monitor_short&quot;] = None
-stokes1.tolerance = 1.0e-4
+stokes1.tolerance = 1.0e-6
 
 stokes1.add_essential_bc( [0.,0.], &quot;Bottom&quot;)         # no slip on the base
 stokes1.add_essential_bc( [0.,sympy.oo], &quot;Left&quot;)     # free slip Left/Right
@@ -640,7 +640,7 @@ p2 = stokes2.Unknowns.p
 
 stokes2.petsc_options[&quot;snes_converged_reason&quot;] = None
 stokes2.petsc_options[&quot;snes_monitor_short&quot;] = None
-stokes2.tolerance = 1.0e-4
+stokes2.tolerance = 1.0e-6
 
 stokes2.add_essential_bc( [0.,0.], &quot;Bottom&quot;)         # no slip on the base
 stokes2.add_essential_bc( [0.,sympy.oo], &quot;Left&quot;)     # free slip Left/Right
@@ -680,7 +680,8 @@ stokes3.add_essential_bc( [0.,sympy.oo], &quot;Right&quot;)    # free slip Left/
 # stokes3.add_natural_bc(   [0.,1000000*v3.sym[1]], &quot;Top&quot;)              # Top &quot;free slip / penalty&quot;
 
 Gamma = mesh.Gamma # sympy.Piecewise((mesh.Gamma, x &lt; 0.5), mesh.CoordinateSystem.unit_j
-stokes3.add_natural_bc( 1.0e6 *  Gamma.dot(v3.sym) * Gamma, &quot;Top&quot;)              # Top &quot;free slip / penalty&quot;
+Gamma = sympy.Matrix([0,1])
+stokes3.add_natural_bc( 1.0e8 *  Gamma.dot(v3.sym) * Gamma, &quot;Top&quot;)              # Top &quot;free slip / penalty&quot;
 
 stokes3.bodyforce = sympy.Matrix([0, sympy.sin(x*sympy.pi)])
 
@@ -693,7 +694,7 @@ stokes3.solve(verbose=False, debug=False, zero_init_guess=True, picard=2)
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-none notranslate"><div class="highlight"><pre><span></span>JacViewer(stokes3)
-# JacDiffViewer(stokes3, stokes0)
+JacDiffViewer(stokes3, stokes0)
 </pre></div>
 </div>
 </div>
@@ -706,7 +707,7 @@ stokesN = uw.systems.Stokes(mesh, solver_name=&quot;StokesN&quot;)
 stokesN.constitutive_model = uw.constitutive_models.ViscousFlowModel
 vN = stokesN.Unknowns.u
 
-stokesN.tolerance = 1.0e-3
+stokesN.tolerance = 1.0e-6
 stokesN.petsc_options.setValue(&quot;snes_monitor&quot;, None)
 stokesN.petsc_options.setValue(&quot;ksp_monitor&quot;, None)
 

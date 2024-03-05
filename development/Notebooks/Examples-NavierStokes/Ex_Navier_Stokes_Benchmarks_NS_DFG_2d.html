@@ -505,6 +505,7 @@ document.write(`
 <span class="c1"># mpirun python3 scriptname -uw_resolution=0.1 etc</span>
 
 <span class="n">resolution</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getReal</span><span class="p">(</span><span class="s2">&quot;model_resolution&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
+<span class="n">refinement</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_refinement&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_number&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 <span class="n">maxsteps</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;max_steps&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
 <span class="n">restart_step</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;restart_step&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
@@ -539,7 +540,7 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">outdir</span> <span class="o">=</span> <span class="s2">&quot;output_swarm_</span><span class="si">{resolution}</span><span class="s2">&quot;</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">outdir</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;output_swarm_</span><span class="si">{</span><span class="n">resolution</span><span class="si">}</span><span class="s2">&quot;</span>
 <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="s2">&quot;.meshes&quot;</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">outdir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
@@ -560,6 +561,54 @@ document.write(`
 <span class="n">height</span> <span class="o">=</span> <span class="mf">0.41</span>
 <span class="n">radius</span> <span class="o">=</span> <span class="mf">0.05</span>
 
+<span class="kn">from</span> <span class="nn">enum</span> <span class="kn">import</span> <span class="n">Enum</span>
+
+<span class="c1">## NOTE: stop using pygmsh, then we can just define boundary labels ourselves and not second guess pygmsh</span>
+
+<span class="k">class</span> <span class="nc">boundaries</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">bottom</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">right</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="n">top</span> <span class="o">=</span> <span class="mi">3</span>
+    <span class="n">left</span>  <span class="o">=</span> <span class="mi">4</span>
+    <span class="n">inclusion</span> <span class="o">=</span> <span class="mi">5</span>
+    <span class="n">All_Boundaries</span> <span class="o">=</span> <span class="mi">1001</span> 
+
+<span class="k">def</span> <span class="nf">pipemesh_mesh_refinement_callback</span><span class="p">(</span><span class="n">dm</span><span class="p">):</span>
+    <span class="n">r_p</span> <span class="o">=</span> <span class="n">radius</span>
+
+    <span class="c1"># print(f&quot;Refinement callback - spherical&quot;, flush=True)</span>
+
+    <span class="n">c2</span> <span class="o">=</span> <span class="n">dm</span><span class="o">.</span><span class="n">getCoordinatesLocal</span><span class="p">()</span>
+    <span class="n">coords</span> <span class="o">=</span> <span class="n">c2</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="o">-</span> <span class="n">centre</span>
+
+    <span class="n">R</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">coords</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">**</span> <span class="mi">2</span> <span class="o">+</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">pipeIndices</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">cython</span><span class="o">.</span><span class="n">petsc_discretisation</span><span class="o">.</span><span class="n">petsc_dm_find_labeled_points_local</span><span class="p">(</span>
+        <span class="n">dm</span><span class="p">,</span> <span class="s2">&quot;inclusion&quot;</span>
+    <span class="p">)</span>
+
+    <span class="n">coords</span><span class="p">[</span><span class="n">pipeIndices</span><span class="p">]</span> <span class="o">*=</span> <span class="n">r_p</span> <span class="o">/</span> <span class="n">R</span><span class="p">[</span><span class="n">pipeIndices</span><span class="p">]</span>
+    <span class="n">coords</span> <span class="o">=</span> <span class="n">coords</span> <span class="o">+</span> <span class="n">centre</span>
+
+    <span class="n">c2</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="n">coords</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">dm</span><span class="o">.</span><span class="n">setCoordinatesLocal</span><span class="p">(</span><span class="n">c2</span><span class="p">)</span>
+
+    <span class="k">return</span>
+
+<span class="c1">## Restore inflow samples to inflow points</span>
+<span class="k">def</span> <span class="nf">pipemesh_return_coords_to_bounds</span><span class="p">(</span><span class="n">coords</span><span class="p">):</span>
+    <span class="n">lefty_troublemakers</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.0</span>
+    <span class="n">far_right</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">2.2</span>
+    <span class="n">too_low</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.0</span>
+    <span class="n">too_high</span> <span class="o">=</span> <span class="n">coords</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.41</span>
+
+    <span class="n">coords</span><span class="p">[</span><span class="n">lefty_troublemakers</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0001</span>
+    <span class="n">coords</span><span class="p">[</span><span class="n">far_right</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">2.2</span> <span class="o">-</span> <span class="mf">0.0001</span>
+
+    <span class="n">coords</span><span class="p">[</span><span class="n">too_low</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0001</span>
+    <span class="n">coords</span><span class="p">[</span><span class="n">too_high</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.41</span> <span class="o">-</span> <span class="mf">0.0001</span>
+
+    <span class="k">return</span> <span class="n">coords</span>
 
 <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
     <span class="c1"># Generate local mesh on boss process</span>
@@ -595,8 +644,13 @@ document.write(`
     <span class="n">markVertices</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">useMultipleTags</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">useRegions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">refinement</span><span class="o">=</span><span class="n">refinement</span><span class="p">,</span>
+    <span class="n">refinement_callback</span><span class="o">=</span><span class="n">pipemesh_mesh_refinement_callback</span><span class="p">,</span>
+    <span class="n">return_coords_to_bounds</span><span class="o">=</span> <span class="n">pipemesh_return_coords_to_bounds</span><span class="p">,</span>
+    <span class="n">boundaries</span><span class="o">=</span><span class="n">boundaries</span><span class="p">,</span>
     <span class="n">qdegree</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
 <span class="p">)</span>
+
 <span class="n">pipemesh</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">view</span><span class="p">()</span>
 
 
@@ -659,45 +713,20 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">swarm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Swarm</span><span class="p">(</span><span class="n">mesh</span><span class="o">=</span><span class="n">pipemesh</span><span class="p">,</span> <span class="n">recycle_rate</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>
-<span class="n">v_star</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">SwarmVariable</span><span class="p">(</span>
-    <span class="s2">&quot;Vdt_p&quot;</span><span class="p">,</span>
-    <span class="n">swarm</span><span class="p">,</span>
-    <span class="n">pipemesh</span><span class="o">.</span><span class="n">dim</span><span class="p">,</span>
-    <span class="n">proxy_degree</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-    <span class="n">proxy_continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">varsymbol</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;{v^{*}}&quot;</span><span class="p">,</span>
-<span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">swarm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Swarm</span><span class="p">(</span><span class="n">mesh</span><span class="o">=</span><span class="n">pipemesh</span><span class="p">,</span> <span class="n">recycle_rate</span><span class="o">=</span><span class="mi">6</span><span class="p">)</span>
 
-<span class="n">v_star_star</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">SwarmVariable</span><span class="p">(</span>
-    <span class="s2">&quot;V2dt_p&quot;</span><span class="p">,</span>
-    <span class="n">swarm</span><span class="p">,</span>
-    <span class="n">pipemesh</span><span class="o">.</span><span class="n">dim</span><span class="p">,</span>
-    <span class="n">proxy_degree</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-    <span class="n">proxy_continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">varsymbol</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;{v^{**}}&quot;</span><span class="p">,</span>
-<span class="p">)</span>
-
-<span class="n">stress_star_p</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">SwarmVariable</span><span class="p">(</span>
-    <span class="sa">r</span><span class="s2">&quot;stress_p&quot;</span><span class="p">,</span>
-    <span class="n">swarm</span><span class="p">,</span>
-    <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span>
-    <span class="n">vtype</span><span class="o">=</span><span class="n">uw</span><span class="o">.</span><span class="n">VarType</span><span class="o">.</span><span class="n">SYM_TENSOR</span><span class="p">,</span>
-    <span class="n">proxy_continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">proxy_degree</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-    <span class="n">varsymbol</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;{\sigma^{*}_</span><span class="si">{p}</span><span class="s2">}&quot;</span><span class="p">,</span>
+<span class="n">DvDt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">ddt</span><span class="o">.</span><span class="n">Lagrangian_Swarm</span><span class="p">(</span>
+    <span class="n">swarm</span><span class="p">,</span> 
+    <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> 
+    <span class="n">uw</span><span class="o">.</span><span class="n">VarType</span><span class="o">.</span><span class="n">VECTOR</span><span class="p">,</span>
+    <span class="n">degree</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span>
 
 
-<span class="n">swarm</span><span class="o">.</span><span class="n">populate</span><span class="p">(</span><span class="n">fill_param</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
-
-
-<span class="n">DFDt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Lagrangian_Updater</span><span class="p">(</span><span class="n">swarm</span><span class="p">,</span> <span class="n">St</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> <span class="p">[</span><span class="n">stress_star_p</span><span class="p">],</span> <span class="n">dt_physical</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
-
-
-<span class="n">DvDt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Lagrangian_Updater</span><span class="p">(</span>
-    <span class="n">swarm</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> <span class="p">[</span><span class="n">v_star</span><span class="p">,</span> <span class="n">v_star_star</span><span class="p">],</span> <span class="n">dt_physical</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span>
-<span class="p">)</span>
+<span class="n">swarm</span><span class="o">.</span><span class="n">populate</span><span class="p">(</span><span class="n">fill_param</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -708,7 +737,6 @@ document.write(`
 <span class="n">passive_swarm</span><span class="o">.</span><span class="n">populate</span><span class="p">(</span>
     <span class="n">fill_param</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
 <span class="p">)</span>
-
 
 <span class="c1"># add new points at the inflow</span>
 <span class="n">npoints</span> <span class="o">=</span> <span class="mi">50</span>
@@ -737,20 +765,18 @@ document.write(`
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Set solve options here (or remove default values</span>
 <span class="c1"># stokes.petsc_options.getAll()</span>
 
-
 <span class="n">navier_stokes</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">NavierStokes</span><span class="p">(</span>
     <span class="n">pipemesh</span><span class="p">,</span>
     <span class="n">velocityField</span><span class="o">=</span><span class="n">v_soln</span><span class="p">,</span>
     <span class="n">pressureField</span><span class="o">=</span><span class="n">p_soln</span><span class="p">,</span>
-    <span class="n">DvDt</span><span class="o">=</span><span class="n">DvDt</span><span class="p">,</span>
-    <span class="n">rho</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">DuDt</span><span class="o">=</span><span class="n">DvDt</span><span class="p">,</span>
+    <span class="n">rho</span><span class="o">=</span><span class="mf">1000.0</span><span class="p">,</span>
     <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
     <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;navier_stokes&quot;</span><span class="p">,</span>
+    <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
 <span class="p">)</span>
 
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscoElasticPlasticFlowModel</span><span class="p">(</span>
-    <span class="n">v_soln</span>
-<span class="p">)</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscousFlowModel</span>
 
 <span class="c1"># Constant visc</span>
 
@@ -766,13 +792,17 @@ document.write(`
 
 <span class="c1"># Velocity boundary conditions</span>
 
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;inclusion&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;top&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;bottom&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="n">Vb</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;left&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">(</span>
+    <span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span>
+    <span class="s2">&quot;inclusion&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;top&quot;</span><span class="p">)</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;bottom&quot;</span><span class="p">)</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="n">Vb</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;left&quot;</span><span class="p">)</span>
 
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">_setup_pointwise_functions</span><span class="p">()</span>
-<span class="n">navier_stokes</span><span class="o">.</span><span class="n">tolerance</span> <span class="o">=</span> <span class="mf">1.0e-4</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">tolerance</span> <span class="o">=</span> <span class="mf">1.0e-3</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">delta_t</span> <span class="o">=</span> <span class="mf">10.0</span>  <span class="c1"># stokes-like at the beginning</span>
+
 
 <span class="k">if</span> <span class="n">model</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>  <span class="c1"># Steady state !</span>
     <span class="c1"># remove the d/dt term ... replace the time dependence with the</span>
@@ -788,7 +818,15 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">navier_stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">timestep</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>  <span class="c1"># Stokes-like initial flow</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">navier_stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">DuDt</span><span class="o">.</span><span class="n">update_pre_solve</span><span class="p">(</span><span class="mf">0.0</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>   
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">timestep</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>  <span class="c1"># Stokes-like initial flow</span>
 <span class="n">nodal_vorticity_from_v</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -796,22 +834,22 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stress_projection</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Tensor_Projection</span><span class="p">(</span>
-    <span class="n">pipemesh</span><span class="p">,</span> <span class="n">tensor_Field</span><span class="o">=</span><span class="n">St</span><span class="p">,</span> <span class="n">scalar_Field</span><span class="o">=</span><span class="n">work</span>
-<span class="p">)</span>
-<span class="n">stress_projection</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">stress_deviator</span>
-<span class="n">stress_projection</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># stress_projection = uw.systems.Tensor_Projection(</span>
+<span class="c1">#     pipemesh, tensor_Field=St, scalar_Field=work</span>
+<span class="c1"># )</span>
+<span class="c1"># stress_projection.uw_function = navier_stokes.stress_deviator</span>
+<span class="c1"># stress_projection.solve()</span>
 
-<span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">stress_star_p</span><span class="p">),</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
-    <span class="n">stress_star_p</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">St</span><span class="o">.</span><span class="n">sym_1d</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span>
-    <span class="p">)</span>
-    <span class="n">stress_star_p</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">St</span><span class="o">.</span><span class="n">sym_1d</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span>
-    <span class="p">)</span>
-    <span class="n">stress_star_p</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">St</span><span class="o">.</span><span class="n">sym_1d</span><span class="p">[</span><span class="mi">2</span><span class="p">],</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span>
-    <span class="p">)</span>
+<span class="c1"># with swarm.access(stress_star_p), pipemesh.access():</span>
+<span class="c1">#     stress_star_p.data[:, 0] = uw.function.evaluate(</span>
+<span class="c1">#         St.sym_1d[0], swarm.particle_coordinates.data</span>
+<span class="c1">#     )</span>
+<span class="c1">#     stress_star_p.data[:, 1] = uw.function.evaluate(</span>
+<span class="c1">#         St.sym_1d[1], swarm.particle_coordinates.data</span>
+<span class="c1">#     )</span>
+<span class="c1">#     stress_star_p.data[:, 2] = uw.function.evaluate(</span>
+<span class="c1">#         St.sym_1d[2], swarm.particle_coordinates.data</span>
+<span class="c1">#     )</span>
 </pre></div>
 </div>
 </div>
@@ -840,11 +878,8 @@ document.write(`
     <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
     <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
-    <span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
-        <span class="n">spoints</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
-        <span class="n">spoints</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
-        <span class="n">spoints</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
-        <span class="n">spoint_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">spoints</span><span class="p">)</span>
+    <span class="n">passive_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
+    <span class="n">active_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">swarm</span><span class="p">)</span>
 
     <span class="n">pvstream</span> <span class="o">=</span> <span class="n">pvmesh</span><span class="o">.</span><span class="n">streamlines_from_source</span><span class="p">(</span>
         <span class="n">point_cloud</span><span class="p">,</span> <span class="n">vectors</span><span class="o">=</span><span class="s2">&quot;V&quot;</span><span class="p">,</span> <span class="n">integration_direction</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">max_steps</span><span class="o">=</span><span class="mi">10</span>
@@ -855,10 +890,10 @@ document.write(`
     <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">0.025</span> <span class="o">/</span> <span class="n">U0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.75</span><span class="p">)</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
-        <span class="n">spoint_cloud</span><span class="p">,</span>
+        <span class="n">active_swarm_points</span><span class="p">,</span>
         <span class="n">color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
         <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-        <span class="n">point_size</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+        <span class="n">point_size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
         <span class="n">opacity</span><span class="o">=</span><span class="mf">0.66</span><span class="p">,</span>
     <span class="p">)</span>
 
@@ -885,86 +920,91 @@ document.write(`
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span>
+<span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
+
+
 <span class="k">def</span> <span class="nf">plot_V_mesh</span><span class="p">(</span><span class="n">filename</span><span class="p">):</span>
+
     <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
         
         <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
         <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
-
+    
         <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="n">pipemesh</span><span class="p">)</span>
         <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
         <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Omega&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">vorticity</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
         <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Vmag&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">))</span>
-        <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;P&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
     
         <span class="n">velocity_points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">meshVariable_to_pv_cloud</span><span class="p">(</span><span class="n">v_soln</span><span class="p">)</span>
         <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">velocity_points</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
-
-        <span class="c1">## Plotting into existing pl (memory leak in pyvista)</span>
-        <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
-        
-
-        <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
-        <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
-
+    
+    
+        <span class="c1"># point sources at cell centres for streamlines</span>
+    
         <span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
         <span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
         <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
-        <span class="n">c_point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+        <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
-        <span class="n">spoints</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">swarm</span><span class="p">)</span>
-        <span class="n">spoint_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">spoints</span><span class="p">)</span>
-
-        <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">0.033</span> <span class="o">/</span> <span class="n">U0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
-
+        <span class="n">passive_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
+        <span class="n">active_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">swarm</span><span class="p">)</span>
+    
         <span class="n">pvstream</span> <span class="o">=</span> <span class="n">pvmesh</span><span class="o">.</span><span class="n">streamlines_from_source</span><span class="p">(</span>
-            <span class="n">c_point_cloud</span><span class="p">,</span> <span class="n">vectors</span><span class="o">=</span><span class="s2">&quot;V&quot;</span><span class="p">,</span> <span class="n">integration_direction</span><span class="o">=</span><span class="s2">&quot;both&quot;</span><span class="p">,</span> <span class="n">max_time</span><span class="o">=</span><span class="mf">0.25</span>
+            <span class="n">point_cloud</span><span class="p">,</span> <span class="n">vectors</span><span class="o">=</span><span class="s2">&quot;V&quot;</span><span class="p">,</span> <span class="n">integration_direction</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">max_steps</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> 
         <span class="p">)</span>
-
-        <span class="c1"># pl.add_mesh(pvmesh,&#39;Black&#39;, &#39;wireframe&#39;, opacity=0.75)</span>
-
-        <span class="c1"># pl.add_points(</span>
-        <span class="c1">#     spoint_cloud,</span>
-        <span class="c1">#     color=&quot;Grey&quot;,</span>
-        <span class="c1">#     render_points_as_spheres=True,</span>
-        <span class="c1">#     point_size=3,</span>
-        <span class="c1">#     opacity=0.5,</span>
-        <span class="c1"># )</span>
 
         <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
             <span class="n">pvmesh</span><span class="p">,</span>
             <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
             <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
-            <span class="n">show_edges</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">show_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
             <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;Omega&quot;</span><span class="p">,</span>
             <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-            <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+            <span class="n">opacity</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+            <span class="n">show_scalar_bar</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="p">)</span>
 
-        <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span><span class="n">pvstream</span><span class="p">)</span>
+        
+        <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> 
+                      <span class="n">mag</span><span class="o">=</span><span class="mf">0.025</span> <span class="o">/</span> <span class="n">U0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.75</span><span class="p">,</span> 
+                      <span class="n">show_scalar_bar</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        
+        <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span><span class="n">pvstream</span><span class="p">,</span> <span class="n">show_scalar_bar</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
         <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
-            <span class="n">point_cloud</span><span class="p">,</span>
+            <span class="n">passive_swarm_points</span><span class="p">,</span>
             <span class="n">color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
             <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
             <span class="n">point_size</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
             <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
         <span class="p">)</span>
+    
 
+        <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
+            <span class="n">active_swarm_points</span><span class="p">,</span>
+            <span class="n">color</span><span class="o">=</span><span class="s2">&quot;DarkGreen&quot;</span><span class="p">,</span>
+            <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="n">point_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="n">opacity</span><span class="o">=</span><span class="mf">0.25</span><span class="p">,</span>
+        <span class="p">)</span>
+    
+
+        
         <span class="n">pl</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">SetPosition</span><span class="p">(</span><span class="mf">0.75</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">)</span>
         <span class="n">pl</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">SetFocalPoint</span><span class="p">(</span><span class="mf">0.75</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
         <span class="n">pl</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">SetClippingRange</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">8.0</span><span class="p">)</span>
-
-        <span class="n">pl</span><span class="o">.</span><span class="n">remove_scalar_bar</span><span class="p">(</span><span class="s2">&quot;Omega&quot;</span><span class="p">)</span>
-        <span class="n">pl</span><span class="o">.</span><span class="n">remove_scalar_bar</span><span class="p">(</span><span class="s2">&quot;mag&quot;</span><span class="p">)</span>
-        <span class="n">pl</span><span class="o">.</span><span class="n">remove_scalar_bar</span><span class="p">(</span><span class="s2">&quot;V&quot;</span><span class="p">)</span>
-
+    
+    
         <span class="c1"># pl.camera_position = &quot;xz&quot;</span>
         <span class="n">pl</span><span class="o">.</span><span class="n">screenshot</span><span class="p">(</span>
             <span class="n">filename</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">{}</span><span class="s2">.png&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">filename</span><span class="p">),</span>
             <span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">2560</span><span class="p">,</span> <span class="mi">1280</span><span class="p">),</span>
             <span class="n">return_img</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="p">)</span>
+    
+        <span class="n">pl</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+    
 </pre></div>
 </div>
 </div>
@@ -973,45 +1013,34 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ts</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="n">elapsed_time</span> <span class="o">=</span> <span class="mf">0.0</span>
-<span class="n">dt_ns</span> <span class="o">=</span> <span class="mf">1.0e-2</span>
+<span class="n">dt_ns</span> <span class="o">=</span> <span class="mf">0.01</span>
+<span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">5</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
+<span class="n">delta_t</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delta_t_cfl</span><span class="p">,</span> <span class="n">dt_ns</span><span class="p">)</span>
 
-<span class="n">DvDt</span><span class="o">.</span><span class="n">dt_physical</span> <span class="o">=</span> <span class="n">dt_ns</span>
-<span class="n">DFDt</span><span class="o">.</span><span class="n">dt_physical</span> <span class="o">=</span> <span class="n">dt_ns</span>
-
-<span class="n">DvDt</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">dt</span><span class="o">=</span><span class="n">dt_ns</span> <span class="o">/</span> <span class="mi">3</span><span class="p">)</span>
-<span class="n">DFDt</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">dt</span><span class="o">=</span><span class="n">dt_ns</span> <span class="o">/</span> <span class="mi">3</span><span class="p">)</span>
+<span class="n">navier_stokes</span><span class="o">.</span><span class="n">DuDt</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">delta_t</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">maxsteps</span><span class="p">):</span>
-    <span class="n">delta_t_swarm</span> <span class="o">=</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
-    <span class="n">delta_t</span> <span class="o">=</span> <span class="mf">0.33</span> <span class="o">*</span> <span class="n">dt_ns</span>  <span class="c1"># min(delta_t_swarm, dt_ns)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">251</span><span class="p">):</span> <span class="c1">#1500</span>
+    <span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">5</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
 
-    <span class="nb">print</span><span class="p">(</span>
-        <span class="sa">f</span><span class="s2">&quot;Memory usage [1] = </span><span class="si">{</span><span class="n">python_process</span><span class="o">.</span><span class="n">memory_info</span><span class="p">()</span><span class="o">.</span><span class="n">rss</span><span class="o">//</span><span class="mi">1000000</span><span class="si">}</span><span class="s2"> Mb&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span>
-    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">step</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">delta_t</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delta_t_cfl</span><span class="p">,</span> <span class="n">dt_ns</span><span class="p">)</span>
 
     <span class="n">navier_stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">timestep</span><span class="o">=</span><span class="n">dt_ns</span><span class="p">,</span> <span class="n">zero_init_guess</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-
-    <span class="n">stress_projection</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
-
-    <span class="c1"># Update swarm variables before advection</span>
-    <span class="c1"># v_star_update_dt.update(dt=dt_ns, evalf=False)</span>
-
-    <span class="n">DvDt</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">dt</span><span class="o">=</span><span class="n">delta_t</span><span class="p">,</span> <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="n">DFDt</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">dt</span><span class="o">=</span><span class="n">delta_t</span><span class="p">,</span> <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-
-    <span class="c1"># update integration swarm</span>
-    <span class="n">swarm</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span><span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
     <span class="c1"># update passive swarm</span>
     <span class="n">passive_swarm</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span><span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
+    <span class="c1"># update material point swarm</span>
+    <span class="n">swarm</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span><span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+    
     <span class="c1"># add new points at the inflow</span>
-    <span class="n">npoints</span> <span class="o">=</span> <span class="mi">50</span>
+    <span class="n">npoints</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">passive_swarm</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">addNPoints</span><span class="p">(</span><span class="n">npoints</span><span class="p">)</span>
     <span class="k">with</span> <span class="n">passive_swarm</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">passive_swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="p">):</span>
         <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">npoints</span><span class="p">):</span>
@@ -1020,7 +1049,7 @@ document.write(`
             <span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.195</span><span class="p">]</span> <span class="o">+</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">((</span><span class="n">npoints</span><span class="p">,</span> <span class="mi">2</span><span class="p">)))</span>
 
     <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Timestep </span><span class="si">{}</span><span class="s2">, dt </span><span class="si">{}</span><span class="s2">, dt_s </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">ts</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">delta_t_swarm</span><span class="p">))</span>
+        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Timestep </span><span class="si">{}</span><span class="s2">, t </span><span class="si">{}</span><span class="s2">, dt </span><span class="si">{}</span><span class="s2">, dt_s </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">ts</span><span class="p">,</span> <span class="n">elapsed_time</span><span class="p">,</span> <span class="n">delta_t</span><span class="p">,</span> <span class="n">delta_t_cfl</span><span class="p">))</span>
 
     <span class="k">if</span> <span class="n">ts</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">nodal_vorticity_from_v</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
@@ -1032,15 +1061,6 @@ document.write(`
             <span class="n">meshVars</span><span class="o">=</span><span class="p">[</span><span class="n">p_soln</span><span class="p">,</span> <span class="n">v_soln</span><span class="p">,</span> <span class="n">vorticity</span><span class="p">,</span> <span class="n">St</span><span class="p">],</span>
             <span class="n">outputPath</span><span class="o">=</span><span class="n">outdir</span><span class="p">,</span>
             <span class="n">index</span><span class="o">=</span><span class="n">ts</span><span class="p">,</span>
-        <span class="p">)</span>
-
-        <span class="n">swarm</span><span class="o">.</span><span class="n">write_timestep</span><span class="p">(</span>
-            <span class="n">expt_name</span><span class="p">,</span>
-            <span class="s2">&quot;active_swarm&quot;</span><span class="p">,</span>
-            <span class="n">swarmVars</span><span class="o">=</span><span class="p">[</span><span class="n">v_star</span><span class="p">,</span> <span class="n">v_star_star</span><span class="p">,</span> <span class="n">stress_star_p</span><span class="p">],</span>
-            <span class="n">outputPath</span><span class="o">=</span><span class="n">outdir</span><span class="p">,</span>
-            <span class="n">index</span><span class="o">=</span><span class="n">ts</span><span class="p">,</span>
-            <span class="n">force_sequential</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="p">)</span>
 
         <span class="n">passive_swarm</span><span class="o">.</span><span class="n">write_timestep</span><span class="p">(</span>
@@ -1060,7 +1080,75 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ls</span> <span class="o">-</span><span class="n">trl</span> <span class="n">output_res_033</span><span class="o">/</span> <span class="o">|</span> <span class="n">tail</span> <span class="o">-</span><span class="mi">20</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># check the mesh if in a notebook / serial</span>
+
+<span class="k">if</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+
+    <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
+    <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
+
+    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="n">pipemesh</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Vmag&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">))</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Omega&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">vorticity</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;P&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    
+    <span class="n">velocity_points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">meshVariable_to_pv_cloud</span><span class="p">(</span><span class="n">v_soln</span><span class="p">)</span>
+    <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">velocity_points</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+
+    <span class="n">ustar</span> <span class="o">=</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">DuDt</span><span class="o">.</span><span class="n">psi_star</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">sym</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Vs&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">ustar</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">ustar</span><span class="p">))</span>
+
+    <span class="c1"># point sources at cell centres</span>
+    <span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
+    <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pipemesh</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
+    <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+
+    <span class="n">passive_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
+    <span class="n">active_swarm_points</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">visualisation</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">swarm</span><span class="p">)</span>
+
+
+    <span class="n">pvstream</span> <span class="o">=</span> <span class="n">pvmesh</span><span class="o">.</span><span class="n">streamlines_from_source</span><span class="p">(</span>
+        <span class="n">point_cloud</span><span class="p">,</span> <span class="n">vectors</span><span class="o">=</span><span class="s2">&quot;V&quot;</span><span class="p">,</span> <span class="n">integration_direction</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">max_steps</span><span class="o">=</span><span class="mi">10</span>
+    <span class="p">)</span>
+
+    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm</span><span class="p">)</span>
+    <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+
+    <span class="n">pl0</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
+
+
+    <span class="n">pl0</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
+        <span class="n">passive_swarm_points</span><span class="p">,</span>
+        <span class="n">color</span><span class="o">=</span><span class="s2">&quot;DarkGreen&quot;</span><span class="p">,</span>
+        <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">point_size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.66</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">pl0</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
+        <span class="n">pvmesh</span><span class="p">,</span>
+        <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
+        <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
+        <span class="n">show_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;Omega&quot;</span><span class="p">,</span>
+        <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+    <span class="p">)</span>
+    
+    <span class="n">pl0</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">0.03</span> <span class="o">/</span> <span class="n">U0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.75</span><span class="p">)</span>
+    <span class="n">pl0</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span><span class="n">pvstream</span><span class="p">)</span>
+
+    <span class="n">pl0</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
+        <span class="n">active_swarm_points</span><span class="p">,</span>
+        <span class="n">color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
+        <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">point_size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">pl0</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
