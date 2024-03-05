@@ -153,6 +153,32 @@ class SolverBaseClass(uw_object):
         self._is_setup = False
 
         return
+    
+    def _handle_none_bcs(self, fn):
+        # converts bcs put as None to sympy.oo 
+
+        import numpy as np
+
+        try: # BC input is iterable
+            in_type = type(fn)
+            fn_list = [sympy.oo if f is None else f for f in fn]
+
+            # convert to original type
+            if in_type is np.ndarray: # numpy array needs special handling
+                conv_fn = np.array(fn_list)
+            else:
+                conv_fn = in_type(fn_list)
+
+            # handle sympy matrices auto transpose
+            if isinstance(fn, (sympy.Matrix)):
+                conv_fn = conv_fn.T
+        except:
+            if fn is None:
+                conv_fn = sympy.oo
+            else:
+                conv_fn = fn
+
+        return conv_fn
             
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
@@ -177,6 +203,9 @@ class SolverBaseClass(uw_object):
         
         self.is_setup = False
         import numpy as np
+
+        conv_fn = self._handle_none_bcs(fn_f)
+        fn_f = conv_fn
 
         try:
             iter(fn_f)
@@ -215,6 +244,9 @@ class SolverBaseClass(uw_object):
 
         self.is_setup = False
         import numpy as np
+
+        conv_fn = self._handle_none_bcs(fn)
+        fn = conv_fn
 
         try:
             iter(fn)
