@@ -159,20 +159,24 @@ class SolverBaseClass(uw_object):
 
         import numpy as np
 
-        try: # BC input is iterable
-            in_type = type(fn)
-            fn_list = [sympy.oo if f is None else f for f in fn]
+        if hasattr(fn, "__len__"):      # BC input is iterable (has __len__ attribute)
+            if not isinstance(fn, str): # str also as __len__ attribute
+                in_type = type(fn)
+                fn_list = [sympy.oo if f is None else f for f in fn]
 
-            # convert to original type
-            if in_type is np.ndarray: # numpy array needs special handling
-                conv_fn = np.array(fn_list)
+                # convert to original type
+                if in_type is np.ndarray: # numpy array needs special handling
+                    conv_fn = np.array(fn_list)
+                else:
+                    conv_fn = in_type(fn_list)
+
+                # handle sympy matrices auto transpose
+                if isinstance(fn, (sympy.Matrix)):
+                    conv_fn = conv_fn.T
             else:
-                conv_fn = in_type(fn_list)
-
-            # handle sympy matrices auto transpose
-            if isinstance(fn, (sympy.Matrix)):
-                conv_fn = conv_fn.T
-        except:
+                print("Warning: B.C. type not supported!")
+                return fn # return back input
+        else:
             if fn is None:
                 conv_fn = sympy.oo
             else:
