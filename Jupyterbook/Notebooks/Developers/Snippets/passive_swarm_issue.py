@@ -77,10 +77,9 @@ with passiveSwarm.access(test_ps):
 # %%
 passiveSwarm.write_timestep("TEST_SWARM", "swarm", 
                              swarmVars = [], outputPath = "./output", 
-                             index=0) 
+                             index=0, force_sequential=True) 
 
 
 # %%
-# !mkdir output
 
 # %%
