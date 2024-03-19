@@ -100,10 +100,14 @@ def meshVariable_to_pv_cloud(meshVar):
     return point_cloud
 
 
-def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
+def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     """evaluate uw scalar function at mesh/cloud points"""
 
     import underworld3 as uw
+    import sympy
+
+    if simplify:
+        uw_fn = sympy.simplify(uw_fn)
 
     if dim is None:
         if pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
@@ -117,12 +121,15 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     return scalar_values
 
 
-def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
+def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     """evaluate uw vector function at mesh/cloud points"""
 
     import numpy as np
     import underworld3 as uw
+    import sympy
 
+    if simplify:
+        uw_fn = sympy.simplify(uw_fn)
     dim = uw_fn.shape[1]
     if dim != 2 and dim != 3:
         print(f"UW vector function should have dimension 2 or 3")

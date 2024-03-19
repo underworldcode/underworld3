@@ -2410,10 +2410,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Copy solution back into user facing variables 
 
-        with self.mesh.access(self.p, self.u):
+        with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
+            # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
 
             for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} to user variables", flush=True)
+                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
 
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
 
@@ -2438,6 +2439,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = lvec.array[:]
 
                 sdm.restoreLocalVec(lvec)
+
+                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
+
 
         self.dm.restoreGlobalVec(gvec)
 

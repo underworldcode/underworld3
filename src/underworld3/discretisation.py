@@ -129,6 +129,7 @@ class Mesh(Stateful, uw_object):
     r"""
     Mesh class for uw - documentation needed
     """
+
     mesh_instances = 0
 
     @timing.routine_timer_decorator
@@ -1658,10 +1659,10 @@ class _MeshVariable(Stateful, uw_object):
         return
 
     def clone(self, name, varsymbol):
-        newMeshVariable = _MeshVariable(
+        newMeshVariable = MeshVariable(
             varname=name,
             mesh=self.mesh,
-            size=self.shape,
+            num_components=self.shape,
             vtype=self.vtype,
             degree=self.degree,
             continuous=self.continuous,
@@ -2450,8 +2451,11 @@ def meshVariable_lookup_by_symbol(mesh, sympy_object):
     """
 
     for meshvar in mesh.vars.values():
-        for comp, subvar in enumerate(meshvar.sym_1d):
-            if subvar == sympy_object:
-                return meshvar, comp
+        if meshvar.sym == sympy_object:
+            return meshvar, -1
+        else:
+            for comp, subvar in enumerate(meshvar.sym_1d):
+                if subvar == sympy_object:
+                    return meshvar, comp
 
     return None
