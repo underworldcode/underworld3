@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Usage:
-#  $ pip install . 
+#  $ pip install .
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
@@ -35,6 +35,7 @@ if petscVer[0] != 3 or petscVer[1] < 18:
     )
     raise RuntimeError(msg)
 
+
 def configure():
 
     INCLUDE_DIRS = []
@@ -44,12 +45,22 @@ def configure():
     # PETSc
     import os
 
-    if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-        PETSC_DIR = os.environ["CONDA_PREFIX"]
-        PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
-    else:
-        PETSC_DIR = os.environ["PETSC_DIR"]
-        PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    print(f"PETSC_INFO - {petsc4py.get_config()}")
+    PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
+    PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
+
+    print(f"PETSC_DIR: {PETSC_DIR}")
+    print(f"PETSC_ARCH: {PETSC_ARCH}")
+
+    # It is preferable to use the petsc4py paths to the
+    # petsc libraries for consistency
+
+    # if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
+    #     PETSC_DIR = os.environ["CONDA_PREFIX"]
+    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    # else:
+    #     PETSC_DIR = os.environ["PETSC_DIR"]
+    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
     from os.path import join, isdir
 
@@ -152,9 +163,7 @@ extensions = [
 setup(
     name="underworld3",
     packages=find_packages(),
-    package_data={
-        "underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]
-    },
+    package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
     ext_modules=cythonize(
         extensions,
         compiler_directives={"language_level": "3"},  # or "2" or "3str"
