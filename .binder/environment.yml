@@ -17,10 +17,10 @@ dependencies:
   - h5py
   # - jgiordani::uw3_env
   - sympy
-  - gmsh
   - pytest
   - ipython 
   - pyvista[all]
+  - quarto
   - pip
   - pip:  
     - gmsh
