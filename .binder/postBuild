@@ -94,8 +94,9 @@ echo $CONDA_PREFIX/lib/
 
 export PYTHONPATH=$CONDA_PREFIX/lib/ 
 
+# We install the local code "properly" - no point in a dev build here
 python3 setup.py develop
-pip3 install -e .
+pip3 install .
 
 echo
 echo Completed
