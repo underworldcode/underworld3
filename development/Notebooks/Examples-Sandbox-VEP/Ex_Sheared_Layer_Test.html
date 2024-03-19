@@ -523,6 +523,20 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <span class="n">eta1</span> <span class="o">=</span> <span class="mi">1000</span>
 <span class="n">eta2</span> <span class="o">=</span> <span class="mi">1</span>
 
+<span class="kn">from</span> <span class="nn">enum</span> <span class="kn">import</span> <span class="n">Enum</span>
+
+<span class="c1">## NOTE: stop using pygmsh, then we can just define boundary labels ourselves and not second guess pygmsh</span>
+
+<span class="k">class</span> <span class="nc">boundaries</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">Bottom</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">Right</span> <span class="o">=</span> <span class="mi">3</span>
+    <span class="n">Top</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="n">Left</span>  <span class="o">=</span> <span class="mi">4</span>
+    <span class="n">Inclusion</span> <span class="o">=</span> <span class="mi">5</span>
+    <span class="n">All_Boundaries</span> <span class="o">=</span> <span class="mi">1001</span> 
+
+
+
 <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
 
     <span class="kn">import</span> <span class="nn">gmsh</span>
@@ -530,13 +544,6 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
     <span class="n">gmsh</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
     <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;Periodic x&quot;</span><span class="p">)</span>
 
-    <span class="c1"># %%</span>
-    <span class="n">boundaries</span> <span class="o">=</span> <span class="p">{</span>
-        <span class="s2">&quot;Bottom&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
-        <span class="s2">&quot;Top&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
-        <span class="s2">&quot;Right&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
-        <span class="s2">&quot;Left&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span>
-    <span class="p">}</span>
 
     <span class="n">xmin</span><span class="p">,</span> <span class="n">ymin</span> <span class="o">=</span> <span class="o">-</span><span class="n">width</span> <span class="o">/</span> <span class="mi">2</span><span class="p">,</span> <span class="o">-</span><span class="n">height</span> <span class="o">/</span> <span class="mi">2</span>
     <span class="n">xmax</span><span class="p">,</span> <span class="n">ymax</span> <span class="o">=</span> <span class="o">+</span><span class="n">width</span> <span class="o">/</span> <span class="mi">2</span><span class="p">,</span> <span class="o">+</span><span class="n">height</span> <span class="o">/</span> <span class="mi">2</span>
@@ -546,10 +553,10 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
     <span class="n">p3</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_point</span><span class="p">(</span><span class="n">xmin</span><span class="p">,</span> <span class="n">ymax</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n">meshSize</span><span class="o">=</span><span class="n">cellSize</span><span class="p">)</span>
     <span class="n">p4</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_point</span><span class="p">(</span><span class="n">xmax</span><span class="p">,</span> <span class="n">ymax</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n">meshSize</span><span class="o">=</span><span class="n">cellSize</span><span class="p">)</span>
 
-    <span class="n">l1</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p1</span><span class="p">,</span> <span class="n">p2</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Bottom&quot;</span><span class="p">])</span>
-    <span class="n">l2</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p2</span><span class="p">,</span> <span class="n">p4</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Right&quot;</span><span class="p">])</span>
-    <span class="n">l3</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p4</span><span class="p">,</span> <span class="n">p3</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Top&quot;</span><span class="p">])</span>
-    <span class="n">l4</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p3</span><span class="p">,</span> <span class="n">p1</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Left&quot;</span><span class="p">])</span>
+    <span class="n">l1</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p1</span><span class="p">,</span> <span class="n">p2</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Bottom&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+    <span class="n">l2</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p2</span><span class="p">,</span> <span class="n">p4</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Right&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+    <span class="n">l3</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p4</span><span class="p">,</span> <span class="n">p3</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Top&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+    <span class="n">l4</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">add_line</span><span class="p">(</span><span class="n">p3</span><span class="p">,</span> <span class="n">p1</span><span class="p">,</span> <span class="n">tag</span><span class="o">=</span><span class="n">boundaries</span><span class="p">[</span><span class="s2">&quot;Left&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
 
     <span class="n">loops</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="k">if</span> <span class="n">radius</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
@@ -577,9 +584,11 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 
     <span class="c1"># Add Physical groups</span>
 
-    <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">tag</span> <span class="ow">in</span> <span class="n">boundaries</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add_physical_group</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">tag</span><span class="p">],</span> <span class="n">tag</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">set_physical_name</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">tag</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">bd</span> <span class="ow">in</span> <span class="n">boundaries</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="n">bd</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="nb">print</span><span class="p">(</span><span class="n">bd</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add_physical_group</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">bd</span><span class="o">.</span><span class="n">value</span><span class="p">],</span> <span class="n">bd</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">set_physical_name</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">bd</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="n">bd</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">radius</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">c1</span><span class="p">,</span> <span class="n">c2</span><span class="p">],</span> <span class="mi">55</span><span class="p">)</span>
@@ -598,11 +607,9 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>
-
-<span class="n">mesh1</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="s2">&quot;tmp_shear_inclusion.msh&quot;</span><span class="p">,</span> 
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mesh1</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="s2">&quot;tmp_shear_inclusion.msh&quot;</span><span class="p">,</span> 
                                <span class="n">simplex</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">markVertices</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> 
-                               <span class="n">useRegions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> 
+                               <span class="n">useRegions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">boundaries</span><span class="o">=</span><span class="n">boundaries</span>
                               <span class="p">)</span>
 <span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">view</span><span class="p">()</span>
 
@@ -725,7 +732,7 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
     <span class="n">mesh1</span><span class="p">,</span>
     <span class="n">velocityField</span><span class="o">=</span><span class="n">v_soln</span><span class="p">,</span>
     <span class="n">pressureField</span><span class="o">=</span><span class="n">p_soln</span><span class="p">,</span>
-    <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;stokes&quot;</span><span class="p">,</span>
 <span class="p">)</span>
 
@@ -836,17 +843,24 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 
 <span class="n">stokes</span><span class="o">.</span><span class="n">tolerance</span> <span class="o">=</span> <span class="mf">1.0e-4</span>
 
-<span class="c1"># hw = 1000.0 / res</span>
-<span class="c1"># surface_defn_fn = sympy.exp(-(((r - radius) / radius) ** 2) * hw)</span>
 <span class="c1"># stokes.bodyforce -= 1.0e6 * surface_defn_fn * v_soln.sym.dot(inclusion_unit_rvec) * inclusion_unit_rvec</span>
 
 <span class="c1"># Velocity boundary conditions</span>
 
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Inclusion&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Top&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Bottom&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Left&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span><span class="p">))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Right&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span><span class="p">))</span>
+<span class="k">if</span> <span class="n">radius</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
+    <span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Inclusion&quot;</span><span class="p">)</span>
+    
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Top&quot;</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Bottom&quot;</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="n">sympy</span><span class="o">.</span><span class="n">oo</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Left&quot;</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="n">sympy</span><span class="o">.</span><span class="n">oo</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Right&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">view</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
@@ -854,7 +868,7 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">_setup_pointwise_functions</span><span class="p">()</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_discretisation</span><span class="p">()</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_discretisation</span><span class="p">(</span><span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">_setup_solver</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -876,13 +890,6 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">Stress</span><span class="o">.</span><span class="n">sym_1d</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">Stress</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">Stress</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
@@ -895,19 +902,18 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Now add yield without pressure dependence</span>
 
-<span class="n">eps_ref</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="mf">0.001</span><span class="p">)</span>
+<span class="n">eps_ref</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
 <span class="n">scale</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="mi">25</span><span class="p">)</span>
 <span class="n">C0</span> <span class="o">=</span> <span class="mi">2500</span>
 <span class="n">Cinf</span> <span class="o">=</span> <span class="mi">500</span>
 
 <span class="c1"># C = 2 * (y * 2)**16 + 5.0 * sympy.exp(-(strain.sym[0]/0.1)**2) + 0.1</span>
-<span class="n">C</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">y</span> <span class="o">*</span> <span class="mi">2</span><span class="p">)</span><span class="o">**</span><span class="mi">16</span> <span class="o">+</span> <span class="p">(</span><span class="n">C0</span><span class="o">-</span><span class="n">Cinf</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">sympy</span><span class="o">.</span><span class="n">tanh</span><span class="p">((</span><span class="n">strain</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">/</span><span class="n">eps_ref</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">*</span><span class="n">scale</span><span class="p">)</span> <span class="p">)</span> <span class="o">/</span> <span class="mi">2</span> <span class="o">+</span> <span class="n">Cinf</span>
+<span class="n">C</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">y</span> <span class="o">*</span> <span class="mi">2</span><span class="p">)</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="p">(</span><span class="n">C0</span><span class="o">-</span><span class="n">Cinf</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">sympy</span><span class="o">.</span><span class="n">tanh</span><span class="p">((</span><span class="n">strain_p</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">/</span><span class="n">eps_ref</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">*</span><span class="n">scale</span><span class="p">)</span> <span class="p">)</span> <span class="o">/</span> <span class="mi">2</span> <span class="o">+</span> <span class="n">Cinf</span>
 
 <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">yield_stress</span> <span class="o">=</span> <span class="n">C</span> <span class="o">+</span> <span class="n">mu</span> <span class="o">*</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">edot_II_fn</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">yield_stress_min</span> <span class="o">=</span> <span class="mf">0.1</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">edot_II_fn</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">min_viscosity</span> <span class="o">=</span> <span class="mf">0.1</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">viscosity</span>
 
 
 <span class="c1"># stokes.solve(zero_init_guess=False, picard=2)</span>
@@ -919,7 +925,21 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">sympy</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">stokes</span><span class="o">.</span><span class="n">_u_f1</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">stress_projection</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">flux</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="mi">0</span><span class="o">/</span><span class="mi">0</span>
 </pre></div>
 </div>
 </div>
@@ -941,6 +961,13 @@ Check the implementation of the Jacobians using various non-linear terms.</p>
 <span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">zero_init_guess</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">picard</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
 
 <span class="n">timing</span><span class="o">.</span><span class="n">print_table</span><span class="p">(</span><span class="n">display_fraction</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">_u_f1</span>
 </pre></div>
 </div>
 </div>
