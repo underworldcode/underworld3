@@ -70,7 +70,7 @@ stokes = uw.systems.Stokes(mesh, verbose=True)
 v = stokes.Unknowns.u
 p = stokes.Unknowns.p
 
-stokes.constitutive_model=uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns)
+stokes.constitutive_model=uw.constitutive_models.ViscousFlowModel(stokes.Unknowns)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 # %%
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3, continuous=True, varsymbol=r"{T}")
@@ -78,9 +78,8 @@ T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=3, continuous=True, va
 
 v0 = stokes.Unknowns.u.clone("V0", r"{v_0}")
 v1 = v0.clone("V1", r"{v_1}")
-# +
-# options = PETSc.Options()
-# options.getAll()
+# -
+
 
 # +
 
@@ -162,6 +161,18 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # %%
 # Solve time
 stokes.solve()
+
+uw.discretisation.meshVariable_lookup_by_symbol(mesh, v.sym)
+
+uw.discretisation.meshVariable_lookup_by_symbol(mesh, v.sym)
+
+
+
+
+
+
+
+
 
 # ### Visualise it !
 
@@ -267,12 +278,14 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V2"] = vis.vector_fn_to_pv_points(pvmesh, v.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
-    pvmesh.point_data["V0"] = vis.vector_fn_to_pv_points(pvmesh, v0.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
-    pvmesh.point_data["V1"] = vis.vector_fn_to_pv_points(pvmesh, v1.sym * stokes.constitutive_model.Parameters.shear_viscosity_0)
-    pvmesh.point_data["dV0"] = pvmesh.point_data["V1"] - pvmesh.point_data["V0"]
     pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v0.sym.dot(v0.sym))
+    pvmesh.point_data["Visc"] = vis.scalar_fn_to_pv_points(pvmesh, stokes.constitutive_model.Parameters.shear_viscosity_0)
 
+    pvmesh.point_data["V2"] = vis.vector_fn_to_pv_points(pvmesh, v.sym * stokes.constitutive_model.viscosity)
+    pvmesh.point_data["V0"] = vis.vector_fn_to_pv_points(pvmesh, v0.sym * stokes.constitutive_model.viscosity)
+    pvmesh.point_data["V1"] = vis.vector_fn_to_pv_points(pvmesh, v1.sym * stokes.constitutive_model.viscosity)
+    pvmesh.point_data["dV0"] = pvmesh.point_data["V1"] - pvmesh.point_data["V0"]
+    
     velocity_points = vis.meshVariable_to_pv_cloud(v)
     velocity_points.point_data["V2"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
     velocity_points.point_data["V1"] = vis.vector_fn_to_pv_points(velocity_points, v1.sym)
@@ -292,7 +305,8 @@ if uw.mpi.size == 1:
         opacity=1.0,
     )
 
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["dV1"], mag=1000000.0, opacity=1, show_scalar_bar=False)
+    arrows0 = pl.add_arrows(velocity_points.points, velocity_points.point_data["V2"], mag=100.0, opacity=1, show_scalar_bar=False)
+    arrows1 = pl.add_arrows(velocity_points.points, velocity_points.point_data["dV2"], mag=100000.0, opacity=1, show_scalar_bar=False)
 
     pl.show(cpos="xy")
 

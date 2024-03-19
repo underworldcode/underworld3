@@ -370,11 +370,14 @@ class SwarmVariable(Stateful, uw_object):
             data_size = self.data.shape
 
         # What to do if there are no particles
-        if data_size[0] == 0:
+        if data_size[0] <= 1:
             return np.zeros((new_coords.shape[0], data_size[1]))
 
         if nnn is None:
             nnn = self.swarm.mesh.dim + 1
+
+        if nnn > data_size[0]:
+            nnn = data_size[0]
 
         with self.swarm.access():
             if self.swarm.recycle_rate > 1:

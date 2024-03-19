@@ -152,7 +152,7 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None ):
+def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None, simplify=True ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -212,6 +212,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
+
+
+
+    if simplify:
+        expr = sympy.simplify(expr)
 
     # 1. Extract UW variables.
     # Let's first collect all the meshvariables present in the expression and check
@@ -495,7 +500,7 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 ### ------------------------------
 
-def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
+def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, simplify=True):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -545,6 +550,9 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False):
 
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
+
+    if simplify:
+        expr = sympy.simplify(expr)
 
     # 1. Extract UW variables.
 
