@@ -58,6 +58,20 @@ radius = 0.0
 eta1 = 1000
 eta2 = 1
 
+from enum import Enum
+
+## NOTE: stop using pygmsh, then we can just define boundary labels ourselves and not second guess pygmsh
+
+class boundaries(Enum):
+    Bottom = 1
+    Right = 3
+    Top = 2
+    Left  = 4
+    Inclusion = 5
+    All_Boundaries = 1001 
+
+
+
 if uw.mpi.rank == 0:
 
     import gmsh
@@ -65,13 +79,6 @@ if uw.mpi.rank == 0:
     gmsh.initialize()
     gmsh.model.add("Periodic x")
 
-    # %%
-    boundaries = {
-        "Bottom": 1,
-        "Top": 2,
-        "Right": 3,
-        "Left": 4,
-    }
 
     xmin, ymin = -width / 2, -height / 2
     xmax, ymax = +width / 2, +height / 2
@@ -81,10 +88,10 @@ if uw.mpi.rank == 0:
     p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, meshSize=cellSize)
     p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, meshSize=cellSize)
 
-    l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries["Bottom"])
-    l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries["Right"])
-    l3 = gmsh.model.geo.add_line(p4, p3, tag=boundaries["Top"])
-    l4 = gmsh.model.geo.add_line(p3, p1, tag=boundaries["Left"])
+    l1 = gmsh.model.geo.add_line(p1, p2, tag=boundaries["Bottom"].value)
+    l2 = gmsh.model.geo.add_line(p2, p4, tag=boundaries["Right"].value)
+    l3 = gmsh.model.geo.add_line(p4, p3, tag=boundaries["Top"].value)
+    l4 = gmsh.model.geo.add_line(p3, p1, tag=boundaries["Left"].value)
 
     loops = []
     if radius > 0.0:
@@ -112,9 +119,11 @@ if uw.mpi.rank == 0:
 
     # Add Physical groups
 
-    for name, tag in boundaries.items():
-        gmsh.model.add_physical_group(1, [tag], tag)
-        gmsh.model.set_physical_name(1, tag, name)
+    for bd in boundaries:
+        print(bd.value, flush=True)
+        print(bd.name, flush=True)
+        gmsh.model.add_physical_group(1, [bd.value], bd.value)
+        gmsh.model.set_physical_name(1, bd.value, bd.name)
 
     if radius > 0.0:
         gmsh.model.addPhysicalGroup(1, [c1, c2], 55)
@@ -128,14 +137,15 @@ if uw.mpi.rank == 0:
     gmsh.write("tmp_shear_inclusion.msh")
     gmsh.finalize()
 
+# -
+
+
 
 
 # +
-
-
 mesh1 = uw.discretisation.Mesh("tmp_shear_inclusion.msh", 
                                simplex=True, markVertices=True, 
-                               useRegions=True, 
+                               useRegions=True, boundaries=boundaries
                               )
 mesh1.dm.view()
 
@@ -237,7 +247,7 @@ stokes = uw.systems.Stokes(
     mesh1,
     velocityField=v_soln,
     pressureField=p_soln,
-    verbose=False,
+    verbose=True,
     solver_name="stokes",
 )
 
@@ -250,10 +260,6 @@ viscosity_L = sympy.Piecewise(
 )
 
 # -
-
-
-
-
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
 stokes.constitutive_model.Parameters.bg_viscosity = viscosity_L
 # stokes.constitutive_model.Parameters.sigma_star_fn 
@@ -313,30 +319,30 @@ stokes.bodyforce = (
 
 stokes.tolerance = 1.0e-4
 
-# hw = 1000.0 / res
-# surface_defn_fn = sympy.exp(-(((r - radius) / radius) ** 2) * hw)
 # stokes.bodyforce -= 1.0e6 * surface_defn_fn * v_soln.sym.dot(inclusion_unit_rvec) * inclusion_unit_rvec
 
 # Velocity boundary conditions
 
-stokes.add_dirichlet_bc((0.0, 0.0), "Inclusion", (0, 1))
-stokes.add_dirichlet_bc((1.0, 0.0), "Top", (0, 1))
-stokes.add_dirichlet_bc((-1.0, 0.0), "Bottom", (0, 1))
-stokes.add_dirichlet_bc((0.0), "Left", (1))
-stokes.add_dirichlet_bc((0.0), "Right", (1))
+if radius > 0.0:
+    stokes.add_dirichlet_bc((0.0, 0.0), "Inclusion")
+    
+stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+stokes.add_dirichlet_bc((-1.0, 0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
 
 # -
 
 
+mesh1.dm.view()
+
 stokes._setup_pointwise_functions()
-stokes._setup_discretisation()
+stokes._setup_discretisation(verbose=True)
 stokes._setup_solver()
 
 stokes.solve()
 
 sigma_projector.solve()
-
-Stress.sym_1d
 
 with mesh1.access():
     print(Stress[0,0].data.max())
@@ -347,19 +353,18 @@ with mesh1.access():
 # +
 # Now add yield without pressure dependence
 
-eps_ref = sympy.sympify(0.001)
+eps_ref = sympy.sympify(1)
 scale = sympy.sympify(25)
 C0 = 2500
 Cinf = 500
 
 # C = 2 * (y * 2)**16 + 5.0 * sympy.exp(-(strain.sym[0]/0.1)**2) + 0.1
-C = 2 * (y * 2)**16 + (C0-Cinf) * (1 - sympy.tanh((strain.sym[0]/eps_ref - 1)*scale) ) / 2 + Cinf
+C = 2 * (y * 2)**2 + (C0-Cinf) * (1 - sympy.tanh((strain_p.sym[0]/eps_ref - 1)*scale) ) / 2 + Cinf
 
 stokes.constitutive_model.Parameters.yield_stress = C + mu * p_soln.sym[0]
-stokes.constitutive_model.Parameters.edot_II_fn = stokes._Einv2
-stokes.constitutive_model.Parameters.yield_stress_min = 0.1
+stokes.constitutive_model.Parameters.edot_II_fn = stokes.Unknowns.Einv2
 stokes.constitutive_model.Parameters.min_viscosity = 0.1
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.viscosity
 
 
 # stokes.solve(zero_init_guess=False, picard=2)
@@ -367,7 +372,11 @@ stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosit
 stokes.constitutive_model
 # -
 
-sympy.simplify(stokes._u_f1[0])
+stokes.constitutive_model.stress_projection()
+
+stokes.constitutive_model.flux
+
+0/0
 
 with mesh1.access():
     print(p_soln.data.min(), p_soln.data.max())
@@ -380,7 +389,10 @@ stokes.snes.setType("newtontr")
 stokes.solve(zero_init_guess=False, picard = -1)
 
 timing.print_table(display_fraction=1)
+# -
 
+
+stokes._u_f1
 
 # +
 
@@ -476,19 +488,6 @@ if uw.mpi.size == 1:
 # +
 # Now add elasticity
 # -
-
-
-
-
-
-
-
-
-
-
-
-
-
 stokes.constitutive_model.Parameters.yield_stress.subs(((strain.sym[0],0.25), (y,0.0)))
 
 stokes.constitutive_model.Parameters.viscosity

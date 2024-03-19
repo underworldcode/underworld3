@@ -4,16 +4,16 @@ LABEL maintainer="https://github.com/underworldcode/"
 # install all build tool as root
 USER root
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends $(awk '{print $1'} /opt/installed.txt) \
- libglu1 \
- libxcursor-dev \
- libxft2 \
- libxinerama1 \
- libfltk1.3-dev \
- libfreetype6-dev \
- libgl1-mesa-dev \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+    && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends $(awk '{print $1'} /opt/installed.txt) \
+    libglu1 \
+    libxcursor-dev \
+    libxft2 \
+    libxinerama1 \
+    libfltk1.3-dev \
+    libfreetype6-dev \
+    libgl1-mesa-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # install python packages for uw3
 RUN pip install sympy gmsh pyvista panel xxhash

@@ -9,7 +9,6 @@ if uw.mpi.size == 1:
 # #### Setup the mesh params
 
 
-
 # %%
 # Set the resolution.
 res = 64
@@ -23,7 +22,6 @@ mesh_qdegree = Tdegree
 mesh_qdegree
 
 
-
 # %%
 xmin, xmax = 0.0, 1.0
 ymin, ymax = 0.0, 1.0
@@ -34,8 +32,11 @@ tmin, tmax = 0.5, 1
 # #### Set up the mesh
 
 mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=mesh_qdegree)
-
+    elementRes=(int(res), int(res)),
+    minCoords=(xmin, ymin),
+    maxCoords=(xmax, ymax),
+    qdegree=mesh_qdegree,
+)
 
 
 # %%
@@ -43,12 +44,18 @@ passiveSwarm = uw.swarm.Swarm(mesh=mesh)
 # test_ps = passiveSwarm.add_variable('test_data', vtype=uw.VarType.MATRIX,
 #                                )
 
-test_ps = uw.swarm.SwarmVariable("test_data", passiveSwarm, size=(3,4), vtype=uw.VarType.MATRIX)
+test_ps = uw.swarm.SwarmVariable(
+    "test_data", passiveSwarm, size=(3, 4), vtype=uw.VarType.MATRIX
+)
 
 # add particles to the swarm
 coords = np.zeros((10, 2))
-coords[:,0] = np.linspace(xmin+mesh.get_min_radius(), xmax-mesh.get_min_radius(), 10)
-coords[:,1] = np.linspace(ymin+mesh.get_min_radius(), ymax-mesh.get_min_radius(), 10)
+coords[:, 0] = np.linspace(
+    xmin + mesh.get_min_radius(), xmax - mesh.get_min_radius(), 10
+)
+coords[:, 1] = np.linspace(
+    ymin + mesh.get_min_radius(), ymax - mesh.get_min_radius(), 10
+)
 
 print(f"{uw.mpi.rank}: {mesh.get_min_radius()}", flush=True)
 uw.mpi.barrier()
@@ -72,15 +79,19 @@ with passiveSwarm.access():
 # %%
 with passiveSwarm.access(test_ps):
     print(uw.mpi.rank, passiveSwarm.data.shape)
-    test_ps.data[:,0] = 1.
+    test_ps.data[:, 0] = 1.0
 
 # %%
-passiveSwarm.write_timestep("TEST_SWARM", "swarm", 
-                             swarmVars = [], outputPath = "./output", 
-                             index=0) 
+passiveSwarm.write_timestep(
+    "TEST_SWARM",
+    "swarm",
+    swarmVars=[],
+    outputPath="./output",
+    index=0,
+    force_sequential=True,
+)
 
 
 # %%
-# !mkdir output
 
 # %%
