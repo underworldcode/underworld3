@@ -11,7 +11,6 @@
 # # conda activate notebook
 # # mamba install --yes -c jgiordani uw3_env
 
-conda run -n notebook mamba install -y -c jgiordani uw3_env --force-reinstall
 
 
 echo
@@ -27,7 +26,7 @@ python3 -m pip install "trame_jupyter_extension"
 # We install the local code "properly" - no point in a dev build here
 
 echo
-echo Install local UW3 pt 1
+echo Check petsc / uw3_env
 echo
 
 # python3 setup.py develop
