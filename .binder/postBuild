@@ -83,8 +83,10 @@
 # echo
 
 echo
-echo Install uw3_env here instead
+echo Install uw3_env during postBuild phase
 echo
+
+conda env list
 
 # conda init
 # conda activate notebook
