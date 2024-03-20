@@ -100,7 +100,7 @@ echo
 echo Setup Conda Environments etc
 echo
 
-cd $CONDA_PREFIX
+cd $CONDA_DIR
 mkdir -p ./etc/conda/activate.d
 touch ./etc/conda/activate.d/env_vars.sh
 
