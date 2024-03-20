@@ -86,7 +86,8 @@ echo
 echo Install uw3_env here instead
 echo
 
-mamba activate notebook
+conda init
+conda activate notebook
 mamba install --yes -c jgiordani uw3_env
 
 echo
