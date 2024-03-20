@@ -33,6 +33,8 @@ echo
 echo Conda prefix:
 echo $CONDA_PREFIX
 
+export CONDA_PREFIX=/srv/conda/envs/notebook/
+
 conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "import petsc4py; print(petsc4py.get_config())"
 conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "from petsc4py import PETSc"
 
