@@ -86,7 +86,8 @@ echo
 echo Install uw3_env here instead
 echo
 
-mamba install -c jgiordani uw3_env
+mamba activate notebook
+mamba install --yes -c jgiordani uw3_env
 
 echo
 echo Install jupyter extensions
