@@ -82,17 +82,17 @@
 # echo Configured VSCode
 # echo
 
-echo
-echo Install uw3_env during postBuild phase
-echo
+# echo
+# echo Install uw3_env during postBuild phase
+# echo
 
-conda env list
+# conda env list
 
-# conda init
-# conda activate notebook
-# mamba install --yes -c jgiordani uw3_env
+# # conda init
+# # conda activate notebook
+# # mamba install --yes -c jgiordani uw3_env
 
-conda run -n notebook mamba install -y -c jgiordani uw3_env 
+# conda run -n notebook mamba install -y -c jgiordani uw3_env 
 
 
 echo
@@ -114,7 +114,10 @@ echo
 # python3 setup.py develop
 # python3 setup.py build_ext
 
-# export PYTHONPATH=$CONDA_PREFIX/lib/ 
+
+python -c "import petsc4py; print(petsc4py.get_config())"
+python -c "from petsc4py import PETSc"
+
 conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib/ pip3 install .
 
 echo

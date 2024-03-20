@@ -1,8 +1,9 @@
 name: uw3
 channels:
-  - conda-forge
   - jgiordani
+  - conda-forge
 dependencies:
+  - jgiordani::uw3_env
   - python=3.10
   - mpmath<=1.3
   - mesalib
