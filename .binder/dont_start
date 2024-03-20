@@ -1,5 +1,0 @@
-#!/bin/bash
-
-export PYTHONPATH=$CONDA_PREFIX/lib/ 
-
-exec "$@"

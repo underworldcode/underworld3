@@ -1,0 +1,8 @@
+#!/bin/bash
+
+## This is not required for the conda-forge version of petsc but
+## it is needed if we install the uw3_env dependencies
+
+export PYTHONPATH=$CONDA_PREFIX/lib/ 
+
+exec "$@"

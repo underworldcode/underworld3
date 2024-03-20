@@ -96,26 +96,6 @@ python3 -m pip install "trame_jupyter_extension"
 
 # We install the local code "properly" - no point in a dev build here
 
-echo 
-echo Setup Conda Environments etc
-echo
-
-cd $CONDA_DIR
-mkdir -p ./etc/conda/activate.d
-touch ./etc/conda/activate.d/env_vars.sh
-
-cat << EOF > ./etc/conda/activate.d/env_vars.sh
-#!/bin/sh
-export PYTHONPATH=$CONDA_PREFIX/lib/ 
-
-EOF
-
-echo
-echo Completed
-echo
-
-
-
 echo
 echo Install local UW3
 echo
