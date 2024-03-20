@@ -109,9 +109,9 @@ echo
 echo Install local UW3
 echo
 
-python3 setup.py develop
-python3 setup.py build_ext
-pip3 install .
+# python3 setup.py develop
+# python3 setup.py build_ext
+conda run -n notebook pip3 install .
 
 echo
 echo Completed
