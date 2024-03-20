@@ -3,7 +3,7 @@ channels:
   - jgiordani
   - conda-forge
 dependencies:
-  - jgiordani::uw3_env
+  # - jgiordani::uw3_env
   - python=3.10
   - mpmath<=1.3
   - mesalib
@@ -16,7 +16,6 @@ dependencies:
   # - petsc4py>=3.20.5
   # - mpi4py
   # - h5py
-  # - jgiordani::uw3_env
   - sympy
   - pytest
   - ipython 
