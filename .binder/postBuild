@@ -11,8 +11,6 @@
 # # conda activate notebook
 # # mamba install --yes -c jgiordani uw3_env
 
-
-
 echo
 echo Install jupyter extensions
 echo
@@ -31,6 +29,9 @@ echo
 
 # python3 setup.py develop
 # python3 setup.py build_ext
+
+echo Conda prefix:
+echo $CONDA_PREFIX
 
 conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "import petsc4py; print(petsc4py.get_config())"
 conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "from petsc4py import PETSc"
