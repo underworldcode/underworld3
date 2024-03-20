@@ -24,35 +24,18 @@ python3 -m pip install "trame_jupyter_extension"
 # We install the local code "properly" - no point in a dev build here
 
 echo
-echo Check petsc / uw3_env
+echo Install local UW3 
 echo
 
-# python3 setup.py develop
-# python3 setup.py build_ext
-
-echo Conda prefix:
-echo $CONDA_PREFIX
-conda run -n notebook echo $CONDA_PREFIX
+# Note: we would be better to find a way to access this directly
+# CONDA_PREFIX=`conda run -n notebook bash -c "echo \${CONDA_PREFIX}"`
 
 export CONDA_PREFIX=/srv/conda/envs/notebook/
-
-conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "import petsc4py; print(petsc4py.get_config())"
-conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib python -c "from petsc4py import PETSc"
-
-python -c "import petsc4py; print(petsc4py.get_config())"
-python -c "from petsc4py import PETSc"
-
 export PYTHONPATH=$CONDA_PREFIX/lib
 
-python -c "import petsc4py; print(petsc4py.get_config())"
-python -c "from petsc4py import PETSc; print('Imported PETSc')"
-
-
-echo
-echo Install local UW3 pt 2
-echo
-
-conda run -n notebook PYTHONPATH=$CONDA_PREFIX/lib/ pip3 install .
+# debugging if required
+# python -c "import petsc4py; print(petsc4py.get_config())"
+# python -c "from petsc4py import PETSc; print('Imported PETSc')"
 
 echo
 echo Completed
