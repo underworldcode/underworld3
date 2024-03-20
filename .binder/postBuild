@@ -32,6 +32,7 @@ echo
 
 echo Conda prefix:
 echo $CONDA_PREFIX
+conda run -n notebook echo $CONDA_PREFIX
 
 export CONDA_PREFIX=/srv/conda/envs/notebook/
 
