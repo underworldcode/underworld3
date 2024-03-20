@@ -86,9 +86,12 @@ echo
 echo Install uw3_env here instead
 echo
 
-conda init
-conda activate notebook
-mamba install --yes -c jgiordani uw3_env
+# conda init
+# conda activate notebook
+# mamba install --yes -c jgiordani uw3_env
+
+conda run -n notebook mamba install -y -c jgiordani uw3_env 
+
 
 echo
 echo Install jupyter extensions
