@@ -113,6 +113,8 @@ echo
 
 # python3 setup.py develop
 # python3 setup.py build_ext
+
+export PYTHONPATH=$CONDA_PREFIX/lib/ 
 conda run -n notebook pip3 install .
 
 echo
