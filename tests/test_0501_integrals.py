@@ -1,4 +1,3 @@
-from re import S
 import underworld3 as uw
 import numpy as np
 import sympy
@@ -146,6 +145,7 @@ def test_integrate_swarmvar_O0():
 @pytest.mark.xfail  # since the derivative of the piecewise constant function does not exist
 def test_integrate_swarmvar_deriv_00():
 
+    # ass s_values_0's proxy variable is a of order 0 is should be constant
     with swarm.access(s_values_0):
         s_values_0.data[:, 0] = np.sin(np.pi * swarm.particle_coordinates.data[:, 1])
 

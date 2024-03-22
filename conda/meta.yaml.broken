@@ -29,14 +29,14 @@ requirements:
     - setuptools
     - cython
     - mpi4py
-    - petsc4py >=3.20.0
+    - petsc4py >=3.20.4
 
   run:
     - {{ compiler('c') }}
     - cython
     - python
     - petsc
-    - petsc4py >=3.20.0
+    - petsc4py >=3.20.4
     - mpi4py
     - h5py
     - pint

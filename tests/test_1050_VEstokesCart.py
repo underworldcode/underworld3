@@ -28,6 +28,7 @@ unstructured_quad_box_irregular_3D = uw.meshing.UnstructuredSimplexBox(
     "mesh",
     [
         structured_quad_box,
+        unstructured_quad_box_regular,
         unstructured_quad_box_irregular,
         unstructured_quad_box_irregular_3D,
     ],
@@ -113,9 +114,15 @@ def test_stokes_boxmesh(mesh):
 ## Mark as xfail for now
 
 
-@pytest.mark.xfail(reason="PetscDMPlex boundary condition issue with gmsh")
-def test_stokes_boxmesh_bc_failure():
-    mesh = unstructured_quad_box_regular
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        unstructured_quad_box_regular,
+    ],
+)
+@pytest.mark.xfail(reason="PeetscDMPlex boundary condition issue with gmsh")
+def test_stokes_boxmesh_bc_failure(mesh):
+    #mesh = unstructured_quad_box_regular
 
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
     mesh.dm.view()

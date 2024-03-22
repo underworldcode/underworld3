@@ -60,12 +60,9 @@ This API documentation is build with
 Open `uw3_api_docs/index.html` to browse. 
 
 """
-
-
-import sys
 from mpi4py import MPI  # for initialising MPI
-
 import petsc4py as _petsc4py
+import sys
 
 _petsc4py.init(sys.argv)
 
