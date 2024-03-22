@@ -213,57 +213,64 @@
 </span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a>    <span class="k">return</span> <span class="n">point_cloud</span>
 </span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a>
 </span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a>
-</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a><span class="k">def</span> <span class="nf">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a><span class="k">def</span> <span class="nf">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">simplify</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
 </span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw scalar function at mesh/cloud points&quot;&quot;&quot;</span>
 </span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>
 </span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
-</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>
-</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>        <span class="k">if</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">1.0e-6</span><span class="p">:</span>
-</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">2</span>
-</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">3</span>
-</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>
-</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
-</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>    <span class="n">scalar_values</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
-</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>
-</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>    <span class="k">return</span> <span class="n">scalar_values</span>
-</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>
-</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>
-</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a><span class="k">def</span> <span class="nf">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
-</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw vector function at mesh/cloud points&quot;&quot;&quot;</span>
+</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>    <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>
+</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>    <span class="k">if</span> <span class="n">simplify</span><span class="p">:</span>
+</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>        <span class="n">uw_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">)</span>
+</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>
+</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>        <span class="k">if</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">1.0e-6</span><span class="p">:</span>
+</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">2</span>
+</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>        <span class="k">else</span><span class="p">:</span>
+</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">3</span>
+</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>
+</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
+</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>    <span class="n">scalar_values</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
+</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>
+</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>    <span class="k">return</span> <span class="n">scalar_values</span>
 </span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>
-</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
-</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a>
-</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>    <span class="n">dim</span> <span class="o">=</span> <span class="n">uw_fn</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
-</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">3</span><span class="p">:</span>
-</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;UW vector function should have dimension 2 or 3&quot;</span><span class="p">)</span>
-</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>
-</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
-</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>    <span class="n">vector_values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">)</span>
-</span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>
-</span><span id="L-133"><a href="#L-133"><span class="linenos">133</span></a>    <span class="n">vector_values</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
-</span><span id="L-134"><a href="#L-134"><span class="linenos">134</span></a>
-</span><span id="L-135"><a href="#L-135"><span class="linenos">135</span></a>    <span class="k">return</span> <span class="n">vector_values</span>
+</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>
+</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a><span class="k">def</span> <span class="nf">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">simplify</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw vector function at mesh/cloud points&quot;&quot;&quot;</span>
+</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>
+</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
+</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>    <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>
+</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>    <span class="k">if</span> <span class="n">simplify</span><span class="p">:</span>
+</span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>        <span class="n">uw_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">)</span>
+</span><span id="L-133"><a href="#L-133"><span class="linenos">133</span></a>    <span class="n">dim</span> <span class="o">=</span> <span class="n">uw_fn</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+</span><span id="L-134"><a href="#L-134"><span class="linenos">134</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">3</span><span class="p">:</span>
+</span><span id="L-135"><a href="#L-135"><span class="linenos">135</span></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;UW vector function should have dimension 2 or 3&quot;</span><span class="p">)</span>
 </span><span id="L-136"><a href="#L-136"><span class="linenos">136</span></a>
-</span><span id="L-137"><a href="#L-137"><span class="linenos">137</span></a>
-</span><span id="L-138"><a href="#L-138"><span class="linenos">138</span></a><span class="c1"># def vector_fn_to_pv_arrows(coords, uw_fn, dim=None):</span>
-</span><span id="L-139"><a href="#L-139"><span class="linenos">139</span></a><span class="c1">#     &quot;&quot;&quot;evaluate uw vector function on point cloud&quot;&quot;&quot;</span>
-</span><span id="L-140"><a href="#L-140"><span class="linenos">140</span></a>
-</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a><span class="c1">#     import numpy as np</span>
-</span><span id="L-142"><a href="#L-142"><span class="linenos">142</span></a>
-</span><span id="L-143"><a href="#L-143"><span class="linenos">143</span></a><span class="c1">#     dim = uw_fn.shape[1]</span>
-</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a><span class="c1">#     if dim != 2 and dim != 3:</span>
-</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a><span class="c1">#         print(f&quot;UW vector function should have dimension 2 or 3&quot;)</span>
-</span><span id="L-146"><a href="#L-146"><span class="linenos">146</span></a>
-</span><span id="L-147"><a href="#L-147"><span class="linenos">147</span></a><span class="c1">#     coords = pv_mesh.points[:, 0 : dim - 1]</span>
-</span><span id="L-148"><a href="#L-148"><span class="linenos">148</span></a><span class="c1">#     vector_values = np.zeros_like(coords)</span>
+</span><span id="L-137"><a href="#L-137"><span class="linenos">137</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
+</span><span id="L-138"><a href="#L-138"><span class="linenos">138</span></a>    <span class="n">vector_values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">)</span>
+</span><span id="L-139"><a href="#L-139"><span class="linenos">139</span></a>
+</span><span id="L-140"><a href="#L-140"><span class="linenos">140</span></a>    <span class="n">vector_values</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
+</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a>
+</span><span id="L-142"><a href="#L-142"><span class="linenos">142</span></a>    <span class="k">return</span> <span class="n">vector_values</span>
+</span><span id="L-143"><a href="#L-143"><span class="linenos">143</span></a>
+</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a>
+</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a><span class="c1"># def vector_fn_to_pv_arrows(coords, uw_fn, dim=None):</span>
+</span><span id="L-146"><a href="#L-146"><span class="linenos">146</span></a><span class="c1">#     &quot;&quot;&quot;evaluate uw vector function on point cloud&quot;&quot;&quot;</span>
+</span><span id="L-147"><a href="#L-147"><span class="linenos">147</span></a>
+</span><span id="L-148"><a href="#L-148"><span class="linenos">148</span></a><span class="c1">#     import numpy as np</span>
 </span><span id="L-149"><a href="#L-149"><span class="linenos">149</span></a>
-</span><span id="L-150"><a href="#L-150"><span class="linenos">150</span></a><span class="c1">#     for i in range(0, dim):</span>
-</span><span id="L-151"><a href="#L-151"><span class="linenos">151</span></a><span class="c1">#         vector_values[:, i] = uw.function.evalf(uw_fn[i], coords)</span>
-</span><span id="L-152"><a href="#L-152"><span class="linenos">152</span></a>
-</span><span id="L-153"><a href="#L-153"><span class="linenos">153</span></a><span class="c1">#     return vector_values</span>
+</span><span id="L-150"><a href="#L-150"><span class="linenos">150</span></a><span class="c1">#     dim = uw_fn.shape[1]</span>
+</span><span id="L-151"><a href="#L-151"><span class="linenos">151</span></a><span class="c1">#     if dim != 2 and dim != 3:</span>
+</span><span id="L-152"><a href="#L-152"><span class="linenos">152</span></a><span class="c1">#         print(f&quot;UW vector function should have dimension 2 or 3&quot;)</span>
+</span><span id="L-153"><a href="#L-153"><span class="linenos">153</span></a>
+</span><span id="L-154"><a href="#L-154"><span class="linenos">154</span></a><span class="c1">#     coords = pv_mesh.points[:, 0 : dim - 1]</span>
+</span><span id="L-155"><a href="#L-155"><span class="linenos">155</span></a><span class="c1">#     vector_values = np.zeros_like(coords)</span>
+</span><span id="L-156"><a href="#L-156"><span class="linenos">156</span></a>
+</span><span id="L-157"><a href="#L-157"><span class="linenos">157</span></a><span class="c1">#     for i in range(0, dim):</span>
+</span><span id="L-158"><a href="#L-158"><span class="linenos">158</span></a><span class="c1">#         vector_values[:, i] = uw.function.evalf(uw_fn[i], coords)</span>
+</span><span id="L-159"><a href="#L-159"><span class="linenos">159</span></a>
+</span><span id="L-160"><a href="#L-160"><span class="linenos">160</span></a><span class="c1">#     return vector_values</span>
 </span></pre></div>
 
 
@@ -457,27 +464,31 @@
 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">scalar_fn_to_pv_points</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">pv_mesh</span>, </span><span class="param"><span class="n">uw_fn</span>, </span><span class="param"><span class="n">dim</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+        <span class="name">scalar_fn_to_pv_points</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">pv_mesh</span>, </span><span class="param"><span class="n">uw_fn</span>, </span><span class="param"><span class="n">dim</span><span class="o">=</span><span class="kc">None</span>, </span><span class="param"><span class="n">simplify</span><span class="o">=</span><span class="kc">True</span></span><span class="return-annotation">):</span></span>
 
                 <label class="view-source-button" for="scalar_fn_to_pv_points-view-source"><span>View Source</span></label>
 
     </div>
     <a class="headerlink" href="#scalar_fn_to_pv_points"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="scalar_fn_to_pv_points-104"><a href="#scalar_fn_to_pv_points-104"><span class="linenos">104</span></a><span class="k">def</span> <span class="nf">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="scalar_fn_to_pv_points-104"><a href="#scalar_fn_to_pv_points-104"><span class="linenos">104</span></a><span class="k">def</span> <span class="nf">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">simplify</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
 </span><span id="scalar_fn_to_pv_points-105"><a href="#scalar_fn_to_pv_points-105"><span class="linenos">105</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw scalar function at mesh/cloud points&quot;&quot;&quot;</span>
 </span><span id="scalar_fn_to_pv_points-106"><a href="#scalar_fn_to_pv_points-106"><span class="linenos">106</span></a>
 </span><span id="scalar_fn_to_pv_points-107"><a href="#scalar_fn_to_pv_points-107"><span class="linenos">107</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
-</span><span id="scalar_fn_to_pv_points-108"><a href="#scalar_fn_to_pv_points-108"><span class="linenos">108</span></a>
-</span><span id="scalar_fn_to_pv_points-109"><a href="#scalar_fn_to_pv_points-109"><span class="linenos">109</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="scalar_fn_to_pv_points-110"><a href="#scalar_fn_to_pv_points-110"><span class="linenos">110</span></a>        <span class="k">if</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">1.0e-6</span><span class="p">:</span>
-</span><span id="scalar_fn_to_pv_points-111"><a href="#scalar_fn_to_pv_points-111"><span class="linenos">111</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">2</span>
-</span><span id="scalar_fn_to_pv_points-112"><a href="#scalar_fn_to_pv_points-112"><span class="linenos">112</span></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="scalar_fn_to_pv_points-113"><a href="#scalar_fn_to_pv_points-113"><span class="linenos">113</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">3</span>
-</span><span id="scalar_fn_to_pv_points-114"><a href="#scalar_fn_to_pv_points-114"><span class="linenos">114</span></a>
-</span><span id="scalar_fn_to_pv_points-115"><a href="#scalar_fn_to_pv_points-115"><span class="linenos">115</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
-</span><span id="scalar_fn_to_pv_points-116"><a href="#scalar_fn_to_pv_points-116"><span class="linenos">116</span></a>    <span class="n">scalar_values</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
-</span><span id="scalar_fn_to_pv_points-117"><a href="#scalar_fn_to_pv_points-117"><span class="linenos">117</span></a>
-</span><span id="scalar_fn_to_pv_points-118"><a href="#scalar_fn_to_pv_points-118"><span class="linenos">118</span></a>    <span class="k">return</span> <span class="n">scalar_values</span>
+</span><span id="scalar_fn_to_pv_points-108"><a href="#scalar_fn_to_pv_points-108"><span class="linenos">108</span></a>    <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="scalar_fn_to_pv_points-109"><a href="#scalar_fn_to_pv_points-109"><span class="linenos">109</span></a>
+</span><span id="scalar_fn_to_pv_points-110"><a href="#scalar_fn_to_pv_points-110"><span class="linenos">110</span></a>    <span class="k">if</span> <span class="n">simplify</span><span class="p">:</span>
+</span><span id="scalar_fn_to_pv_points-111"><a href="#scalar_fn_to_pv_points-111"><span class="linenos">111</span></a>        <span class="n">uw_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">)</span>
+</span><span id="scalar_fn_to_pv_points-112"><a href="#scalar_fn_to_pv_points-112"><span class="linenos">112</span></a>
+</span><span id="scalar_fn_to_pv_points-113"><a href="#scalar_fn_to_pv_points-113"><span class="linenos">113</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="scalar_fn_to_pv_points-114"><a href="#scalar_fn_to_pv_points-114"><span class="linenos">114</span></a>        <span class="k">if</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">1.0e-6</span><span class="p">:</span>
+</span><span id="scalar_fn_to_pv_points-115"><a href="#scalar_fn_to_pv_points-115"><span class="linenos">115</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">2</span>
+</span><span id="scalar_fn_to_pv_points-116"><a href="#scalar_fn_to_pv_points-116"><span class="linenos">116</span></a>        <span class="k">else</span><span class="p">:</span>
+</span><span id="scalar_fn_to_pv_points-117"><a href="#scalar_fn_to_pv_points-117"><span class="linenos">117</span></a>            <span class="n">dim</span> <span class="o">=</span> <span class="mi">3</span>
+</span><span id="scalar_fn_to_pv_points-118"><a href="#scalar_fn_to_pv_points-118"><span class="linenos">118</span></a>
+</span><span id="scalar_fn_to_pv_points-119"><a href="#scalar_fn_to_pv_points-119"><span class="linenos">119</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
+</span><span id="scalar_fn_to_pv_points-120"><a href="#scalar_fn_to_pv_points-120"><span class="linenos">120</span></a>    <span class="n">scalar_values</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
+</span><span id="scalar_fn_to_pv_points-121"><a href="#scalar_fn_to_pv_points-121"><span class="linenos">121</span></a>
+</span><span id="scalar_fn_to_pv_points-122"><a href="#scalar_fn_to_pv_points-122"><span class="linenos">122</span></a>    <span class="k">return</span> <span class="n">scalar_values</span>
 </span></pre></div>
 
 
@@ -491,28 +502,31 @@
 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">vector_fn_to_pv_points</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">pv_mesh</span>, </span><span class="param"><span class="n">uw_fn</span>, </span><span class="param"><span class="n">dim</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+        <span class="name">vector_fn_to_pv_points</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">pv_mesh</span>, </span><span class="param"><span class="n">uw_fn</span>, </span><span class="param"><span class="n">dim</span><span class="o">=</span><span class="kc">None</span>, </span><span class="param"><span class="n">simplify</span><span class="o">=</span><span class="kc">True</span></span><span class="return-annotation">):</span></span>
 
                 <label class="view-source-button" for="vector_fn_to_pv_points-view-source"><span>View Source</span></label>
 
     </div>
     <a class="headerlink" href="#vector_fn_to_pv_points"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="vector_fn_to_pv_points-121"><a href="#vector_fn_to_pv_points-121"><span class="linenos">121</span></a><span class="k">def</span> <span class="nf">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
-</span><span id="vector_fn_to_pv_points-122"><a href="#vector_fn_to_pv_points-122"><span class="linenos">122</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw vector function at mesh/cloud points&quot;&quot;&quot;</span>
-</span><span id="vector_fn_to_pv_points-123"><a href="#vector_fn_to_pv_points-123"><span class="linenos">123</span></a>
-</span><span id="vector_fn_to_pv_points-124"><a href="#vector_fn_to_pv_points-124"><span class="linenos">124</span></a>    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-</span><span id="vector_fn_to_pv_points-125"><a href="#vector_fn_to_pv_points-125"><span class="linenos">125</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
-</span><span id="vector_fn_to_pv_points-126"><a href="#vector_fn_to_pv_points-126"><span class="linenos">126</span></a>
-</span><span id="vector_fn_to_pv_points-127"><a href="#vector_fn_to_pv_points-127"><span class="linenos">127</span></a>    <span class="n">dim</span> <span class="o">=</span> <span class="n">uw_fn</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
-</span><span id="vector_fn_to_pv_points-128"><a href="#vector_fn_to_pv_points-128"><span class="linenos">128</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">3</span><span class="p">:</span>
-</span><span id="vector_fn_to_pv_points-129"><a href="#vector_fn_to_pv_points-129"><span class="linenos">129</span></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;UW vector function should have dimension 2 or 3&quot;</span><span class="p">)</span>
-</span><span id="vector_fn_to_pv_points-130"><a href="#vector_fn_to_pv_points-130"><span class="linenos">130</span></a>
-</span><span id="vector_fn_to_pv_points-131"><a href="#vector_fn_to_pv_points-131"><span class="linenos">131</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
-</span><span id="vector_fn_to_pv_points-132"><a href="#vector_fn_to_pv_points-132"><span class="linenos">132</span></a>    <span class="n">vector_values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">)</span>
-</span><span id="vector_fn_to_pv_points-133"><a href="#vector_fn_to_pv_points-133"><span class="linenos">133</span></a>
-</span><span id="vector_fn_to_pv_points-134"><a href="#vector_fn_to_pv_points-134"><span class="linenos">134</span></a>    <span class="n">vector_values</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
-</span><span id="vector_fn_to_pv_points-135"><a href="#vector_fn_to_pv_points-135"><span class="linenos">135</span></a>
-</span><span id="vector_fn_to_pv_points-136"><a href="#vector_fn_to_pv_points-136"><span class="linenos">136</span></a>    <span class="k">return</span> <span class="n">vector_values</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="vector_fn_to_pv_points-125"><a href="#vector_fn_to_pv_points-125"><span class="linenos">125</span></a><span class="k">def</span> <span class="nf">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pv_mesh</span><span class="p">,</span> <span class="n">uw_fn</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">simplify</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+</span><span id="vector_fn_to_pv_points-126"><a href="#vector_fn_to_pv_points-126"><span class="linenos">126</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;evaluate uw vector function at mesh/cloud points&quot;&quot;&quot;</span>
+</span><span id="vector_fn_to_pv_points-127"><a href="#vector_fn_to_pv_points-127"><span class="linenos">127</span></a>
+</span><span id="vector_fn_to_pv_points-128"><a href="#vector_fn_to_pv_points-128"><span class="linenos">128</span></a>    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+</span><span id="vector_fn_to_pv_points-129"><a href="#vector_fn_to_pv_points-129"><span class="linenos">129</span></a>    <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
+</span><span id="vector_fn_to_pv_points-130"><a href="#vector_fn_to_pv_points-130"><span class="linenos">130</span></a>    <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="vector_fn_to_pv_points-131"><a href="#vector_fn_to_pv_points-131"><span class="linenos">131</span></a>
+</span><span id="vector_fn_to_pv_points-132"><a href="#vector_fn_to_pv_points-132"><span class="linenos">132</span></a>    <span class="k">if</span> <span class="n">simplify</span><span class="p">:</span>
+</span><span id="vector_fn_to_pv_points-133"><a href="#vector_fn_to_pv_points-133"><span class="linenos">133</span></a>        <span class="n">uw_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">)</span>
+</span><span id="vector_fn_to_pv_points-134"><a href="#vector_fn_to_pv_points-134"><span class="linenos">134</span></a>    <span class="n">dim</span> <span class="o">=</span> <span class="n">uw_fn</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+</span><span id="vector_fn_to_pv_points-135"><a href="#vector_fn_to_pv_points-135"><span class="linenos">135</span></a>    <span class="k">if</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">dim</span> <span class="o">!=</span> <span class="mi">3</span><span class="p">:</span>
+</span><span id="vector_fn_to_pv_points-136"><a href="#vector_fn_to_pv_points-136"><span class="linenos">136</span></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;UW vector function should have dimension 2 or 3&quot;</span><span class="p">)</span>
+</span><span id="vector_fn_to_pv_points-137"><a href="#vector_fn_to_pv_points-137"><span class="linenos">137</span></a>
+</span><span id="vector_fn_to_pv_points-138"><a href="#vector_fn_to_pv_points-138"><span class="linenos">138</span></a>    <span class="n">coords</span> <span class="o">=</span> <span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span>
+</span><span id="vector_fn_to_pv_points-139"><a href="#vector_fn_to_pv_points-139"><span class="linenos">139</span></a>    <span class="n">vector_values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">pv_mesh</span><span class="o">.</span><span class="n">points</span><span class="p">)</span>
+</span><span id="vector_fn_to_pv_points-140"><a href="#vector_fn_to_pv_points-140"><span class="linenos">140</span></a>
+</span><span id="vector_fn_to_pv_points-141"><a href="#vector_fn_to_pv_points-141"><span class="linenos">141</span></a>    <span class="n">vector_values</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evalf</span><span class="p">(</span><span class="n">uw_fn</span><span class="p">,</span> <span class="n">coords</span><span class="p">)</span>
+</span><span id="vector_fn_to_pv_points-142"><a href="#vector_fn_to_pv_points-142"><span class="linenos">142</span></a>
+</span><span id="vector_fn_to_pv_points-143"><a href="#vector_fn_to_pv_points-143"><span class="linenos">143</span></a>    <span class="k">return</span> <span class="n">vector_values</span>
 </span></pre></div>
 
 
