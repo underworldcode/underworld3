@@ -5,13 +5,12 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
-
 
 # # Examples with General Mesh variable manipulation
 #
@@ -24,6 +23,10 @@
 #
 # The masks are implemented as continuous mesh variables (the user can specify the interpolation order) and so they are also differentiable (once).
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # +
 import petsc4py
@@ -107,7 +110,7 @@ import vtk
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
 pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
+pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 
 
@@ -163,10 +166,7 @@ pl.add_mesh(
 
 
 pl.show(cpos="xy")
-# -
 
-
-0 / 0
 
 # +
 ad = uw.systems.AdvDiffusionSwarm(meshbox, t_soln, T1.fn, degree=3, projection=True)
@@ -235,7 +235,7 @@ if uw.mpi.size == 1 and ad.projection:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 250]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     pv.start_xvfb()
@@ -295,7 +295,7 @@ def plot_T_mesh(filename):
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
+        pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = False
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
         pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
@@ -432,7 +432,7 @@ if uw.mpi.size == 1:
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
     pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "pythreejs"
+    pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
     pv.start_xvfb()
@@ -500,3 +500,6 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
+# -
+
+

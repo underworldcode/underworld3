@@ -1,13 +1,12 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" >
+<html lang="en" data-content_root="../../" >
 
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>Spiegelman et al, notch-deformation benchmark &#8212; Underworld 3</title>
   
@@ -19,52 +18,49 @@
   </script>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=e353d410970836974a52" rel="stylesheet" />
-<link href="../../_static/styles/bootstrap.css?digest=e353d410970836974a52" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=e353d410970836974a52" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+<link href="../../_static/styles/bootstrap.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
 
   
-  <link href="../../_static/vendor/fontawesome/6.1.2/css/all.min.css?digest=e353d410970836974a52" rel="stylesheet" />
-  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.1.2/webfonts/fa-solid-900.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.1.2/webfonts/fa-brands-400.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.1.2/webfonts/fa-regular-400.woff2" />
+  <link href="../../_static/vendor/fontawesome/6.5.1/css/all.min.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.1/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.1/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.1/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
-    <link rel="stylesheet" href="../../_static/styles/sphinx-book-theme.css?digest=14f4ca6b54d191a8c7657f6c759bf11a5fb86285" type="text/css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=fa44fd50" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/sphinx-book-theme.css?v=384b581d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=13237357" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
     <link rel="stylesheet" type="text/css" href="../../_static/mystnb.4510f1fc1dee50b3e5859aac5469c37c29e427902b24a333a5f9fcb2f0b3ac41.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-thebe.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/customize.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/design-style.4045f2051d55cab465a707391d5b2007.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-thebe.css?v=4fa983c6" />
+    <link rel="stylesheet" type="text/css" href="../../_static/design-style.1e8bd061cd6da7fc9cf755528e8ffc24.min.css?v=0a3b3ea7" />
+    <link rel="stylesheet" type="text/css" href="../../_static/customize.css?v=47e70012" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=e353d410970836974a52" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=e353d410970836974a52" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8d27b9dea8ad943066ae" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8d27b9dea8ad943066ae" />
+  <script src="../../_static/vendor/fontawesome/6.5.1/js/all.min.js?digest=8d27b9dea8ad943066ae"></script>
 
-    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
-    <script src="../../_static/jquery.js"></script>
-    <script src="../../_static/underscore.js"></script>
-    <script src="../../_static/_sphinx_javascript_frameworks_compat.js"></script>
-    <script src="../../_static/doctools.js"></script>
-    <script src="../../_static/clipboard.min.js"></script>
-    <script src="../../_static/copybutton.js"></script>
-    <script src="../../_static/scripts/sphinx-book-theme.js?digest=5a5c038af52cf7bc1a1ec88eea08e6366ee68824"></script>
+    <script src="../../_static/documentation_options.js?v=9eb32ce0"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/scripts/sphinx-book-theme.js?v=efea14e4"></script>
     <script>let toggleHintShow = 'Click to show';</script>
     <script>let toggleHintHide = 'Click to hide';</script>
     <script>let toggleOpenOnPrint = 'true';</script>
-    <script src="../../_static/togglebutton.js"></script>
+    <script src="../../_static/togglebutton.js?v=4a39c7ea"></script>
     <script async="async" kind="hypothesis" src="https://hypothes.is/embed.js"></script>
-    <script src="../../_static/font_button.js"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
-    <script src="../../_static/design-tabs.js"></script>
-    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"
-const thebe_selector = ".thebe,.cell"
-const thebe_selector_input = "pre"
-const thebe_selector_output = ".output, .cell_output"
-</script>
-    <script async="async" src="../../_static/sphinx-thebe.js"></script>
+    <script src="../../_static/design-tabs.js?v=36754332"></script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
+    <script async="async" src="../../_static/sphinx-thebe.js?v=c100c467"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'Notebooks/Examples-Sandbox-VEP/Ex_Shear_Band_Notch_Benchmark';</script>
+    <script src="../../_static/font_button.js?v=3ec2d3a6"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Flow and Shear banding around a circular inclusion in pure shear" href="Ex_Shear_Band_Plasticity_PS.html" />
@@ -78,7 +74,15 @@ const thebe_selector_output = ".output, .cell_output"
 
   
   
-  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <a id="pst-skip-link" class="skip-link" href="#main-content">Skip to main content</a>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>
+    Back to top
+  </button>
+
   
   <input type="checkbox"
           class="sidebar-toggle"
@@ -113,11 +117,14 @@ const thebe_selector_output = ".output, .cell_output"
 </form></div>
   </div>
   
-    <nav class="bd-header navbar navbar-expand-lg bd-navbar">
-    </nav>
+    <header class="bd-header navbar navbar-expand-lg bd-navbar">
+    </header>
   
+
   <div class="bd-container">
     <div class="bd-container__inner bd-page-width">
+      
+      
       
       <div class="bd-sidebar-primary bd-sidebar">
         
@@ -132,9 +139,11 @@ const thebe_selector_output = ".output, .cell_output"
   
     <div class="sidebar-primary-items__start sidebar-primary__section">
         <div class="sidebar-primary-item">
+
   
 
 <a class="navbar-brand logo" href="../../FrontPage.html">
+  
   
   
   
@@ -144,12 +153,23 @@ const thebe_selector_output = ".output, .cell_output"
       
     
     
-    <img src="../../_static/AuWorldEQ.jpg" class="logo__image only-light" alt="Logo image"/>
-    <script>document.write(`<img src="../../_static/AuWorldEQ.jpg" class="logo__image only-dark" alt="Logo image"/>`);</script>
+    <img src="../../_static/AuWorldEQ.jpg" class="logo__image only-light" alt="Underworld 3 - Home"/>
+    <script>document.write(`<img src="../../_static/AuWorldEQ.jpg" class="logo__image only-dark" alt="Underworld 3 - Home"/>`);</script>
   
   
 </a></div>
-        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main">
+        <div class="sidebar-primary-item">
+
+ <script>
+ document.write(`
+   <button class="btn navbar-btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         
         <ul class="nav bd-sidenav bd-sidenav__home-link">
@@ -190,14 +210,12 @@ const thebe_selector_output = ".output, .cell_output"
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian-NL.html">Nonlinear diffusion of a hot pipe</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian.html">Linear diffusion of a hot pipe</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PoissonEquation/Ex_Poisson_Cartesian.html">Poisson Equation (simple)</a></li>
-
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Examples-PorousFlow/Readme.html">Porous flow examples</a><input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-4"><i class="fa-solid fa-chevron-down"></i></label><ul>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PorousFlow/Ex_Darcy_1D_benchmark.html">Darcy flow (1d) using xy coordinates to define permeability distribution</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PorousFlow/Ex_Darcy_1D_benchmark-Swarm.html">Darcy flow (1d) using swarm variable to define permeability</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-PorousFlow/Ex_Darcy_Cartesian.html">Underworld Groundwater Flow Benchmark 1</a></li>
-
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Examples-StokesFlow/Readme.html">Stokes Flow</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-5"><i class="fa-solid fa-chevron-down"></i></label><ul>
@@ -205,19 +223,16 @@ const thebe_selector_output = ".output, .cell_output"
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Cartesian_SolNL.html">Non-linear Stokes benchmark</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Sinker.html">Multiple materials - Linear stokes sinker</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Cartesian_SolC.html">Stokes Benchmark SolCx</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Disk_Cartesian.html">Cylindrical Stokes (Cartesian formulation)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Disk_CylCoords.html">Cylindrical Stokes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Spherical_FreeSlipBCs.html">Mathematical formulation</a></li>
-
-
+<li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Spherical_FreeSlipBCs.html">Stokes flow in a Spherical Domain</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Swarm_RT_Cartesian.html">Rayleigh Taylor - swarm materials</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_Stokes_Swarm_RT_Spherical.html">Rayleigh-Taylor (Level-set based) in the sphere</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-StokesFlow/Ex_WIP_Stokes_Periodic.html">Periodic Mesh Example (WIP)</a></li>
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Examples-Convection/Readme.html">Convection modelling examples</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-6"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.html">Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_AdvectionDiffusionSwarm_RotationTest.html">Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.html">Field (SemiLagrange) Advection solver test</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_AdvectionDiffusionSwarm_RotationTest.html">Swarm Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_Convection_1_SLCN_Cartesian.html">Constant viscosity convection, Cartesian domain (benchmark)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_Convection_2_SLCN_Cartesian-TdepVisc.html">Temperature-dependent viscosity convection, Cartesian Domain(benchmark)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Convection/Ex_Convection_3_SLCN_Cylindrical-TdepVisc.html">Temperature-dependent viscosity convection, Cylindrical domain (benchmark)</a></li>
@@ -237,32 +252,14 @@ const thebe_selector_output = ".output, .cell_output"
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Examples-NavierStokes/Readme.html">Navier Stokes Equation</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-8"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Benchmark_NS_DFG_2d_1.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Benchmark_NS_DFG_2d_1_ss.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Benchmark_NS_DFG_2d_2.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere-StreakSwarm.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_NavierStokesRotationTest.html">Navier Stokes test: boundary driven ring with step change in boundary conditions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_Navier_Stokes_Disk_FreeSlipBCs-Coriolis.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
-
 <li class="toctree-l2"><a class="reference internal" href="../Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis_ss.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
 
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Examples-Utilities/Readme.html">Miscellaneous Tips and Tricks</a><input class="toctree-checkbox" id="toctree-checkbox-9" name="toctree-checkbox-9" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-9"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex-ConstitutiveTensors.html">Tests</a></li>
-
-
-
-
-
-
-
-
-
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex_BCs_from_meshVariables.html">Cylindrical 2D Diffusion</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex_Coordinates.html">Symbolic forms v. mesh variables</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex_Integrals_on_Meshes.html">Using the PETSc mesh integration routines</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex_Projection_Function_Eval.html">Projection-based function evaluation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Examples-Utilities/Ex_Tensor_Variables_etc.html">Examples with General Mesh variable manipulation</a></li>
@@ -420,24 +417,28 @@ const thebe_selector_output = ".output, .cell_output"
 </button>
 
 
+
 <script>
 document.write(`
-  <button class="theme-switch-button btn btn-sm btn-outline-primary navbar-btn rounded-circle" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
-    <span class="theme-switch" data-mode="light"><i class="fa-solid fa-sun"></i></span>
-    <span class="theme-switch" data-mode="dark"><i class="fa-solid fa-moon"></i></span>
-    <span class="theme-switch" data-mode="auto"><i class="fa-solid fa-circle-half-stroke"></i></span>
+  <button class="btn btn-sm navbar-btn theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="theme-switch nav-link" data-mode="light"><i class="fa-solid fa-sun fa-lg"></i></span>
+    <span class="theme-switch nav-link" data-mode="dark"><i class="fa-solid fa-moon fa-lg"></i></span>
+    <span class="theme-switch nav-link" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg"></i></span>
   </button>
 `);
 </script>
+
 
 <script>
 document.write(`
   <button class="btn btn-sm navbar-btn search-button search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
-    <i class="fa-solid fa-magnifying-glass"></i>
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
   </button>
 `);
 </script>
-
+<label class="sidebar-toggle secondary-toggle btn btn-sm" for="__secondary"title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</label>
 </div></div>
       
     </div>
@@ -453,6 +454,14 @@ document.write(`
     <div id="print-main-content">
         <div id="jb-print-toc">
             
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-this-mesh-can-be-solved-for-a-simple-linear-problem">Check that this mesh can be solved for a simple, linear problem</a></li>
+</ul>
+            </nav>
         </div>
     </div>
 </div>
@@ -460,20 +469,19 @@ document.write(`
               
                 
 <div id="searchbox"></div>
-                <article class="bd-article" role="main">
+                <article class="bd-article">
                   
-  <p>coding: utf-8</p>
-<section class="tex2jax_ignore mathjax_ignore" id="spiegelman-et-al-notch-deformation-benchmark">
-<h1>Spiegelman et al, notch-deformation benchmark<a class="headerlink" href="#spiegelman-et-al-notch-deformation-benchmark" title="Permalink to this heading">#</a></h1>
+  <section class="tex2jax_ignore mathjax_ignore" id="spiegelman-et-al-notch-deformation-benchmark">
+<h1>Spiegelman et al, notch-deformation benchmark<a class="headerlink" href="#spiegelman-et-al-notch-deformation-benchmark" title="Link to this heading">#</a></h1>
 <p>This example is for the notch-localization test of Spiegelman et al. For which they supply a geometry file which gmsh can use to construct meshes at various resolutions. NOTE: we are just demonstrating the mesh here, not the solver configuration / benchmarking.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">.geo</span></code> file is provided and we show how to make this into a <code class="docutils literal notranslate"><span class="pre">.msh</span></code> file and
 how to read that into a <code class="docutils literal notranslate"><span class="pre">uw.discretisation.Mesh</span></code> object. The <code class="docutils literal notranslate"><span class="pre">.geo</span></code> file has header parameters to control the mesh refinement, and we provide a coarse version and the original version.</p>
 <p>After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="kn">import</span> <span class="nn">gmsh</span>
-<span class="kn">import</span> <span class="nn">meshio</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># to fix trame issue</span>
+<span class="kn">import</span> <span class="nn">nest_asyncio</span>
+<span class="n">nest_asyncio</span><span class="o">.</span><span class="n">apply</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
@@ -485,6 +493,37 @@ how to read that into a <code class="docutils literal notranslate"><span class="
 <span class="kn">import</span> <span class="nn">underworld3</span> <span class="k">as</span> <span class="nn">uw</span>
 <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
 <span class="kn">import</span> <span class="nn">sympy</span>
+<span class="kn">import</span> <span class="nn">gmsh</span>
+<span class="kn">import</span> <span class="nn">os</span>
+
+<span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="s2">&quot;meshes&quot;</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;output_np</span><span class="si">{</span><span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;UW_TIMING_ENABLE&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;1&quot;</span>
+
+<span class="c1"># Define the problem size</span>
+<span class="c1">#      1 - ultra low res for automatic checking</span>
+<span class="c1">#      2 - low res problem to play with this notebook</span>
+<span class="c1">#      3 - medium resolution (be prepared to wait)</span>
+<span class="c1">#      4 - highest resolution (benchmark case from Spiegelman et al)</span>
+
+<span class="n">problem_size</span> <span class="o">=</span> <span class="mi">2</span>
+
+<span class="c1"># For testing and automatic generation of notebook output,</span>
+<span class="c1"># over-ride the problem size if the UW_TESTING_LEVEL is set</span>
+
+<span class="n">uw_testing_level</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;UW_TESTING_LEVEL&quot;</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">uw_testing_level</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">problem_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">uw_testing_level</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+        <span class="c1"># Accept the default value</span>
+        <span class="k">pass</span>
 </pre></div>
 </div>
 </div>
@@ -498,101 +537,231 @@ how to read that into a <code class="docutils literal notranslate"><span class="
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">mesh_res</span> <span class="o">=</span> <span class="s2">&quot;coarse&quot;</span>  <span class="c1"># For tests</span>
-<span class="n">build_mesh</span> <span class="o">=</span> <span class="kc">False</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="k">if</span> <span class="n">build_mesh</span><span class="p">:</span>
-    <span class="k">if</span> <span class="n">mesh_res</span> <span class="o">==</span> <span class="s2">&quot;coarse&quot;</span><span class="p">:</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;Notch&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;meshes/compression_mesh_rounded_coarse.geo&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;meshes/notch_coarse.msh&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">problem_size</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+    <span class="n">cl_1</span> <span class="o">=</span> <span class="mf">0.25</span>
+    <span class="n">cl_2</span> <span class="o">=</span> <span class="mf">0.15</span>
+    <span class="n">cl_2a</span> <span class="o">=</span> <span class="mf">0.1</span>
+    <span class="n">cl_3</span> <span class="o">=</span> <span class="mf">0.25</span>
+    <span class="n">cl_4</span> <span class="o">=</span> <span class="mf">0.15</span>
+<span class="k">elif</span> <span class="n">problem_size</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
+    <span class="n">cl_1</span> <span class="o">=</span> <span class="mf">0.1</span>
+    <span class="n">cl_2</span> <span class="o">=</span> <span class="mf">0.05</span>
+    <span class="n">cl_2a</span> <span class="o">=</span> <span class="mf">0.03</span>
+    <span class="n">cl_3</span> <span class="o">=</span> <span class="mf">0.1</span>
+    <span class="n">cl_4</span> <span class="o">=</span> <span class="mf">0.05</span>
+<span class="k">elif</span> <span class="n">problem_size</span> <span class="o">==</span> <span class="mi">3</span><span class="p">:</span>
+    <span class="n">cl_1</span> <span class="o">=</span> <span class="mf">0.06</span>
+    <span class="n">cl_2</span> <span class="o">=</span> <span class="mf">0.03</span>
+    <span class="n">cl_2a</span> <span class="o">=</span> <span class="mf">0.015</span>
+    <span class="n">cl_3</span> <span class="o">=</span> <span class="mf">0.04</span>
+    <span class="n">cl_4</span> <span class="o">=</span> <span class="mf">0.02</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="n">cl_1</span> <span class="o">=</span> <span class="mf">0.04</span>
+    <span class="n">cl_2</span> <span class="o">=</span> <span class="mf">0.005</span>
+    <span class="n">cl_2a</span> <span class="o">=</span> <span class="mf">0.003</span>
+    <span class="n">cl_3</span> <span class="o">=</span> <span class="mf">0.02</span>
+    <span class="n">cl_4</span> <span class="o">=</span> <span class="mf">0.01</span>
 
-    <span class="k">elif</span> <span class="n">mesh_res</span> <span class="o">==</span> <span class="s2">&quot;medium&quot;</span><span class="p">:</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;Notch&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;meshes/compression_mesh_rounded_medium.geo&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;meshes/notch_medium.msh&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="c1"># The benchmark provides a .geo file. This is the gmsh python</span>
+<span class="c1"># equivalent (mostly transcribed from the .geo format). The duplicated</span>
+<span class="c1"># Point2 caused a few problems with the mesh reader at one point.</span>
 
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;Notch&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;meshes/compression_mesh_rounded_refine.geo&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;meshes/notch_refine.msh&quot;</span><span class="p">)</span>
-        <span class="n">gmsh</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">option</span><span class="o">.</span><span class="n">setNumber</span><span class="p">(</span><span class="s2">&quot;General.Verbosity&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;Notch&quot;</span><span class="p">)</span>
+
+    <span class="n">Point1</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="c1"># Point2 = gmsh.model.geo.addPoint(-2, -1, 0, cl_1)</span>
+    <span class="n">Point3</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">+</span><span class="mi">2</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="n">Point4</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="n">Point5</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="n">Point6</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="n">Point7</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_1</span><span class="p">)</span>
+    <span class="n">Point8</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.08333333333329999</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2</span><span class="p">)</span>
+    <span class="n">Point9</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.08333333333329999</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2</span><span class="p">)</span>
+    <span class="n">Point10</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.08333333333329999</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.6666666666667</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2</span><span class="p">)</span>
+    <span class="n">Point11</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.08333333333329999</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.6666666666667</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2</span><span class="p">)</span>
+    <span class="n">Point25</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_4</span><span class="p">)</span>
+    <span class="n">Point26</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_4</span><span class="p">)</span>
+    <span class="n">Point27</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_3</span><span class="p">)</span>
+
+    <span class="n">Line1</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point1</span><span class="p">,</span> <span class="n">Point3</span><span class="p">)</span>
+    <span class="n">Line2</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point3</span><span class="p">,</span> <span class="n">Point4</span><span class="p">)</span>
+    <span class="n">Line3</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point4</span><span class="p">,</span> <span class="n">Point5</span><span class="p">)</span>
+    <span class="n">Line4</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point5</span><span class="p">,</span> <span class="n">Point26</span><span class="p">)</span>
+    <span class="n">Line8</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point26</span><span class="p">,</span> <span class="n">Point27</span><span class="p">)</span>
+    <span class="n">Line9</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point27</span><span class="p">,</span> <span class="n">Point25</span><span class="p">)</span>
+    <span class="n">Line10</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point25</span><span class="p">,</span> <span class="n">Point6</span><span class="p">)</span>
+    <span class="n">Line6</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point6</span><span class="p">,</span> <span class="n">Point7</span><span class="p">)</span>
+    <span class="n">Line7</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point7</span><span class="p">,</span> <span class="n">Point1</span><span class="p">)</span>
+
+    <span class="n">Point12</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.1033333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point13</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.0833333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.73</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point14</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.0833333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.686666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point15</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.0633333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.666666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point16</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.0633333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.666666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point17</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.0833333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.686666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point18</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.0833333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.73</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point19</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.1033333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.75</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point20</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.103333333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.73</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point21</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="o">-</span><span class="mf">0.063333333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.686666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point22</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.063333333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.686666666666666</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+    <span class="n">Point24</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPoint</span><span class="p">(</span><span class="mf">0.103333333333333</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.73</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">cl_2a</span><span class="p">)</span>
+
+    <span class="n">Circle22</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCircleArc</span><span class="p">(</span><span class="n">Point12</span><span class="p">,</span> <span class="n">Point20</span><span class="p">,</span> <span class="n">Point13</span><span class="p">)</span>
+    <span class="n">Circle23</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCircleArc</span><span class="p">(</span><span class="n">Point14</span><span class="p">,</span> <span class="n">Point21</span><span class="p">,</span> <span class="n">Point15</span><span class="p">)</span>
+    <span class="n">Circle24</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCircleArc</span><span class="p">(</span><span class="n">Point16</span><span class="p">,</span> <span class="n">Point22</span><span class="p">,</span> <span class="n">Point17</span><span class="p">)</span>
+    <span class="n">Circle25</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCircleArc</span><span class="p">(</span><span class="n">Point18</span><span class="p">,</span> <span class="n">Point24</span><span class="p">,</span> <span class="n">Point19</span><span class="p">)</span>
+
+    <span class="n">Line26</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point7</span><span class="p">,</span> <span class="n">Point12</span><span class="p">)</span>
+    <span class="n">Line27</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point13</span><span class="p">,</span> <span class="n">Point14</span><span class="p">)</span>
+    <span class="n">Line28</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point15</span><span class="p">,</span> <span class="n">Point16</span><span class="p">)</span>
+    <span class="n">Line29</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point17</span><span class="p">,</span> <span class="n">Point18</span><span class="p">)</span>
+    <span class="n">Line30</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addLine</span><span class="p">(</span><span class="n">Point19</span><span class="p">,</span> <span class="n">Point4</span><span class="p">)</span>
+
+    <span class="n">LineLoop31</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCurveLoop</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="n">Line1</span><span class="p">,</span>
+            <span class="n">Line2</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Line30</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Circle25</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Line29</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Circle24</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Line28</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Circle23</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Line27</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Circle22</span><span class="p">,</span>
+            <span class="o">-</span><span class="n">Line26</span><span class="p">,</span>
+            <span class="n">Line7</span><span class="p">,</span>
+        <span class="p">],</span>
+    <span class="p">)</span>
+
+    <span class="n">LineLoop33</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addCurveLoop</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="n">Line6</span><span class="p">,</span>
+            <span class="n">Line26</span><span class="p">,</span>
+            <span class="n">Circle22</span><span class="p">,</span>
+            <span class="n">Line27</span><span class="p">,</span>
+            <span class="n">Circle23</span><span class="p">,</span>
+            <span class="n">Line28</span><span class="p">,</span>
+            <span class="n">Circle24</span><span class="p">,</span>
+            <span class="n">Line29</span><span class="p">,</span>
+            <span class="n">Circle25</span><span class="p">,</span>
+            <span class="n">Line30</span><span class="p">,</span>
+            <span class="n">Line3</span><span class="p">,</span>
+            <span class="n">Line4</span><span class="p">,</span>
+            <span class="n">Line8</span><span class="p">,</span>
+            <span class="n">Line9</span><span class="p">,</span>
+            <span class="n">Line10</span><span class="p">,</span>
+        <span class="p">],</span>
+    <span class="p">)</span>
+
+    <span class="n">Surface32</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPlaneSurface</span><span class="p">([</span><span class="n">LineLoop31</span><span class="p">])</span>
+    <span class="n">Surface34</span> <span class="o">=</span> <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">addPlaneSurface</span><span class="p">([</span><span class="n">LineLoop33</span><span class="p">])</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">geo</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">Line1</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Bottom&quot;</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">Line2</span><span class="p">,</span> <span class="n">Line3</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Right&quot;</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">Line7</span><span class="p">,</span> <span class="n">Line6</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Left&quot;</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">[</span><span class="n">Line4</span><span class="p">,</span> <span class="n">Line8</span><span class="p">,</span> <span class="n">Line9</span><span class="p">,</span> <span class="n">Line10</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Top&quot;</span><span class="p">)</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span>
+        <span class="mi">1</span><span class="p">,</span>
+        <span class="p">[</span>
+            <span class="n">Line26</span><span class="p">,</span>
+            <span class="n">Circle22</span><span class="p">,</span>
+            <span class="n">Line27</span><span class="p">,</span>
+            <span class="n">Circle23</span><span class="p">,</span>
+            <span class="n">Line28</span><span class="p">,</span>
+            <span class="n">Circle24</span><span class="p">,</span>
+            <span class="n">Line29</span><span class="p">,</span>
+            <span class="n">Circle25</span><span class="p">,</span>
+            <span class="n">Line30</span><span class="p">,</span>
+        <span class="p">],</span>
+        <span class="n">tag</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;InnerBoundary&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="p">[</span><span class="n">Surface32</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Weak&quot;</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">addPhysicalGroup</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="p">[</span><span class="n">Surface34</span><span class="p">],</span> <span class="n">tag</span><span class="o">=</span><span class="mi">101</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Strong&quot;</span><span class="p">)</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;./meshes/notch_mesh</span><span class="si">{</span><span class="n">problem_size</span><span class="si">}</span><span class="s2">.msh&quot;</span><span class="p">)</span>
+    <span class="n">gmsh</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
 </div>
-<p>Create dictionary to tell the mesh constructor about the mesh labels
-which are not embedded in the .geo file in the way the physical groups
-are embedded in the .msh file</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cell_sets</span> <span class="o">=</span> <span class="p">[]</span>
-<span class="n">cell_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;weak&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}]</span>
-<span class="n">cell_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;strong&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">underworld3</span> <span class="kn">import</span> <span class="n">timing</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">face_sets</span> <span class="o">=</span> <span class="p">[]</span>
-<span class="n">face_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Left&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}]</span>
-<span class="n">face_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Right&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}]</span>
-<span class="n">face_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Bottom&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}]</span>
-<span class="n">face_sets</span> <span class="o">+=</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Top&quot;</span><span class="p">,</span> <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">}]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">timing</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+<span class="n">timing</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">mesh1</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span>
-    <span class="sa">f</span><span class="s2">&quot;./meshes/notch_</span><span class="si">{</span><span class="n">mesh_res</span><span class="si">}</span><span class="s2">.msh&quot;</span><span class="p">,</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mesh1</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span>
+    <span class="sa">f</span><span class="s2">&quot;./meshes/notch_mesh</span><span class="si">{</span><span class="n">problem_size</span><span class="si">}</span><span class="s2">.msh&quot;</span><span class="p">,</span>
     <span class="n">simplex</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">qdegree</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
-    <span class="n">cellSets</span><span class="o">=</span><span class="n">cell_sets</span><span class="p">,</span>
-    <span class="n">faceSets</span><span class="o">=</span><span class="n">face_sets</span><span class="p">,</span>
+    <span class="n">markVertices</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">useRegions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">useMultipleTags</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">view</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">swarm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Swarm</span><span class="p">(</span><span class="n">mesh</span><span class="o">=</span><span class="n">mesh1</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    
+    <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
+    <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
+
+    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="n">mesh1</span><span class="p">)</span>
+
+    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
+
+    <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
+        <span class="n">pvmesh</span><span class="p">,</span>
+        <span class="s2">&quot;Blue&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;wireframe&quot;</span><span class="p">,</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="c1"># pl.add_points(point_cloud, cmap=&quot;coolwarm&quot;, render_points_as_spheres=False, point_size=10, opacity=0.66)</span>
+
+    <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">cpos</span><span class="o">=</span><span class="s2">&quot;xy&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">swarm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Swarm</span><span class="p">(</span><span class="n">mesh</span><span class="o">=</span><span class="n">mesh1</span><span class="p">)</span>
 <span class="n">material</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">SwarmVariable</span><span class="p">(</span>
-    <span class="s2">&quot;M&quot;</span><span class="p">,</span> <span class="n">swarm</span><span class="p">,</span> <span class="n">num_components</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">proxy_continuous</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">proxy_degree</span><span class="o">=</span><span class="mi">1</span>
+    <span class="s2">&quot;M&quot;</span><span class="p">,</span> <span class="n">swarm</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">proxy_continuous</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">proxy_degree</span><span class="o">=</span><span class="mi">0</span>
 <span class="p">)</span>
-<span class="n">swarm</span><span class="o">.</span><span class="n">populate</span><span class="p">(</span><span class="n">fill_param</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">swarm</span><span class="o">.</span><span class="n">populate</span><span class="p">(</span><span class="n">fill_param</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">v_soln</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;U&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dim</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">v_soln</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;U&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dim</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
 <span class="n">p_soln</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;P&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="n">p_null</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;P2&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
@@ -604,7 +773,7 @@ are embedded in the .msh file</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">edot</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span>
     <span class="sa">r</span><span class="s2">&quot;\dot\varepsilon&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>
-<span class="n">visc</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\eta&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">visc</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\eta&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 <span class="n">stress</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\sigma&quot;</span><span class="p">,</span> <span class="n">mesh1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">continuous</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -612,11 +781,10 @@ are embedded in the .msh file</p>
 </div>
 <p>This is how we extract cell data from the mesh. We can map it to the swarm data structure and use this to
 build material properties that depend on cell type.</p>
-<p>Parallel ? Local or global ?</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">indexSetW</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">getStratumIS</span><span class="p">(</span><span class="s2">&quot;Cell Sets&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
-<span class="n">indexSetS</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">getStratumIS</span><span class="p">(</span><span class="s2">&quot;Cell Sets&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">indexSetW</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">getStratumIS</span><span class="p">(</span><span class="s2">&quot;Weak&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)</span>
+<span class="n">indexSetS</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">dm</span><span class="o">.</span><span class="n">getStratumIS</span><span class="p">(</span><span class="s2">&quot;Strong&quot;</span><span class="p">,</span> <span class="mi">101</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -649,58 +817,52 @@ build material properties that depend on cell type.</p>
 <p>check the mesh if in a notebook / serial</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="kc">False</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="kc">True</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    
     <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
-    <span class="kn">import</span> <span class="nn">vtk</span>
+    <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
 
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">background</span> <span class="o">=</span> <span class="s2">&quot;white&quot;</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">window_size</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1050</span><span class="p">,</span> <span class="mi">500</span><span class="p">]</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">antialiasing</span> <span class="o">=</span> <span class="kc">True</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">jupyter_backend</span> <span class="o">=</span> <span class="s2">&quot;panel&quot;</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">smooth_shading</span> <span class="o">=</span> <span class="kc">True</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">camera</span><span class="p">[</span><span class="s2">&quot;viewup&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">]</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">camera</span><span class="p">[</span><span class="s2">&quot;position&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]</span>
+    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;./meshes/notch_mesh</span><span class="si">{</span><span class="n">problem_size</span><span class="si">}</span><span class="s2">.msh&quot;</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
 
-    <span class="n">mesh1</span><span class="o">.</span><span class="n">vtk</span><span class="p">(</span><span class="s2">&quot;tmp_notch.vtk&quot;</span><span class="p">)</span>
-    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="s2">&quot;tmp_notch.vtk&quot;</span><span class="p">)</span>
-
-    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">()</span>
+    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
 
     <span class="c1"># points = np.zeros((mesh1._centroids.shape[0], 3))</span>
     <span class="c1"># points[:, 0] = mesh1._centroids[:, 0]</span>
     <span class="c1"># points[:, 1] = mesh1._centroids[:, 1]</span>
 
-    <span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
-        <span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
-        <span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
-        <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">swarm</span><span class="o">.</span><span class="n">particle_coordinates</span><span class="o">.</span><span class="n">data</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
-
+    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">swarm</span><span class="p">)</span>
     <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
     <span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
         <span class="n">point_cloud</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;M&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">material</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
 
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">N</span>
-    <span class="p">)</span>
 
-    <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
-        <span class="n">pvmesh</span><span class="p">,</span>
+    <span class="c1"># pl.add_mesh(</span>
+    <span class="c1">#     pvmesh,</span>
+    <span class="c1">#     cmap=&quot;coolwarm&quot;,</span>
+    <span class="c1">#     edge_color=&quot;Black&quot;,</span>
+    <span class="c1">#     show_edges=True,</span>
+    <span class="c1">#     use_transparency=False,</span>
+    <span class="c1">#     opacity=0.5,</span>
+    <span class="c1"># )</span>
+    
+    <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
+        <span class="n">point_cloud</span><span class="p">,</span>
         <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
-        <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
-        <span class="n">show_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-        <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+        <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">point_size</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.66</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># pl.add_points(point_cloud, cmap=&quot;coolwarm&quot;, render_points_as_spheres=False, point_size=10, opacity=0.66)</span>
+    <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="s2">&quot;Black&quot;</span><span class="p">,</span> <span class="s2">&quot;wireframe&quot;</span><span class="p">)</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">cpos</span><span class="o">=</span><span class="s2">&quot;xy&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
 </div>
-<p>Check that this mesh can be solved for a simple, linear problem</p>
+<section id="check-that-this-mesh-can-be-solved-for-a-simple-linear-problem">
+<h2>Check that this mesh can be solved for a simple, linear problem<a class="headerlink" href="#check-that-this-mesh-can-be-solved-for-a-simple-linear-problem" title="Link to this heading">#</a></h2>
 <p>Create Stokes object</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
@@ -709,7 +871,7 @@ build material properties that depend on cell type.</p>
     <span class="n">velocityField</span><span class="o">=</span><span class="n">v_soln</span><span class="p">,</span>
     <span class="n">pressureField</span><span class="o">=</span><span class="n">p_soln</span><span class="p">,</span>
     <span class="n">solver_name</span><span class="o">=</span><span class="s2">&quot;stokes&quot;</span><span class="p">,</span>
-    <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -719,28 +881,48 @@ build material properties that depend on cell type.</p>
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Set solve options here (or remove default values</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;ksp_monitor&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;snes_atol&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.001</span>
+
+<span class="n">stokes</span><span class="o">.</span><span class="n">tolerance</span> <span class="o">=</span> <span class="mf">1.0e-6</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;snes_atol&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mf">1e-2</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">bodyforce</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">Matrix</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.001</span><span class="p">])</span><span class="o">.</span><span class="n">T</span>
+
+<span class="c1"># stokes.petsc_options[&quot;fieldsplit_velocity_ksp_rtol&quot;] = 1e-4</span>
+<span class="c1"># stokes.petsc_options[&quot;fieldsplit_pressure_ksp_type&quot;] = &quot;gmres&quot; # gmres here for bulletproof</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span>
+    <span class="s2">&quot;fieldsplit_pressure_pc_type&quot;</span>
+<span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;gamg&quot;</span>  <span class="c1"># can use gasm / gamg / lu here</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span>
+    <span class="s2">&quot;fieldsplit_pressure_pc_gasm_type&quot;</span>
+<span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;basic&quot;</span>  <span class="c1"># can use gasm / gamg / lu here</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span>
+    <span class="s2">&quot;fieldsplit_pressure_pc_gamg_type&quot;</span>
+<span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;classical&quot;</span>  <span class="c1"># can use gasm / gamg / lu here</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;fieldsplit_pressure_pc_gamg_classical_type&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;direct&quot;</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;fieldsplit_pressure_pc_gamg_esteig_ksp_type&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;cg&quot;</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Level set approach to rheology:</span>
-<span class="n">viscosity_L</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">Piecewise</span><span class="p">(</span>
-    <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.5</span><span class="p">),</span>
-    <span class="p">(</span><span class="mf">1000.0</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
-<span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscousFlowModel</span><span class="p">(</span><span class="n">mesh1</span><span class="o">.</span><span class="n">dim</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viscosity_L</span> <span class="o">=</span> <span class="mf">999.0</span> <span class="o">*</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mf">1.0</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">constitutive_models</span><span class="o">.</span><span class="n">ViscousFlowModel</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">=</span> <span class="n">viscosity_L</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity_L</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">penalty</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">penalty</span> <span class="o">=</span> <span class="mf">0.1</span>
 </pre></div>
 </div>
 </div>
@@ -748,10 +930,12 @@ build material properties that depend on cell type.</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Velocity boundary conditions</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="o">+</span><span class="mf">1.0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="s2">&quot;Left&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="s2">&quot;Right&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="s2">&quot;Left&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;Left&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">(</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="s2">&quot;Right&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;Right&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,),</span> <span class="s2">&quot;Bottom&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span><span class="p">,))</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,),</span> <span class="s2">&quot;Upper&quot;</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span><span class="p">,))</span>
+<span class="c1"># stokes.add_dirichlet_bc((0.0,), &quot;Top&quot;, (1,))</span>
 </pre></div>
 </div>
 </div>
@@ -765,15 +949,9 @@ build material properties that depend on cell type.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">X</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">res</span> <span class="o">=</span> <span class="mf">0.1</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">X</span>
+
+<span class="n">res</span> <span class="o">=</span> <span class="mf">0.1</span>
 <span class="n">hw</span> <span class="o">=</span> <span class="mf">1000.0</span> <span class="o">/</span> <span class="n">res</span>
 <span class="n">surface_defn_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="p">((</span><span class="n">y</span> <span class="o">-</span> <span class="mi">0</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">hw</span><span class="p">)</span>
 <span class="n">base_defn_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="p">((</span><span class="n">y</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">hw</span><span class="p">)</span>
@@ -783,11 +961,17 @@ build material properties that depend on cell type.</p>
 </div>
 </div>
 </div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span>
+</pre></div>
+</div>
+</div>
+</div>
 <p>This is a strategy to obtain integrals over the surface (etc)</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">surface_integral</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">uw_function</span><span class="p">,</span> <span class="n">mask_fn</span><span class="p">):</span>
-
     <span class="n">calculator</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">maths</span><span class="o">.</span><span class="n">Integral</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">uw_function</span> <span class="o">*</span> <span class="n">mask_fn</span><span class="p">)</span>
     <span class="n">value</span> <span class="o">=</span> <span class="n">calculator</span><span class="o">.</span><span class="n">evaluate</span><span class="p">()</span>
 
@@ -805,7 +989,7 @@ build material properties that depend on cell type.</p>
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
 <span class="n">strain_rate_calc</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Projection</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">edot</span><span class="p">)</span>
-<span class="n">strain_rate_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span>
+<span class="n">strain_rate_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span>
 <span class="n">strain_rate_calc</span><span class="o">.</span><span class="n">smoothing</span> <span class="o">=</span> <span class="mf">1.0e-3</span>
 </pre></div>
 </div>
@@ -834,109 +1018,72 @@ build material properties that depend on cell type.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Stokes setup&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># stokes._setup_terms()</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_terms</span><span class="p">()</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># stokes._uu_G3</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># First, we solve the linear problem</span>
+
+<span class="n">stokes</span><span class="o">.</span><span class="n">tolerance</span> <span class="o">=</span> <span class="mf">1e-4</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">petsc_options</span><span class="p">[</span><span class="s2">&quot;snes_atol&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mf">1.0e-2</span>
+
+<span class="c1"># stokes.petsc_options[&quot;ksp_rtol&quot;]  = 1.0e-4</span>
+<span class="c1"># stokes.petsc_options[&quot;ksp_atol&quot;]  = 1.0e-8</span>
+
+<span class="c1"># stokes.petsc_options[&quot;fieldsplit_pressure_ksp_rtol&quot;]  = 1.0e-5</span>
+<span class="c1"># stokes.petsc_options[&quot;fieldsplit_velocity_ksp_rtol&quot;]  = 1.0e-5</span>
+
+
 <span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">zero_init_guess</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Linear solve complete&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">p_surface_ave</span> <span class="o">=</span> <span class="n">surface_integral</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Surface Average pressure: </span><span class="si">{</span><span class="n">p_surface_ave</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">p_null</span><span class="p">):</span>
-    <span class="n">p_null</span><span class="o">.</span><span class="n">data</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">p_surface_ave</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">tau_y</span> <span class="o">=</span> <span class="mi">100</span> <span class="o">+</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">-</span> <span class="n">p_null</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viscosity_L</span> <span class="o">=</span> <span class="mf">999.0</span> <span class="o">*</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mf">1.0</span>
-<span class="n">viscosity_Y</span> <span class="o">=</span> <span class="n">tau_y</span> <span class="o">/</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span> <span class="o">+</span> <span class="mf">0.001</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viscosity_H</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="p">(</span><span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity_Y</span> <span class="o">+</span> <span class="mi">1</span> <span class="o">/</span> <span class="mi">1</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viscosity</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">Piecewise</span><span class="p">(</span>
-    <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.5</span><span class="p">),</span>
-    <span class="p">(</span><span class="n">viscosity_Y</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
-<span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">=</span> <span class="n">viscosity</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">_setup_terms</span><span class="p">()</span>
-</pre></div>
-</div>
-</div>
-</div>
-<p>Fake call-back version</p>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
-    <span class="n">p_surface_ave</span> <span class="o">=</span> <span class="n">surface_integral</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
-    <span class="k">with</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">p_null</span><span class="p">):</span>
-        <span class="n">p_null</span><span class="o">.</span><span class="n">data</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">p_surface_ave</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>
+<span class="n">C0</span> <span class="o">=</span> <span class="mi">150</span>
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">10</span><span class="p">,</span><span class="mi">2</span><span class="p">):</span>
+    <span class="n">mu</span> <span class="o">=</span> <span class="mf">0.75</span>
+    <span class="n">C</span> <span class="o">=</span> <span class="n">C0</span> <span class="o">+</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="n">i</span> <span class="o">/</span> <span class="mi">9</span><span class="p">)</span> <span class="o">*</span> <span class="mf">15.0</span>
+    <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Mu - </span><span class="si">{</span><span class="n">mu</span><span class="si">}</span><span class="s2">, C = </span><span class="si">{</span><span class="n">C</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="n">tau_y</span> <span class="o">=</span> <span class="n">C</span> <span class="o">+</span> <span class="n">mu</span> <span class="o">*</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">viscosity_L</span> <span class="o">=</span> <span class="mf">999.0</span> <span class="o">*</span> <span class="n">material</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mf">1.0</span>
+    <span class="n">viscosity_Y</span> <span class="o">=</span> <span class="n">tau_y</span> <span class="o">/</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span> <span class="o">+</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mi">1000</span><span class="p">)</span>
+    <span class="n">viscosity</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="p">(</span><span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity_Y</span> <span class="o">+</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity_L</span><span class="p">)</span>
+
+    <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">shear_viscosity_0</span> <span class="o">=</span> <span class="n">viscosity</span>
+    <span class="n">stokes</span><span class="o">.</span><span class="n">saddle_preconditioner</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">viscosity</span>
+
+    <span class="c1"># +</span>
+    <span class="c1"># Now use that as the guess for a better job</span>
+
+    <span class="c1"># stokes.tolerance = 1e-4</span>
+    <span class="c1"># stokes.petsc_options[&quot;ksp_rtol&quot;]  = 1.0e-4</span>
+    <span class="c1"># stokes.petsc_options[&quot;ksp_atol&quot;]  = 1.0e-8</span>
+
+    <span class="c1"># stokes.petsc_options[&quot;fieldsplit_pressure_ksp_rtol&quot;]  = 1.0e-5</span>
+    <span class="c1"># stokes.petsc_options[&quot;fieldsplit_velocity_ksp_rtol&quot;]  = 1.0e-5</span>
+    <span class="c1"># stokes.snes.atol = 1e-3</span>
 
     <span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">zero_init_guess</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Completed: Mu - </span><span class="si">{</span><span class="n">mu</span><span class="si">}</span><span class="s2">, C = </span><span class="si">{</span><span class="n">C</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -946,7 +1093,7 @@ build material properties that depend on cell type.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
 <span class="n">viscosity_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span>
 <span class="n">stress_calc</span><span class="o">.</span><span class="n">uw_function</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">_Einv2</span>
+    <span class="mi">2</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">constitutive_model</span><span class="o">.</span><span class="n">Parameters</span><span class="o">.</span><span class="n">viscosity</span> <span class="o">*</span> <span class="n">stokes</span><span class="o">.</span><span class="n">Unknowns</span><span class="o">.</span><span class="n">Einv2</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -962,75 +1109,70 @@ build material properties that depend on cell type.</p>
 </div>
 </div>
 </div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stress</span><span class="o">.</span><span class="n">stats</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1">## Save data ...</span>
+<span class="n">savefile</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;output/notched_beam_mesh_</span><span class="si">{</span><span class="n">problem_size</span><span class="si">}</span><span class="s2">&quot;</span>
+<span class="n">mesh1</span><span class="o">.</span><span class="n">petsc_save_checkpoint</span><span class="p">(</span><span class="n">index</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">meshVars</span><span class="o">=</span><span class="p">[</span><span class="n">p_soln</span><span class="p">,</span> <span class="n">v_soln</span><span class="p">,</span> <span class="n">edot</span><span class="p">],</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">savefile</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
 <p>check the mesh if in a notebook / serial</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-    <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+    
     <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
-    <span class="kn">import</span> <span class="nn">vtk</span>
+    <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
 
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">background</span> <span class="o">=</span> <span class="s2">&quot;white&quot;</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">window_size</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1050</span><span class="p">,</span> <span class="mi">500</span><span class="p">]</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">antialiasing</span> <span class="o">=</span> <span class="kc">True</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">jupyter_backend</span> <span class="o">=</span> <span class="s2">&quot;panel&quot;</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">smooth_shading</span> <span class="o">=</span> <span class="kc">True</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">camera</span><span class="p">[</span><span class="s2">&quot;viewup&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">]</span>
-    <span class="n">pv</span><span class="o">.</span><span class="n">global_theme</span><span class="o">.</span><span class="n">camera</span><span class="p">[</span><span class="s2">&quot;position&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]</span>
+    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="n">mesh1</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;sfn&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;pres&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;edot&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">edot</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">visc</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;str&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">stress</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
 
-    <span class="n">mesh1</span><span class="o">.</span><span class="n">vtk</span><span class="p">(</span><span class="s2">&quot;tmp_notch.vtk&quot;</span><span class="p">)</span>
-    <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="s2">&quot;tmp_notch.vtk&quot;</span><span class="p">)</span>
-
+    <span class="n">velocity_points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">meshVariable_to_pv_cloud</span><span class="p">(</span><span class="n">v_soln</span><span class="p">)</span>
+    <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">velocity_points</span><span class="p">,</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    
     <span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">mesh1</span><span class="o">.</span><span class="n">_centroids</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
     <span class="n">points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
     <span class="n">points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">_centroids</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
-
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;sfn&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">surface_defn_fn</span><span class="p">,</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">N</span>
-    <span class="p">)</span>
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;pres&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-        <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">-</span> <span class="n">p_null</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span>
-    <span class="p">)</span>
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;edot&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">edot</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">visc</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;str&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">function</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">stress</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
-
-    <span class="k">with</span> <span class="n">mesh1</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
-        <span class="n">usol</span> <span class="o">=</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
-
-    <span class="n">arrow_loc</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">v_soln</span><span class="o">.</span><span class="n">coords</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
-    <span class="n">arrow_loc</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">v_soln</span><span class="o">.</span><span class="n">coords</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
-
-    <span class="n">arrow_length</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">v_soln</span><span class="o">.</span><span class="n">coords</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
-    <span class="n">arrow_length</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">:</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">usol</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
-
     <span class="n">point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
     <span class="k">with</span> <span class="n">swarm</span><span class="o">.</span><span class="n">access</span><span class="p">():</span>
         <span class="n">point_cloud</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;M&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">material</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
 
-    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">()</span>
+    <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
 
-    <span class="c1"># pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)</span>
+    <span class="c1"># pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
         <span class="n">pvmesh</span><span class="p">,</span>
-        <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
-        <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;str&quot;</span><span class="p">,</span>
+        <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;RdYlGn&quot;</span><span class="p">,</span>
+        <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;eta&quot;</span><span class="p">,</span>
         <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Grey&quot;</span><span class="p">,</span>
         <span class="n">show_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-        <span class="c1"># clim=[0.5,0.8],</span>
-        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.75</span><span class="p">,</span>
+        <span class="n">clim</span><span class="o">=</span><span class="p">[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">],</span>
+        <span class="n">opacity</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
     <span class="p">)</span>
 
-    <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span>
-        <span class="n">point_cloud</span><span class="p">,</span>
-        <span class="n">cmap</span><span class="o">=</span><span class="s2">&quot;coolwarm&quot;</span><span class="p">,</span>
-        <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-        <span class="n">point_size</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
-        <span class="n">opacity</span><span class="o">=</span><span class="mf">0.3</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="c1"># pl.add_points(</span>
+    <span class="c1">#     point_cloud,</span>
+    <span class="c1">#     cmap=&quot;coolwarm&quot;,</span>
+    <span class="c1">#     render_points_as_spheres=False,</span>
+    <span class="c1">#     point_size=5,</span>
+    <span class="c1">#     opacity=0.1,</span>
+    <span class="c1"># )</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">cpos</span><span class="o">=</span><span class="s2">&quot;xy&quot;</span><span class="p">)</span>
 </pre></div>
@@ -1039,19 +1181,7 @@ build material properties that depend on cell type.</p>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">surface_defn_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="p">((</span><span class="n">y</span> <span class="o">-</span> <span class="mi">0</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">hw</span><span class="p">)</span>
-<span class="n">p_surface_ave</span> <span class="o">=</span> <span class="n">surface_integral</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Upper surface average P = </span><span class="si">{</span><span class="n">p_surface_ave</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">surface_defn_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="p">((</span><span class="n">y</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">hw</span><span class="p">)</span>
-<span class="n">p_surface_ave</span> <span class="o">=</span> <span class="n">surface_integral</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">p_soln</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Lower surface average P = </span><span class="si">{</span><span class="n">p_surface_ave</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="mi">0</span><span class="o">/</span><span class="mi">0</span>
 </pre></div>
 </div>
 </div>
@@ -1059,13 +1189,41 @@ build material properties that depend on cell type.</p>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
-<span class="n">surface_defn_fn</span> <span class="o">=</span> <span class="n">sympy</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="p">((</span><span class="n">y</span> <span class="o">+</span> <span class="mf">0.666</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">hw</span><span class="p">)</span>
-<span class="n">p_surface_ave</span> <span class="o">=</span> <span class="n">surface_integral</span><span class="p">(</span><span class="n">mesh1</span><span class="p">,</span> <span class="n">edot</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">surface_defn_fn</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Edot at 0.666 = </span><span class="si">{</span><span class="n">p_surface_ave</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="c1"># surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)</span>
+<span class="c1"># p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)</span>
+<span class="c1"># print(f&quot;Upper surface average P = {p_surface_ave}&quot;)</span>
 </pre></div>
 </div>
 </div>
 </div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># surface_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)</span>
+<span class="c1"># p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)</span>
+<span class="c1"># print(f&quot;Lower surface average P = {p_surface_ave}&quot;)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
+<span class="c1"># surface_defn_fn = sympy.exp(-((y + 0.666) ** 2) * hw)</span>
+<span class="c1"># p_surface_ave = surface_integral(mesh1, edot.sym[0], surface_defn_fn)</span>
+<span class="c1"># print(f&quot;Edot at 0.666 = {p_surface_ave}&quot;)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">(),</span> <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;eta&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
+</pre></div>
+</div>
+</div>
+</div>
+</section>
 </section>
 
     <script type="text/x-thebe-config">
@@ -1093,11 +1251,10 @@ build material properties that depend on cell type.</p>
 
               
               
-                <footer class="bd-footer-article">
+              
+              
+                <footer class="prev-next-footer">
                   
-<div class="footer-article-items footer-article__inner">
-  
-    <div class="footer-article-item"><!-- Previous / next buttons -->
 <div class="prev-next-area">
     <a class="left-prev"
        href="Readme.html"
@@ -1117,15 +1274,27 @@ build material properties that depend on cell type.</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
-</div></div>
-  
 </div>
-
                 </footer>
               
             </div>
             
             
+              
+                <div class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+  <div class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav class="bd-toc-nav page-toc">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-this-mesh-can-be-solved-for-a-simple-linear-problem">Check that this mesh can be solved for a simple, linear problem</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
               
             
           </div>
@@ -1143,6 +1312,7 @@ By Louis Moresi
   
   <div class="footer-item">
     
+
   </div>
   
   <div class="footer-item">
@@ -1162,8 +1332,8 @@ By Louis Moresi
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script src="../../_static/scripts/bootstrap.js?digest=e353d410970836974a52"></script>
-<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=e353d410970836974a52"></script>
+  <script src="../../_static/scripts/bootstrap.js?digest=8d27b9dea8ad943066ae"></script>
+<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=8d27b9dea8ad943066ae"></script>
 
   <footer class="bd-footer">
   </footer>

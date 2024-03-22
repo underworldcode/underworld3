@@ -5,15 +5,13 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# %% [markdown]
 # # Underworld Groundwater Flow Benchmark 1
 #
 # See the Underworld2 example by Adam Beall.
@@ -25,6 +23,10 @@
 #
 # *Note*, there is not an obvious way in pyvista to make the streamlines smaller / shorter / fainter where flow rates are very low so the visualisation is a little misleading right now.
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # %%
 from petsc4py import PETSc
@@ -40,10 +42,9 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 )
 
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
-v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
+v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1, continuous=False)
 
 
-# %%
 # Mesh deformation
 
 x, y = mesh.X
@@ -55,23 +56,17 @@ new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.data, mesh.N)
 
 mesh.deform_mesh(new_coords=new_coords)
 
+
+
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
-
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -85,63 +80,50 @@ if uw.mpi.size == 1 and uw.is_notebook:
 
 # %%
 # Create Poisson object
-darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
-darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
-darcy.constitutive_model.Parameters.diffusivity = 1
+darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_soln, v_Field=v_soln)
+darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
+darcy.constitutive_model.Parameters.permeability = 1
 darcy.petsc_options.delValue("ksp_monitor")
 
-# %%
 # Set some things
 
 k = sympy.exp(-2.0 * 2.302585 * (h_fn - y))  # powers of 10
-darcy.constitutive_model.Parameters.diffusivity = k
+darcy.constitutive_model.Parameters.permeability = k
+
+k
 
 darcy.f = 0.0
-darcy.s = sympy.Matrix([0, -1]).T
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
 
 darcy.add_dirichlet_bc(0.0, "Top")
 
 # Zero pressure gradient at sides / base (implied bc)
 
-darcy._v_projector.smoothing = 1.0e-3
+darcy._v_projector.smoothing = 0.0
+
+
 
 # %%
 # Solve time
-darcy.solve()
+darcy.petsc_options.setValue("snes_monitor", None)
+darcy.solve(verbose=False)
 
 # %%
 if uw.mpi.size == 1 and uw.is_notebook:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+    pvmesh.point_data["dP"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym[0] - (h_fn - y))
+    pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, k)
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(v_soln.sym.dot(v_soln.sym)))
 
-    with mesh.access():
-        usol = v_soln.data.copy()
-
-    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.sym[0], mesh.data, mesh.N)
-    pvmesh.point_data["dP"] = uw.function.evaluate(
-        p_soln.sym[0] - (h_fn - y), mesh.data, mesh.N
-    )
-    pvmesh.point_data["K"] = uw.function.evaluate(k, mesh.data, mesh.N)
-    pvmesh.point_data["S"] = uw.function.evaluate(
-        sympy.log(v_soln.sym.dot(v_soln.sym)), mesh.data, mesh.N
-    )
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
     # point sources at cell centres
 
@@ -150,51 +132,42 @@ if uw.mpi.size == 1 and uw.is_notebook:
     points[:, 1] = mesh._centroids[:, 1]
     point_cloud = pv.PolyData(points[::3])
 
-    v_vectors = np.zeros((mesh.data.shape[0], 3))
-    v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh.data)
-    pvmesh.point_data["V"] = v_vectors
-
     pvstream = pvmesh.streamlines_from_source(
-        point_cloud,
-        vectors="V",
-        integrator_type=45,
-        integration_direction="both",
-        max_steps=1000,
-        max_time=0.2,
-        initial_step_length=0.001,
-        max_step_length=0.01,
-    )
+                                                point_cloud,
+                                                vectors="V",
+                                                integrator_type=45,
+                                                integration_direction="both",
+                                                max_steps=1000,
+                                                max_time=0.2,
+                                                initial_step_length=0.001,
+                                                max_step_length=0.01,
+                                            )
 
     pl = pv.Plotter()
 
     pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=False,
-        scalars="P",
-        use_transparency=False,
-        opacity=1.0,
-    )
+                pvmesh,
+                cmap="coolwarm",
+                edge_color="Black",
+                show_edges=True,
+                scalars="P",
+                use_transparency=False,
+                opacity=1.0,
+            )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
-
-    pl.add_mesh(pvstream, line_width=10.0)
-
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.5, opacity=0.5)
+    pl.add_mesh(pvstream, line_width=1.0)
     pl.show(cpos="xy")
 
-# %%
-## Metrics
+#
+# ## Metrics
 
 _, _, _, max_p, _, _, _ = p_soln.stats()
-_, _, _, max_vh, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.i)))
-_, _, _, max_vv, _, _, _ = mesh.stats(abs(v_soln.fn.dot(mesh.N.j)))
 
-print("Max horizontal velocity: {:4f}".format(max_vh))
-print("Max vertical velocity:   {:4f}".format(max_vv))
+
+# +
+
 print("Max pressure         :   {:4f}".format(max_p))
+# -
 
 
-# %%
-
-# %%

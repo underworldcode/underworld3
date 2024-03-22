@@ -5,15 +5,14 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # ''Non-linear Stokes Sinker''
 # ======
 #
@@ -21,6 +20,11 @@
 #
 #
 #
+# -
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # %%
 import underworld as uw2
@@ -29,11 +33,12 @@ import underworld.visualisation as vis
 import numpy as np
 import math
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Setup parameters
 # -----
 #
 # Set simulation parameters for the test and position of the spherical sinker.
+# -
 
 # %%
 # Set the resolution.
@@ -71,9 +76,10 @@ nsteps = 10
 swarmGPC = 2
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Create mesh and finite element variables
 # ------
+# -
 
 # %%
 def uw2_stokesSinker():
@@ -319,9 +325,7 @@ def uw3_stokesSinker(render=True):
 
     stokes = uw3.systems.Stokes(mesh, velocityField=v, pressureField=p)
 
-    stokes.constitutive_model = uw3.systems.constitutive_models.ViscousFlowModel(
-        mesh.dim
-    )
+    stokes.constitutive_model = uw3.constitutive_models.ViscousFlowModel
 
     ### free slip.
     ### note with petsc we always need to provide a vector of correct cardinality.
@@ -387,7 +391,7 @@ def uw3_stokesSinker(render=True):
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
+        pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = True
 
         mesh.vtk("tempMsh.vtk")
@@ -530,6 +534,7 @@ def uw3_stokesSinker(render=True):
         return tSinker, ySinker
 
 
+
 # %%
 tSinker_UW2, ySinker0_UW2, ySinker1_UW2 = uw2_stokesSinker()
 
@@ -564,4 +569,3 @@ if uw3.mpi.rank == 0:
 
     # fig1.show()
 
-# %%

@@ -5,25 +5,33 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Rayleigh-Taylor (Level-set based) in the sphere
 #
 # If there are just two materials, then an efficient way to manage the interface tracking is through a "level-set" which tracks not just the material type, but the distance to the interface. The distance is a continuous quantity that is not degraded quickly by classical advection schemes. A particle-based level set also has advantages because the smooth signed-distance quantity can be projected to the mesh more accurately than a sharp condition function.
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 # +
+import os
+
+os.environ["UW_TIMING_ENABLE"] = "1"
+
 import petsc4py
 from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
+from underworld3 import timing
 
 import numpy as np
 import sympy
@@ -39,10 +47,9 @@ viscosityRatio = 1.0
 
 r_layer = 0.7
 r_o = 1.0
-r_i = 0.5
+r_i = 0.54
 
-elements = 7
-res = 1.0 / elements
+res = 0.25
 
 Rayleigh = 1.0e6 / (r_o - r_i) ** 3
 
@@ -50,15 +57,10 @@ offset = 0.5 * res
 
 
 # +
-# mesh = uw.meshing.CubedSphere(
-#     radiusInner=r_i,
-#     radiusOuter=r_o,
-#     numElements=elements,
-#     simplex=True,
-#     qdegree=2,
-# )
+cell_size = uw.options.getReal("mesh_cell_size", default=0.1)
+particle_fill = uw.options.getInt("particle_fill", default=5)
+viscosity_ratio = uw.options.getReal("rt_viscosity_ratio", default=1.0)
 
-# or
 
 mesh = uw.meshing.SphericalShell(
     radiusInner=r_i, radiusOuter=r_o, cellSize=res, qdegree=2
@@ -73,7 +75,7 @@ meshr = uw.discretisation.MeshVariable(r"r", mesh, 1, degree=1)
 
 
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, num_components=1)
+material = uw.swarm.SwarmVariable(r"\cal{L}", swarm, proxy_degree=1, size=1)
 swarm.populate(fill_param=2)
 
 
@@ -93,13 +95,6 @@ with swarm.access(material):
 x, y, z = mesh.CoordinateSystem.X
 ra, l1, l2 = mesh.CoordinateSystem.xR
 
-hw = 1000.0 / res
-surface_fn_a = sympy.exp(-(((ra - r_o) / r_o) ** 2) * hw)
-surface_fn = sympy.exp(-(((meshr.sym[0] - r_o) / r_o) ** 2) * hw)
-
-base_fn_a = sympy.exp(-(((ra - r_i) / r_o) ** 2) * hw)
-base_fn = sympy.exp(-(((meshr.sym[0] - r_i) / r_o) ** 2) * hw)
-
 
 # +
 
@@ -114,10 +109,7 @@ display(viscosity)
 with swarm.access():
     print(material.data.max(), material.data.min())
 
-material._meshVar.stats()
-
 if False:
-
     import numpy as np
     import pyvista as pv
     import vtk
@@ -189,68 +181,55 @@ stokes.petsc_options["snes_rtol"] = 1.0e-4
 stokes.petsc_options["snes_rtol"] = 1.0e-3
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = viscosity
 
-# buoyancy (magnitude)
-buoyancy = Rayleigh * density * (1 - surface_fn) * (1 - base_fn)
+Gamma = mesh.Gamma
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Upper")
+stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) *  Gamma, "Lower")
 
-unit_vec_r = mesh.CoordinateSystem.unit_e_0
+# buoyancy (magnitude)
+buoyancy = Rayleigh * density  # * (1 - surface_fn) * (1 - base_fn)
+
+unit_vec_r = mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]
 
 # Free slip condition by penalizing radial velocity at the surface (non-linear term)
-free_slip_penalty_upper = v_soln.sym.dot(unit_vec_r) * unit_vec_r * surface_fn
-free_slip_penalty_lower = v_soln.sym.dot(unit_vec_r) * unit_vec_r * base_fn
 
 stokes.bodyforce = -unit_vec_r * buoyancy
-stokes.bodyforce -= 1000000 * (free_slip_penalty_upper + free_slip_penalty_lower)
 
 stokes.saddle_preconditioner = 1 / viscosity
 
 # -
 
+mesh.CoordinateSystem.unit_e_0.shape
+(mesh.CoordinateSystem.X / mesh.CoordinateSystem.xR[0]).shape
+
 with mesh.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), mesh.data
+        sympy.sqrt(x**2 + y**2 + z**2), mesh.data, mesh.N
     )  # cf radius_fn which is 0->1
 
 
-stokes._setup_terms(verbose=False)
+# +
+timing.reset()
+timing.start()
 
 stokes.solve(zero_init_guess=True)
+
+timing.print_table()
 
 # +
 # check the solution
 
-
 if uw.mpi.size == 1 and render:
-
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [1.0, 1.0, 1.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-    # pv.start_xvfb()
-
-    mesh.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    pvmesh.point_data["M"] = uw.function.evaluate(material.sym[0], mesh.data)
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
-    pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), mesh.data)
-
-    velocity = np.zeros((mesh.data.shape[0], 3))
-    velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], mesh.data)
-    velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], mesh.data)
-    velocity[:, 2] = uw.function.evaluate(v_soln.sym[2], mesh.data)
-
-    pvmesh.point_data["V"] = 10.0 * velocity / velocity.max()
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
+    pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+    pvmesh.point_data["V"] = 10.0 * vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)/vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()
 
     # point sources at cell centres
 
@@ -272,12 +251,7 @@ if uw.mpi.size == 1 and render:
         surface_streamlines=False,
     )
 
-    with swarm.access():
-        spoints = np.zeros((swarm.data.shape[0], 3))
-        spoints[:, 0] = swarm.data[:, 0]
-        spoints[:, 1] = swarm.data[:, 1]
-        spoints[:, 2] = swarm.data[:, 2]
-
+    spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
     with swarm.access():
@@ -287,54 +261,34 @@ if uw.mpi.size == 1 and render:
 
     pl = pv.Plotter(window_size=(1000, 1000))
 
-    pl.add_mesh(pvmesh, "Gray", "wireframe")
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.5)
     # pl.add_arrows(arrow_loc, velocity_field, mag=0.2/vmag, opacity=0.5)
 
-    pl.add_mesh(pvstream, opacity=1.0)
+    pl.add_mesh(pvstream, opacity=1.0, cmap="RdGy_r",)
     # pl.add_mesh(pvmesh, cmap="Blues_r", edge_color="Gray", show_edges=True, scalars="rho", opacity=0.25)
 
-    pl.add_mesh(contours, opacity=0.75, color="Yellow")
+    # pl.add_mesh(contours, opacity=1, color="Blue")
 
-    # pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=2, opacity=0.3)
+    pl.add_points(spoint_cloud, cmap="Reds_r", scalars="M", render_points_as_spheres=True, point_size=10, opacity=0.3)
     # pl.add_points(pdata)
 
     pl.show(cpos="xz")
 
 
 # +
-pv.global_theme.background = "white"
-pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
-pv.global_theme.jupyter_backend = "panel"
-pv.global_theme.smooth_shading = False
-pv.global_theme.camera["viewup"] = [1.0, 1.0, 1.0]
-pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-pl = pv.Plotter()
-
 
 def plot_mesh(filename):
-
     if uw.mpi.size != 1:
         return
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    mesh.vtk("tmp_box.vtk")
-    pvmesh = pv.read("tmp_box.vtk")
-
-    pvmesh.point_data["Mat"] = uw.function.evaluate(material.sym[0], mesh.data)
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
-    pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), mesh.data)
-
-    velocity = np.zeros((mesh.data.shape[0], 3))
-    velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], mesh.data)
-    velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], mesh.data)
-
-    pvmesh.point_data["V"] = 10.0 * velocity / velocity.max()
-    print(f"Vscale {velocity.max()}")
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
+    pvmesh.point_data["M"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
+    pvmesh.point_data["V"] = 10.0 * vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)/vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()
+    print(f"Vscale {vis.vector_fn_to_pv_points(pvmesh, v_soln.sym).max()}")
 
     # point sources at cell centres
 
@@ -352,18 +306,13 @@ def plot_mesh(filename):
         surface_streamlines=False,
     )
 
-    with swarm.access():
-        spoints = np.zeros((swarm.data.shape[0], 3))
-        spoints[:, 0] = swarm.data[:, 0]
-        spoints[:, 1] = swarm.data[:, 1]
-        spoints[:, 2] = 0.0
-
+    spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
     with swarm.access():
         spoint_cloud.point_data["M"] = material.data[...]
 
-    contours = pvmesh.contour(isosurfaces=[0.0], scalars="Mat")
+    contours = pvmesh.contour(isosurfaces=[0.0], scalars="M")
 
     ## Plotting into existing pl (memory leak in pyvista)
     pl.clear()
@@ -386,7 +335,9 @@ def plot_mesh(filename):
 
     pl.camera_position = "xz"
     pl.screenshot(
-        filename="{}.png".format(filename), window_size=(1000, 1000), return_img=False
+        filename="{}.png".format(filename),
+        window_size=(1000, 1000),
+        return_img=False,
     )
 
     return
@@ -401,8 +352,7 @@ t_step = 0
 
 expt_name = "output/swarm_rt_sph"
 
-for step in range(0, 200):
-
+for step in range(0, 10):
     stokes.solve(zero_init_guess=False)
     delta_t = 2.0 * stokes.estimate_dt()
 
@@ -415,21 +365,13 @@ for step in range(0, 200):
     swarm.advection(v_soln.sym, delta_t)
 
     if t_step < 10 or t_step % 5 == 0:
-        plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        # plot_mesh(filename="{}_step_{}".format(expt_name, t_step))
 
-        savefile = "output/swarm_rt_{}.h5".format(t_step)
-        mesh.save(savefile)
-        v_soln.save(savefile)
-        mesh.generate_xdmf(savefile)
+        mesh.petsc_save_checkpoint(index=t_step, meshVars=[v_soln], outputPath='./output/')
 
     t_step += 1
 
 # -
 
 
-savefile = "output/swarm_rt.h5".format(step)
-mesh.save(savefile)
-v_soln.save(savefile)
-mesh.generate_xdmf(savefile)
 
-material

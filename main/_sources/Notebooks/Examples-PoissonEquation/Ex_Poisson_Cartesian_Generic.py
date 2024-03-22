@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -19,6 +19,10 @@
 #
 # ## Generic scalar solver class
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 import underworld3 as uw
 import numpy as np
 import sympy
@@ -26,17 +30,22 @@ import sympy
 from underworld3.meshing import UnstructuredSimplexBox
 
 mesh = UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=True, cellSize=1.0 / 32
+    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=False, cellSize=1.0 / 32
 )
 
 t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 t_soln0 = uw.discretisation.MeshVariable("T0", mesh, 1, degree=1)
 
+# +
 poisson0 = uw.systems.SNES_Scalar(mesh, u_Field=t_soln0)
 poisson0.F0 = 0.0
-poisson0.F1 = 1.0 * poisson0._L
-poisson0.add_dirichlet_bc(1.0, "Bottom")
-poisson0.add_dirichlet_bc(0.0, "Top")
+poisson0.F1 = 1.0 * poisson0.Unknowns.L
+poisson0.add_dirichlet_bc(1.0, "Bottom", 0)
+poisson0.add_dirichlet_bc(0.0, "Top", 0)
+
+poisson0.constitutive_model = uw.constitutive_models.DiffusionModel
+poisson0.constitutive_model.Parameters.diffusivity = 1.0
+# -
 
 poisson0.solve()
 
@@ -48,12 +57,12 @@ poisson0.solve()
 # +
 # Create Poisson object
 poisson = uw.systems.Poisson(mesh, u_Field=t_soln)
-poisson.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
 poisson.constitutive_model.Parameters.diffusivity = 1.0
 
 poisson.f = 0.0
-poisson.add_dirichlet_bc(1.0, "Bottom")
-poisson.add_dirichlet_bc(0.0, "Top")
+poisson.add_dirichlet_bc(1.0, "Bottom", 0)
+poisson.add_dirichlet_bc(0.0, "Top", 0)
 # -
 
 # Solve time
@@ -70,11 +79,11 @@ display(poisson._L)
 display(poisson._f1)
 # -
 
-poisson._L
+poisson.Unknowns.L
 
-poisson.u.sym.jacobian(poisson._L)
+poisson.u.sym.jacobian(poisson.Unknowns.L)
 
-poisson._f1.jacobian(poisson._L)
+poisson._f1.jacobian(poisson.Unknowns.L)
 
 # ## Validation
 
@@ -95,26 +104,16 @@ with mesh.access():
 from mpi4py import MPI
 
 if MPI.COMM_WORLD.size == 1:
-
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [500, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
+    pvmesh.point_data["T"] = mesh_analytic_soln
+    pvmesh.point_data["T2"] = mesh_numerical_soln
+    pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
 
-    mesh.vtk("mesh_tmp.vtk")
-    pvmesh = pv.read("mesh_tmp.vtk")
-
-    with mesh.access():
-        pvmesh.point_data["T"] = mesh_analytic_soln
-        pvmesh.point_data["T2"] = mesh_numerical_soln
-        pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"]
-
-    pl = pv.Plotter(notebook=True)
+    pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_mesh(
         pvmesh,
@@ -132,3 +131,5 @@ if MPI.COMM_WORLD.size == 1:
 
 
 # -
+
+

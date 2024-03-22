@@ -87,8 +87,6 @@ Note: underworld provides a translation between mesh variables and their `sympy`
 symbolic representation on the user-facing side that also needs to translate 
 to PETSc data structures in the compiled code. 
 
-
-
 ## Underworld Solver Classes
 
 We provide 3 base classes to build solvers. These are a scalar SNES solver, 
@@ -98,7 +96,6 @@ can then be used to build solvers for many common situations.
 
 A blank slate is a very scary thing and so we provide templates for some common equations
 and examples to show how these can be extended. 
-
 
 
 `````{tabbed} Poisson Equation
@@ -257,9 +254,6 @@ projections need to be evaluated during the solve).
 Creating sub-classes from the equation systems or the generic solvers is an excellent way to build workflows whenever there is a risk of exposing some fragile construction at the user level. 
 
 Some of the need for these templates is a result of inconsistencies in the way `sympy` treats matrices, vectors and tensor (array) objects. We expect this to change over time.
-
-
-
 
 
 ## Example 1 - The Poisson Equation

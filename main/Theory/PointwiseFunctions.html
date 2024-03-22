@@ -1,13 +1,12 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" >
+<html lang="en" data-content_root="../" >
 
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>PETSc pointwise functions and PDE solvers &#8212; Underworld 3</title>
   
@@ -19,54 +18,51 @@
   </script>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=e353d410970836974a52" rel="stylesheet" />
-<link href="../_static/styles/bootstrap.css?digest=e353d410970836974a52" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=e353d410970836974a52" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
 
   
-  <link href="../_static/vendor/fontawesome/6.1.2/css/all.min.css?digest=e353d410970836974a52" rel="stylesheet" />
-  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.1.2/webfonts/fa-solid-900.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.1.2/webfonts/fa-brands-400.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.1.2/webfonts/fa-regular-400.woff2" />
+  <link href="../_static/vendor/fontawesome/6.5.1/css/all.min.css?digest=8d27b9dea8ad943066ae" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.1/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.1/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.1/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css" />
-    <link rel="stylesheet" href="../_static/styles/sphinx-book-theme.css?digest=14f4ca6b54d191a8c7657f6c759bf11a5fb86285" type="text/css" />
-    <link rel="stylesheet" type="text/css" href="../_static/togglebutton.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=fa44fd50" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=384b581d" />
+    <link rel="stylesheet" type="text/css" href="../_static/togglebutton.css?v=13237357" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
     <link rel="stylesheet" type="text/css" href="../_static/mystnb.4510f1fc1dee50b3e5859aac5469c37c29e427902b24a333a5f9fcb2f0b3ac41.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-thebe.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/customize.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/design-style.4045f2051d55cab465a707391d5b2007.min.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-thebe.css?v=4fa983c6" />
+    <link rel="stylesheet" type="text/css" href="../_static/design-style.1e8bd061cd6da7fc9cf755528e8ffc24.min.css?v=0a3b3ea7" />
+    <link rel="stylesheet" type="text/css" href="../_static/customize.css?v=47e70012" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=e353d410970836974a52" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=e353d410970836974a52" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8d27b9dea8ad943066ae" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8d27b9dea8ad943066ae" />
+  <script src="../_static/vendor/fontawesome/6.5.1/js/all.min.js?digest=8d27b9dea8ad943066ae"></script>
 
-    <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
-    <script src="../_static/jquery.js"></script>
-    <script src="../_static/underscore.js"></script>
-    <script src="../_static/_sphinx_javascript_frameworks_compat.js"></script>
-    <script src="../_static/doctools.js"></script>
-    <script src="../_static/clipboard.min.js"></script>
-    <script src="../_static/copybutton.js"></script>
-    <script src="../_static/scripts/sphinx-book-theme.js?digest=5a5c038af52cf7bc1a1ec88eea08e6366ee68824"></script>
+    <script src="../_static/documentation_options.js?v=9eb32ce0"></script>
+    <script src="../_static/doctools.js?v=888ff710"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=efea14e4"></script>
     <script>let toggleHintShow = 'Click to show';</script>
     <script>let toggleHintHide = 'Click to hide';</script>
     <script>let toggleOpenOnPrint = 'true';</script>
-    <script src="../_static/togglebutton.js"></script>
+    <script src="../_static/togglebutton.js?v=4a39c7ea"></script>
     <script async="async" kind="hypothesis" src="https://hypothes.is/embed.js"></script>
-    <script src="../_static/font_button.js"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
-    <script src="../_static/design-tabs.js"></script>
-    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"
-const thebe_selector = ".thebe,.cell"
-const thebe_selector_input = "pre"
-const thebe_selector_output = ".output, .cell_output"
-</script>
-    <script async="async" src="../_static/sphinx-thebe.js"></script>
+    <script src="../_static/design-tabs.js?v=36754332"></script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
+    <script async="async" src="../_static/sphinx-thebe.js?v=c100c467"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
     <script>window.MathJax = {"options": {"processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
     <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'Theory/PointwiseFunctions';</script>
+    <script src="../_static/font_button.js?v=3ec2d3a6"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Linear Algebra" href="LinearAlgebra.html" />
@@ -80,7 +76,15 @@ const thebe_selector_output = ".output, .cell_output"
 
   
   
-  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <a id="pst-skip-link" class="skip-link" href="#main-content">Skip to main content</a>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>
+    Back to top
+  </button>
+
   
   <input type="checkbox"
           class="sidebar-toggle"
@@ -115,11 +119,14 @@ const thebe_selector_output = ".output, .cell_output"
 </form></div>
   </div>
   
-    <nav class="bd-header navbar navbar-expand-lg bd-navbar">
-    </nav>
+    <header class="bd-header navbar navbar-expand-lg bd-navbar">
+    </header>
   
+
   <div class="bd-container">
     <div class="bd-container__inner bd-page-width">
+      
+      
       
       <div class="bd-sidebar-primary bd-sidebar">
         
@@ -134,9 +141,11 @@ const thebe_selector_output = ".output, .cell_output"
   
     <div class="sidebar-primary-items__start sidebar-primary__section">
         <div class="sidebar-primary-item">
+
   
 
 <a class="navbar-brand logo" href="../FrontPage.html">
+  
   
   
   
@@ -146,12 +155,23 @@ const thebe_selector_output = ".output, .cell_output"
       
     
     
-    <img src="../_static/AuWorldEQ.jpg" class="logo__image only-light" alt="Logo image"/>
-    <script>document.write(`<img src="../_static/AuWorldEQ.jpg" class="logo__image only-dark" alt="Logo image"/>`);</script>
+    <img src="../_static/AuWorldEQ.jpg" class="logo__image only-light" alt="Underworld 3 - Home"/>
+    <script>document.write(`<img src="../_static/AuWorldEQ.jpg" class="logo__image only-dark" alt="Underworld 3 - Home"/>`);</script>
   
   
 </a></div>
-        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main">
+        <div class="sidebar-primary-item">
+
+ <script>
+ document.write(`
+   <button class="btn navbar-btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         
         <ul class="nav bd-sidenav bd-sidenav__home-link">
@@ -192,14 +212,12 @@ const thebe_selector_output = ".output, .cell_output"
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian-NL.html">Nonlinear diffusion of a hot pipe</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PoissonEquation/Ex_DiffusionSLCN_Cartesian.html">Linear diffusion of a hot pipe</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PoissonEquation/Ex_Poisson_Cartesian.html">Poisson Equation (simple)</a></li>
-
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Notebooks/Examples-PorousFlow/Readme.html">Porous flow examples</a><input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-4"><i class="fa-solid fa-chevron-down"></i></label><ul>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PorousFlow/Ex_Darcy_1D_benchmark.html">Darcy flow (1d) using xy coordinates to define permeability distribution</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PorousFlow/Ex_Darcy_1D_benchmark-Swarm.html">Darcy flow (1d) using swarm variable to define permeability</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-PorousFlow/Ex_Darcy_Cartesian.html">Underworld Groundwater Flow Benchmark 1</a></li>
-
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Readme.html">Stokes Flow</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-5"><i class="fa-solid fa-chevron-down"></i></label><ul>
@@ -207,19 +225,16 @@ const thebe_selector_output = ".output, .cell_output"
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Cartesian_SolNL.html">Non-linear Stokes benchmark</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Sinker.html">Multiple materials - Linear stokes sinker</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Cartesian_SolC.html">Stokes Benchmark SolCx</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Disk_Cartesian.html">Cylindrical Stokes (Cartesian formulation)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Disk_CylCoords.html">Cylindrical Stokes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Spherical_FreeSlipBCs.html">Mathematical formulation</a></li>
-
-
+<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Spherical_FreeSlipBCs.html">Stokes flow in a Spherical Domain</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Swarm_RT_Cartesian.html">Rayleigh Taylor - swarm materials</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_Stokes_Swarm_RT_Spherical.html">Rayleigh-Taylor (Level-set based) in the sphere</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-StokesFlow/Ex_WIP_Stokes_Periodic.html">Periodic Mesh Example (WIP)</a></li>
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Notebooks/Examples-Convection/Readme.html">Convection modelling examples</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-6"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.html">Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_AdvectionDiffusionSwarm_RotationTest.html">Field Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_AdvectionDiffusionSLCN_RotationTest.html">Field (SemiLagrange) Advection solver test</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_AdvectionDiffusionSwarm_RotationTest.html">Swarm Advection solver test - shear flow driven by a pre-defined, rigid body rotation in a disc</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_Convection_1_SLCN_Cartesian.html">Constant viscosity convection, Cartesian domain (benchmark)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_Convection_2_SLCN_Cartesian-TdepVisc.html">Temperature-dependent viscosity convection, Cartesian Domain(benchmark)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Convection/Ex_Convection_3_SLCN_Cylindrical-TdepVisc.html">Temperature-dependent viscosity convection, Cylindrical domain (benchmark)</a></li>
@@ -239,32 +254,14 @@ const thebe_selector_output = ".output, .cell_output"
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Readme.html">Navier Stokes Equation</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-8"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_1.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_1_ss.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Benchmark_NS_DFG_2d_2.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere-StreakSwarm.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_NavierStokesFlowAroundSphere.html">Navier Stokes test: flow around a circular inclusion (2D)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_NavierStokesRotationTest.html">Navier Stokes test: boundary driven ring with step change in boundary conditions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_FreeSlipBCs-Coriolis.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
-
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-NavierStokes/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis_ss.html">Cylindrical Stokes with Coriolis term (out of plane)</a></li>
 
 </ul>
 </li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../Notebooks/Examples-Utilities/Readme.html">Miscellaneous Tips and Tricks</a><input class="toctree-checkbox" id="toctree-checkbox-9" name="toctree-checkbox-9" type="checkbox"/><label class="toctree-toggle" for="toctree-checkbox-9"><i class="fa-solid fa-chevron-down"></i></label><ul>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex-ConstitutiveTensors.html">Tests</a></li>
-
-
-
-
-
-
-
-
-
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex_BCs_from_meshVariables.html">Cylindrical 2D Diffusion</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex_Coordinates.html">Symbolic forms v. mesh variables</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex_Integrals_on_Meshes.html">Using the PETSc mesh integration routines</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex_Projection_Function_Eval.html">Projection-based function evaluation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../Notebooks/Examples-Utilities/Ex_Tensor_Variables_etc.html">Examples with General Mesh variable manipulation</a></li>
@@ -391,20 +388,22 @@ const thebe_selector_output = ".output, .cell_output"
 </button>
 
 
+
 <script>
 document.write(`
-  <button class="theme-switch-button btn btn-sm btn-outline-primary navbar-btn rounded-circle" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
-    <span class="theme-switch" data-mode="light"><i class="fa-solid fa-sun"></i></span>
-    <span class="theme-switch" data-mode="dark"><i class="fa-solid fa-moon"></i></span>
-    <span class="theme-switch" data-mode="auto"><i class="fa-solid fa-circle-half-stroke"></i></span>
+  <button class="btn btn-sm navbar-btn theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="theme-switch nav-link" data-mode="light"><i class="fa-solid fa-sun fa-lg"></i></span>
+    <span class="theme-switch nav-link" data-mode="dark"><i class="fa-solid fa-moon fa-lg"></i></span>
+    <span class="theme-switch nav-link" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg"></i></span>
   </button>
 `);
 </script>
 
+
 <script>
 document.write(`
   <button class="btn btn-sm navbar-btn search-button search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
-    <i class="fa-solid fa-magnifying-glass"></i>
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
   </button>
 `);
 </script>
@@ -454,10 +453,10 @@ document.write(`
               
                 
 <div id="searchbox"></div>
-                <article class="bd-article" role="main">
+                <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="petsc-pointwise-functions-and-pde-solvers">
-<h1>PETSc pointwise functions and PDE solvers<a class="headerlink" href="#petsc-pointwise-functions-and-pde-solvers" title="Permalink to this heading">#</a></h1>
+<h1>PETSc pointwise functions and PDE solvers<a class="headerlink" href="#petsc-pointwise-functions-and-pde-solvers" title="Link to this heading">#</a></h1>
 <p>As we saw in [the Finite Element Pages], the finite element method provides a very general way to approach the numerical solution of a very wide variety of problems in continuum mechanics using a standardised, matrix-based formulation and with considerable flexibility in the choice of discretisation, mesh geometry, and the ability to deal very naturally with jumps in material properties.</p>
 <p>However, the FEM is based upon a variational, “weak” form of the governing equations of any problem while most publications outline the strong form of any problem and this can make it difficult for anyone without a strong mathematical background to translate quickly from publication to a new model.</p>
 <p>PETSc provides a mechanism to automatically generate a finite element weak form from the strong (point-wise) form of the governing equations. This takes the form of a template equation and, in the case of non-linear problems, a template for the corresponding Jacobian derivatives.</p>
@@ -531,7 +530,7 @@ especially for vector problems.</p>
 symbolic representation on the user-facing side that also needs to translate
 to PETSc data structures in the compiled code.</p>
 <section id="underworld-solver-classes">
-<h2>Underworld Solver Classes<a class="headerlink" href="#underworld-solver-classes" title="Permalink to this heading">#</a></h2>
+<h2>Underworld Solver Classes<a class="headerlink" href="#underworld-solver-classes" title="Link to this heading">#</a></h2>
 <p>We provide 3 base classes to build solvers. These are a scalar SNES solver,
 a vector SNES solver and a Vector SNES saddle point solver (constrained vector problem).
 These are bare-bones classes that implement the pointwise function / sympy approach that
@@ -540,16 +539,16 @@ can then be used to build solvers for many common situations.</p>
 and examples to show how these can be extended.</p>
 </section>
 <section id="implementation-examples">
-<h2>Implementation &amp; Examples<a class="headerlink" href="#implementation-examples" title="Permalink to this heading">#</a></h2>
+<h2>Implementation &amp; Examples<a class="headerlink" href="#implementation-examples" title="Link to this heading">#</a></h2>
 <section id="poisson-solvers">
-<h3>Poisson Solvers<a class="headerlink" href="#poisson-solvers" title="Permalink to this heading">#</a></h3>
+<h3>Poisson Solvers<a class="headerlink" href="#poisson-solvers" title="Link to this heading">#</a></h3>
 <p>(link to another document)
 Diffusion</p>
 <p>Darcy flow</p>
 <p>Advection-diffusion (SLCN)</p>
 </section>
 <section id="advection-dominated-flow">
-<h3>Advection dominated flow<a class="headerlink" href="#advection-dominated-flow" title="Permalink to this heading">#</a></h3>
+<h3>Advection dominated flow<a class="headerlink" href="#advection-dominated-flow" title="Link to this heading">#</a></h3>
 <p>(link to another document)</p>
 <p>Swarm-based problems</p>
 <p>Projection / swarm evaluation</p>
@@ -557,7 +556,7 @@ Diffusion</p>
 <p>Material point methods</p>
 </section>
 <section id="incompressible-stokes">
-<h3>Incompressible Stokes<a class="headerlink" href="#incompressible-stokes" title="Permalink to this heading">#</a></h3>
+<h3>Incompressible Stokes<a class="headerlink" href="#incompressible-stokes" title="Link to this heading">#</a></h3>
 <p>(link to another document)</p>
 <p>Saddle point problems</p>
 <p>Stokes, boundary conditions, constraints</p>
@@ -566,14 +565,14 @@ Diffusion</p>
 </section>
 </section>
 <section id="remarks">
-<h2>Remarks<a class="headerlink" href="#remarks" title="Permalink to this heading">#</a></h2>
+<h2>Remarks<a class="headerlink" href="#remarks" title="Link to this heading">#</a></h2>
 <p>The generic solver classes can be used to construct all of the examples above. The equation-system classes that we provide help to provide a template or scaffolding for a less experienced user and they also help to orchestrate cases where multiple solvers come together in a specific order (e.g. the Navier-Stokes case where history variable
 projections need to be evaluated during the solve).</p>
 <p>Creating sub-classes from the equation systems or the generic solvers is an excellent way to build workflows whenever there is a risk of exposing some fragile construction at the user level.</p>
 <p>Some of the need for these templates is a result of inconsistencies in the way <code class="docutils literal notranslate"><span class="pre">sympy</span></code> treats matrices, vectors and tensor (array) objects. We expect this to change over time.</p>
 </section>
 <section id="example-1-the-poisson-equation">
-<h2>Example 1 - The Poisson Equation<a class="headerlink" href="#example-1-the-poisson-equation" title="Permalink to this heading">#</a></h2>
+<h2>Example 1 - The Poisson Equation<a class="headerlink" href="#example-1-the-poisson-equation" title="Link to this heading">#</a></h2>
 <p>The classical form of the scalar Poisson Equation is</p>
 <div class="math notranslate nohighlight">
 \[ \alpha \nabla^2 \psi = f \]</div>
@@ -609,11 +608,11 @@ the <code class="docutils literal notranslate"><span class="pre">SNES_Scalar</sp
 term and very little else.
 <span class="math notranslate nohighlight">\(F_0\)</span> and <span class="math notranslate nohighlight">\(F_1\)</span> are inherited as an empty scalar and vector respectively.
 These are available in the template for the user to extend the equation as needed.</p>
-<p><span class="xref myst">This notebook</span> compares
+<p><a class="reference internal" href="#../Notebooks/Ex_Poisson_Cartesian_Generic"><span class="xref myst">This notebook</span></a> compares
 the generic class and the one with the flux templated.</p>
 </section>
 <section id="example-2-projections-and-evaluations">
-<h2>Example 2 - Projections and Evaluations<a class="headerlink" href="#example-2-projections-and-evaluations" title="Permalink to this heading">#</a></h2>
+<h2>Example 2 - Projections and Evaluations<a class="headerlink" href="#example-2-projections-and-evaluations" title="Link to this heading">#</a></h2>
 <p>PETSc has a very general concept of discretisation spaces that do not
 necessarily admit to continuous interpolation to or from arbitrary points.
 For this reason, a more general concept is to create projections that map
@@ -655,11 +654,11 @@ solenoidal vector fields (ensuring that the projection remains divergence free).
 provide templates for the <span class="math notranslate nohighlight">\(F_0\)</span> and <span class="math notranslate nohighlight">\(F_1\)</span> terms with generic smoothing.
 For an explanation of the divergence free projection methodology, see the next
 example on the incompressible Stokes problem.</p>
-<p><span class="xref myst">This notebook</span> has an example of
+<p><a class="reference internal" href="#../Notebooks/Ex_Project_Function.md"><span class="xref myst">This notebook</span></a> has an example of
 each of these cases.</p>
 </section>
 <section id="example-3-incompressible-stokes-equation">
-<h2>Example 3 - Incompressible Stokes Equation<a class="headerlink" href="#example-3-incompressible-stokes-equation" title="Permalink to this heading">#</a></h2>
+<h2>Example 3 - Incompressible Stokes Equation<a class="headerlink" href="#example-3-incompressible-stokes-equation" title="Link to this heading">#</a></h2>
 <p>The incompressible Stokes Equation is an example of a problem with an
 additional constraint equation that must be satisfied by the solution.
 Variational formulations (the weak form of
@@ -712,7 +711,7 @@ constraint equation and is physically identifiable as a pressure.</p>
 user interface to the saddle point system for incompressible Stokes flow.</p>
 </section>
 <section id="example-4-advection-in-the-absence-of-diffusion">
-<h2>Example 4 - Advection in the absence of diffusion<a class="headerlink" href="#example-4-advection-in-the-absence-of-diffusion" title="Permalink to this heading">#</a></h2>
+<h2>Example 4 - Advection in the absence of diffusion<a class="headerlink" href="#example-4-advection-in-the-absence-of-diffusion" title="Link to this heading">#</a></h2>
 <p>The pure transport equation can be written in Lagrangian</p>
 <div class="math notranslate nohighlight">
 \[ \frac{D \psi}{D t} = 0 \]</div>
@@ -738,7 +737,7 @@ to define their own projection operator, apply the boundary conditions, and solv
 boundary conditions / constraints, so that this is not part of the user’s responsibility</em>)</p>
 </section>
 <section id="example-5-the-scalar-advection-diffusion-equation">
-<h2>Example 5 - The Scalar Advection-diffusion Equation<a class="headerlink" href="#example-5-the-scalar-advection-diffusion-equation" title="Permalink to this heading">#</a></h2>
+<h2>Example 5 - The Scalar Advection-diffusion Equation<a class="headerlink" href="#example-5-the-scalar-advection-diffusion-equation" title="Link to this heading">#</a></h2>
 <p>The situation where a quantity is diffusing through a moving fluid.</p>
 <div class="math notranslate nohighlight">
 \[ \frac{\partial \psi}{\partial t} + \mathbf{u}\cdot\nabla\psi = \nabla \cdot \alpha \nabla \psi + f\]</div>
@@ -791,7 +790,7 @@ projection subroutines Lagrangian history term, but not the update of this varia
 <p><em>Caveat emptor:</em> In the Crank-Nicholson stiffness matrix terms above, we form the derivatives in both the flux and the flux history with the same operator where, strictly, we should transport the derivatives (or form derivatives with respect to the transported coordinate system).</p>
 </section>
 <section id="example-6-navier-stokes">
-<h2>Example 6 - Navier-Stokes<a class="headerlink" href="#example-6-navier-stokes" title="Permalink to this heading">#</a></h2>
+<h2>Example 6 - Navier-Stokes<a class="headerlink" href="#example-6-navier-stokes" title="Link to this heading">#</a></h2>
 <p>The incompressible Navier-Stokes equation of fluid dynamics is essentially the vector equivalent of the
 scalar advection-diffusion equation above, in which the transported quantity is the velocity (strictly momentum) vector that is also responsible for the transport.</p>
 <div class="math notranslate nohighlight">
@@ -854,11 +853,10 @@ scalar advection-diffusion equation above, in which the transported quantity is 
 
               
               
-                <footer class="bd-footer-article">
+              
+              
+                <footer class="prev-next-footer">
                   
-<div class="footer-article-items footer-article__inner">
-  
-    <div class="footer-article-item"><!-- Previous / next buttons -->
 <div class="prev-next-area">
     <a class="left-prev"
        href="FiniteElements.html"
@@ -878,10 +876,7 @@ scalar advection-diffusion equation above, in which the transported quantity is 
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
-</div></div>
-  
 </div>
-
                 </footer>
               
             </div>
@@ -889,6 +884,7 @@ scalar advection-diffusion equation above, in which the transported quantity is 
             
               
                 <div class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
 
   <div class="sidebar-secondary-item">
   <div class="page-toc tocsection onthispage">
@@ -931,6 +927,7 @@ By Louis Moresi
   
   <div class="footer-item">
     
+
   </div>
   
   <div class="footer-item">
@@ -950,8 +947,8 @@ By Louis Moresi
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script src="../_static/scripts/bootstrap.js?digest=e353d410970836974a52"></script>
-<script src="../_static/scripts/pydata-sphinx-theme.js?digest=e353d410970836974a52"></script>
+  <script src="../_static/scripts/bootstrap.js?digest=8d27b9dea8ad943066ae"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=8d27b9dea8ad943066ae"></script>
 
   <footer class="bd-footer">
   </footer>

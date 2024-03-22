@@ -5,15 +5,14 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # ''Stokes Sinker''
 # ======
 #
@@ -22,6 +21,11 @@
 #
 #
 #
+# -
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 # %%
 import underworld as uw2
@@ -32,11 +36,12 @@ import math
 
 rank = uw2.mpi.rank
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Setup parameters
 # -----
 #
 # Set simulation parameters for the test and position of the spherical sinker.
+# -
 
 # %%
 # Set the resolution.
@@ -70,9 +75,10 @@ nsteps = 10
 swarmGPC = 4
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Create UW2 version
 # ------
+# -
 
 # %%
 def uw2_stokesSinker():
@@ -267,9 +273,10 @@ def uw2_stokesSinker():
         return tSinker, ySinker0, ySinker1
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Create UW3 version
 # ------
+# -
 
 # %%
 from petsc4py import PETSc
@@ -358,7 +365,7 @@ def uw3_stokesSinker(render=True):
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
         pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
+        pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = True
 
         mesh.vtk("tempMsh.vtk")
@@ -398,9 +405,7 @@ def uw3_stokesSinker(render=True):
     if render:
         plot_fig()
 
-    stokes.constitutive_model = uw3.systems.constitutive_models.ViscousFlowModel(
-        mesh.dim
-    )
+    stokes.constitutive_model = uw3.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.material_properties = (
         stokes.constitutive_model.Parameters(viscosity=viscosity)
     )
@@ -484,15 +489,15 @@ tSinker_UW2, ySinker0_UW2, ySinker1_UW2 = uw2_stokesSinker()
 # %%
 tSinker_UW3, ySinker_UW3 = uw3_stokesSinker()
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # Compare velocity of tracer in both models to terminal velocity estimation
 # ------
+# -
 
-# %%
-#### Terminal velocity estimation is closest to model with no slip boundaries, free slip results in a higher velocity
+# ### Terminal velocity estimation is closest to model with no slip boundaries, free slip results in a higher velocity
 
 
-### UW2 and UW3 velocities match when the viscosities in UW3 are doubled or densities are halved
+# ## UW2 and UW3 velocities match when the viscosities in UW3 are doubled or densities are halved
 
 
 stokes_vel0 = (-1 * (2 * sphereRadius) ** 2 * (densitySphere - densityBG)) / (
@@ -542,4 +547,3 @@ if rank == 0:
 
     # fig1.show()
 
-# %%

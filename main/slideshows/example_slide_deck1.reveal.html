@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -8,21 +8,23 @@
     <link rel="shortcut icon" href="./favicon.ico" />
     <link rel="stylesheet" href="./dist/reset.css" />
     <link rel="stylesheet" href="./dist/reveal.css" />
-    <link rel="stylesheet" href="/_assets/css/anu.css" id="theme" />
+    <link rel="stylesheet" href="./_assets/css/anu.css" id="theme" />
     <link rel="stylesheet" href="./css/highlight/base16/zenburn.css" />
-
 
   </head>
   <body>
     <div class="reveal">
-      <div class="slides"><section  data-markdown><script type="text/template">
+      <div class="slides">
+        <section data-markdown data-separator="<--o-->" data-separator-vertical="<--v-->">
+          <textarea data-template>
+            
 
 # Example slides 1
 
 Louis Moresi  
 Australian National University
 
-</script></section><section  data-markdown><script type="text/template">
+<--o-->
 
 ## Second slide
 
@@ -32,8 +34,9 @@ Australian National University
 </blockquote>
 
 
-<aside class="notes"><p>This is a speaker note that is not rendered !</p>
-</aside></script></section><section  data-markdown><script type="text/template">
+Note: This is a speaker note that is not rendered !
+
+<--o-->
 
 ## Slide number 3
 
@@ -47,13 +50,13 @@ Australian National University
 
  This is an subsection of text
 
-</script></section><section  data-markdown><script type="text/template">
+<--o-->
 
 ## Stokes Equation
 
 $$ \nabla \cdot \sigma = \rho g  \mathbf{ z }   $$
 
-</script></section><section  data-markdown><script type="text/template">
+<--o-->
 
 ## Image 
 
@@ -63,7 +66,7 @@ $$ \nabla \cdot \sigma = \rho g  \mathbf{ z }   $$
 ![Earth](images/lava.png) <!-- .element height="50%" width="50%"  -->
 ```
 
-</script></section><section  data-markdown><script type="text/template">
+<--o-->
 
 ## Image v2 
 
@@ -76,10 +79,15 @@ container sizing etc, you can use `html`
 <img class="r-stretch" data-src="images/AuWorldEQ.png">
 ```
 
-</script></section></div>
+
+          </textarea>
+        </section>
+      </div>
     </div>
 
     <script src="./dist/reveal.js"></script>
+
+    <script src="./mermaid/dist/mermaid.min.js"></script>
 
     <script src="./plugin/markdown/markdown.js"></script>
     <script src="./plugin/highlight/highlight.js"></script>
@@ -108,6 +116,9 @@ container sizing etc, you can use `html`
         center: true,
         transition: 'default', // none/fade/slide/convex/concave/zoom
         slideNumber: true,
+        highlight: {
+          highlightOnLoad: false
+        },
         plugins: [
           RevealMarkdown,
           RevealHighlight,
@@ -120,12 +131,26 @@ container sizing etc, you can use `html`
       // options from URL query string
       var queryOptions = Reveal().getQueryHash() || {};
 
-      var options = extend(defaultOptions, {"slideNumber":true,"width":1100,"height":750,"margin":0.07}, queryOptions);
+      var options = extend(defaultOptions, {"slideNumber":true,"width":1100,"height":750,"margin":0.07,"_":[],"static":"static_slides/slideshows","theme":"css/anu.css","glob":"**/*.reveal.md","separator":"<--o-->","vertical-separator":"<--v-->","verticalSeparator":"<--v-->","static-dirs":"movies,images","staticDirs":"movies,images"}, queryOptions);
     </script>
 
 
     <script>
       Reveal.initialize(options);
+      Reveal.addEventListener('ready', function (event) {
+        const blocks = Reveal.getRevealElement().querySelectorAll('pre code:not(.mermaid)');
+        const hlp = Reveal.getPlugin('highlight');
+        blocks.forEach(hlp.highlightBlock);
+      });
+    </script>
+
+    <script>
+      const mermaidOptions = extend({ startOnLoad: false }, {});
+      mermaid.startOnLoad = false;
+      mermaid.initialize(mermaidOptions);
+      const cb = function (event) { mermaid.init(mermaidOptions, '.stack.present>.present pre code.mermaid'); };
+      Reveal.addEventListener('ready', cb);
+      Reveal.addEventListener('slidetransitionend', cb);
     </script>
   </body>
 </html>
