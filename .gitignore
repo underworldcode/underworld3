@@ -8,26 +8,25 @@ stokes.c
 analytic_sol.c
 maths.c
 swarm.c
+*_debug.txt
 .env
-__pycache__
-/__pycache__
 **/__pycache__
 *.so
 examples/.ipynb_checkpoints/*
 examples/PoissonEq/poisson
 *.h5
 *.xmf
-underworld3/petsc_types.c
 python/underworld3
 examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
 build
 keep
 old
-underworld3.egg-info/*
+**/underworld3.egg-info/*
 keep/*
 *.swp
 nohup.out
+*.png # Add these explicitly if you want to keep them 
 
 # Jupyter Book build relics
 
@@ -39,6 +38,20 @@ Jupyterbook/node_modules/.yarn-integrity
 Jupyterbook/Notebooks_old*
 package-lock.json
 
+# Myst build relics
+
+Documentation/_build
+Documentation/_build/templates
+
+
+# Mesh files etc
+
+uw_*.msh
+*.msh # unless we really want to add some examples
+*.h5
+*.xdmf
+*.vtk
+*.pbin
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -56,13 +69,17 @@ uw3_api_docs/*
 
 
 # Visualisation artefacts
-
 ignore*vtk
 ignore*msh
 tmp*vtk
 tmp*msh
 
+# Docker build artefacts
+
+docker/underworld3_components
+
 # Other
 *DS_Store
 Jupyterbook/.DS_Store
 Jupyterbook/Notebooks/.DS_Store
+Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png

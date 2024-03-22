@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-# $ pip install -e . or just python setup.py build_ext
+
+# Usage:
+#  $ pip install .
 
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
@@ -31,10 +33,7 @@ if petscVer[0] != 3 or petscVer[1] < 18:
         f"Minimum compatible version of petsc is 3.18.0, detected version "
         f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
     )
-    if petscVer[1] == 17 and petscVer[2] == 4:
-        print("Warning Petsc 3.17.4 may not compatible with underworld3")
-    else:
-        raise RuntimeError(msg)
+    raise RuntimeError(msg)
 
 
 def configure():
@@ -46,12 +45,22 @@ def configure():
     # PETSc
     import os
 
-    if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-        PETSC_DIR = os.environ["CONDA_PREFIX"]
-        PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
-    else:
-        PETSC_DIR = os.environ["PETSC_DIR"]
-        PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    print(f"PETSC_INFO - {petsc4py.get_config()}")
+    PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
+    PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
+
+    print(f"PETSC_DIR: {PETSC_DIR}")
+    print(f"PETSC_ARCH: {PETSC_ARCH}")
+
+    # It is preferable to use the petsc4py paths to the
+    # petsc libraries for consistency
+
+    # if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
+    #     PETSC_DIR = os.environ["CONDA_PREFIX"]
+    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    # else:
+    #     PETSC_DIR = os.environ["PETSC_DIR"]
+    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
     from os.path import join, isdir
 
@@ -93,7 +102,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_discretisation",
         sources=[
-            "underworld3/cython/petsc_discretisation.pyx",
+            "src/underworld3/cython/petsc_discretisation.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -101,7 +110,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_maths",
         sources=[
-            "underworld3/cython/petsc_maths.pyx",
+            "src/underworld3/cython/petsc_maths.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -109,7 +118,7 @@ extensions = [
     Extension(
         "underworld3.kdtree",
         sources=[
-            "underworld3/kdtree.pyx",
+            "src/underworld3/kdtree.pyx",
         ],
         extra_compile_args=extra_compile_args + ["-std=c++11"],
         language="c++",
@@ -118,7 +127,7 @@ extensions = [
     Extension(
         "underworld3.cython.petsc_types",
         sources=[
-            "underworld3/cython/petsc_types.pyx",
+            "src/underworld3/cython/petsc_types.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -126,7 +135,7 @@ extensions = [
     Extension(
         "underworld3.cython.generic_solvers",
         sources=[
-            "underworld3/cython/petsc_generic_snes_solvers.pyx",
+            "src/underworld3/cython/petsc_generic_snes_solvers.pyx",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -134,8 +143,8 @@ extensions = [
     Extension(
         "underworld3.function._function",
         sources=[
-            "underworld3/function/_function.pyx",
-            "underworld3/function/petsc_tools.c",
+            "src/underworld3/function/_function.pyx",
+            "src/underworld3/function/petsc_tools.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -143,8 +152,8 @@ extensions = [
     Extension(
         "underworld3.function.analytic",
         sources=[
-            "underworld3/function/analytic.pyx",
-            "underworld3/function/AnalyticSolNL.c",
+            "src/underworld3/function/analytic.pyx",
+            "src/underworld3/function/AnalyticSolNL.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -154,9 +163,7 @@ extensions = [
 setup(
     name="underworld3",
     packages=find_packages(),
-    package_data={
-        "underworld3": ["*.pxd", "*.h", "function/*.h", "petsc/*.pxd", "petsc/*.h"]
-    },
+    package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
     ext_modules=cythonize(
         extensions,
         compiler_directives={"language_level": "3"},  # or "2" or "3str"

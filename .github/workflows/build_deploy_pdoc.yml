@@ -25,11 +25,11 @@ jobs:
           cache-env: true
 
       # the following may be needed if conda-forge is out of date
-      - name: Add compatible petsc4py
-        shell: bash -l {0}
-        run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
-          pip3 install petsc4py --upgrade
+      # - name: Add compatible petsc4py
+      #   shell: bash -l {0}
+      #   run: |
+      #     export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
+      #     pip3 install petsc4py==3.18 --upgrade
 
       - name: Build UW3
         shell: bash -l {0}
@@ -58,4 +58,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           destination_dir: ${{ github.ref_name }}_api    # The dest dir is identified by branch 
-          publish_dir: uw3_api_docs/underworld3
+          publish_dir: uw3_api_docs   # /underworld3

@@ -12,133 +12,32 @@ The development branch has similar documentation:
 - https://underworldcode.github.io/underworld3/development/FrontPage.html
 - https://underworldcode.github.io/underworld3/development_api/index.html
 
+## Binder demonstration version
+
+ [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/underworld3/development)
+ 
+ [Binder - Dev Branch](https://mybinder.org/v2/gh/underworldcode/underworld3/development)
+
 
 ## Building
 
 Refer to the Dockerfile for uw3 build instructions.  
 
-For development, building inplace will prob be preferable.  Remove
-any existing installations using `clean.sh` then run
-
+To install from the repository
 ```shell
-python3 setup.py develop 
+pip install .
 ```
 
 The in-place `pip` installation may be helpful for developers (after the above)
+
 
 ```shell
 pip install -e .
 ```
 
-For in place usage, you will usually need to set an appropriate PYTHONPATH.
+To clean the git repository or all files ... be careful.
+```shell
+./clean.sh
+```
 
 
-## Development milestones
-
-Reproduce the existing UW2 examples and extend to spherical / cylindrical
-
-- [x] Spherical stokes
-- [x] Buoyancy driven stokes (various geometries)
-- [x] Compositional Buoyancy (Rayleigh-Taylor) level set
-- [x] Compositional Buoyancy (Rayleigh-Taylor) via swarms (benchmark)
-- [x] Advection/diffusion (slcn)
-- [x] Advection/diffusion (swarm)
-- [x] Constant viscosity convection
-- [x] Convection, strongly temp-dep viscosity (stagnant lid)
-- [x] Non-linear viscosity convection 
-- [ ] Quantitative Convection benchmarks (various geometries)
-- [ ] Viscoelasticity (linear) benchmarks 
-- [x] Inertial terms (Navier-Stokes benchmarks)
-- [x] Anisotropic viscosity
-
-## Repository milestones
-
- - [x] pip install 
- - [ ] conda install 
- - [x] auto-formatting (e.g. black)
- - [x] pytest setup
- - [ ] pytest full-coverage
- - [ ] pytest on commit / PR
- - [x] api docs (pdoc3)
- - [ ] jupyterbook docs (autobuild / publish)
- - [ ] JOSS compatibility:
-   - [ ] LICENCE
-   - [ ] citation txt
-   - [ ] PR / Commit templates
-   - [ ] Policies
-
-### Checklist
-
-Ingredients in achieving the above
-
-[[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
-
-- [x] spherical, annulus 
-- [x] Cartesian
-- [x] Different element types (at least Linear / Quadratic & Hex, Tet)
-- [ ] Sandbox-style deforming mesh
-  - [ ] Sandbox-style deforming mesh *with particles* 
-- [ ] Remeshing examples / adaptivity
-- [ ] Earth topography / plate boundary adapted mesh
-
-[[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
-
-- [x] Cont Galerkin 
-- [ ] ~Disc Galerkin~
-- [x] Semi-lagrangian
-- [x] Free-slip BC on surface
-  - [ ] Penalty - Needs improved interface for users)
-
-
-[[P](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L73)] Physics
-
-- [x] Stokes-Boussinesq
-- [x] Temp-dep rheology
-- [x] Buoyancy driven convection
-- [x] Non-linear viscosity / yielding
-- [ ] Viscoelasticity
-- [x] Navier-Stokes / interial terms
-- [ ] Energy equation, resolve bdry layers
-- [ ]
-- [ ] ~kermit the 🐸~
-
-[[S](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L354)] Solvers
-
-- [x] SNES - generic vector / scalar
-- [x] Block Stokes solvers
-- [x] Semi-lagrangian
-- [x] Swarm-projected history terms
-- [x] Projection solvers for function (sympy / variables) evaluation
-- [ ] ~TS~  (address this later)
-
-PIC for composition
-
-- [x] Viscosity, buoyancy, ... 
-- [x] Nearest neighbour (k-d tree ? 🌳 )
-- [ ] ~2D - L2 projection into FEM space (Petsc shall provide)~
-- [ ] ~3D - L2 projection into FEM space (Petsc shall provide but not in 3D)~
-- [x] Petsc Integrals
-- [x] uw.function evaluate (for Sympy functions)
-
-[[O1](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L218) [O2](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L382)] Output
-
-- [x] HDF5 -> XDMF -> Paraview
-- [x] pyvista (serial)
-- [ ] LavaVu (or pyvista parallel workflow)
-
-[[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
-- [ ] MMS
-- [ ] Analytical 
-  - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
-  -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
-
-
-### Tasks
-
-  - [x] Solver options - robust for viscosity contrasts, customisable and quick.
-  - [ ] Investigate generalising context managers
-  - [ ] ~Proper quadratic mesh interpolations for deformed meshes.~
-  - [ ] DMLabels for higher order meshes, ie. using a label to set values in a Vec. How do you label mid-points?
-  - [ ] Further integrals/reduction operators on fields variables.
-  - [x] nKK nanoflann exposure.
-  - [ ] create developer docs for software stack and general development strategy.

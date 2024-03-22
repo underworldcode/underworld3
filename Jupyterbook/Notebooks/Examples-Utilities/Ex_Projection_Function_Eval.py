@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -22,18 +22,24 @@
 #
 # We'll demonstrate this using a swarm variable (scalar / vector), but the same approach is useful for gradient recovery.
 
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
+
 import underworld3 as uw
 import numpy as np
 import sympy
 
 from underworld3.meshing import UnstructuredSimplexBox
 
-meshbox = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0)
+meshbox = UnstructuredSimplexBox(minCoords=(0.0, 0.0), 
+                                 maxCoords=(1.0, 1.0), 
+                                 cellSize=1.0 / 32.0,)
 
-import meshio
-
-mesh2 = meshio.read(filename="../Examples-StokesFlow/tmp_ball.vtk")
-meshio.write(filename="tmp_ball.msh", mesh=mesh2)
+# +
+# import meshio
+# mesh2 = meshio.read(filename="../Examples-StokesFlow/tmp_ball.vtk")
+# meshio.write(filename="tmp_ball.msh", mesh=mesh2)
 
 # +
 import sympy
@@ -43,14 +49,7 @@ import sympy
 x, y = meshbox.X
 # -
 
-meshbox.dm.createDS()
-
-
 s_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=2)
-
-s_soln._set_vec(s_soln._available)
-
-meshbox.dm.getNumFields()
 
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
 
@@ -63,13 +62,10 @@ meshbox.vector.divergence(v_fn)
 swarm = uw.swarm.Swarm(mesh=meshbox)
 s_values = uw.swarm.SwarmVariable("Ss", swarm, 1, proxy_degree=3)
 v_values = uw.swarm.SwarmVariable("Vs", swarm, meshbox.dim, proxy_degree=3)
-iv_values = uw.swarm.SwarmVariable("Vi", swarm, meshbox.dim, proxy_degree=3)
+# iv_values = uw.swarm.SwarmVariable("Vi", swarm, meshbox.dim, proxy_degree=3)
 
 swarm.populate(fill_param=3)
 # -
-
-
-meshbox.dm.getNumFields()
 
 
 scalar_projection = uw.systems.Projection(meshbox, s_soln)
@@ -91,19 +87,15 @@ vector_projection.add_dirichlet_bc(v_fn, "Top", (0, 1))
 vector_projection.add_dirichlet_bc(v_fn, "Bottom", (0, 1))
 # -
 
-s_soln._lvec is None
-
-with swarm.access(s_values, v_values, iv_values):
-    s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data)
-    v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data)
-    v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data)
+with swarm.access(s_values, v_values):
+    s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, meshbox.N)
+    v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data, meshbox.N)
+    v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data, meshbox.N)
 
 
 scalar_projection.solve()
 
-# + tags=[]
 vector_projection.solve()
-# -
 
 scalar_projection.uw_function = meshbox.vector.divergence(v_soln.sym)
 scalar_projection.solve()
@@ -116,33 +108,16 @@ s_soln.stats()
 
 if uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, s_soln.sym)
 
-    pv.start_xvfb()
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    meshbox.vtk("mesh_tmp.vtk")
-    pvmesh = pv.read("mesh_tmp.vtk")
-
-    with meshbox.access():
-        vsol = v_soln.data.copy()
-
-    pvmesh.point_data["S"] = uw.function.evaluate(s_soln.fn, meshbox.data)
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = vsol[...]
-
-    pl = pv.Plotter()
+    pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
@@ -150,9 +125,12 @@ if uw.mpi.size == 1:
         pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="S", use_transparency=False, opacity=0.5
     )
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=1.0e-1, opacity=0.5)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1.0e-1, opacity=0.5)
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+# -
+
+

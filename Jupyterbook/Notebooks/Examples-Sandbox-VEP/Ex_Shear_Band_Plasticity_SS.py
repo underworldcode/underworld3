@@ -5,19 +5,22 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-
 # # Shear bands around a circular inclusion in a simple shear flow
 #
 # No slip conditions
 #
 #
+
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 expt_name = "ShearBand"
 
@@ -40,11 +43,9 @@ height = 1.0
 radius = 0.1
 
 if uw.mpi.rank == 0:
-
     # Generate local mesh on boss process
 
     with pygmsh.geo.Geometry() as geom:
-
         geom.characteristic_length_max = csize
 
         inclusion = geom.add_circle(
@@ -125,7 +126,7 @@ stokes = uw.systems.Stokes(
 )
 
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity = 1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 stokes.penalty = 0.0
@@ -140,7 +141,7 @@ nodal_strain_rate_inv2 = uw.systems.Projection(
 )
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "top", 0)
 nodal_strain_rate_inv2.add_dirichlet_bc(1.0, "bottom", 0)
-nodal_strain_rate_inv2.uw_function = stokes._Einv2
+nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
 nodal_strain_rate_inv2.smoothing = 1.0e-3
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -199,7 +200,7 @@ for i in range(steps):
     C = 2.5 + (steps - i) * 0.33
     print(f"Mu - {mu}, C = {C}")
     tau_y = sympy.Max(C + mu * stokes.p.sym[0], 0.1)
-    viscosity = sympy.Min(tau_y / (2 * stokes._Einv2 + 0.01), 1.0)
+    viscosity = sympy.Min(tau_y / (2 * stokes.Unknowns.Einv2 + 0.01), 1.0)
     # viscosity = 100 * (0.01 + stokes._Einv2)
     stokes.constitutive_model.Parameters.viscosity = viscosity
     stokes.saddle_preconditioner = 1 / viscosity
@@ -209,57 +210,36 @@ for i in range(steps):
 
 
 nodal_tau_inv2.uw_function = (
-    stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+    stokes.constitutive_model.Parameters.viscosity * stokes.Unknowns.Einv2
 )
 nodal_tau_inv2.solve()
 nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 nodal_visc_calc.solve()
 nodal_strain_rate_inv2.solve()
-nodal_pres_calc.solve()
+# nodal_pres_calc.solve()
+
+with mesh1.access():
+    print(v_soln.data)
 
 # +
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 1250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_cont.sym)
+    pvmesh.point_data["Edot"] = vis.scalar_fn_to_pv_points(pvmesh, strain_rate_inv2.sym)
+    pvmesh.point_data["Visc"] = vis.scalar_fn_to_pv_points(pvmesh, node_viscosity.sym)
+    pvmesh.point_data["Str"] = vis.scalar_fn_to_pv_points(pvmesh, dev_stress_inv2.sym)
+    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v_soln.sym.dot(v_soln.sym))
 
-    mesh1.vtk("tmp_shear_inclusion.vtk")
-    pvmesh = pv.read("tmp_shear_inclusion.vtk")
+    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    with mesh1.access():
-        usol = v_soln.data.copy()
-
-    with mesh1.access():
-        pvmesh.point_data["Vmag"] = uw.function.evaluate(
-            sympy.sqrt(v_soln.fn.dot(v_soln.fn)), mesh1.data
-        )
-        pvmesh.point_data["P"] = uw.function.evaluate(p_cont.fn, mesh1.data)
-        pvmesh.point_data["Edot"] = uw.function.evaluate(
-            strain_rate_inv2.fn, mesh1.data
-        )
-        pvmesh.point_data["Str"] = uw.function.evaluate(dev_stress_inv2.fn, mesh1.data)
-        pvmesh.point_data["Visc"] = uw.function.evaluate(node_viscosity.fn, mesh1.data)
-
-    v_vectors = np.zeros((mesh1.data.shape[0], 3))
-    v_vectors[:, 0:2] = uw.function.evaluate(v_soln.fn, mesh1.data)
-    pvmesh.point_data["V"] = v_vectors / v_vectors.max()
-
-    arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v_soln.coords[...]
-
-    arrow_length = np.zeros((v_soln.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
 
     # point sources at cell centres
 
@@ -273,9 +253,9 @@ if uw.mpi.size == 1:
         point_cloud, vectors="V", integration_direction="both", max_steps=100
     )
 
-    pl = pv.Plotter(window_size=(2000, 500))
+    pl = pv.Plotter(window_size=(1000, 500))
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.1, opacity=0.75)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.1, opacity=0.75)
     pl.camera_position = "xy"
 
     pl.add_mesh(
@@ -303,3 +283,7 @@ pvmesh.point_data["P"].min(), pvmesh.point_data["P"].max()  # cf 4.26
 pvmesh.point_data["Str"].min(), pvmesh.point_data["Str"].max()
 
 pvmesh.point_data["Edot"].min(), pvmesh.point_data["Edot"].max()
+
+pvmesh.point_data["V"].min(), pvmesh.point_data["V"].max()
+
+

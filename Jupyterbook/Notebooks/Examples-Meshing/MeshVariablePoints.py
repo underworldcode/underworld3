@@ -5,14 +5,14 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # # Creating a mesh (and checking the labels)
 #
 # This example is for the notch-localization test of Spiegelman et al. For which they supply a geometry file which gmsh can use to construct meshes at various resolutions. NOTE: we are just demonstrating the mesh here, not the solver configuration / benchmarking.
@@ -21,8 +21,11 @@
 # how to read that into a `uw.discretisation.Mesh` object. The `.geo` file has header parameters to control the mesh refinement, and we provide a coarse version and the original version.
 #
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
+# -
 
-# %%
+# to fix trame issue
+import nest_asyncio
+nest_asyncio.apply()
 
 import petsc4py
 from petsc4py import PETSc
@@ -38,8 +41,10 @@ mesh1 = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.1)
 mesh1.dm.view()
 
 
+# +
 # %%
-petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
+# petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
+# -
 
 # %%
 petsc_discretisation.petsc_dm_set_periodicity(
@@ -54,11 +59,10 @@ mesh1.dm.localizeCoordinates()
 # %%
 mesh1.dm.view()
 
+# +
 # %%
-petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
-
-# %%
-0 / 0
+# petsc_discretisation.petsc_dm_get_periodicity(mesh1.dm)
+# -
 
 # %%
 dC0 = uw.discretisation.MeshVariable(r"dC_0", mesh1, 1, degree=0, continuous=False)
@@ -68,41 +72,26 @@ C1 = uw.discretisation.MeshVariable(r"C_1", mesh1, 1, degree=1, continuous=True)
 C2 = uw.discretisation.MeshVariable(r"C_2", mesh1, 1, degree=2, continuous=True)
 
 
-# %% [markdown]
+# + [markdown] magic_args="[markdown]"
 # This is how we extract cell data from the mesh. We can map it to the swarm data structure
+# -
 
-# %%
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
-    import numpy as np
+    
     import pyvista as pv
-    import vtk
+    import underworld3.visualisation as vis
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
+    pvmesh = vis.mesh_to_pv_mesh(mesh1)
 
-    mesh1.vtk("tmp_notch.vtk")
-    pvmesh = pv.read("tmp_notch.vtk")
-
-    pl = pv.Plotter()
-
-    var = dC1
-    points = np.zeros((var.coords.shape[0], 3))
-    points[:, 0] = var.coords[:, 0]
-    points[:, 1] = var.coords[:, 1]
+    points = vis.meshVariable_to_pv_cloud(dC1)
     point_cloud = pv.PolyData(points)
 
-    var = dC2
-    points = np.zeros((var.coords.shape[0], 3))
-    points[:, 0] = var.coords[:, 0]
-    points[:, 1] = var.coords[:, 1]
+    points = vis.meshVariable_to_pv_cloud(dC2)
     point_cloud2 = pv.PolyData(points)
+
+    pl = pv.Plotter()
 
     pl.add_mesh(
         pvmesh,
@@ -128,3 +117,5 @@ if uw.mpi.size == 1:
     )
 
     pl.show(cpos="xy")
+
+
