@@ -64,7 +64,9 @@ x,y = mesh.X
 # -
 
 
-stokes = uw.systems.Stokes(mesh, verbose=False)
+mesh.view()
+
+stokes = uw.systems.Stokes(mesh, verbose=True)
 
 # +
 v = stokes.Unknowns.u

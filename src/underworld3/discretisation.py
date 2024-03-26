@@ -196,6 +196,8 @@ class Mesh(Stateful, uw_object):
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
 
+        uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
