@@ -33,6 +33,8 @@ def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
     dm.createLabel(stacked_bc_label_name)
     stacked_bc_label = dm.getLabel(stacked_bc_label_name)
 
+    print(f"{uw.mpi.rank}: BC stacker - 1", flush=True)
+
     for b in boundaries:
         bc_label_name = b.name
         lab = dm.getLabel(bc_label_name)
@@ -40,10 +42,15 @@ def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
         if not lab:
             continue
 
+        print(f"{uw.mpi.rank}: BC stacker - 2 ({b.name})", flush=True)
+
         lab_is = lab.getStratumIS(b.value)
 
         # Load this up on the stack
-        stacked_bc_label.setStratumIS(b.value, lab_is)
+        if lab_is:
+            stacked_bc_label.setStratumIS(b.value, lab_is)
+
+        print(f"{uw.mpi.rank}: BC stacker - 3 ({b.name})", flush=True)
 
 
 def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
