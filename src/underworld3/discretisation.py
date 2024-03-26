@@ -411,18 +411,18 @@ class Mesh(Stateful, uw_object):
         for bd in self.boundaries:
             l = self.dm.getLabel(bd.name)
             if l:
-                i = l.getStratumSize(2)
-                ii = uw.utilities.gather_data(np.array([float(i)])).astype(int)
-                uw.mpi.barrier()
+                i = l.getStratumSize(bd.value)
             else:
-                ii = np.array([0])
+                i = 0
+
+            ii = uw.utilities.gather_data(np.array([float(i)]))
 
             if uw.mpi.rank == 0:
                 print(
-                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                    f"| {bd.name:<20}     | {bd.value:<5} | {int(ii.min()):<8} | {int(ii.max()):<8} |",
                 )
-        if uw.mpi.rank == 0:
 
+        if uw.mpi.rank == 0:
             print(f"| ------------------------------------------------------ |")
             print("\n", flush=True)
 
