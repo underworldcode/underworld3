@@ -535,7 +535,7 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Stokes</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">stokes</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">systems</span><span class="o">.</span><span class="n">Stokes</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -559,8 +559,7 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>
-<span class="n">eta_0</span> <span class="o">=</span> <span class="mf">1.0</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">eta_0</span> <span class="o">=</span> <span class="mf">1.0</span>
 <span class="n">x_c</span> <span class="o">=</span> <span class="mf">0.5</span>
 <span class="n">f_0</span> <span class="o">=</span> <span class="mf">1.0</span>
 </pre></div>
@@ -665,20 +664,6 @@ document.write(`
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># %%</span>
 <span class="c1"># Solve time</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">meshVariable_lookup_by_symbol</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">v</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="cell docutils container">
-<div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">meshVariable_lookup_by_symbol</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">v</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -799,7 +784,7 @@ document.write(`
 <span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="n">sympy</span><span class="o">.</span><span class="n">oo</span><span class="p">,</span><span class="mf">0.0</span><span class="p">),</span> <span class="s2">&quot;Bottom&quot;</span><span class="p">)</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span><span class="n">sympy</span><span class="o">.</span><span class="n">oo</span><span class="p">),</span> <span class="s2">&quot;Left&quot;</span><span class="p">)</span>
 <span class="n">stokes</span><span class="o">.</span><span class="n">add_dirichlet_bc</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span><span class="n">sympy</span><span class="o">.</span><span class="n">oo</span><span class="p">),</span> <span class="s2">&quot;Right&quot;</span><span class="p">)</span>
-<span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">stokes</span><span class="o">.</span><span class="n">solve</span><span class="p">()</span>
 </pre></div>
 </div>
 </div>
@@ -844,7 +829,7 @@ document.write(`
     <span class="n">arrows0</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V2&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">show_scalar_bar</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">arrows1</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;dV2&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">100000.0</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">show_scalar_bar</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
-    <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">cpos</span><span class="o">=</span><span class="s2">&quot;xy&quot;</span><span class="p">)</span>
+    <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">jupyter_backend</span><span class="o">=</span><span class="s1">&#39;client&#39;</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>

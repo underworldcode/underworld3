@@ -502,7 +502,7 @@ document.write(`
 <span class="c1"># These can be set when launching the script as</span>
 <span class="c1"># mpirun python3 scriptname -uw_resolution=0.1 etc</span>
 
-<span class="n">resolution</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getReal</span><span class="p">(</span><span class="s2">&quot;model_resolution&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
+<span class="n">resolution</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_resolution&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
 <span class="n">refinement</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_refinement&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;model_number&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 <span class="n">maxsteps</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">getInt</span><span class="p">(</span><span class="s2">&quot;max_steps&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
@@ -926,7 +926,7 @@ document.write(`
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ts</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="n">elapsed_time</span> <span class="o">=</span> <span class="mf">0.0</span>
 <span class="n">dt_ns</span> <span class="o">=</span> <span class="mf">0.01</span>
-<span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">5</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
+<span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
 <span class="n">delta_t</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delta_t_cfl</span><span class="p">,</span> <span class="n">dt_ns</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -934,7 +934,7 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">250</span><span class="p">):</span> <span class="c1">#1500</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">maxsteps</span><span class="p">):</span> <span class="c1">#1500</span>
     <span class="n">delta_t_cfl</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">navier_stokes</span><span class="o">.</span><span class="n">estimate_dt</span><span class="p">()</span>
 
     <span class="k">if</span> <span class="n">step</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -988,7 +988,7 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># check the mesh if in a notebook / serial</span>
 
-<span class="k">if</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
 
     <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
     <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>

@@ -496,16 +496,15 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="o">%%</span><span class="n">sh</span>
 
-<span class="n">ls</span> <span class="o">-</span><span class="n">tr</span> <span class="o">/</span><span class="n">Users</span><span class="o">/</span><span class="n">lmoresi</span><span class="o">/+</span><span class="n">Simulations</span><span class="o">/</span><span class="n">NS_benchmarks</span><span class="o">/</span><span class="n">NS_BMK_DvDt_std</span> <span class="o">|</span> <span class="n">tail</span>
+<span class="n">ls</span> <span class="o">-</span><span class="n">tr</span> <span class="o">/</span><span class="n">Users</span><span class="o">/</span><span class="n">lmoresi</span><span class="o">/+</span><span class="n">Simulations</span><span class="o">/</span><span class="n">NS_benchmarks</span><span class="o">/</span><span class="n">NS_BMK_Re1000</span>
 <span class="c1">#ls -tr /Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_033/*mesh*h5 | tail -10</span>
-
 </pre></div>
 </div>
 </div>
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ls</span> <span class="o">/</span><span class="n">Users</span><span class="o">/</span><span class="n">lmoresi</span><span class="o">/+</span><span class="n">Simulations</span><span class="o">/</span><span class="n">NS_benchmarks</span><span class="o">/</span><span class="n">NS_BMK_DvDt_std</span><span class="o">/</span><span class="n">NS_benchmark_DFG2d_2iii_0</span><span class="mf">.033</span><span class="o">*</span> <span class="o">|</span> <span class="n">tail</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ls</span> <span class="o">-</span><span class="n">tr</span> <span class="o">/</span><span class="n">Users</span><span class="o">/</span><span class="n">lmoresi</span><span class="o">/+</span><span class="n">Simulations</span><span class="o">/</span><span class="n">NS_benchmarks</span><span class="o">/</span><span class="n">NS_BMK_Re1000</span><span class="o">/</span><span class="n">output_res_60_3</span><span class="mf">.0</span><span class="o">/</span><span class="n">NS_test_Re_1000_SLCN_60</span><span class="o">*</span><span class="n">mesh</span><span class="o">*</span> <span class="o">|</span> <span class="n">tail</span>
 </pre></div>
 </div>
 </div>
@@ -514,12 +513,12 @@ document.write(`
 <div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1">## Reading the checkpoints back in ... </span>
 
-<span class="n">step</span> <span class="o">=</span> <span class="mi">390</span>
+<span class="n">step</span> <span class="o">=</span> <span class="mi">190</span>
 
-<span class="n">checkpoint_dir</span> <span class="o">=</span> <span class="s2">&quot;/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std&quot;</span>
+<span class="n">checkpoint_dir</span> <span class="o">=</span> <span class="s2">&quot;/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_Re1000/output_res_60_3.0&quot;</span>
 <span class="c1"># checkpoint_dir = &quot;/Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes//Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std&quot;</span>
 
-<span class="n">checkpoint_base</span> <span class="o">=</span> <span class="s2">&quot;NS_benchmark_DFG2d_2iii_0.033&quot;</span>
+<span class="n">checkpoint_base</span> <span class="o">=</span> <span class="s2">&quot;NS_test_Re_1000_SLCN_60&quot;</span>
 <span class="n">base_filename</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">checkpoint_base</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -527,7 +526,8 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mesh</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">base_filename</span><span class="si">}</span><span class="s2">.mesh.</span><span class="si">{</span><span class="n">step</span><span class="si">:</span><span class="s2">05d</span><span class="si">}</span><span class="s2">.h5&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># mesh = uw.discretisation.Mesh(f&quot;{base_filename}.mesh.{step:05d}.h5&quot;)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">base_filename</span><span class="si">}</span><span class="s2">.mesh.00000.h5&quot;</span><span class="p">)</span>
 
 <span class="n">v_soln_ckpt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="s2">&quot;U&quot;</span><span class="p">,</span> <span class="n">mesh</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">dim</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
 <span class="n">p_soln_ckpt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">discretisation</span><span class="o">.</span><span class="n">MeshVariable</span><span class="p">(</span><span class="s2">&quot;P&quot;</span><span class="p">,</span> <span class="n">mesh</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
@@ -561,7 +561,7 @@ document.write(`
     <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
 
     <span class="n">pvmesh</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">mesh_to_pv_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
-    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;P&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">p_soln_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
+    <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;P&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">p_soln_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Omega&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">vorticity_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
     <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">vector_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">v_soln_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span>
     <span class="n">pvmesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;Vmag&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">scalar_fn_to_pv_points</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">v_soln_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">v_soln_ckpt</span><span class="o">.</span><span class="n">sym</span><span class="p">)))</span>
@@ -574,7 +574,7 @@ document.write(`
     <span class="n">Vb</span> <span class="o">=</span> <span class="p">(</span><span class="mf">4.0</span> <span class="o">*</span> <span class="n">U0</span> <span class="o">*</span> <span class="n">y</span> <span class="o">*</span> <span class="p">(</span><span class="mf">0.41</span> <span class="o">-</span> <span class="n">y</span><span class="p">))</span> <span class="o">/</span> <span class="mf">0.41</span><span class="o">**</span><span class="mi">2</span>
         
     <span class="c1"># swarm points</span>
-    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_point_cloud</span><span class="p">(</span><span class="n">passive_swarm_ckpt</span><span class="p">)</span>
+    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm_ckpt</span><span class="p">)</span>
     <span class="n">swarm_point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
     <span class="c1"># point sources at cell centres</span>
@@ -592,7 +592,7 @@ document.write(`
     <span class="p">)</span>
 
     <span class="n">pl</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">Plotter</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">750</span><span class="p">))</span>
-    <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">pl</span><span class="o">.</span><span class="n">add_arrows</span><span class="p">(</span><span class="n">velocity_points</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">velocity_points</span><span class="o">.</span><span class="n">point_data</span><span class="p">[</span><span class="s2">&quot;V&quot;</span><span class="p">],</span> <span class="n">mag</span><span class="o">=</span><span class="mf">0.001</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
         <span class="n">pvmesh</span><span class="p">,</span>
@@ -606,7 +606,7 @@ document.write(`
 
     <span class="n">pl</span><span class="o">.</span><span class="n">add_points</span><span class="p">(</span><span class="n">swarm_point_cloud</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
                   <span class="n">render_points_as_spheres</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-                  <span class="n">point_size</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.2</span>
+                  <span class="n">point_size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.2</span>
                 <span class="p">)</span>
 
     <span class="n">pl</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span><span class="n">pvmesh</span><span class="p">,</span><span class="s1">&#39;Black&#39;</span><span class="p">,</span> <span class="s1">&#39;wireframe&#39;</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.25</span><span class="p">)</span>
@@ -629,7 +629,14 @@ document.write(`
             <span class="n">return_img</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="p">)</span>
     
-    <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+    <span class="n">pl</span><span class="o">.</span><span class="n">show</span><span class="p">(</span><span class="n">jupyter_backend</span><span class="o">=</span><span class="s2">&quot;client&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="mi">0</span><span class="o">/</span><span class="mi">0</span>
 </pre></div>
 </div>
 </div>
@@ -650,6 +657,15 @@ document.write(`
 </div>
 <div class="cell docutils container">
 <div class="cell_input docutils container">
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Override output range (but need to run above cell to get the files themselves)</span>
+
+<span class="c1"># steps = range(0,550,10)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
     <span class="kn">import</span> <span class="nn">pyvista</span> <span class="k">as</span> <span class="nn">pv</span>
     <span class="kn">import</span> <span class="nn">underworld3.visualisation</span> <span class="k">as</span> <span class="nn">vis</span>
@@ -659,9 +675,9 @@ document.write(`
 <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="n">steps</span><span class="p">:</span>
     <span class="c1"># check the mesh if in a notebook / serial</span>
     
-    <span class="n">v_soln_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;U&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">)</span>
-    <span class="n">p_soln_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;P&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">)</span>
-    <span class="n">vorticity_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;omega&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">)</span>
+    <span class="n">v_soln_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;U&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">p_soln_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;P&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">vorticity_ckpt</span><span class="o">.</span><span class="n">read_timestep</span><span class="p">(</span><span class="n">checkpoint_base</span><span class="p">,</span> <span class="s2">&quot;omega&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">outputPath</span><span class="o">=</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
 <span class="c1"># This one is just the individual points</span>
     <span class="n">passive_swarm_ckpt</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">swarm</span><span class="o">.</span><span class="n">Swarm</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
@@ -681,7 +697,7 @@ document.write(`
     <span class="n">Vb</span> <span class="o">=</span> <span class="p">(</span><span class="mf">4.0</span> <span class="o">*</span> <span class="n">U0</span> <span class="o">*</span> <span class="n">y</span> <span class="o">*</span> <span class="p">(</span><span class="mf">0.41</span> <span class="o">-</span> <span class="n">y</span><span class="p">))</span> <span class="o">/</span> <span class="mf">0.41</span><span class="o">**</span><span class="mi">2</span>
 
     <span class="c1"># swarm points</span>
-    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_point_cloud</span><span class="p">(</span><span class="n">passive_swarm_ckpt</span><span class="p">)</span>
+    <span class="n">points</span> <span class="o">=</span> <span class="n">vis</span><span class="o">.</span><span class="n">swarm_to_pv_cloud</span><span class="p">(</span><span class="n">passive_swarm_ckpt</span><span class="p">)</span>
     <span class="n">swarm_point_cloud</span> <span class="o">=</span> <span class="n">pv</span><span class="o">.</span><span class="n">PolyData</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
 
     <span class="c1"># point sources at cell centres</span>
@@ -715,6 +731,7 @@ document.write(`
         <span class="n">edge_color</span><span class="o">=</span><span class="s2">&quot;Black&quot;</span><span class="p">,</span>
         <span class="n">show_edges</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="n">scalars</span><span class="o">=</span><span class="s2">&quot;Omega&quot;</span><span class="p">,</span>
+        <span class="n">clim</span><span class="o">=</span><span class="p">[</span><span class="o">-</span><span class="mi">1000</span><span class="p">,</span><span class="mi">1000</span><span class="p">],</span>
         <span class="n">use_transparency</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="n">opacity</span><span class="o">=</span><span class="mf">0.75</span><span class="p">,</span>
     <span class="p">)</span>
