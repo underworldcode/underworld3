@@ -64,7 +64,7 @@ x,y = mesh.X
 # -
 
 
-stokes = uw.systems.Stokes(mesh, verbose=True)
+stokes = uw.systems.Stokes(mesh, verbose=False)
 
 # +
 v = stokes.Unknowns.u
@@ -81,12 +81,9 @@ v1 = v0.clone("V1", r"{v_1}")
 # -
 
 
-# +
-
 eta_0 = 1.0
 x_c = 0.5
 f_0 = 1.0
-# -
 
 
 stokes.penalty = 100.0
@@ -161,18 +158,6 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 # %%
 # Solve time
 stokes.solve()
-
-uw.discretisation.meshVariable_lookup_by_symbol(mesh, v.sym)
-
-uw.discretisation.meshVariable_lookup_by_symbol(mesh, v.sym)
-
-
-
-
-
-
-
-
 
 # ### Visualise it !
 
@@ -266,7 +251,7 @@ stokes.add_natural_bc(1e6 * Gamma.dot(v.sym) * Gamma, "Top")
 stokes.add_dirichlet_bc((sympy.oo,0.0), "Bottom")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Left")
 stokes.add_dirichlet_bc((0.0,sympy.oo), "Right")
-stokes.solve(debug=False, verbose=False)
+stokes.solve()
 
 
 # +
@@ -308,7 +293,9 @@ if uw.mpi.size == 1:
     arrows0 = pl.add_arrows(velocity_points.points, velocity_points.point_data["V2"], mag=100.0, opacity=1, show_scalar_bar=False)
     arrows1 = pl.add_arrows(velocity_points.points, velocity_points.point_data["dV2"], mag=100000.0, opacity=1, show_scalar_bar=False)
 
-    pl.show(cpos="xy")
+    pl.show(jupyter_backend='client')
+
+
 
 # +
 # %%
@@ -336,9 +323,3 @@ except ImportError:
     warnings.warn("Unable to test SolC results as UW2 not available.")
 
 # %%
-# -
-
-
-
-
-

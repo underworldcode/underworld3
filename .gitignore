@@ -10,15 +10,12 @@ maths.c
 swarm.c
 *_debug.txt
 .env
-__pycache__
-/__pycache__
 **/__pycache__
 *.so
 examples/.ipynb_checkpoints/*
 examples/PoissonEq/poisson
 *.h5
 *.xmf
-underworld3/petsc_types.c
 python/underworld3
 examples/c_examples/PoissonEq/poisson
 examples/c_examples/CartesianStokes/stokes
@@ -30,6 +27,17 @@ keep/*
 *.swp
 nohup.out
 *.png # Add these explicitly if you want to keep them 
+
+# quarto build relics
+
+documentation/index.aux
+documentation/index.pdf
+documentation/index.tex
+documentation/index.log
+documentation/index.toc
+
+
+
 
 # Jupyter Book build relics
 
@@ -86,3 +94,4 @@ docker/underworld3_components
 Jupyterbook/.DS_Store
 Jupyterbook/Notebooks/.DS_Store
 Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png
+Documentation/index.aux

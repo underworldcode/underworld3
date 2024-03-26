@@ -55,7 +55,7 @@ import sympy
 # These can be set when launching the script as
 # mpirun python3 scriptname -uw_resolution=0.1 etc
 
-resolution = uw.options.getReal("model_resolution", default=30)
+resolution = uw.options.getInt("model_resolution", default=30)
 refinement = uw.options.getInt("model_refinement", default=0)
 model = uw.options.getInt("model_number", default=4)
 maxsteps = uw.options.getInt("max_steps", default=1000)
@@ -438,11 +438,11 @@ def plot_V_mesh(filename):
 ts = 0
 elapsed_time = 0.0
 dt_ns = 0.01
-delta_t_cfl = 5 * navier_stokes.estimate_dt()
+delta_t_cfl = 2 * navier_stokes.estimate_dt()
 delta_t = min(delta_t_cfl, dt_ns)
 
 
-for step in range(0, 250): #1500
+for step in range(0, maxsteps): #1500
     delta_t_cfl = 2 * navier_stokes.estimate_dt()
 
     if step % 10 == 0:
@@ -491,7 +491,7 @@ for step in range(0, 250): #1500
 # +
 # check the mesh if in a notebook / serial
 
-if 1 and uw.mpi.size == 1:
+if uw.mpi.size == 1:
 
     import pyvista as pv
     import underworld3.visualisation as vis

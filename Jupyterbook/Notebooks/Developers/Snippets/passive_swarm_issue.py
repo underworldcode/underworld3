@@ -2,6 +2,7 @@
 import underworld3 as uw
 import numpy as np
 import math
+import petsc4py
 
 if uw.mpi.size == 1:
     import matplotlib.pyplot as plt
@@ -40,26 +41,32 @@ mesh = uw.meshing.StructuredQuadBox(
 
 
 # %%
+petsc4py.PETSc.garbage_view()
+
+# %%
 passiveSwarm = uw.swarm.Swarm(mesh=mesh)
 # test_ps = passiveSwarm.add_variable('test_data', vtype=uw.VarType.MATRIX,
 #                                )
 
 test_ps = uw.swarm.SwarmVariable(
-    "test_data", passiveSwarm, size=(3, 4), vtype=uw.VarType.MATRIX
+    "test_data", passiveSwarm, size=(10000, 1), vtype=uw.VarType.MATRIX, _proxy=False,
 )
 
 # add particles to the swarm
-coords = np.zeros((10, 2))
+num_p = 100
+
+coords = np.zeros((num_p, 2))
 coords[:, 0] = np.linspace(
-    xmin + mesh.get_min_radius(), xmax - mesh.get_min_radius(), 10
+    xmin + mesh.get_min_radius(), xmax - mesh.get_min_radius(), num_p
 )
 coords[:, 1] = np.linspace(
-    ymin + mesh.get_min_radius(), ymax - mesh.get_min_radius(), 10
+    ymin + mesh.get_min_radius(), ymax - mesh.get_min_radius(), num_p
 )
 
-print(f"{uw.mpi.rank}: {mesh.get_min_radius()}", flush=True)
-uw.mpi.barrier()
 
+
+# %%
+petsc4py.PETSc.garbage_view()
 
 # %%
 kdt = uw.kdtree.KDTree(coords)

@@ -43,28 +43,28 @@ import sympy
 
 # + language="sh"
 #
-# ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std | tail
+# ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_Re1000
 # #ls -tr /Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes/output_res_033/*mesh*h5 | tail -10
-#
 #
 # -
 
 
-# ls /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std/NS_benchmark_DFG2d_2iii_0.033* | tail
+# ls -tr /Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_Re1000/output_res_60_3.0/NS_test_Re_1000_SLCN_60*mesh* | tail
 
 # +
 ## Reading the checkpoints back in ... 
 
-step = 390
+step = 190
 
-checkpoint_dir = "/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std"
+checkpoint_dir = "/Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_Re1000/output_res_60_3.0"
 # checkpoint_dir = "/Users/lmoresi/+Underworld/underworld3/JupyterBook/Notebooks/Examples-NavierStokes//Users/lmoresi/+Simulations/NS_benchmarks/NS_BMK_DvDt_std"
 
-checkpoint_base = "NS_benchmark_DFG2d_2iii_0.033"
+checkpoint_base = "NS_test_Re_1000_SLCN_60"
 base_filename = os.path.join(checkpoint_dir, checkpoint_base)
 
 # +
-mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.{step:05d}.h5")
+# mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.{step:05d}.h5")
+mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.00000.h5")
 
 v_soln_ckpt = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p_soln_ckpt = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
@@ -92,7 +92,7 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln_ckpt.sym)
+    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln_ckpt.sym[0])
     pvmesh.point_data["Omega"] = vis.scalar_fn_to_pv_points(pvmesh, vorticity_ckpt.sym)
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln_ckpt.sym)
     pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.sqrt(v_soln_ckpt.sym.dot(v_soln_ckpt.sym)))
@@ -105,7 +105,7 @@ if uw.mpi.size == 1:
     Vb = (4.0 * U0 * y * (0.41 - y)) / 0.41**2
         
     # swarm points
-    points = vis.swarm_point_cloud(passive_swarm_ckpt)
+    points = vis.swarm_to_pv_cloud(passive_swarm_ckpt)
     swarm_point_cloud = pv.PolyData(points)
 
     # point sources at cell centres
@@ -123,7 +123,7 @@ if uw.mpi.size == 1:
     )
 
     pl = pv.Plotter(window_size=(1000, 750))
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.02, opacity=0.5)
+    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.001, opacity=0.5)
 
     pl.add_mesh(
         pvmesh,
@@ -137,7 +137,7 @@ if uw.mpi.size == 1:
 
     pl.add_points(swarm_point_cloud, color="Black",
                   render_points_as_spheres=True,
-                  point_size=5, opacity=0.2
+                  point_size=3, opacity=0.2
                 )
 
     pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.25)
@@ -160,8 +160,11 @@ if uw.mpi.size == 1:
             return_img=False,
         )
     
-    pl.show()
+    pl.show(jupyter_backend="client")
+# -
 
+
+0/0
 
 # +
 import glob
@@ -175,6 +178,11 @@ print(steps)
 
 
 # +
+# Override output range (but need to run above cell to get the files themselves)
+
+# steps = range(0,550,10)
+
+# +
 if uw.mpi.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
@@ -184,9 +192,9 @@ if uw.mpi.size == 1:
 for step in steps:
     # check the mesh if in a notebook / serial
     
-    v_soln_ckpt.read_timestep(checkpoint_base, "U", step, outputPath=checkpoint_dir)
-    p_soln_ckpt.read_timestep(checkpoint_base, "P", step, outputPath=checkpoint_dir)
-    vorticity_ckpt.read_timestep(checkpoint_base, "omega", step, outputPath=checkpoint_dir)
+    v_soln_ckpt.read_timestep(checkpoint_base, "U", step, outputPath=checkpoint_dir, verbose=True)
+    p_soln_ckpt.read_timestep(checkpoint_base, "P", step, outputPath=checkpoint_dir, verbose=True)
+    vorticity_ckpt.read_timestep(checkpoint_base, "omega", step, outputPath=checkpoint_dir, verbose=True)
 
 # This one is just the individual points
     passive_swarm_ckpt = uw.swarm.Swarm(mesh)
@@ -206,7 +214,7 @@ for step in steps:
     Vb = (4.0 * U0 * y * (0.41 - y)) / 0.41**2
 
     # swarm points
-    points = vis.swarm_point_cloud(passive_swarm_ckpt)
+    points = vis.swarm_to_pv_cloud(passive_swarm_ckpt)
     swarm_point_cloud = pv.PolyData(points)
 
     # point sources at cell centres
@@ -240,6 +248,7 @@ for step in steps:
         edge_color="Black",
         show_edges=False,
         scalars="Omega",
+        clim=[-1000,1000],
         use_transparency=False,
         opacity=0.75,
     )
@@ -263,6 +272,4 @@ for step in steps:
     
     pl.clear()
 # -
-
-
 

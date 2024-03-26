@@ -152,7 +152,7 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None, simplify=True ):
+def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None, simplify=True, verbose=False ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -213,10 +213,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
-
-
     if simplify:
         expr = sympy.simplify(expr)
+
+    if verbose and uw.mpi.rank==0:
+        print(f"Expression to be evaluated: {expr}")
 
     # 1. Extract UW variables.
     # Let's first collect all the meshvariables present in the expression and check
@@ -300,7 +301,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     interpolant_varfns = defaultdict(lambda : [])
 
     for varfn in varfns:
+        if verbose and uw.mpi.rank == 0:
+            print(f"Varfn for interpolation: {varfn}")
+
         interpolant_varfns[varfn.meshvar().mesh].append(varfn)
+
 
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.

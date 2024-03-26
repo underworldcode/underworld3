@@ -369,22 +369,65 @@ class Mesh(Stateful, uw_object):
         return self.dm.getCoordinateDim()
 
     def view(self):
+
+        import numpy as np
+
         if uw.mpi.rank == 0:
-            print(f"Mesh {self.instance}")
+            print(f"\n")
+            print(f"Mesh # {self.instance}: {self.name}\n")
 
             if len(self.vars) > 0:
-                print(f"| Variable Name       | component | degree | type        |")
-                print(f"| ------------------------------------------------------ |")
+                print(f"| Variable Name       | component | degree |     type        |")
+                print(f"| ---------------------------------------------------------- |")
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^11} |"
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
                     )
 
+                print(f"| ---------------------------------------------------------- |")
+                print("\n", flush=True)
+            else:
+                print(f"No variables are defined on the mesh\n", flush=True)
+
+        ## Boundary information
+
+        # for bd in self.boundaries:
+        #     l = self.dm.getLabel(bd.name)
+        #     if l:
+        #         i = l.getStratumSize(2)
+        #         ii = uw.utilities.gather_data(np.array([float(i)])).astype(int)
+        #         uw.mpi.barrier()
+        #     else:
+        #         ii = np.array([0])
+
+        if uw.mpi.rank == 0:
+            if len(self.boundaries) > 0:
+                print(f"| Boundary Name            | ID    | Min Size | Max Size |")
+                print(f"| ------------------------------------------------------ |")
+            else:
+                print(f"No boundary labels are defined on the mesh\n")
+
+        for bd in self.boundaries:
+            l = self.dm.getLabel(bd.name)
+            if l:
+                i = l.getStratumSize(2)
+                ii = uw.utilities.gather_data(np.array([float(i)])).astype(int)
+                uw.mpi.barrier()
+            else:
+                ii = np.array([0])
+
+            if uw.mpi.rank == 0:
                 print(
-                    f"| ------------------------------------------------------ |",
-                    flush=True,
+                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
                 )
+        if uw.mpi.rank == 0:
+
+            print(f"| ------------------------------------------------------ |")
+            print("\n", flush=True)
+
+        ## Information on the mesh DM
+        self.dm.view()
 
     def clone_dm_hierarchy(self):
         """
@@ -1860,6 +1903,9 @@ class _MeshVariable(Stateful, uw_object):
             data_name=None,
         ):
             """Read the mesh data as a swarm-like value"""
+
+            if verbose and uw.mpi.rank == 0:
+                print(f"Reading data file {data_file}", flush=True)
 
             h5f = h5py.File(data_file)
             D = h5f["fields"][data_name][()]

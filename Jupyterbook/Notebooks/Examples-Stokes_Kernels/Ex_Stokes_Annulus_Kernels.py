@@ -14,9 +14,18 @@
 
 # # Cylindrical Stokes 
 #
-# Mesh with embedded internal surface
+# Mesh with embedded internal surface. This allows us to introduce an internal force integral
 #
-# This allows us to introduce an internal force integral
+
+# + language="html"
+#
+# <iframe width="750" 
+#         height="500" 
+#         src="./scene-export-9.html"
+#         title="Annulus Kernel Model">
+# </iframe>
+#
+# -
 
 # to fix trame issue
 import nest_asyncio

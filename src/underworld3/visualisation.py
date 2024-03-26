@@ -18,7 +18,6 @@ def mesh_to_pv_mesh(mesh):
     pv.global_theme.anti_aliasing = "msaa"
     pv.global_theme.jupyter_backend = "client"
     pv.global_theme.smooth_shading = True
-    pv.global_theme.smooth_shading = True
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
