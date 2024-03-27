@@ -196,6 +196,7 @@ class SemiLagrangian(uw_object):
                 order=2,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+                evalf=evalf,
             )
 
             if i == 0:
