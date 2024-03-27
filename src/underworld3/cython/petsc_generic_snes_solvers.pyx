@@ -2413,10 +2413,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Copy solution back into user facing variables 
 
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-            # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
+            print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
 
             for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
+                print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
 
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
 
@@ -2434,7 +2434,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 clvec = lvec
                 csdm = sdm
                 
-                # print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
+                print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
 
                 # Now copy into the user vec.
@@ -2442,7 +2442,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 sdm.restoreLocalVec(lvec)
 
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
+                print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
 
 
         self.dm.restoreGlobalVec(gvec)
