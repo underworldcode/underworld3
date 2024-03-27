@@ -182,7 +182,7 @@ class SemiLagrangian(uw_object):
         # 2. Compute the upstream values
 
         if verbose and uw.mpi.rank == 0:
-            print(f"Update {self.psi_fn}", flush=True)
+            print(f"Update 2 {self.psi_fn}", flush=True)
 
         # We use the u_star variable as a working value here so we have to work backwards
         for i in range(self.order - 1, -1, -1):
@@ -218,6 +218,9 @@ class SemiLagrangian(uw_object):
                             )
                         )
 
+            if verbose and uw.mpi.rank == 0:
+                print(f"Update 3 {self.psi_fn}", flush=True)
+
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._X0.data[...]
@@ -226,7 +229,14 @@ class SemiLagrangian(uw_object):
             self._psi_star_projection_solver.uw_function = (
                 self._nswarm_psi.swarmVariable.sym
             )
+
+            if verbose and uw.mpi.rank == 0:
+                print(f"Update 4 {self.psi_fn}", flush=True)
+
             self._psi_star_projection_solver.solve()
+
+            if verbose and uw.mpi.rank == 0:
+                print(f"Update 5 {self.psi_fn}", flush=True)
 
             # Copy data from the projection operator if required
             if i != 0:
