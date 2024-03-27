@@ -2418,7 +2418,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if verbose and uw.mpi.rank == 0:
                 print(f"SNES post-solve - bcs", flush=True)
 
-
         # Copy solution back into user facing variables 
 
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
@@ -2450,7 +2449,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = lvec.array[:]
 
                 sdm.restoreLocalVec(lvec)
-
                 # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
 
 
