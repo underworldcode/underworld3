@@ -375,6 +375,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
       - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
 
     """
+
     instances = 0
 
     def __init__(
@@ -638,6 +639,7 @@ class SNES_VE_Stokes(SNES_Stokes):
       - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
 
     """
+
     instances = 0
 
     def __init__(
@@ -2579,9 +2581,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - pre-solve DuDt update", flush=True)
+
         # Update SemiLagrange Flux terms
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - solve Stokes flow", flush=True)
 
         super().solve(
             zero_init_guess,
@@ -2589,6 +2597,10 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             verbose=verbose,
             picard=0,
         )
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - post-solve DuDt update", flush=True)
+
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
