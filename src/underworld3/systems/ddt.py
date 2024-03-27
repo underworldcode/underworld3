@@ -181,6 +181,9 @@ class SemiLagrangian(uw_object):
 
         # 2. Compute the upstream values
 
+        if verbose and uw.mpi.rank == 0:
+            print(f"Update {self.psi_fn}", flush=True)
+
         # We use the u_star variable as a working value here so we have to work backwards
         for i in range(self.order - 1, -1, -1):
             with self._nswarm_psi.access(self._nswarm_psi._X0):
@@ -200,11 +203,20 @@ class SemiLagrangian(uw_object):
                 self._psi_star_projection_solver.uw_function = self.psi_fn
                 self._psi_star_projection_solver.solve()
 
-            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
-                        self.psi_star[i].sym[d], self._nswarm_psi.data
-                    )
+            if evalf:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
+                        )
+            else:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = (
+                            uw.function.evaluate(
+                                self.psi_star[i].sym[d], self._nswarm_psi.data
+                            )
+                        )
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
