@@ -1347,7 +1347,7 @@ class Mesh(Stateful, uw_object):
         """Extract single label value and make a point mask"""
 
         meshVar = MeshVariable(
-            f"Mask_{label_name}",
+            f"Mask_{label_name}_{label_value}",
             self,
             vtype=uw.VarType.SCALAR,
             degree=1,
