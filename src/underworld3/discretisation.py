@@ -2566,6 +2566,8 @@ def petsc_dm_find_labeled_points_local(
 
     # _, iset_lab = label.convertToSection()
     iset_lab = label.getStratumIS(label_value)
+    if not iset_lab:
+        return np.zeros((0, 0))
 
     # We need to associate edges and faces with their point indices to
     # build a field representation
