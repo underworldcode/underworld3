@@ -80,6 +80,9 @@ def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundar
         return 
 
         
+
+# This is not cython, does it need to be here or in discretisation.py ?       
+
 def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbose=False):
         '''Identify local points associated with "Label" 
         
