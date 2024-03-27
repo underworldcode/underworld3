@@ -164,13 +164,6 @@ class SemiLagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        # if average_over_dt:
-        #     phi = min(1.0, dt / self.dt_physical)
-        # else:
-        #     phi = 1.0
-
-        if verbose and uw.mpi.rank == 0:
-            print(f"Update {self.psi_fn}", flush=True)
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain
@@ -180,9 +173,6 @@ class SemiLagrangian(uw_object):
                 self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
         # 2. Compute the upstream values
-
-        if verbose and uw.mpi.rank == 0:
-            print(f"Update 2 {self.psi_fn}", flush=True)
 
         # We use the u_star variable as a working value here so we have to work backwards
         for i in range(self.order - 1, -1, -1):
@@ -219,9 +209,6 @@ class SemiLagrangian(uw_object):
                             )
                         )
 
-            if verbose and uw.mpi.rank == 0:
-                print(f"Update 3 {self.psi_fn}", flush=True)
-
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._X0.data[...]
@@ -231,13 +218,7 @@ class SemiLagrangian(uw_object):
                 self._nswarm_psi.swarmVariable.sym
             )
 
-            if verbose and uw.mpi.rank == 0:
-                print(f"Update 4 {self.psi_fn}", flush=True)
-
             self._psi_star_projection_solver.solve()
-
-            if verbose and uw.mpi.rank == 0:
-                print(f"Update 5 {self.psi_fn}", flush=True)
 
             # Copy data from the projection operator if required
             if i != 0:
