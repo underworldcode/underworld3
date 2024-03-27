@@ -1872,7 +1872,7 @@ class NodalPointSwarm(Swarm):
 
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
-        shift = 1.0e-3
+        shift = 1.0e-2
         coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")

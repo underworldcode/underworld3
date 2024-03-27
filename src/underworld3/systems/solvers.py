@@ -2555,6 +2555,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         _force_setup: bool = False,
         verbose=False,
         evalf=False,
+        order=None,
     ):
         """
         Generates solution to constructed system.
@@ -2565,6 +2566,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
         """
+
+        if order is None or order > self.order:
+            order = self.order
 
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
@@ -2585,8 +2589,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             print(f"NS solver - pre-solve DuDt update", flush=True)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf, order=order)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf, order=order)
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - solve Stokes flow", flush=True)
@@ -2601,8 +2605,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - post-solve DuDt update", flush=True)
 
-        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf, order=order)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf, order=order)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True

@@ -442,11 +442,12 @@ class Lagrangian(uw_object):
 
         if order is None:
             order = self.order
-        else:
-            order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order <= 1:
+            if order == 0:  # special case - no history term (catch )
+                bdf0 = sympy.simpify[0]
+
+            if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
@@ -469,11 +470,12 @@ class Lagrangian(uw_object):
     def adams_moulton_flux(self, order=None):
         if order is None:
             order = self.order
-        else:
-            order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order == 1:
+            if order == 0:  # Special case - no history term
+                am = self.psi_fn
+
+            elif order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
