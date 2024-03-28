@@ -2567,8 +2567,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             system solution. Otherwise, the current values of `self.u` will be used.
         """
 
-        if order is None or order > self.order:
-            order = self.order
+        if order is None or order > self._order:
+            order = self._order
 
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
