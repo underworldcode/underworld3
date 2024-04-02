@@ -2044,7 +2044,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self._first_solve = True
 
         self._order = order
-
         self._constitutive_model = None
 
         self._penalty = 0.0
@@ -2060,7 +2059,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             self.u.sym,
-            self.u.sym,
+            self.u.sym * bc_mask,
             vtype=uw.VarType.VECTOR,
             degree=self.u.degree,
             continuous=self.u.continuous,
@@ -2330,6 +2329,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
+        bc_mask: Optional[sympy.Function] = sympy.sympify(1),
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
