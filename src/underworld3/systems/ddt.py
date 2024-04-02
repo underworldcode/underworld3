@@ -41,6 +41,7 @@ class SemiLagrangian(uw_object):
         order=1,
         smoothing=0.0,
         under_relaxation=0.0,
+        bc_mask_fn=1,
     ):
         super().__init__()
 
@@ -60,7 +61,7 @@ class SemiLagrangian(uw_object):
         # meshVariable (storage)
 
         self._psi_fn = psi_fn
-        self.V_fn = V_fn
+        self.V_fn = bc_mask_fn * V_fn
         self.order = order
 
         psi_star = []

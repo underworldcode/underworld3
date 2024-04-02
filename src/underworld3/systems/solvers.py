@@ -2380,7 +2380,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 self.u.sym,
-                1 * self.u.sym,
+                self.u.sym,
                 vtype=uw.VarType.VECTOR,
                 degree=self.u.degree,
                 continuous=self.u.continuous,
@@ -2389,6 +2389,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=self.essential_bcs,
                 order=self._order,
                 smoothing=0.0,
+                bc_mask_fn=bc_mask_fn,
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
@@ -2399,7 +2400,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                bc_mask_fn * self.u.sym,
+                self.u.sym,
                 vtype=uw.VarType.SYM_TENSOR,
                 degree=self.u.degree - 1,
                 continuous=True,
@@ -2408,6 +2409,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=None,
                 order=self._order,
                 smoothing=0.0,
+                bc_mask_fn=bc_mask_fn,
             )
 
         ## Add in the history terms provided ...
