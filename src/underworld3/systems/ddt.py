@@ -163,14 +163,23 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
     ):
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain
 
+        if dt_physical is not None:
+            phi = min(1.0, dt / dt_physical)
+        else:
+            phi = sympy.sympify(1)
+
         for i in range(self.order - 1, 0, -1):
             with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+                self.psi_star[i].data[...] = (
+                    phi * self.psi_star[i - 1].data[...]
+                    + (1 - phi) * self.psi_star[i].data[...]
+                )
 
         # 2. Compute the upstream values
 
@@ -284,7 +293,7 @@ class SemiLagrangian(uw_object):
 
 
 ## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but
-## sets up the swarm for itself. This does not have much use - the swarm version
+## sets up the swarm for itself. This does not have a practical use-case - the swarm version
 ## is slower, more cumbersome, and less stable / accurate. The only reason to use
 ## it is if there is an existing swarm that we can re-purpose.
 

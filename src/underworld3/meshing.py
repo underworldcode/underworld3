@@ -1281,7 +1281,6 @@ def AnnulusInternalBoundary(
         Centre = 10
         All_Boundaries = 1001
 
-
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
 
@@ -1493,7 +1492,6 @@ def CubedSphere(
         Lower = 1
         Upper = 2
         All_Boundaries = 1001
-
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -1713,7 +1711,6 @@ def RegionalSphericalBox(
         East = 5
         West = 6
         All_Boundaries = 1001
-
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -2092,7 +2089,6 @@ def SegmentedSphericalShell(
         Centre = 1
         Slices = 40
         All_Boundaries = 1001
-
 
     meshRes = cellSize
     num_segments = numSegments
@@ -2494,7 +2490,6 @@ def SegmentedSphericalBall(
         Centre = 1
         Slices = 40
         All_Boundaries = 1001
-
 
     meshRes = cellSize
     num_segments = numSegments
