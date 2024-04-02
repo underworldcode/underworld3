@@ -61,8 +61,9 @@ class SemiLagrangian(uw_object):
         # meshVariable (storage)
 
         self._psi_fn = psi_fn
-        self.V_fn = bc_mask_fn * V_fn
+        self.V_fn = V_fn
         self.order = order
+        self.bc_mask_fn = bc_mask_fn
 
         psi_star = []
         self.psi_star = psi_star
@@ -198,7 +199,9 @@ class SemiLagrangian(uw_object):
                 order=2,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+                bc_mask_fn=self.bc_mask_fn
                 evalf=evalf,
+
             )
 
             if i == 0:
