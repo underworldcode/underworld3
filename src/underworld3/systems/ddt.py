@@ -172,7 +172,7 @@ class SemiLagrangian(uw_object):
         # 1. Copy the stored values down the chain
 
         if dt_physical is not None:
-            phi = min(1.0, dt / dt_physical)
+            phi = min(1, dt / dt_physical)
         else:
             phi = sympy.sympify(1)
 

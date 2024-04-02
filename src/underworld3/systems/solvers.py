@@ -2346,6 +2346,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         # These are unique to the advection solver
         self.delta_t = sympy.oo
+        self.delta_t_physical = None
+
         self.is_setup = False
         self.rho = rho
         self._first_solve = True
@@ -2357,10 +2359,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty = 0.0
 
         self._constitutive_model = None
-
-        # These are unique to the advection solver
-        self.delta_t = 0.0
-        self.is_setup = False
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_problem_description
@@ -2418,9 +2416,17 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     def navier_stokes_problem_description(self):
         # f0 residual term
-        self._u_f0 = (
-            self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
-        )
+
+        if self.delta_t_physical is not None:
+            self._u_f0 = (
+                self.F0
+                - self.bodyforce
+                + self.rho * self.DuDt.bdf() / self.delta_t_physical
+            )
+        else:
+            self._u_f0 = (
+                self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
+            )
 
         # f1 residual term
         self._u_f1 = (
@@ -2440,6 +2446,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
+
+    @property
+    def delta_t_physical(self):
+        return self._delta_t_physical
+
+    @delta_t_physical.setter
+    def delta_t_physical(self, value):
+        self.is_setup = False
+        self._delta_t_physical = sympify(value)
 
     @property
     def f(self):
