@@ -2329,7 +2329,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        bc_mask: Optional[sympy.Function] = sympy.sympify(1),
+        bc_mask_fn: Optional[sympy.Function] = sympy.sympify(1),
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
@@ -2380,7 +2380,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 self.u.sym,
-                bc_mask.sym[0] * self.u.sym,
+                bc_mask_fn * self.u.sym,
                 vtype=uw.VarType.VECTOR,
                 degree=self.u.degree,
                 continuous=self.u.continuous,
@@ -2399,7 +2399,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                bc_mask.sym[0] * self.u.sym,
+                bc_mask_fn * self.u.sym,
                 vtype=uw.VarType.SYM_TENSOR,
                 degree=self.u.degree - 1,
                 continuous=True,
