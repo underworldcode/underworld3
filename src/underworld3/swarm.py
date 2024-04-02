@@ -2002,6 +2002,8 @@ class NodalPointSwarm(Swarm):
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
 
+                print(f"{uw.mpi.rank}: {bc_mask_fn}")
+
                 bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data)).reshape(
                     -1, 1
                 )
