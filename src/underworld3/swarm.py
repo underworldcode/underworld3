@@ -1895,7 +1895,7 @@ class NodalPointSwarm(Swarm):
         order=2,
         corrector=False,
         restore_points_to_domain_func=None,
-        bc_mask_fn=None,
+        bc_mask_fn=sympy.sympify(1),
         evalf=False,
     ):
         # X0 holds the particle location at the start of advection
