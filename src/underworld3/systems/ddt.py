@@ -146,8 +146,9 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional = None,
     ):
-        self.update_pre_solve(dt, evalf, verbose)
+        self.update_pre_solve(dt, evalf, verbose, dt_physical)
         return
 
     def update_post_solve(
@@ -155,6 +156,7 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
     ):
         return
 

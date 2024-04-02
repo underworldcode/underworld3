@@ -2552,6 +2552,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        physical_timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
         evalf=False,
@@ -2589,8 +2590,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             print(f"NS solver - pre-solve DuDt update", flush=True)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_pre_solve(
+            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
+        )
+        self.DFDt.update_pre_solve(
+            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
+        )
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - solve Stokes flow", flush=True)
@@ -2605,8 +2610,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - post-solve DuDt update", flush=True)
 
-        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_post_solve(
+            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
+        )
+        self.DFDt.update_post_solve(
+            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
+        )
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
