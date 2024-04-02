@@ -2545,11 +2545,11 @@ def petsc_dm_find_labeled_points_local(
     eStart, eEnd = dm.getDepthStratum(1)
     fStart, fEnd = dm.getDepthStratum(2)
 
-    print(f"Label: {label_name} / {label_value}")
-    print(f"points: {pStart}: {pEnd}")
-    print(f"edges : {eStart}: {eEnd}")
-    print(f"faces : {fStart}: {fEnd}")
-    print(f"", flush=True)
+    # print(f"Label: {label_name} / {label_value}")
+    # print(f"points: {pStart}: {pEnd}")
+    # print(f"edges : {eStart}: {eEnd}")
+    # print(f"faces : {fStart}: {fEnd}")
+    # print(f"", flush=True)
 
     label = dm.getLabel(label_name)
     if not label:
