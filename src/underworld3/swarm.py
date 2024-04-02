@@ -1872,7 +1872,7 @@ class NodalPointSwarm(Swarm):
 
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
-        shift = 1.0e-3
+        shift = 0.0
         coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")
@@ -1910,11 +1910,6 @@ class NodalPointSwarm(Swarm):
         # ? how does this interact with the particle restoration function ?
 
         V_fn_matrix = self.mesh.vector.to_matrix(V_fn)
-
-        with self.access():
-            bc_mask_fn = np.rint(
-                uw.function.evalf(bc_mask_fn, self.data).reshape(-1, 1)
-            )
 
         # if corrector == True and not self._X0_uninitialised:
         #     with self.access(self.particle_coordinates):
@@ -1971,6 +1966,8 @@ class NodalPointSwarm(Swarm):
                             V_fn_matrix[d], self.data
                         ).reshape(-1)
 
+                bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data))
+
                 mid_pt_coords = (
                     self.data[...].copy() + 0.5 * delta_t * v_at_Vpts * bc_mask_fn
                 )
@@ -2003,6 +2000,7 @@ class NodalPointSwarm(Swarm):
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
 
+                bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data))
                 new_coords = X0.data[...].copy() + delta_t * v_at_Vpts * bc_mask_fn
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
