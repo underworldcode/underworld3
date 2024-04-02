@@ -1911,7 +1911,8 @@ class NodalPointSwarm(Swarm):
 
         V_fn_matrix = self.mesh.vector.to_matrix(V_fn)
 
-        bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data).reshape(-1))
+        with self.access():
+            bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data).reshape(-1))
 
         # if corrector == True and not self._X0_uninitialised:
         #     with self.access(self.particle_coordinates):
