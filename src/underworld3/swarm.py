@@ -1966,14 +1966,12 @@ class NodalPointSwarm(Swarm):
                             V_fn_matrix[d], self.data
                         ).reshape(-1)
 
-                print(f"A: {uw.mpi.rank}: {bc_mask_fn}", flush=True)
-
-                bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data)).reshape(
-                    -1, 1
-                )
+                bc_mask_array = np.rint(
+                    uw.function.evalf(bc_mask_fn, self.data)
+                ).reshape(-1, 1)
 
                 mid_pt_coords = (
-                    self.data[...].copy() + 0.5 * delta_t * v_at_Vpts * bc_mask_fn
+                    self.data[...].copy() + 0.5 * delta_t * v_at_Vpts * bc_mask_array
                 )
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -2004,12 +2002,10 @@ class NodalPointSwarm(Swarm):
                 # if (uw.mpi.rank == 0):
                 #     print("Re-launch from X0", flush=True)
 
-                print(f"B: {uw.mpi.rank}: {bc_mask_fn}", flush=True)
-
-                bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data)).reshape(
-                    -1, 1
-                )
-                new_coords = X0.data[...].copy() + delta_t * v_at_Vpts * bc_mask_fn
+                bc_mask_array = np.rint(
+                    uw.function.evalf(bc_mask_fn, self.data)
+                ).reshape(-1, 1)
+                new_coords = X0.data[...].copy() + delta_t * v_at_Vpts * bc_mask_array
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
                 if restore_points_to_domain_func is not None:
@@ -2042,10 +2038,10 @@ class NodalPointSwarm(Swarm):
                             V_fn_matrix[d], self.data
                         ).reshape(-1)
 
-                bc_mask_fn = np.rint(uw.function.evalf(bc_mask_fn, self.data)).reshape(
-                    -1, 1
-                )
-                new_coords = self.data + delta_t * v_at_Vpts * bc_mask_fn
+                bc_mask_array = np.rint(
+                    uw.function.evalf(bc_mask_fn, self.data)
+                ).reshape(-1, 1)
+                new_coords = self.data + delta_t * v_at_Vpts * bc_mask_array
 
                 # validate_coords to ensure they live within the domain (or there will be trouble)
 
