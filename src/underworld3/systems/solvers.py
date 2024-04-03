@@ -2346,7 +2346,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         # These are unique to the advection solver
         self.delta_t = sympy.oo
-        self.delta_t_physical = None
 
         self.is_setup = False
         self.rho = rho
@@ -2409,7 +2408,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=None,
                 order=self._order,
                 smoothing=0.0,
-                bc_mask_fn=bc_mask_fn,
+                bc_mask_fn=None,
             )
 
         ## Add in the history terms provided ...
@@ -2419,16 +2418,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def navier_stokes_problem_description(self):
         # f0 residual term
 
-        if self.delta_t_physical is not None:
-            self._u_f0 = (
-                self.F0
-                - self.bodyforce
-                + self.rho * self.DuDt.bdf() / self.delta_t_physical
-            )
-        else:
-            self._u_f0 = (
-                self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
-            )
+        self._u_f0 = (
+            self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
+        )
 
         # f1 residual term
         self._u_f1 = (
@@ -2448,15 +2440,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t = sympify(value)
-
-    @property
-    def delta_t_physical(self):
-        return self._delta_t_physical
-
-    @delta_t_physical.setter
-    def delta_t_physical(self, value):
-        self.is_setup = False
-        self._delta_t_physical = sympify(value)
 
     @property
     def f(self):
@@ -2500,30 +2483,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     ):
         self.Unknowns.DFDt = DFDt_value
         self._solver_is_setup = False
-
-    # @property
-    # def constitutive_model(self):
-    #     return self._constitutive_model
-
-    # @constitutive_model.setter
-    # def constitutive_model(self, model):
-    #     ### checking if it's an instance
-    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### checking if it's a class
-    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model(self.u)
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### Raise an error if it's neither
-    #     else:
-    #         raise RuntimeError(
-    #             "constitutive_model must be a valid class or instance of a valid class"
-    #         )
 
     @property
     def constraints(self):
@@ -2569,7 +2528,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
-        physical_timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
         evalf=False,
@@ -2607,12 +2565,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             print(f"NS solver - pre-solve DuDt update", flush=True)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update_pre_solve(
-            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
-        )
-        self.DFDt.update_pre_solve(
-            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
-        )
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - solve Stokes flow", flush=True)
@@ -2627,12 +2581,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - post-solve DuDt update", flush=True)
 
-        self.DuDt.update_post_solve(
-            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
-        )
-        self.DFDt.update_post_solve(
-            timestep, verbose=verbose, evalf=evalf, dt_physical=physical_timestep
-        )
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
