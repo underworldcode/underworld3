@@ -941,6 +941,9 @@ class Mesh(Stateful, uw_object):
 
         viewer(self.dm)
 
+        # Not sure if the files are correctly written if we do not explicitly destroy the viewer
+        viewer.destroy()
+
     def vtk(self, filename: str):
         """
         Save mesh to the specified file
@@ -948,6 +951,7 @@ class Mesh(Stateful, uw_object):
 
         viewer = PETSc.Viewer().createVTK(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self.dm)
+        viewer.destroy()
 
     def generate_xdmf(self, filename: str):
         """
