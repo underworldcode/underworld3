@@ -375,6 +375,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
       - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
 
     """
+
     instances = 0
 
     def __init__(
@@ -638,6 +639,7 @@ class SNES_VE_Stokes(SNES_Stokes):
       - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
 
     """
+
     instances = 0
 
     def __init__(
@@ -2042,7 +2044,6 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self._first_solve = True
 
         self._order = order
-
         self._constitutive_model = None
 
         self._penalty = 0.0
@@ -2058,7 +2059,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             self.u.sym,
-            self.u.sym,
+            self.u.sym * bc_mask,
             vtype=uw.VarType.VECTOR,
             degree=self.u.degree,
             continuous=self.u.continuous,
@@ -2328,6 +2329,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
+        bc_mask_fn: Optional[sympy.Function] = 1,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
@@ -2344,6 +2346,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         # These are unique to the advection solver
         self.delta_t = sympy.oo
+
         self.is_setup = False
         self.rho = rho
         self._first_solve = True
@@ -2355,10 +2358,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty = 0.0
 
         self._constitutive_model = None
-
-        # These are unique to the advection solver
-        self.delta_t = 0.0
-        self.is_setup = False
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_problem_description
@@ -2389,6 +2388,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=self.essential_bcs,
                 order=self._order,
                 smoothing=0.0,
+                bc_mask_fn=bc_mask_fn,
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
@@ -2402,12 +2402,13 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 self.u.sym,
                 vtype=uw.VarType.SYM_TENSOR,
                 degree=self.u.degree - 1,
-                continuous=True,
+                continuous=False,
                 varsymbol=rf"{{F[ {self.u.symbol} ] }}",
                 verbose=self.verbose,
                 bcs=None,
                 order=self._order,
                 smoothing=0.0,
+                bc_mask_fn=None,
             )
 
         ## Add in the history terms provided ...
@@ -2416,6 +2417,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     def navier_stokes_problem_description(self):
         # f0 residual term
+
         self._u_f0 = (
             self.F0 - self.bodyforce + self.rho * self.DuDt.bdf() / self.delta_t
         )
@@ -2482,30 +2484,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self.Unknowns.DFDt = DFDt_value
         self._solver_is_setup = False
 
-    # @property
-    # def constitutive_model(self):
-    #     return self._constitutive_model
-
-    # @constitutive_model.setter
-    # def constitutive_model(self, model):
-    #     ### checking if it's an instance
-    #     if isinstance(model, uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### checking if it's a class
-    #     elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-    #         self._constitutive_model = model(self.u)
-    #         ### update history terms using setters
-    #         self._constitutive_model.flux_dt = self.DFDt
-    #         self._constitutive_model.DuDt = self.DuDt
-    #     ### Raise an error if it's neither
-    #     else:
-    #         raise RuntimeError(
-    #             "constitutive_model must be a valid class or instance of a valid class"
-    #         )
-
     @property
     def constraints(self):
         return self._constraints
@@ -2553,6 +2531,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         _force_setup: bool = False,
         verbose=False,
         evalf=False,
+        order=None,
     ):
         """
         Generates solution to constructed system.
@@ -2563,6 +2542,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
         """
+
+        if order is None or order > self._order:
+            order = self._order
 
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
@@ -2579,9 +2561,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
 
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - pre-solve DuDt update", flush=True)
+
         # Update SemiLagrange Flux terms
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - solve Stokes flow", flush=True)
 
         super().solve(
             zero_init_guess,
@@ -2589,6 +2577,10 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             verbose=verbose,
             picard=0,
         )
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"NS solver - post-solve DuDt update", flush=True)
+
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 

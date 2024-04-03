@@ -196,6 +196,8 @@ class Mesh(Stateful, uw_object):
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
 
+        uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
@@ -392,15 +394,6 @@ class Mesh(Stateful, uw_object):
 
         ## Boundary information
 
-        # for bd in self.boundaries:
-        #     l = self.dm.getLabel(bd.name)
-        #     if l:
-        #         i = l.getStratumSize(2)
-        #         ii = uw.utilities.gather_data(np.array([float(i)])).astype(int)
-        #         uw.mpi.barrier()
-        #     else:
-        #         ii = np.array([0])
-
         if uw.mpi.rank == 0:
             if len(self.boundaries) > 0:
                 print(f"| Boundary Name            | ID    | Min Size | Max Size |")
@@ -415,11 +408,11 @@ class Mesh(Stateful, uw_object):
             else:
                 i = 0
 
-            ii = uw.utilities.gather_data(np.array([float(i)]))
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
             if uw.mpi.rank == 0:
                 print(
-                    f"| {bd.name:<20}     | {bd.value:<5} | {int(ii.min()):<8} | {int(ii.max()):<8} |",
+                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
                 )
 
         if uw.mpi.rank == 0:
@@ -948,6 +941,9 @@ class Mesh(Stateful, uw_object):
 
         viewer(self.dm)
 
+        # Not sure if the files are correctly written if we do not explicitly destroy the viewer
+        viewer.destroy()
+
     def vtk(self, filename: str):
         """
         Save mesh to the specified file
@@ -955,6 +951,7 @@ class Mesh(Stateful, uw_object):
 
         viewer = PETSc.Viewer().createVTK(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self.dm)
+        viewer.destroy()
 
     def generate_xdmf(self, filename: str):
         """
@@ -1349,6 +1346,32 @@ class Mesh(Stateful, uw_object):
         vrms = vnorm2 / numpy.sqrt(vsize)
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
+
+    def meshVariable_mask_from_label(self, label_name, label_value):
+        """Extract single label value and make a point mask"""
+
+        meshVar = MeshVariable(
+            f"Mask_{label_name}_{label_value}",
+            self,
+            vtype=uw.VarType.SCALAR,
+            degree=1,
+            continuous=True,
+            varsymbol=rf"\cal{{M}}^{{[{label_name:.4}]}}",
+        )
+
+        point_indices = petsc_dm_find_labeled_points_local(
+            self.dm,
+            label_name,
+            label_value,
+            sectionIndex=False,
+        )
+
+        with self.access(meshVar):
+            meshVar.data[...] = 0.0
+            if point_indices is not None:
+                meshVar.data[point_indices] = 1.0
+
+        return meshVar
 
 
 ## Here we check the existence of the meshVariable and so on before defining a new one
@@ -2505,3 +2528,80 @@ def meshVariable_lookup_by_symbol(mesh, sympy_object):
                     return meshvar, comp
 
     return None
+
+
+def petsc_dm_find_labeled_points_local(
+    dm, label_name, label_value, sectionIndex=False, verbose=False
+):
+    """Identify local points associated with "Label"
+
+    dm -> expects a petscDM object
+    label_name -> "String Name for Label"
+    sectionIndex -> False: leave points as indexed by the relevant section on the dm
+                    True: index into the local coordinate array
+
+    NOTE: Assumes uniform element types
+    """
+
+    import numpy as np
+
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    fStart, fEnd = dm.getDepthStratum(2)
+
+    # print(f"Label: {label_name} / {label_value}")
+    # print(f"points: {pStart}: {pEnd}")
+    # print(f"edges : {eStart}: {eEnd}")
+    # print(f"faces : {fStart}: {fEnd}")
+    # print(f"", flush=True)
+
+    label = dm.getLabel(label_name)
+    if not label:
+        if uw.mpi.rank == 0:
+            print(f"Label {label_name} is not present on the dm")
+        return np.array([0])
+
+    pointIS = dm.getStratumIS("depth", 0)
+    edgeIS = dm.getStratumIS("depth", 1)
+    faceIS = dm.getStratumIS("depth", 2)
+
+    point_indices = pointIS.getIndices()
+    edge_indices = edgeIS.getIndices()
+    face_indices = faceIS.getIndices()
+
+    # _, iset_lab = label.convertToSection()
+    iset_lab = label.getStratumIS(label_value)
+    if not iset_lab:
+        return None
+
+    # We need to associate edges and faces with their point indices to
+    # build a field representation
+
+    IndicesP = np.intersect1d(iset_lab.getIndices(), pointIS.getIndices())
+    IndicesE = np.intersect1d(iset_lab.getIndices(), edgeIS.getIndices())
+    IndicesF = np.intersect1d(iset_lab.getIndices(), faceIS.getIndices())
+
+    # print(f"Label {label_name}")
+    # print(f"P -> {len(IndicesP)}, E->{len(IndicesE)}, F->{len(IndicesF)},")
+
+    IndicesFe = np.empty((IndicesF.shape[0], dm.getConeSize(fStart)), dtype=int)
+    for f in range(IndicesF.shape[0]):
+        IndicesFe[f] = dm.getCone(IndicesF[f])
+
+    IndicesFE = np.union1d(IndicesE, IndicesFe)
+
+    # All faces are now recorded as edges
+
+    IndicesFEP = np.empty((IndicesFE.shape[0], dm.getConeSize(eStart)), dtype=int)
+
+    for e in range(IndicesFE.shape[0]):
+        IndicesFEP[e] = dm.getCone(IndicesFE[e])
+
+    # all faces / edges are now points
+
+    if sectionIndex:
+        Indices = np.union1d(IndicesP, IndicesFEP)
+    else:
+        Indices = np.union1d(IndicesP, IndicesFEP) - pStart
+
+    return Indices

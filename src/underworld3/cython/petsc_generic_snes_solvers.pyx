@@ -646,9 +646,9 @@ class SNES_Scalar(SolverBaseClass):
 
             bc_label = mesh.dm.getLabel(boundary)
             bc_is = bc_label.getStratumIS(value)
-            if bc_is is None:
-                print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-                continue
+            # if bc_is is None:
+            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
+            #     continue
 
             if bc.fn_f is not None:
 
@@ -1050,7 +1050,7 @@ class SNES_Vector(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -1084,7 +1084,7 @@ class SNES_Vector(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -1272,7 +1272,8 @@ class SNES_Vector(SolverBaseClass):
             boundary_id = bc.PETScID
             
             value = self.mesh.boundaries[bc.boundary].value
-            bc_label = self.dm.getLabel(boundary)
+            bc_label = self.dm.getLabel("UW_Boundaries")
+            #bc_label = self.dm.getLabel(boundary)
             
             label_val = value            
 
@@ -2092,9 +2093,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
-            self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
+            # bc_label = self.dm.getLabel(boundary)
+            # bc_is = bc_label.getStratumIS(value)
+            # self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -2105,7 +2106,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                str("UW_Boundaries").encode('utf8'), 
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -2197,7 +2198,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary_id = bc.PETScID
             
             value = self.mesh.boundaries[bc.boundary].value
-            bc_label = self.dm.getLabel(boundary)
+            bc_label = self.dm.getLabel("UW_Boundaries")
+            # bc_label = self.dm.getLabel(boundary)
             
             label_val = value            
 
@@ -2359,6 +2361,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         if not zero_init_guess:
 
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES pre-solve - non-zero initial guess", flush=True)
+
+
             self.petsc_options.setValue("snes_max_it", 0)
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
@@ -2376,7 +2382,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         else:
             self.atol = 0.0
 
-        
+        if verbose and uw.mpi.rank == 0:
+            print(f"SNES solve - picard = {picard}", flush=True)
 
         # Picard solves if requested
 
@@ -2407,6 +2414,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef Vec clvec
         cdef DM csdm
+
+        if verbose and uw.mpi.rank == 0:
+                print(f"SNES post-solve - bcs", flush=True)
 
         # Copy solution back into user facing variables 
 
@@ -2439,7 +2449,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = lvec.array[:]
 
                 sdm.restoreLocalVec(lvec)
-
                 # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
 
 
