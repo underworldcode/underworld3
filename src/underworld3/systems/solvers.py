@@ -2402,7 +2402,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 self.u.sym,
                 vtype=uw.VarType.SYM_TENSOR,
                 degree=self.u.degree - 1,
-                continuous=True,
+                continuous=False,
                 varsymbol=rf"{{F[ {self.u.symbol} ] }}",
                 verbose=self.verbose,
                 bcs=None,
