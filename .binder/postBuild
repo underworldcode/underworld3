@@ -39,7 +39,6 @@ export PYTHONPATH=$CONDA_PREFIX/lib
 
 pip install .
 
-
 echo
 echo Completed
 echo
