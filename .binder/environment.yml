@@ -2,7 +2,7 @@ name: uw3
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  # - python=3.11
   - petsc=3.21.0
   - petsc4py=3.21.0
   - cython=3.*
