@@ -6,7 +6,7 @@ import pytest
 import sympy
 import underworld3 as uw
 import numpy as np
-import os
+import os, shutil
 
 import numpy as np
 import sympy
@@ -40,6 +40,11 @@ w = uw.discretisation.MeshVariable(
     varsymbol=r"\mathbf{w}",
 )
 
+# clear any prior artifacts
+shutil.rmtree("/tmp/fn_ptr_ext_TEST_0", ignore_errors=True)
+shutil.rmtree("/tmp/fn_ptr_ext_TEST_1", ignore_errors=True)
+shutil.rmtree("/tmp/fn_ptr_ext_TEST_2", ignore_errors=True)
+
 
 ## This needs to be fixed up for systems that don't use /tmp like this
 ## So does the JIT ... it assumes /tmp is used exactly like this (LM).
@@ -70,7 +75,7 @@ def test_getext_simple():
 
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0/cy_ext.h")
-    assert "Processing JIT    5 / Matrix([[1], [2]])" in captured_setup_solver
+    assert r"Processing JIT    5 / Matrix([[1], [2]])" in captured_setup_solver
 
 
 def test_getext_sympy_fns():
@@ -101,7 +106,7 @@ def test_getext_sympy_fns():
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_1")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_1/cy_ext.h")
     assert (
-        "Processing JIT    5 / Matrix([[1/N.x], [N.x*exp(N.x*N.y)]])"
+        r"Processing JIT    5 / Matrix([[1/N.x], [N.x*exp(N.x*N.y)]])"
         in captured_setup_solver
     )
 
@@ -134,7 +139,7 @@ def test_getext_meshVar():
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2/cy_ext.h")
     assert (
-        "Processing JIT    5 / Matrix([[\mathbf{v}_{ 0,1}(N.x, N.y)/\mathbf{v}_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
+        r"Processing JIT    5 / Matrix([[\mathbf{v}_{ 0,1}(N.x, N.y)/\mathbf{v}_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
         in captured_setup_solver
     )
 
@@ -355,3 +360,19 @@ def test_getext_meshVar():
 
 # test_build_functions()
 # test_build_boundary_functions()
+
+
+def setup_function():
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_0", ignore_errors=True)
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_1", ignore_errors=True)
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_2", ignore_errors=True)
+    return
+
+
+# # clean up
+def teardown_function():
+    #    yield  # This runs the tests
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_0", ignore_errors=True)
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_1", ignore_errors=True)
+    shutil.rmtree("/tmp/fn_ptr_ext_TEST_2", ignore_errors=True)
+    return
