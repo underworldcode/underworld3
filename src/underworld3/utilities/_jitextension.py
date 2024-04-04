@@ -88,7 +88,6 @@ def getext(
     fns_bd_jacobian,
     primary_field_list,
     verbose=False,
-    clear_cache=False,
     debug=False,
     debug_name=None,
     cache=True,
