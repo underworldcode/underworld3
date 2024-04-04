@@ -1,0 +1,23 @@
+petsc=3.21.0
+petsc4py=3.21.0
+cython=3.*
+  # - mpmath<=1.3
+  # - mesalib
+numpy
+scipy
+  # - mpich-mpicc
+  # - mpich-mpicxx
+mpi4py
+h5py
+sympy
+pytest
+#  - ipython 
+pyvista
+#  - quarto
+gmsh
+jupyterlab>=4.1
+jupytext>=1.16.1
+pygments>=2.17.0
+trame-vtk
+trame-vuetify
+  
