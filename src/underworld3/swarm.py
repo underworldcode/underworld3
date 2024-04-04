@@ -1601,145 +1601,155 @@ class Swarm(Stateful, uw_object):
         restore_points_to_domain_func=None,
         evalf=False,
     ):
+
+        dt_limit = self.estimate_dt(V_fn)
+
+        if dt_limit is not None:
+            substeps = int(max(1, abs(delta_t) // dt_limit))
+        else:
+            substeps = 1
+
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping.
 
         X0 = self._X0
 
-        # Use current velocity to estimate where the particles would have
-        # landed in an implicit step.
-
-        # ? how does this interact with the particle restoration function ?
-
         V_fn_matrix = self.mesh.vector.to_matrix(V_fn)
 
-        if corrector == True and not self._X0_uninitialised:
-            with self.access(self.particle_coordinates):
-                v_at_Vpts = np.zeros_like(self.data)
+        # Use current velocity to estimate where the particles would have
+        # landed in an implicit step. WE CANT DO THIS WITH SUB-STEPPING unless
+        # We have a lot more information about the previous launch point / timestep
+        # Also: how does this interact with the particle restoration function ?
 
-                if evalf:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evalf(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
-                else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
+        # if corrector == True and not self._X0_uninitialised:
+        #     with self.access(self.particle_coordinates):
+        #         v_at_Vpts = np.zeros_like(self.data)
 
-                corrected_position = X0.data.copy() + delta_t * v_at_Vpts
-                if restore_points_to_domain_func is not None:
-                    corrected_position = restore_points_to_domain_func(
-                        corrected_position
-                    )
+        #         if evalf:
+        #             for d in range(self.dim):
+        #                 v_at_Vpts[:, d] = uw.function.evalf(
+        #                     V_fn_matrix[d], self.data
+        #                 ).reshape(-1)
+        #         else:
+        #             for d in range(self.dim):
+        #                 v_at_Vpts[:, d] = uw.function.evaluate(
+        #                     V_fn_matrix[d], self.data
+        #                 ).reshape(-1)
 
-                updated_current_coords = 0.5 * (corrected_position + self.data.copy())
+        #         corrected_position = X0.data.copy() + delta_t * v_at_Vpts
+        #         if restore_points_to_domain_func is not None:
+        #             corrected_position = restore_points_to_domain_func(
+        #                 corrected_position
+        #             )
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
+        #         updated_current_coords = 0.5 * (corrected_position + self.data.copy())
 
-                if restore_points_to_domain_func is not None:
-                    updated_current_coords = restore_points_to_domain_func(
-                        updated_current_coords
-                    )
+        #         # validate_coords to ensure they live within the domain (or there will be trouble)
 
-                self.data[...] = updated_current_coords[...]
+        #         if restore_points_to_domain_func is not None:
+        #             updated_current_coords = restore_points_to_domain_func(
+        #                 updated_current_coords
+        #             )
 
-                del updated_current_coords
-                del v_at_Vpts
+        #         self.data[...] = updated_current_coords[...]
+
+        #         del updated_current_coords
+        #         del v_at_Vpts
 
         with self.access(X0):
             X0.data[...] = self.data[...]
             self._X0_uninitialised = False
 
-        # Mid point algorithm (2nd order)
-        if order == 2:
-            with self.access(self.particle_coordinates):
-                v_at_Vpts = np.zeros_like(self.data)
+        # Wrap this whole thing in sub-stepping loop
+        for step in range(0, substeps):
 
-                if evalf:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evalf(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
-                else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
+            # Mid point algorithm (2nd order)
 
-                mid_pt_coords = self.data[...].copy() + 0.5 * delta_t * v_at_Vpts
+            if order == 2:
+                with self.access(self.particle_coordinates):
+                    v_at_Vpts = np.zeros_like(self.data)
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
+                    if evalf:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evalf(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
+                    else:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evaluate(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
 
-                if restore_points_to_domain_func is not None:
-                    mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
+                    mid_pt_coords = (
+                        self.data[...].copy() + 0.5 * delta_t * v_at_Vpts / substeps
+                    )
 
-                self.data[...] = mid_pt_coords[...]
+                    # validate_coords to ensure they live within the domain (or there will be trouble)
 
-                del mid_pt_coords
+                    if restore_points_to_domain_func is not None:
+                        mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                ## Let the swarm be updated, and then move the rest of the way
+                    self.data[...] = mid_pt_coords[...]
 
-            with self.access(self.particle_coordinates):
-                v_at_Vpts = np.zeros_like(self.data)
+                    del mid_pt_coords
 
-                if evalf:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evalf(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
-                else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
+                    ## Let the swarm be updated, and then move the rest of the way
 
-                # if (uw.mpi.rank == 0):
-                #     print("Re-launch from X0", flush=True)
+                with self.access(self.particle_coordinates):
+                    v_at_Vpts = np.zeros_like(self.data)
 
-                new_coords = X0.data[...].copy() + delta_t * v_at_Vpts
+                    if evalf:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evalf(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
+                    else:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evaluate(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
-                if restore_points_to_domain_func is not None:
-                    new_coords = restore_points_to_domain_func(new_coords)
+                    # if (uw.mpi.rank == 0):
+                    #     print("Re-launch from X0", flush=True)
 
-                self.data[...] = new_coords[...]
+                    new_coords = X0.data[...].copy() + delta_t * v_at_Vpts / substeps
 
-                del new_coords
-                del v_at_Vpts
+                    # validate_coords to ensure they live within the domain (or there will be trouble)
+                    if restore_points_to_domain_func is not None:
+                        new_coords = restore_points_to_domain_func(new_coords)
 
-        # Previous position algorithm (cf above) - we use the previous step as the
-        # launch point using the current velocity field. This gives a correction to the previous
-        # landing point.
+                    self.data[...] = new_coords[...]
 
-        # assumes X0 is stored from the previous step ... midpoint is needed in the first step
+                    del new_coords
+                    del v_at_Vpts
 
-        # forward Euler (1st order)
-        else:
-            with self.access(self.particle_coordinates):
-                v_at_Vpts = np.zeros_like(self.data)
+            # forward Euler (1st order)
+            else:
+                with self.access(self.particle_coordinates):
+                    v_at_Vpts = np.zeros_like(self.data)
 
-                if evalf:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evalf(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
-                else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d], self.data
-                        ).reshape(-1)
+                    if evalf:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evalf(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
+                    else:
+                        for d in range(self.dim):
+                            v_at_Vpts[:, d] = uw.function.evaluate(
+                                V_fn_matrix[d], self.data
+                            ).reshape(-1)
 
-                new_coords = self.data + delta_t * v_at_Vpts
+                    new_coords = self.data + delta_t * v_at_Vpts / substeps
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
+                    # validate_coords to ensure they live within the domain (or there will be trouble)
 
-                if restore_points_to_domain_func is not None:
-                    new_coords = restore_points_to_domain_func(new_coords)
+                    if restore_points_to_domain_func is not None:
+                        new_coords = restore_points_to_domain_func(new_coords)
 
-                self.data[...] = new_coords[...].copy()
+                    self.data[...] = new_coords[...].copy()
+
+        ## End of substepping loop
 
         ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
         ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
@@ -1817,6 +1827,42 @@ class Swarm(Stateful, uw_object):
 
         return
 
+    @timing.routine_timer_decorator
+    def estimate_dt(self, V_fn):
+        """
+        Calculates an appropriate advective timestep for the given
+        mesh and velocity configuration.
+        """
+        # we'll want to do this on an element by element basis
+        # for more general mesh
+
+        # first let's extract a max global velocity magnitude
+        import math
+
+        with self.access():
+            vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
+            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+            if self.mesh.dim == 3:
+                magvel_squared += vel[:, 2] ** 2
+
+            max_magvel = math.sqrt(magvel_squared.max())
+
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        min_dx = self.mesh.get_min_radius()
+
+        # The assumption should be that we cross one or two elements (4 radii), not more,
+        # in a single step (order 2, means one element per half-step or something
+        # that we can broadly interpret that way)
+
+        if max_magvel_glob != 0.0:
+            return 4.0 * min_dx / max_magvel_glob
+        else:
+            return None
+
 
 class NodalPointSwarm(Swarm):
     r"""Swarm with particles located at the coordinate points of a meshVariable
@@ -1887,41 +1933,41 @@ class NodalPointSwarm(Swarm):
 
         return
 
-    @timing.routine_timer_decorator
-    def estimate_dt(self, V_fn):
-        """
-        Calculates an appropriate advective timestep for the given
-        mesh and velocity configuration.
-        """
-        # we'll want to do this on an element by element basis
-        # for more general mesh
+    # @timing.routine_timer_decorator
+    # def estimate_dt(self, V_fn):
+    #     """
+    #     Calculates an appropriate advective timestep for the given
+    #     mesh and velocity configuration.
+    #     """
+    #     # we'll want to do this on an element by element basis
+    #     # for more general mesh
 
-        # first let's extract a max global velocity magnitude
-        import math
+    #     # first let's extract a max global velocity magnitude
+    #     import math
 
-        with self.access():
-            vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
-            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
-            if self.mesh.dim == 3:
-                magvel_squared += vel[:, 2] ** 2
+    #     with self.access():
+    #         vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
+    #         magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+    #         if self.mesh.dim == 3:
+    #             magvel_squared += vel[:, 2] ** 2
 
-            max_magvel = math.sqrt(magvel_squared.max())
+    #         max_magvel = math.sqrt(magvel_squared.max())
 
-        from mpi4py import MPI
+    #     from mpi4py import MPI
 
-        comm = MPI.COMM_WORLD
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+    #     comm = MPI.COMM_WORLD
+    #     max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
-        min_dx = self.mesh.get_min_radius()
+    #     min_dx = self.mesh.get_min_radius()
 
-        # The assumption should be that we cross one or two elements (4 radii), not more,
-        # in a single step (order 2, means one element per half-step or something
-        # that we can broadly interpret that way)
+    #     # The assumption should be that we cross one or two elements (4 radii), not more,
+    #     # in a single step (order 2, means one element per half-step or something
+    #     # that we can broadly interpret that way)
 
-        if max_magvel_glob != 0.0:
-            return 4.0 * min_dx / max_magvel_glob
-        else:
-            return None
+    #     if max_magvel_glob != 0.0:
+    #         return 4.0 * min_dx / max_magvel_glob
+    #     else:
+    #         return None
 
     @timing.routine_timer_decorator
     def advection(
@@ -1932,7 +1978,6 @@ class NodalPointSwarm(Swarm):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
-        _bc_mask_fn=sympy.sympify(1),
     ):
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -1944,11 +1989,6 @@ class NodalPointSwarm(Swarm):
             substeps = int(max(1, abs(delta_t) // dt_limit))
         else:
             substeps = 1
-
-        # print(
-        #     f"NSWARM - dt_max - {dt_limit}; dt_requested - {delta_t} -> {substeps}",
-        #     flush=True,
-        # )
 
         X0 = self._X0
 
@@ -1988,8 +2028,7 @@ class NodalPointSwarm(Swarm):
                     ).reshape(-1, 1)
 
                     mid_pt_coords = (
-                        self.data[...].copy()
-                        + 0.5 * delta_t * v_at_Vpts * bc_mask_array / substeps
+                        self.data[...].copy() + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -2023,10 +2062,7 @@ class NodalPointSwarm(Swarm):
                     bc_mask_array = np.rint(
                         uw.function.evalf(_bc_mask_fn, self.data)
                     ).reshape(-1, 1)
-                    new_coords = (
-                        X0.data[...].copy()
-                        + delta_t * v_at_Vpts * bc_mask_array / substeps
-                    )
+                    new_coords = X0.data[...].copy() + delta_t * v_at_Vpts / substeps
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
                     if restore_points_to_domain_func is not None:
@@ -2062,9 +2098,7 @@ class NodalPointSwarm(Swarm):
                     bc_mask_array = np.rint(
                         uw.function.evalf(_bc_mask_fn, self.data)
                     ).reshape(-1, 1)
-                    new_coords = (
-                        self.data + delta_t * v_at_Vpts * bc_mask_array / substeps
-                    )
+                    new_coords = self.data + delta_t * v_at_Vpts / substeps
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
 
