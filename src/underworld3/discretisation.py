@@ -422,6 +422,7 @@ class Mesh(Stateful, uw_object):
         ## Information on the mesh DM
         self.dm.view()
 
+
     def clone_dm_hierarchy(self):
         """
         Clone the dm hierarchy on the mesh
@@ -764,9 +765,22 @@ class Mesh(Stateful, uw_object):
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
 
-        import os
-
         output_base_name = os.path.join(outputPath, filename)
+
+        # check the directory where we will write checkpoint
+        dir_path = os.path.dirname(output_base_name) # get directory
+
+        # check if path exists
+        if os.path.exists(os.path.abspath(dir_path)): # easier to debug abs
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")
+
+        # check if we have write access
+        if os.access(os.path.abspath(dir_path), os.W_OK):
+            pass
+        else:
+            raise RuntimeError(f"No write access to {os.path.abspath(dir_path)}")
 
         # Checkpoint the mesh file itself if required
 
@@ -1914,6 +1928,12 @@ class _MeshVariable(Stateful, uw_object):
 
         output_base_name = os.path.join(outputPath, data_filename)
         data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
+
+        # check if data_file exists
+        if os.path.isfile(os.path.abspath(data_file)):
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(data_file)} does not exist")
 
         import h5py
         import numpy as np
