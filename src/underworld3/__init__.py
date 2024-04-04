@@ -60,6 +60,7 @@ This API documentation is build with
 Open `uw3_api_docs/index.html` to browse. 
 
 """
+
 from mpi4py import MPI  # for initialising MPI
 import petsc4py as _petsc4py
 import sys
@@ -73,6 +74,12 @@ from petsc4py import PETSc
 # https://gitlab.com/petsc/petsc/-/issues/1066
 
 PETSc.Sys.popErrorHandler()
+
+
+def view():
+
+    return
+
 
 # PETSc.Log().begin()
 

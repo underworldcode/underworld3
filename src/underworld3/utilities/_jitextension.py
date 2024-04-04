@@ -91,6 +91,7 @@ def getext(
     clear_cache=False,
     debug=False,
     debug_name=None,
+    cache=True,
 ):
     """
     Check if we've already created an equivalent extension
@@ -126,7 +127,7 @@ def getext(
         jitname = abs(hash((mesh, fns, tuple(mesh.vars.keys()))))
 
     # Create the module if not in dictionary
-    if jitname not in _ext_dict.keys():
+    if jitname not in _ext_dict.keys() or not cache:
         _createext(
             jitname,
             mesh,
