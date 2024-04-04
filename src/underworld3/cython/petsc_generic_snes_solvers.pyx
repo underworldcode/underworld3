@@ -156,31 +156,26 @@ class SolverBaseClass(uw_object):
     
     def _handle_none_bcs(self, fn):
         # converts bcs put as None to sympy.oo 
+        # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
 
         import numpy as np
 
         if hasattr(fn, "__len__"):      # BC input is iterable (has __len__ attribute)
-            if not isinstance(fn, str): # str also as __len__ attribute
-                in_type = type(fn)
-                fn_list = [sympy.oo if f is None else f for f in fn]
+            in_type = type(fn)
+            fn_list = [sympy.oo if f is None else f for f in fn]
 
-                # convert to original type
-                if in_type is np.ndarray: # numpy array needs special handling
-                    conv_fn = np.array(fn_list)
-                else:
-                    conv_fn = in_type(fn_list)
-
-                # handle sympy matrices auto transpose
-                if isinstance(fn, (sympy.Matrix)):
-                    conv_fn = conv_fn.T
+            # convert to original type
+            if in_type is np.ndarray: # numpy array needs special handling
+                conv_fn = np.array(fn_list)
             else:
-                print("Warning: B.C. type not supported!")
-                return fn # return back input
+                conv_fn = in_type(fn_list)
+
+            # handle sympy matrices auto transpose
+            if isinstance(fn, (sympy.Matrix)):
+                conv_fn = conv_fn.T
         else:
-            if fn is None:
-                conv_fn = sympy.oo
-            else:
-                conv_fn = fn
+            print("Warning: B.C. should be iterable!")
+            return fn # return back input
 
         return conv_fn
             
