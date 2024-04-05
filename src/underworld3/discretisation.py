@@ -150,6 +150,7 @@ class Mesh(Stateful, uw_object):
         boundaries=None,
         boundary_normals=None,
         name=None,
+        verbose=False,
         *args,
         **kwargs,
     ):
@@ -421,7 +422,6 @@ class Mesh(Stateful, uw_object):
 
         ## Information on the mesh DM
         self.dm.view()
-
 
     def clone_dm_hierarchy(self):
         """
@@ -768,10 +768,10 @@ class Mesh(Stateful, uw_object):
         output_base_name = os.path.join(outputPath, filename)
 
         # check the directory where we will write checkpoint
-        dir_path = os.path.dirname(output_base_name) # get directory
+        dir_path = os.path.dirname(output_base_name)  # get directory
 
         # check if path exists
-        if os.path.exists(os.path.abspath(dir_path)): # easier to debug abs
+        if os.path.exists(os.path.abspath(dir_path)):  # easier to debug abs
             pass
         else:
             raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")

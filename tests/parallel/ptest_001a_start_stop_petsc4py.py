@@ -4,12 +4,6 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-import argparse
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--discontinuous", action="store_true")
-args = parser.parse_args()
-
 
 # from underworld3.cython import petsc_discretisation
 

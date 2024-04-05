@@ -4,14 +4,6 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
-import argparse
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--discontinuous", action="store_true")
-args = parser.parse_args()
-
-
-# from underworld3.cython import petsc_discretisation
 
 mesh1 = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.1)
 
@@ -24,13 +16,11 @@ C3 = uw.discretisation.MeshVariable(r"C_3", mesh1, 1, degree=3, continuous=True)
 
 # This always seems to fail in parallel
 
-if args.discontinuous:
-
-    print(f"{uw.mpi.rank} - define dis-continuous (dC0) variable", flush=True)
-    dC0 = uw.discretisation.MeshVariable(r"dC_0", mesh1, 1, degree=0, continuous=False)
-    print(f"{uw.mpi.rank} - define dis-continuous (dC1) variable", flush=True)
-    dC1 = uw.discretisation.MeshVariable(r"dC_1", mesh1, 1, degree=1, continuous=False)
-    print(f"{uw.mpi.rank} - define dis-continuous (dC2) variable", flush=True)
-    dC2 = uw.discretisation.MeshVariable(r"dC_2", mesh1, 1, degree=2, continuous=False)
+print(f"{uw.mpi.rank} - define dis-continuous (dC0) variable", flush=True)
+dC0 = uw.discretisation.MeshVariable(r"dC_0", mesh1, 1, degree=0, continuous=False)
+print(f"{uw.mpi.rank} - define dis-continuous (dC1) variable", flush=True)
+dC1 = uw.discretisation.MeshVariable(r"dC_1", mesh1, 1, degree=1, continuous=False)
+print(f"{uw.mpi.rank} - define dis-continuous (dC2) variable", flush=True)
+dC2 = uw.discretisation.MeshVariable(r"dC_2", mesh1, 1, degree=2, continuous=False)
 
 print(f"{uw.mpi.rank} - All done", flush=True)

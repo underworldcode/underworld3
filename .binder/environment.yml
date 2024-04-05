@@ -17,7 +17,7 @@ dependencies:
   - sympy
   - pytest
   - ipython 
-  - pyvista[all]
+  - pyvista
   - quarto
   - pip
   - pip:  
