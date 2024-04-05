@@ -520,6 +520,17 @@ class SwarmVariable(Stateful, uw_object):
         swarmFilename = output_base_name + f".{swarmID}.{index:05}.h5"
         filename = output_base_name + f".{swarmID}.{data_name}.{index:05}.h5"
 
+        # check if swarmFilename exists
+        if os.path.isfile(os.path.abspath(swarmFilename)): # easier to debug abs path
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(swarmFilename)} does not exist")
+
+        if os.path.isfile(os.path.abspath(filename)):
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(filename)} does not exist")
+
         ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
         with h5py.File(f"{filename}", "r") as h5f_data, h5py.File(
             f"{swarmFilename}", "r"
@@ -1294,9 +1305,22 @@ class Swarm(Stateful, uw_object):
         # This will eliminate the issue of whether or not to put path separators in the
         # outputPath. Also does the right thing if outputPath is ""
 
-        import os
-
         output_base_name = os.path.join(outputPath, filename) + "." + swarmname
+
+        # check the directory where we will write checkpoint
+        dir_path = os.path.dirname(output_base_name) # get directory
+
+        # check if path exists
+        if os.path.exists(os.path.abspath(dir_path)): # easier to debug abs
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")
+
+        # check if we have write access
+        if os.access(os.path.abspath(dir_path), os.W_OK):
+            pass
+        else:
+            raise RuntimeError(f"No write access to {os.path.abspath(dir_path)}")
 
         # could also try to coerce this to be a list and raise if it fails (tuple, singleton ... )
         # also ... why the typechecking if this can still happen
