@@ -15,22 +15,9 @@ from underworld3.cython import petsc_discretisation
 
 import underworld3.timing as timing
 
-
 ## Introduce these two specific types of coordinate tracking vector objects
 
 from sympy.vector import CoordSys3D
-
-
-# class MeshBasisVec(CoordSys3D):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         return
-
-
-# class MeshSurfaceNormalVec(CoordSys3D):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         return
 
 
 @timing.routine_timer_decorator
@@ -49,6 +36,7 @@ def _from_gmsh(
 
     comm = comm or PETSc.COMM_WORLD
     options = PETSc.Options()
+    options["dm_plex_hash_location"] = None
 
     # This option allows objects to be in multiple physical groups
     # Rather than just the first one found.
@@ -160,6 +148,8 @@ class Mesh(Stateful, uw_object):
         comm = PETSc.COMM_WORLD
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
+            if verbose and uw.mpi.rank == 0:
+                print(f"Constructing UW mesh from DMPlex object", flush=True)
             name = "plexmesh"
             self.dm = plex_or_meshfile
             self.sf0 = None  # Should we build one ?
@@ -170,6 +160,11 @@ class Mesh(Stateful, uw_object):
 
             # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
+                if verbose and uw.mpi.rank == 0:
+                    print(
+                        f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True
+                    )
+
                 self.sf0, self.dm = _from_gmsh(
                     plex_or_meshfile,
                     comm,
@@ -178,6 +173,11 @@ class Mesh(Stateful, uw_object):
                     useMultipleTags=useMultipleTags,
                 )
             elif ext.lower() == ".h5":
+                if verbose and uw.mpi.rank == 0:
+                    print(
+                        f"Constructing UW mesh from DMPlex h5 file {plex_or_meshfile}",
+                        flush=True,
+                    )
                 self.sf0, self.dm = _from_plexh5(
                     plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
                 )
@@ -188,14 +188,18 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
-        # Use grid hashing for point location
-        options = PETSc.Options()
-        options["dm_plex_hash_location"] = None
-        self.dm.setFromOptions()
-
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
+
+        ## Calling setFromOptions here causes a seg fault in the conda-forge
+        ## installation. Very strange ... what else is in the options database at
+        ## this point ?
+
+        # options.delValue("dm_plex_gmsh_mark_vertices")
+        # options.delValue("dm_plex_gmsh_multiple_tags")
+        # options.delValue("dm_plex_gmsh_use_regions")
+        # # self.dm.setFromOptions()
 
         uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
@@ -208,7 +212,16 @@ class Mesh(Stateful, uw_object):
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh refinement levels: {refinement}",
+                flush=True,
+            )
+
+        uw.mpi.barrier()
+
         if not refinement is None and refinement > 0:
+
             self.dm.setRefinementUniform()
             self.dm.distribute()
 
@@ -241,7 +254,9 @@ class Mesh(Stateful, uw_object):
             self.dm = self.dm_h.clone()
 
         else:
+
             self.dm.distribute()
+
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
 
@@ -323,7 +338,19 @@ class Mesh(Stateful, uw_object):
         self.degree = degree
         self.qdegree = qdegree
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Populating mesh coordinate data",
+                flush=True,
+            )
+
         self.nuke_coords_and_rebuild()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Populating mesh coordinates {coordinate_system_type}",
+                flush=True,
+            )
 
         ## Coordinate System
 
@@ -354,6 +381,12 @@ class Mesh(Stateful, uw_object):
 
         else:
             self.vector = uw.maths.vector_calculus(mesh=self)
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh construction complete",
+                flush=True,
+            )
 
         super().__init__()
 
@@ -462,7 +495,6 @@ class Mesh(Stateful, uw_object):
             self.isSimplex,
             self.qdegree,
             "meshproj_{}_".format(self.mesh_instances),
-            PETSc.COMM_SELF,
         )
 
         if (
@@ -472,18 +504,6 @@ class Mesh(Stateful, uw_object):
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
-
-        ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
-        # if self.degree == 1:
-        #     # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
-        #     # issues with petsc that we see in parallel - in which case there is a fallback, pass no
-        #     # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
-        #     # (but it should !)
-
-        #     self.dm.projectCoordinates(self.petsc_fe)
-
-        # else:
-        #     uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
 
@@ -1067,6 +1087,7 @@ class Mesh(Stateful, uw_object):
         return arrcopy
 
     def _build_kd_tree_index(self):
+
         if hasattr(self, "_index") and self._index is not None:
             return
 
@@ -1079,66 +1100,38 @@ class Mesh(Stateful, uw_object):
         # at gauss points. These will then be used as basis for
         # kd-tree indexing back to owning cells.
 
-        tempSwarm = Swarm(self)
+        from petsc4py import PETSc
+
+        tempSwarm = PETSc.DMSwarm().create()
+        tempSwarm.setDimension(self.dim)
+        tempSwarm.setCellDM(self.dm)
+        tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
+
         # 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
+
+        tempSwarm.finalizeFieldRegister()
+        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 4)
 
         # We can't use our own populate function since this needs THIS kd_tree to exist
         # We will need to use a standard layout instead
 
-        tempSwarm.dm.finalizeFieldRegister()
-        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 3)
+        ## ?? is this required given no migration ??
+        tempSwarm.migrate(remove_sent_points=True)
 
-        with tempSwarm.access():
-            # Build index on particle coords
-            self._indexCoords = tempSwarm.particle_coordinates.data.copy()
-            self._index = uw.kdtree.KDTree(self._indexCoords)
-            self._index.build_index()
+        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
+        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
 
-            # Grab mapping back to cell_ids.
-            # Note that this is the numpy array that we eventually return from this
-            # method. As such, we take measures to ensure that we use `numpy.int64` here
-            # because we cast from this type in  `_function.evaluate` to construct
-            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
-            # will cause bugs that are difficult to find.
+        self._indexCoords = PIC_coords.copy()
+        self._index = uw.kdtree.KDTree(self._indexCoords)
+        self._index.build_index()
+        self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
 
-            self._indexMap = numpy.array(
-                tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
-            )
+        tempSwarm.restoreField("DMSwarmPIC_coor")
+        tempSwarm.restoreField("DMSwarm_cellid")
 
-        # Use the "OK" version above to find these lengths
-        (
-            self._min_size,
-            self._radii,
-            self._centroids,
-            self._search_lengths,
-        ) = self._get_mesh_sizes()
+        tempSwarm.destroy()
 
-        ## Now, we can use this information to rebuild the index more carefully
-        """
-        tempSwarm2 = Swarm(self)
-        tempSwarm2.populate(fill_param=4)
-
-        with tempSwarm2.access():
-            # Build index on particle coords
-            self._indexCoords = tempSwarm2.particle_coordinates.data.copy()
-            self._index = uw.kdtree.KDTree(self._indexCoords)
-            self._index.build_index()
-
-            # Grab mapping back to cell_ids.
-            # Note that this is the numpy array that we eventually return from this
-            # method. As such, we take measures to ensure that we use `numpy.int64` here
-            # because we cast from this type in  `_function.evaluate` to construct
-            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
-            # will cause bugs that are difficult to find.
-
-            self._indexMap = numpy.array(
-                tempSwarm2.particle_cellid.data[:, 0], dtype=numpy.int64
-            )
-
-        # update these
-        self._min_sizes, self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
-        """
         return
 
     @timing.routine_timer_decorator
@@ -1465,8 +1458,6 @@ def MeshVariable(
         dm0.copyFields(dm1)
         dm1.createDS()
 
-        # print(f"{uw.mpi.rank}: Here 1", flush=True)
-
         mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
 
         mesh._lvec.destroy()
@@ -1477,8 +1468,6 @@ def MeshVariable(
         # Copy the array data and push to gvec
         new_gvec_sub.array[...] = old_gvec.array[...]
         new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
-
-        # print(f"{uw.mpi.rank}: Here 2", flush=True)
 
         # Copy the data to mesh._lvec and delete gvec
         dm1.globalToLocal(new_gvec, mesh._lvec)

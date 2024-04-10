@@ -1488,7 +1488,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree - 1,
-            continuous=False,
+            continuous=True,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
@@ -1532,8 +1532,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         """
-        Calculates an appropriate advective timestep for the given
-        mesh and diffusivity configuration.
+        Calculates an appropriate timestep for the given
+        mesh and diffusivity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+
         """
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
@@ -1581,7 +1586,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
-        return dt_estimate
+        return dt_diff, dt_adv
 
     @timing.routine_timer_decorator
     def solve(
@@ -2059,7 +2064,7 @@ class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             self.u.sym,
-            self.u.sym * bc_mask,
+            self.u.sym,
             vtype=uw.VarType.VECTOR,
             degree=self.u.degree,
             continuous=self.u.continuous,
@@ -2329,7 +2334,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
-        bc_mask_fn: Optional[sympy.Function] = 1,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
@@ -2388,7 +2392,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=self.essential_bcs,
                 order=self._order,
                 smoothing=0.0,
-                bc_mask_fn=bc_mask_fn,
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
@@ -2408,7 +2411,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 bcs=None,
                 order=self._order,
                 smoothing=0.0,
-                bc_mask_fn=None,
             )
 
         ## Add in the history terms provided ...
@@ -2588,3 +2590,62 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self.constitutive_model._solver_is_setup = True
 
         return
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        """
+        Calculates an appropriate timestep for the given
+        mesh and viscosity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
+
+        """
+
+        if isinstance(self.constitutive_model.viscosity, sympy.Expr):
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.viscosity / self.rho),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
+            max_diffusivity = k.max()
+        else:
+            k = self.constitutive_model.viscosity / self.rho
+            max_diffusivity = k
+
+        ### required modules
+        from mpi4py import MPI
+
+        ## get global max dif value
+        comm = MPI.COMM_WORLD
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ### get the velocity values
+        vel = uw.function.evaluate(
+            self.u.sym,
+            self.mesh._centroids,
+            self.mesh.N,
+        )
+
+        ### get global velocity from velocity field
+        max_magvel = np.linalg.norm(vel, axis=1).max()
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        ## get radius
+        min_dx = self.mesh.get_min_radius()
+
+        ## estimate dt of adv and diff components
+
+        if max_magvel_glob == 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_estimate = dt_diff
+        elif diffusivity_glob == 0.0:
+            dt_adv = min_dx / max_magvel_glob
+            dt_estimate = dt_adv
+        else:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_adv = min_dx / max_magvel_glob
+            dt_estimate = min(dt_diff, dt_adv)
+
+        return dt_diff, dt_adv

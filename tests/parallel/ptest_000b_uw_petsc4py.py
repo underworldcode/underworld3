@@ -9,6 +9,6 @@ from mpi4py import MPI
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
-dm = PETSc.DM().create()
+dm = PETSc.DMPlex().create()
 
-print(f"{rank} - All done", flush=True)
+print(f"{rank} - DM create done", flush=True)

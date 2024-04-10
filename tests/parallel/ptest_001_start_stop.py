@@ -5,7 +5,12 @@ import numpy as np
 import sympy
 
 
-mesh1 = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.1)
+mesh1 = uw.meshing.Annulus(
+    radiusInner=0.5,
+    radiusOuter=1.0,
+    cellSize=0.1,
+    verbose=True,
+)
 
 print(f"{uw.mpi.rank} - define continuous variable", flush=True)
 C1 = uw.discretisation.MeshVariable(r"C_1", mesh1, 1, degree=1, continuous=True)
@@ -24,3 +29,5 @@ print(f"{uw.mpi.rank} - define dis-continuous (dC2) variable", flush=True)
 dC2 = uw.discretisation.MeshVariable(r"dC_2", mesh1, 1, degree=2, continuous=False)
 
 print(f"{uw.mpi.rank} - All done", flush=True)
+
+mesh1.dm.view()
