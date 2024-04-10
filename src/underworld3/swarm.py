@@ -1860,8 +1860,8 @@ class Swarm(Stateful, uw_object):
         import math
 
         with self.access():
-
             if self.dm.getLocalSize() == 0:
+                print(f"{uw.mpi.rank}: no particles", flush=True)
                 max_magvel = 0.0
             else:
                 vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
@@ -1870,6 +1870,9 @@ class Swarm(Stateful, uw_object):
                     magvel_squared += vel[:, 2] ** 2
 
                 max_magvel = math.sqrt(magvel_squared.max())
+
+        print(f"{uw.mpi.rank}: find max velocity", flush=True)
+        uw.mpi.barrier()
 
         from mpi4py import MPI
 
