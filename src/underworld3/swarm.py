@@ -1864,7 +1864,14 @@ class Swarm(Stateful, uw_object):
                 print(f"{uw.mpi.rank}: no particles", flush=True)
                 max_magvel = 0.0
             else:
+                print(f"{uw.mpi.rank}: {self.dm.getLocalSize()} particles", flush=True)
+
                 vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
+                print(
+                    f"{uw.mpi.rank}: {self.dm.getLocalSize()} particles/ done",
+                    flush=True,
+                )
+
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:
                     magvel_squared += vel[:, 2] ** 2
