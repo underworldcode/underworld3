@@ -1861,14 +1861,14 @@ class Swarm(Stateful, uw_object):
 
         with self.access():
             vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
-            try:            
+            try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:
                     magvel_squared += vel[:, 2] ** 2
-                    
+
                 max_magvel = math.sqrt(magvel_squared.max())
-                
-            except ValueError, IndexError:
+
+            except (ValueError, IndexError):
                 max_magvel = 0.0
 
         from mpi4py import MPI
