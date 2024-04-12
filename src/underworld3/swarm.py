@@ -521,7 +521,7 @@ class SwarmVariable(Stateful, uw_object):
         filename = output_base_name + f".{swarmID}.{data_name}.{index:05}.h5"
 
         # check if swarmFilename exists
-        if os.path.isfile(os.path.abspath(swarmFilename)): # easier to debug abs path
+        if os.path.isfile(os.path.abspath(swarmFilename)):  # easier to debug abs path
             pass
         else:
             raise RuntimeError(f"{os.path.abspath(swarmFilename)} does not exist")
@@ -827,7 +827,6 @@ class Swarm(Stateful, uw_object):
             )
 
         self._X0_uninitialised = True
-        # self._Xorig_uninitialised = True
         self._index = None
         self._nnmapdict = {}
 
@@ -912,10 +911,7 @@ class Swarm(Stateful, uw_object):
         """
 
         if layout == None:
-            if self.mesh.isSimplex == True and self.dim == 2 and fill_param > 1:
-                layout = SwarmPICLayout.REGULAR
-            else:
-                layout = SwarmPICLayout.GAUSS
+            layout = SwarmPICLayout.GAUSS
 
         if not isinstance(layout, SwarmPICLayout):
             raise ValueError("'layout' must be an instance of 'SwarmPICLayout'")
@@ -1308,10 +1304,10 @@ class Swarm(Stateful, uw_object):
         output_base_name = os.path.join(outputPath, filename) + "." + swarmname
 
         # check the directory where we will write checkpoint
-        dir_path = os.path.dirname(output_base_name) # get directory
+        dir_path = os.path.dirname(output_base_name)  # get directory
 
         # check if path exists
-        if os.path.exists(os.path.abspath(dir_path)): # easier to debug abs
+        if os.path.exists(os.path.abspath(dir_path)):  # easier to debug abs
             pass
         else:
             raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")
@@ -1865,11 +1861,15 @@ class Swarm(Stateful, uw_object):
 
         with self.access():
             vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
-            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
-            if self.mesh.dim == 3:
-                magvel_squared += vel[:, 2] ** 2
+            try:
+                magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+                if self.mesh.dim == 3:
+                    magvel_squared += vel[:, 2] ** 2
 
-            max_magvel = math.sqrt(magvel_squared.max())
+                max_magvel = math.sqrt(magvel_squared.max())
+
+            except (ValueError, IndexError):
+                max_magvel = 0.0
 
         from mpi4py import MPI
 

@@ -77,6 +77,14 @@ PETSc.Sys.popErrorHandler()
 
 
 def view():
+    from IPython.display import Latex, Markdown, display
+    from textwrap import dedent
+    import inspect
+
+    ## Docstring (static)
+    docstring = dedent(__doc__)
+    # docstring = docstring.replace("$", "$").replace("$", "$")
+    display(Markdown(docstring))
 
     return
 

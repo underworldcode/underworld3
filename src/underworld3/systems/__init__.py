@@ -18,11 +18,14 @@ from .solvers import (
     SNES_AdvectionDiffusion_SLCN as AdvDiffusion,
 )  # fix examples then remove this
 
-from .solvers import SNES_AdvectionDiffusion_SLCN as AdvDiffusionSLCN
+
+# These are now implemented the same way using the ddt module
+from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
+# These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm
-from .solvers import SNES_NavierStokes_SLCN as NavierStokesSLCN
+from .solvers import SNES_NavierStokes as NavierStokesSLCN
 from .solvers import SNES_NavierStokes as NavierStokes
 
 

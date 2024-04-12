@@ -559,6 +559,9 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
     if simplify:
         expr = sympy.simplify(expr)
 
+    # if coords.shape[0] == 0:
+    #     return np.zeros_like(coords)
+
     # 1. Extract UW variables.
 
     # Let's first collect all the meshvariables present in the expression and check
