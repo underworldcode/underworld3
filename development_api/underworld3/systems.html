@@ -111,17 +111,20 @@
 </span><span id="L-18"><a href="#L-18"><span class="linenos">18</span></a>    <span class="n">SNES_AdvectionDiffusion_SLCN</span> <span class="k">as</span> <span class="n">AdvDiffusion</span><span class="p">,</span>
 </span><span id="L-19"><a href="#L-19"><span class="linenos">19</span></a><span class="p">)</span>  <span class="c1"># fix examples then remove this</span>
 </span><span id="L-20"><a href="#L-20"><span class="linenos">20</span></a>
-</span><span id="L-21"><a href="#L-21"><span class="linenos">21</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_AdvectionDiffusion_SLCN</span> <span class="k">as</span> <span class="n">AdvDiffusionSLCN</span>
-</span><span id="L-22"><a href="#L-22"><span class="linenos">22</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_AdvectionDiffusion</span> <span class="k">as</span> <span class="n">AdvDiffusion</span>
-</span><span id="L-23"><a href="#L-23"><span class="linenos">23</span></a>
-</span><span id="L-24"><a href="#L-24"><span class="linenos">24</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes</span> <span class="k">as</span> <span class="n">NavierStokesSwarm</span>
-</span><span id="L-25"><a href="#L-25"><span class="linenos">25</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes_SLCN</span> <span class="k">as</span> <span class="n">NavierStokesSLCN</span>
-</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes</span> <span class="k">as</span> <span class="n">NavierStokes</span>
-</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a>
-</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a>
-</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">Lagrangian</span> <span class="k">as</span> <span class="n">Lagrangian_DDt</span>
-</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">SemiLagrangian</span> <span class="k">as</span> <span class="n">SemiLagragian_DDt</span>
-</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">Lagrangian_Swarm</span> <span class="k">as</span> <span class="n">Lagrangian_Swarm_DDt</span>
+</span><span id="L-21"><a href="#L-21"><span class="linenos">21</span></a>
+</span><span id="L-22"><a href="#L-22"><span class="linenos">22</span></a><span class="c1"># These are now implemented the same way using the ddt module</span>
+</span><span id="L-23"><a href="#L-23"><span class="linenos">23</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_AdvectionDiffusion</span> <span class="k">as</span> <span class="n">AdvDiffusionSLCN</span>
+</span><span id="L-24"><a href="#L-24"><span class="linenos">24</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_AdvectionDiffusion</span> <span class="k">as</span> <span class="n">AdvDiffusion</span>
+</span><span id="L-25"><a href="#L-25"><span class="linenos">25</span></a>
+</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a><span class="c1"># These are now implemented the same way using the ddt module</span>
+</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes</span> <span class="k">as</span> <span class="n">NavierStokesSwarm</span>
+</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes</span> <span class="k">as</span> <span class="n">NavierStokesSLCN</span>
+</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a><span class="kn">from</span> <span class="nn">.solvers</span> <span class="kn">import</span> <span class="n">SNES_NavierStokes</span> <span class="k">as</span> <span class="n">NavierStokes</span>
+</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a>
+</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a>
+</span><span id="L-32"><a href="#L-32"><span class="linenos">32</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">Lagrangian</span> <span class="k">as</span> <span class="n">Lagrangian_DDt</span>
+</span><span id="L-33"><a href="#L-33"><span class="linenos">33</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">SemiLagrangian</span> <span class="k">as</span> <span class="n">SemiLagragian_DDt</span>
+</span><span id="L-34"><a href="#L-34"><span class="linenos">34</span></a><span class="kn">from</span> <span class="nn">.ddt</span> <span class="kn">import</span> <span class="n">Lagrangian_Swarm</span> <span class="k">as</span> <span class="n">Lagrangian_Swarm_DDt</span>
 </span></pre></div>
 
 
