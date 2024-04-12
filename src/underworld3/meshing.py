@@ -567,20 +567,16 @@ def SphericalShell(
         volume = gmsh.model.getEntities(3)[0]
 
         if radiusInner > 0.0:
-            outerSurface, innerSurface = surfaces
+            for surface in surfaces:
+                if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
+                    gmsh.model.addPhysicalGroup(surface[0], [surface[1]], boundaries.Lower.value, 
+                                                name=boundaries.Lower.name,)
+                    print('Created inner boundary surface')
+                elif np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter):
+                    gmsh.model.addPhysicalGroup(surface[0], [surface[1]], boundaries.Upper.value, 
+                                                name=boundaries.Upper.name,)
+                    print('Created outer boundary surface')
 
-            gmsh.model.addPhysicalGroup(
-                innerSurface[0],
-                [innerSurface[1]],
-                boundaries.Lower.value,
-                name=boundaries.Lower.name,
-            )
-            gmsh.model.addPhysicalGroup(
-                outerSurface[0],
-                [outerSurface[1]],
-                boundaries.Upper.value,
-                name=boundaries.Upper.name,
-            )
             gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
             gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
 
