@@ -205,6 +205,28 @@ def UnstructuredSimplexBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def box_return_coords_to_bounds(coords):
+
+        x00s = coords[:, 0] < minCoords[0]
+        x01s = coords[:, 0] > maxCoords[0]
+        x10s = coords[:, 1] < minCoords[1]
+        x11s = coords[:, 1] > maxCoords[1]
+
+        if dim == 3:
+            x20s = coords[:, 1] < minCoords[2]
+            x21s = coords[:, 1] > maxCoords[2]
+
+        coords[x00s, :] = minCoords[0]
+        coords[x01s, :] = maxCoords[0]
+        coords[x10s, :] = minCoords[1]
+        coords[x11s, :] = maxCoords[1]
+
+        if dim == 3:
+            coords[x20s, :] = minCoords[2]
+            coords[x21s, :] = maxCoords[2]
+
+        return coords
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -217,6 +239,7 @@ def UnstructuredSimplexBox(
         markVertices=True,
         refinement=refinement,
         refinement_callback=None,
+        return_coords_to_bounds=box_return_coords_to_bounds,
         verbose=verbose,
     )
 
@@ -499,6 +522,28 @@ def StructuredQuadBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def box_return_coords_to_bounds(coords):
+
+        x00s = coords[:, 0] < minCoords[0]
+        x01s = coords[:, 0] > maxCoords[0]
+        x10s = coords[:, 1] < minCoords[1]
+        x11s = coords[:, 1] > maxCoords[1]
+
+        if dim == 3:
+            x20s = coords[:, 1] < minCoords[2]
+            x21s = coords[:, 1] > maxCoords[2]
+
+        coords[x00s, :] = minCoords[0]
+        coords[x01s, :] = maxCoords[0]
+        coords[x10s, :] = minCoords[1]
+        coords[x11s, :] = maxCoords[1]
+
+        if dim == 3:
+            coords[x20s, :] = minCoords[2]
+            coords[x21s, :] = maxCoords[2]
+
+        return coords
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -511,6 +556,7 @@ def StructuredQuadBox(
         markVertices=True,
         refinement=refinement,
         refinement_callback=None,
+        return_coords_to_bounds=box_return_coords_to_bounds,
         verbose=verbose,
     )
 
@@ -568,14 +614,26 @@ def SphericalShell(
 
         if radiusInner > 0.0:
             for surface in surfaces:
-                if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
-                    gmsh.model.addPhysicalGroup(surface[0], [surface[1]], boundaries.Lower.value, 
-                                                name=boundaries.Lower.name,)
-                    print('Created inner boundary surface')
-                elif np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter):
-                    gmsh.model.addPhysicalGroup(surface[0], [surface[1]], boundaries.Upper.value, 
-                                                name=boundaries.Upper.name,)
-                    print('Created outer boundary surface')
+                if np.isclose(
+                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
+                ):
+                    gmsh.model.addPhysicalGroup(
+                        surface[0],
+                        [surface[1]],
+                        boundaries.Lower.value,
+                        name=boundaries.Lower.name,
+                    )
+                    print("Created inner boundary surface")
+                elif np.isclose(
+                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
+                ):
+                    gmsh.model.addPhysicalGroup(
+                        surface[0],
+                        [surface[1]],
+                        boundaries.Upper.value,
+                        name=boundaries.Upper.name,
+                    )
+                    print("Created outer boundary surface")
 
             gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
             gmsh.model.setPhysicalName(volume[1], 99999, "Elements")

@@ -1536,9 +1536,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         mesh and diffusivity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:
 
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
             - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
 
+            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
         """
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):

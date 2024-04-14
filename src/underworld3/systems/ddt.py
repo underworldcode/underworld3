@@ -224,7 +224,7 @@ class SemiLagrangian(uw_object):
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
-                self._nswarm_psi.data[...] = self._nswarm_psi._X0.data[...]
+                self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
 
             # Now project to the mesh using bc's to obtain u_star
             self._psi_star_projection_solver.uw_function = (

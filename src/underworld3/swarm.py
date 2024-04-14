@@ -63,7 +63,7 @@ class SwarmVariable(Stateful, uw_object):
         Semi-Optional. The underworld variable type for this variable.
     proxy_degree :
         The polynomial degree for this variable.
-     proxy_continuous :
+    proxy_continuous :
         The polynomial degree for this variable.
     varsymbol:
         A symbolic form for printing etc (sympy / latex)
@@ -1677,12 +1677,11 @@ class Swarm(Stateful, uw_object):
         #         del updated_current_coords
         #         del v_at_Vpts
 
-        with self.access(X0):
-            X0.data[...] = self.data[...]
-            self._X0_uninitialised = False
-
         # Wrap this whole thing in sub-stepping loop
         for step in range(0, substeps):
+
+            with self.access(X0):
+                X0.data[...] = self.data[...]
 
             # Mid point algorithm (2nd order)
 
@@ -1702,7 +1701,7 @@ class Swarm(Stateful, uw_object):
                             ).reshape(-1)
 
                     mid_pt_coords = (
-                        self.data[...].copy() + 0.5 * delta_t * v_at_Vpts / substeps
+                        self.data[...] + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -1733,7 +1732,7 @@ class Swarm(Stateful, uw_object):
                     # if (uw.mpi.rank == 0):
                     #     print("Re-launch from X0", flush=True)
 
-                    new_coords = X0.data[...].copy() + delta_t * v_at_Vpts / substeps
+                    new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
                     if restore_points_to_domain_func is not None:
@@ -1953,6 +1952,32 @@ class NodalPointSwarm(Swarm):
             nX0.data[...] = coords
 
         self._nswarm = nswarm
-        self._X0 = nX0
+        self._nX0 = nX0
+        self._nCoords = coords
+
+        return
+
+    @timing.routine_timer_decorator
+    def advection(
+        self,
+        V_fn,
+        delta_t,
+        order=2,
+        corrector=False,
+        restore_points_to_domain_func=None,
+        evalf=False,
+    ):
+
+        with self.access(self._X0):
+            self._X0.data[...] = self._nCoords[...]
+
+        super().advection(
+            V_fn,
+            delta_t,
+            order,
+            corrector,
+            restore_points_to_domain_func,
+            evalf,
+        )
 
         return
