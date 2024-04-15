@@ -64,7 +64,7 @@ def test_advDiff_boxmesh(mesh):
 
     # #### Create the advDiff solver
 
-    adv_diff = uw.systems.AdvDiffusionSLCN(
+    adv_diff = uw.systems.AdvDiffusion(
         mesh,
         u_Field=T,
         V_fn=v,
@@ -151,9 +151,10 @@ def test_advDiff_boxmesh(mesh):
     model_time = 0.0
 
     #### Solve
-    dt = adv_diff.estimate_dt()
+    dtd, dta = adv_diff.estimate_dt()
 
-    print(f"dt: {dt}\n")
+    # This should be stable, and soluble by the 1D FD
+    dt = 0.001
 
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)

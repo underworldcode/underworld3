@@ -22,7 +22,7 @@ def test_adv_diff_annulus():
     t_o = 1.0
     r_i = 0.5
     r_o = 1.0
-    delta_t = 1.0
+    delta_t = 0.05  ## 1/20 rotation in one step
 
     adv_diff = uw.systems.AdvDiffusion(
         mesh,
@@ -72,9 +72,6 @@ def test_adv_diff_annulus():
     scalar_projection_solver.uw_function = t_soln.sym[0]
     scalar_projection_solver.bcs = adv_diff.bcs
     scalar_projection_solver.solve()
-
-    # Tests addition of another mesh variable after set up of solve
-    # v_soln2 = uw.discretisation.MeshVariable("U2", mesh, mesh.dim, degree=2)
 
     scalar_projection_solver.uw_function = t_soln.sym[0]
     scalar_projection_solver.bcs = adv_diff.bcs
