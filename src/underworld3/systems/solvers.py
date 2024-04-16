@@ -1043,15 +1043,10 @@ class SNES_Tensor_Projection(SNES_Projection):
         self._uw_scalar_function = user_uw_function
 
 
-## --------------------------------
-## Project from pointwise vector
-## functions to nodal point unknowns
-##
-## We can add boundary constraints in the usual way (parent class handles this)
-## We can add smoothing (which takes the form of a viscosity term)
-## Here we add an incompressibility constraint
-## --------------------------------
-
+## Deletion warning: This code duplicates the functionality of
+## SNES_AdvectionDiffusion which is general enough to use a Lagrangian DDt if
+## provided for the scalar field. The flux is aways a SL update because of the nature of
+## the FE derivatives.
 
 #################################################
 # Characteristics-based advection-diffusion
@@ -1062,297 +1057,297 @@ class SNES_Tensor_Projection(SNES_Projection):
 #################################################
 
 
-class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
-    r"""
-    This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
-    which is described in Spiegelman & Katz, (2006).
-
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
-    $$
-
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
-
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
-    the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
-    swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
-
-    ## Properties
-
-      - The unknown is $u$.
-
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not. Currently it is a MeshVariable** this is the desired behaviour though.
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
-
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
-
-      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
-        Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
-
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
-    """
-
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
-        display(Latex(r"$\quad\theta = $ " + self.theta._repr_latex_()))
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        u_Field: uw.discretisation.MeshVariable,
-        V_fn: Union[
-            uw.discretisation.MeshVariable, sympy.Basic
-        ],  # Should be a sympy function
-        order: int = 1,
-        solver_name: str = "",
-        restore_points_func: Callable = None,
-        verbose=False,
-    ):
-        ## Parent class will set up default values etc
-        super().__init__(
-            mesh,
-            u_Field,
-            None,
-            None,
-            u_Field.degree,
-            solver_name,
-            verbose,
-        )
-
-        if solver_name == "":
-            solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
-
-        if isinstance(V_fn, uw.discretisation._MeshVariable):
-            self._V_fn = V_fn.sym
-        else:
-            self._V_fn = V_fn
-
-        # default values for properties
-        self.f = sympy.Matrix.zeros(1, 1)
-
-        self._constitutive_model = None
-
-        # These are unique to the advection solver
-        self.delta_t = 0.0
-        self.is_setup = False
-
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.adv_diff_slcn_problem_description
-
-        ### Setup the history terms
-
-        self.Unknowns.DuDt = SemiLagrangian_DDt(
-            self.mesh,
-            u_Field.sym,
-            self._V_fn,
-            vtype=uw.VarType.SCALAR,
-            degree=u_Field.degree,
-            continuous=u_Field.continuous,
-            varsymbol=u_Field.symbol,
-            verbose=verbose,
-            bcs=self.essential_bcs,
-            order=order,
-            smoothing=0.0,
-        )
-
-        self.Unknowns.DFDt = SemiLagrangian_DDt(
-            self.mesh,
-            sympy.Matrix(
-                [[0] * self.mesh.dim]
-            ),  # Actual function is not defined at this stage
-            self._V_fn,
-            vtype=uw.VarType.VECTOR,
-            degree=u_Field.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-            verbose=verbose,
-            bcs=None,
-            order=order,
-            smoothing=0.0,
-        )
-
-        return
-
-    def adv_diff_slcn_problem_description(self):
-        # f0 residual term
-        self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
-
-        # f1 residual term
-        self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
-
-        return
-
-    @property
-    def f(self):
-        return self._f
-
-    @f.setter
-    def f(self, value):
-        self.is_setup = False
-        self._f = sympy.Matrix((value,))
-
-    @property
-    def V_fn(self):
-        return self._V_fn
-
-    @property
-    def delta_t(self):
-        return self._delta_t
-
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
-
-    @timing.routine_timer_decorator
-    def estimate_dt(self, v_factor=1.0, diffusivity=None):
-        """
-        Calculates an appropriate advective timestep for the given
-        mesh and diffusivity configuration.
-        """
-
-        ## If k is non-linear and depends on gradients, then this evaluation
-        ## does not work, we instead need a projection.
-
-        if diffusivity is None:
-            diffusivity = self.constitutive_model.Parameters.diffusivity
-
-        if isinstance(diffusivity, uw.discretisation._MeshVariable):
-            diffusivity = diffusivity.sym[0]
-
-        if isinstance(diffusivity, sympy.Expr):
-            k = uw.function.evaluate(
-                sympy.sympify(diffusivity),
-                self.mesh._centroids,
-                self.mesh.N,
-            )
-            max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.Parameters.diffusivity
-            max_diffusivity = k
-
-        ### required modules
-        from mpi4py import MPI
-
-        ## get global max dif value
-        comm = MPI.COMM_WORLD
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
-
-        ### get the velocity values
-        vel = uw.function.evaluate(
-            self.V_fn,
-            self.mesh._centroids,
-            self.mesh.N,
-        )
-
-        ### get global velocity from velocity field
-        max_magvel = np.linalg.norm(vel, axis=1).max()
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
-
-        ## get radius
-        min_dx = self.mesh.get_min_radius()
-
-        ## estimate dt of adv and diff components
-
-        if max_magvel_glob == 0.0:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = dt_adv
-        else:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = min(dt_diff, v_factor * dt_adv)
-
-        return dt_estimate
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
-
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
-
-        if _force_setup:
-            self.is_setup = False
-
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Update SemiLagrange Unknown and Flux terms
-        # self.DuDt.update(timestep, verbose=verbose, evalf=False)
-        # self.DFDt.update(timestep, verbose=verbose, evalf=False)
-
-        # super().solve(zero_init_guess, _force_setup)
-
-        self.DuDt.update_pre_solve(timestep, verbose=verbose)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose)
-
-        super().solve(zero_init_guess, _force_setup)
-
-        self.DuDt.update_post_solve(timestep, verbose=verbose)
-        self.DFDt.update_post_solve(timestep, verbose=verbose)
-
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-        return
-
-
-#################################################
-# Swarm-based advection-diffusion
-# solver based on SNES_Poisson and swarm-variable
-# projection
-#
-#################################################
+# class SNES_AdvectionDiffusion_SLCN(SNES_Scalar):
+#     r"""
+#     This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
+#     which is described in Spiegelman & Katz, (2006).
+
+#     $$
+#     \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+#     \nabla \cdot
+#             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+#             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+#     $$
+
+#     The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+#     the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+
+#     The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
+#     the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
+#     swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
+
+#     ## Properties
+
+#       - The unknown is $u$.
+
+#       - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+#         calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not. Currently it is a MeshVariable** this is the desired behaviour though.
+
+#       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+#         one of the scalar `uw.constitutive_models` classes and populating the parameters.
+#         It is usually a constant or a function of position / time and may also be non-linear
+#         or anisotropic.
+
+#       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+#         `meshVariable` or `swarmVariable` types.
+
+#       - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
+#         Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
+
+#     ## Notes
+
+#       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
+#         Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
+
+#     ## Reference
+
+#     Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+#     of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+
+#     """
+
+#     def _object_viewer(self):
+#         from IPython.display import Latex, Markdown, display
+
+#         super()._object_viewer()
+
+#         ## feedback on this instance
+#         display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
+#         display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
+#         display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
+#         display(Latex(r"$\quad\theta = $ " + self.theta._repr_latex_()))
+
+#     @timing.routine_timer_decorator
+#     def __init__(
+#         self,
+#         mesh: uw.discretisation.Mesh,
+#         u_Field: uw.discretisation.MeshVariable,
+#         V_fn: Union[
+#             uw.discretisation.MeshVariable, sympy.Basic
+#         ],  # Should be a sympy function
+#         order: int = 1,
+#         solver_name: str = "",
+#         restore_points_func: Callable = None,
+#         verbose=False,
+#     ):
+#         ## Parent class will set up default values etc
+#         super().__init__(
+#             mesh,
+#             u_Field,
+#             None,
+#             None,
+#             u_Field.degree,
+#             solver_name,
+#             verbose,
+#         )
+
+#         if solver_name == "":
+#             solver_name = "AdvDiff_slcn_{}_".format(self.instance_number)
+
+#         if isinstance(V_fn, uw.discretisation._MeshVariable):
+#             self._V_fn = V_fn.sym
+#         else:
+#             self._V_fn = V_fn
+
+#         # default values for properties
+#         self.f = sympy.Matrix.zeros(1, 1)
+
+#         self._constitutive_model = None
+
+#         # These are unique to the advection solver
+#         self.delta_t = 0.0
+#         self.is_setup = False
+
+#         self.restore_points_to_domain_func = restore_points_func
+#         self._setup_problem_description = self.adv_diff_slcn_problem_description
+
+#         ### Setup the history terms
+
+#         self.Unknowns.DuDt = SemiLagrangian_DDt(
+#             self.mesh,
+#             u_Field.sym,
+#             self._V_fn,
+#             vtype=uw.VarType.SCALAR,
+#             degree=u_Field.degree,
+#             continuous=u_Field.continuous,
+#             varsymbol=u_Field.symbol,
+#             verbose=verbose,
+#             bcs=self.essential_bcs,
+#             order=order,
+#             smoothing=0.0,
+#         )
+
+#         self.Unknowns.DFDt = SemiLagrangian_DDt(
+#             self.mesh,
+#             sympy.Matrix(
+#                 [[0] * self.mesh.dim]
+#             ),  # Actual function is not defined at this stage
+#             self._V_fn,
+#             vtype=uw.VarType.VECTOR,
+#             degree=u_Field.degree - 1,
+#             continuous=True,
+#             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+#             verbose=verbose,
+#             bcs=None,
+#             order=order,
+#             smoothing=0.0,
+#         )
+
+#         return
+
+#     def adv_diff_slcn_problem_description(self):
+#         # f0 residual term
+#         self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
+
+#         # f1 residual term
+#         self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
+
+#         return
+
+#     @property
+#     def f(self):
+#         return self._f
+
+#     @f.setter
+#     def f(self, value):
+#         self.is_setup = False
+#         self._f = sympy.Matrix((value,))
+
+#     @property
+#     def V_fn(self):
+#         return self._V_fn
+
+#     @property
+#     def delta_t(self):
+#         return self._delta_t
+
+#     @delta_t.setter
+#     def delta_t(self, value):
+#         self.is_setup = False
+#         self._delta_t = sympify(value)
+
+#     @timing.routine_timer_decorator
+#     def estimate_dt(self, v_factor=1.0, diffusivity=None):
+#         """
+#         Calculates an appropriate advective timestep for the given
+#         mesh and diffusivity configuration.
+#         """
+
+#         ## If k is non-linear and depends on gradients, then this evaluation
+#         ## does not work, we instead need a projection.
+
+#         if diffusivity is None:
+#             diffusivity = self.constitutive_model.Parameters.diffusivity
+
+#         if isinstance(diffusivity, uw.discretisation._MeshVariable):
+#             diffusivity = diffusivity.sym[0]
+
+#         if isinstance(diffusivity, sympy.Expr):
+#             k = uw.function.evaluate(
+#                 sympy.sympify(diffusivity),
+#                 self.mesh._centroids,
+#                 self.mesh.N,
+#             )
+#             max_diffusivity = k.max()
+#         else:
+#             k = self.constitutive_model.Parameters.diffusivity
+#             max_diffusivity = k
+
+#         ### required modules
+#         from mpi4py import MPI
+
+#         ## get global max dif value
+#         comm = MPI.COMM_WORLD
+#         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+#         ### get the velocity values
+#         vel = uw.function.evaluate(
+#             self.V_fn,
+#             self.mesh._centroids,
+#             self.mesh.N,
+#         )
+
+#         ### get global velocity from velocity field
+#         max_magvel = np.linalg.norm(vel, axis=1).max()
+#         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+#         ## get radius
+#         min_dx = self.mesh.get_min_radius()
+
+#         ## estimate dt of adv and diff components
+
+#         if max_magvel_glob == 0.0:
+#             dt_diff = (min_dx**2) / diffusivity_glob
+#             dt_estimate = dt_diff
+#         elif diffusivity_glob == 0.0:
+#             dt_adv = min_dx / max_magvel_glob
+#             dt_estimate = dt_adv
+#         else:
+#             dt_diff = (min_dx**2) / diffusivity_glob
+#             dt_adv = min_dx / max_magvel_glob
+#             dt_estimate = min(dt_diff, v_factor * dt_adv)
+
+#         return dt_estimate
+
+#     @timing.routine_timer_decorator
+#     def solve(
+#         self,
+#         zero_init_guess: bool = True,
+#         timestep: float = None,
+#         _force_setup: bool = False,
+#         verbose=False,
+#     ):
+#         """
+#         Generates solution to constructed system.
+
+#         Params
+#         ------
+#         zero_init_guess:
+#             If `True`, a zero initial guess will be used for the
+#             system solution. Otherwise, the current values of `self.u` will be used.
+#         """
+
+#         if timestep is not None and timestep != self.delta_t:
+#             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+#         if _force_setup:
+#             self.is_setup = False
+
+#         if not self.constitutive_model._solver_is_setup:
+#             self.is_setup = False
+#             self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+#         if not self.is_setup:
+#             self._setup_pointwise_functions(verbose)
+#             self._setup_discretisation(verbose)
+#             self._setup_solver(verbose)
+
+#         # Update SemiLagrange Unknown and Flux terms
+#         # self.DuDt.update(timestep, verbose=verbose, evalf=False)
+#         # self.DFDt.update(timestep, verbose=verbose, evalf=False)
+
+#         # super().solve(zero_init_guess, _force_setup)
+
+#         self.DuDt.update_pre_solve(timestep, verbose=verbose)
+#         self.DFDt.update_pre_solve(timestep, verbose=verbose)
+
+#         super().solve(zero_init_guess, _force_setup)
+
+#         self.DuDt.update_post_solve(timestep, verbose=verbose)
+#         self.DFDt.update_post_solve(timestep, verbose=verbose)
+
+#         self.is_setup = True
+#         self.constitutive_model._solver_is_setup = True
+
+#         return
+
+
+# #################################################
+# # Swarm-based advection-diffusion
+# # solver based on SNES_Poisson and swarm-variable
+# # projection
+# #
+# #################################################
 
 
 class SNES_AdvectionDiffusion(SNES_Scalar):
@@ -1638,6 +1633,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         return
 
 
+## Deletion warning !!
+
+
 #################################################
 # Swarm-based advection-diffusion
 # solver based on SNES_Poisson and swarm-variable
@@ -1649,611 +1647,617 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 ## This could be the parent class for AdvectionDiffusionSLCN
 
 
-class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
-    r"""
-    This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
-
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
-    $$
-
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
-
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^*$
-
-    ## Properties
-
-      - The unknown is $u$.
-
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
-
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
-
-      - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
-        Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
-
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## Reference
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-    """
-
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        u_Field: uw.discretisation.MeshVariable,
-        V_fn: Union[
-            uw.discretisation.MeshVariable, sympy.Basic
-        ],  # Should be a sympy function
-        DuDt: Lagrangian_DDt,
-        solver_name: str = "",
-        restore_points_func: Callable = None,
-        verbose=False,
-    ):
-        if solver_name == "":
-            solver_name = "AdvDiff_swarm_{}_".format(self.instance_number)
-
-        ## Parent class will set up default values etc
-        super().__init__(
-            mesh,
-            u_Field,
-            DuDt,
-            DFDt,
-            solver_name,
-            verbose,
-        )
-
-        self.delta_t = 1.0
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.adv_diff_swarm_problem_description
-
-        self.is_setup = False
-        self.u_star_is_valid = False
-
-        if isinstance(V_fn, uw.discretisation._MeshVariable):
-            self._V_fn = V_fn.sym
-        else:
-            self._V_fn = V_fn
-
-        # default values for properties
-        self.f = sympy.Matrix.zeros(1, 1)
-        self._constitutive_model = None
-
-        return
-
-    def adv_diff_swarm_problem_description(self):
-        # f0 residual term
-        self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
-
-        # f1 residual term
-        self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
-
-        return
-
-    @property
-    def V_fn(self):
-        return self._V_fn
-
-    @property
-    def u(self):
-        return self._u
-
-    @property
-    def u_star_fn(self):
-        if self.projection:
-            return self._u_star_projected.sym
-        else:
-            return self._u_star_raw_fn
-
-    @u_star_fn.setter
-    def u_star_fn(self, u_star_fn):
-        self.is_setup = False
-        if self.projection:
-            self._u_star_projector.is_setup = False
-            self._u_star_projector.uw_function = u_star_fn
-
-        self._u_star_raw_fn = u_star_fn
-
-    @property
-    def delta_t(self):
-        return self._delta_t
-
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
-
-    @property
-    def theta(self):
-        return self._theta
-
-    @theta.setter
-    def theta(self, value):
-        self.is_setup = False
-        self._theta = sympify(value)
-
-    @property
-    def f(self):
-        return self._f
-
-    @f.setter
-    def f(self, value):
-        self.is_setup = False
-        self._f = sympy.Matrix((value,))
-
-    @property
-    def constitutive_model(self):
-        return self._constitutive_model
-
-    @constitutive_model.setter
-    def constitutive_model(self, model):
-        ### checking if it's an instance
-        if isinstance(model, uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model
-
-            ### update history terms using setters
-            self.DFDt.psi_fn = model._q(self.Unknowns.u)
-
-        ### checking if it's a class
-        elif type(model) == type(uw.constitutive_models.Constitutive_Model):
-            self._constitutive_model = model(self.Unknowns)
-
-            ### update history terms using setters
-            self.DFDt.psi_fn = model._q(self.u)
-
-        ### Raise an error if it's neither
-        else:
-            raise RuntimeError(
-                "constitutive_model must be a valid class or instance of a valid class"
-            )
-
-    @timing.routine_timer_decorator
-    def estimate_dt(self):
-        """
-        Calculates an appropriate advective timestep for the given
-        mesh and diffusivity configuration.
-        """
-        # ## update the diffusivity values
-        # self.k_proj = uw.systems.Projection(self.mesh, self.k)
-        # self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
-        # self.k_proj.smoothing = 0.0
-        # self.k_proj.solve(_force_setup=True)
-
-        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            k = uw.function.evaluate(
-                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
-                self.mesh._centroids,
-                self.mesh.N,
-            )
-            max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.Parameters.diffusivity
-            max_diffusivity = k
-
-        ### required modules
-        from mpi4py import MPI
-
-        # with self.mesh.access(self.k):
-        #     ## get local max diff value
-        #     max_diffusivity = self.k.data[:, 0].max()
-
-        ## get global max dif value
-        comm = MPI.COMM_WORLD
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
-
-        ### get the velocity values
-        vel = uw.function.evaluate(
-            self.V_fn,
-            self.mesh._centroids,
-            self.mesh.N,
-        )
-
-        ### get global velocity from velocity field
-        max_magvel = np.linalg.norm(vel, axis=1).max()
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
-
-        ## get radius
-        min_dx = self.mesh.get_min_radius()
-
-        ## estimate dt of adv and diff components
-
-        if max_magvel_glob == 0.0:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = dt_adv
-        else:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = min(dt_diff, dt_adv)
-
-        return dt_estimate
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
-
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
-
-        if _force_setup:
-            self.is_setup = False
-
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Update SemiLagrange Flux terms
-        self.DuDt.update(timestep, verbose=verbose)
-        self.DFDt.update(timestep, verbose=verbose)
-
-        super().solve(zero_init_guess, _force_setup)
-
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-        return
-
-    @timing.routine_timer_decorator
-    def _setup_terms(self):
-        if self.projection:
-            self._u_star_projector.bcs = self.bcs
-            self._u_star_projector._setup_pointwise_functions()  # _setup_terms()
-
-        super()._setup_pointwise_functions()  # ._setup_terms()
+# class SNES_AdvectionDiffusion_Swarm_old(SNES_Scalar):
+#     r"""
+#     This class provides a solver for the scalar Advection-Diffusion equation which is similar to that
+#     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
+#     distributed sampling of upstream values taken from an arbitrary swarm variable.
+
+#     $$
+#     \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+#     \nabla \cdot
+#             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+#             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+#     $$
+
+#     The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+#     the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+
+#     The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
+#     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
+#     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
+#     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
+#     **and update** the swarmVariable representing $u^*$
+
+#     ## Properties
+
+#       - The unknown is $u$.
+
+#       - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+#         calculated in situ (e.g. `V_Field = v_solution.sym`)
+
+#       - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+#         variable updated.
+
+#       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+#         one of the scalar `uw.constitutive_models` classes and populating the parameters.
+#         It is usually a constant or a function of position / time and may also be non-linear
+#         or anisotropic.
+
+#       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+#         `meshVariable` or `swarmVariable` types.
+
+#       - The `theta` property sets $\theta$, the parameter that tunes between backward Euler $\theta=1$, forward Euler $\theta=0$ and
+#         Crank-Nicholson $\theta=1/2$. The default is to use the Crank-Nicholson value.
+
+#     ## Notes
+
+#       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
+#         Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
+
+#     ## Reference
+
+#     Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+#     of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+#     """
+
+#     instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+#     @timing.routine_timer_decorator
+#     def __init__(
+#         self,
+#         mesh: uw.discretisation.Mesh,
+#         u_Field: uw.discretisation.MeshVariable,
+#         V_fn: Union[
+#             uw.discretisation.MeshVariable, sympy.Basic
+#         ],  # Should be a sympy function
+#         DuDt: Lagrangian_DDt,
+#         solver_name: str = "",
+#         restore_points_func: Callable = None,
+#         verbose=False,
+#     ):
+#         if solver_name == "":
+#             solver_name = "AdvDiff_swarm_{}_".format(self.instance_number)
+
+#         ## Parent class will set up default values etc
+#         super().__init__(
+#             mesh,
+#             u_Field,
+#             DuDt,
+#             DFDt,
+#             solver_name,
+#             verbose,
+#         )
+
+#         self.delta_t = 1.0
+#         self.restore_points_to_domain_func = restore_points_func
+#         self._setup_problem_description = self.adv_diff_swarm_problem_description
+
+#         self.is_setup = False
+#         self.u_star_is_valid = False
+
+#         if isinstance(V_fn, uw.discretisation._MeshVariable):
+#             self._V_fn = V_fn.sym
+#         else:
+#             self._V_fn = V_fn
+
+#         # default values for properties
+#         self.f = sympy.Matrix.zeros(1, 1)
+#         self._constitutive_model = None
+
+#         return
+
+#     def adv_diff_swarm_problem_description(self):
+#         # f0 residual term
+#         self._f0 = self.F0 - self.f + self.DuDt.bdf() / self.delta_t
+
+#         # f1 residual term
+#         self._f1 = self.F1 + self.DFDt.adams_moulton_flux()
+
+#         return
+
+#     @property
+#     def V_fn(self):
+#         return self._V_fn
+
+#     @property
+#     def u(self):
+#         return self._u
+
+#     @property
+#     def u_star_fn(self):
+#         if self.projection:
+#             return self._u_star_projected.sym
+#         else:
+#             return self._u_star_raw_fn
+
+#     @u_star_fn.setter
+#     def u_star_fn(self, u_star_fn):
+#         self.is_setup = False
+#         if self.projection:
+#             self._u_star_projector.is_setup = False
+#             self._u_star_projector.uw_function = u_star_fn
+
+#         self._u_star_raw_fn = u_star_fn
+
+#     @property
+#     def delta_t(self):
+#         return self._delta_t
+
+#     @delta_t.setter
+#     def delta_t(self, value):
+#         self.is_setup = False
+#         self._delta_t = sympify(value)
+
+#     @property
+#     def theta(self):
+#         return self._theta
+
+#     @theta.setter
+#     def theta(self, value):
+#         self.is_setup = False
+#         self._theta = sympify(value)
+
+#     @property
+#     def f(self):
+#         return self._f
+
+#     @f.setter
+#     def f(self, value):
+#         self.is_setup = False
+#         self._f = sympy.Matrix((value,))
+
+#     @property
+#     def constitutive_model(self):
+#         return self._constitutive_model
+
+#     @constitutive_model.setter
+#     def constitutive_model(self, model):
+#         ### checking if it's an instance
+#         if isinstance(model, uw.constitutive_models.Constitutive_Model):
+#             self._constitutive_model = model
+
+#             ### update history terms using setters
+#             self.DFDt.psi_fn = model._q(self.Unknowns.u)
+
+#         ### checking if it's a class
+#         elif type(model) == type(uw.constitutive_models.Constitutive_Model):
+#             self._constitutive_model = model(self.Unknowns)
+
+#             ### update history terms using setters
+#             self.DFDt.psi_fn = model._q(self.u)
+
+#         ### Raise an error if it's neither
+#         else:
+#             raise RuntimeError(
+#                 "constitutive_model must be a valid class or instance of a valid class"
+#             )
+
+#     @timing.routine_timer_decorator
+#     def estimate_dt(self):
+#         """
+#         Calculates an appropriate advective timestep for the given
+#         mesh and diffusivity configuration.
+#         """
+#         # ## update the diffusivity values
+#         # self.k_proj = uw.systems.Projection(self.mesh, self.k)
+#         # self.k_proj.uw_function = self.constitutive_model.Parameters.diffusivity
+#         # self.k_proj.smoothing = 0.0
+#         # self.k_proj.solve(_force_setup=True)
+
+#         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
+#             k = uw.function.evaluate(
+#                 sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+#                 self.mesh._centroids,
+#                 self.mesh.N,
+#             )
+#             max_diffusivity = k.max()
+#         else:
+#             k = self.constitutive_model.Parameters.diffusivity
+#             max_diffusivity = k
+
+#         ### required modules
+#         from mpi4py import MPI
+
+#         # with self.mesh.access(self.k):
+#         #     ## get local max diff value
+#         #     max_diffusivity = self.k.data[:, 0].max()
+
+#         ## get global max dif value
+#         comm = MPI.COMM_WORLD
+#         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+#         ### get the velocity values
+#         vel = uw.function.evaluate(
+#             self.V_fn,
+#             self.mesh._centroids,
+#             self.mesh.N,
+#         )
+
+#         ### get global velocity from velocity field
+#         max_magvel = np.linalg.norm(vel, axis=1).max()
+#         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+#         ## get radius
+#         min_dx = self.mesh.get_min_radius()
+
+#         ## estimate dt of adv and diff components
+
+#         if max_magvel_glob == 0.0:
+#             dt_diff = (min_dx**2) / diffusivity_glob
+#             dt_estimate = dt_diff
+#         elif diffusivity_glob == 0.0:
+#             dt_adv = min_dx / max_magvel_glob
+#             dt_estimate = dt_adv
+#         else:
+#             dt_diff = (min_dx**2) / diffusivity_glob
+#             dt_adv = min_dx / max_magvel_glob
+#             dt_estimate = min(dt_diff, dt_adv)
+
+#         return dt_estimate
+
+#     @timing.routine_timer_decorator
+#     def solve(
+#         self,
+#         zero_init_guess: bool = True,
+#         timestep: float = None,
+#         _force_setup: bool = False,
+#         verbose=False,
+#     ):
+#         """
+#         Generates solution to constructed system.
+
+#         Params
+#         ------
+#         zero_init_guess:
+#             If `True`, a zero initial guess will be used for the
+#             system solution. Otherwise, the current values of `self.u` will be used.
+#         """
+
+#         if timestep is not None and timestep != self.delta_t:
+#             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+#         if _force_setup:
+#             self.is_setup = False
+
+#         if not self.constitutive_model._solver_is_setup:
+#             self.is_setup = False
+#             self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+#         if not self.is_setup:
+#             self._setup_pointwise_functions(verbose)
+#             self._setup_discretisation(verbose)
+#             self._setup_solver(verbose)
+
+#         # Update SemiLagrange Flux terms
+#         self.DuDt.update(timestep, verbose=verbose)
+#         self.DFDt.update(timestep, verbose=verbose)
+
+#         super().solve(zero_init_guess, _force_setup)
+
+#         self.is_setup = True
+#         self.constitutive_model._solver_is_setup = True
+
+#         return
+
+#     @timing.routine_timer_decorator
+#     def _setup_terms(self):
+#         if self.projection:
+#             self._u_star_projector.bcs = self.bcs
+#             self._u_star_projector._setup_pointwise_functions()  # _setup_terms()
+
+#         super()._setup_pointwise_functions()  # ._setup_terms()
+
+
+## This is exactly duplicated now in the SNES_NavierStokes class.
+## That class will use a Lagrangian DDt if it is provided, otherwise the
+## code is the same as this one. SNES_NavierStokes_SLCN is almost a partial of
+## the complete class.
 
 
 ## This one is already updated to work with the Semi-Lagrange D_Dt
-class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
-    r"""
-    This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
+# class SNES_NavierStokes_SLCN(SNES_Stokes_SaddlePt):
+#     r"""
+#     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
+#     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
+#     distributed sampling of upstream values taken from an arbitrary swarm variable.
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
-    $$
+#     $$
+#     \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
+#                                       \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
+#         \nabla \cdot
+#             \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+#                     \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+#             \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+#     $$
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+#     The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+#     the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
 
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
+#     The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
+#     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
+#     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
+#     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
+#     **and update** the swarmVariable representing $u^{ * }$
 
-    ## Properties
+#     ## Properties
 
-      - The unknown is $u$.
+#       - The unknown is $u$.
 
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
+#       - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+#         calculated in situ (e.g. `V_Field = v_solution.sym`)
 
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
+#       - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
+#         variable updated.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+#       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+#         one of the scalar `uw.constitutive_models` classes and populating the parameters.
+#         It is usually a constant or a function of position / time and may also be non-linear
+#         or anisotropic.
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+#       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+#         `meshVariable` or `swarmVariable` types.
 
-    ## Notes
+#     ## Notes
 
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
+#       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
+#         Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
-    ## Reference
+#     ## Reference
 
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-    """
+#     Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+#     of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+#     """
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
+#     def _object_viewer(self):
+#         from IPython.display import Latex, Markdown, display
 
-        super()._object_viewer()
+#         super()._object_viewer()
 
-        ## feedback on this instance
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{p} = $ " + self.p.sym._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
-        display(Latex(rf"$\quad\rho = $ {self.rho}"))
+#         ## feedback on this instance
+#         display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
+#         display(Latex(r"$\quad\mathbf{p} = $ " + self.p.sym._repr_latex_()))
+#         display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
+#         display(Latex(rf"$\quad\rho = $ {self.rho}"))
 
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
-        mesh: uw.discretisation.Mesh,
-        velocityField: uw.discretisation.MeshVariable,
-        pressureField: uw.discretisation.MeshVariable,
-        rho: Optional[float] = 0.0,
-        solver_name: Optional[str] = "",
-        p_continuous: Optional[bool] = True,
-        restore_points_func: Callable = None,
-        verbose: Optional[bool] = False,
-        order: Optional[int] = 1,
-    ):
-        ## Parent class will set up default values and load u_Field into the solver
+#     @timing.routine_timer_decorator
+#     def __init__(
+#         self,
+#         mesh: uw.discretisation.Mesh,
+#         velocityField: uw.discretisation.MeshVariable,
+#         pressureField: uw.discretisation.MeshVariable,
+#         rho: Optional[float] = 0.0,
+#         solver_name: Optional[str] = "",
+#         p_continuous: Optional[bool] = True,
+#         restore_points_func: Callable = None,
+#         verbose: Optional[bool] = False,
+#         order: Optional[int] = 1,
+#     ):
+#         ## Parent class will set up default values and load u_Field into the solver
 
-        super().__init__(
-            mesh,
-            velocityField,
-            pressureField,
-            None,
-            None,
-            order,
-            p_continuous,
-            solver_name,
-            verbose,
-        )
+#         super().__init__(
+#             mesh,
+#             velocityField,
+#             pressureField,
+#             None,
+#             None,
+#             order,
+#             p_continuous,
+#             solver_name,
+#             verbose,
+#         )
 
-        # These are unique to the advection solver
-        self.delta_t = sympy.oo
-        self.is_setup = False
-        self.rho = rho
-        self._first_solve = True
+#         # These are unique to the advection solver
+#         self.delta_t = sympy.oo
+#         self.is_setup = False
+#         self.rho = rho
+#         self._first_solve = True
 
-        self._order = order
-        self._constitutive_model = None
+#         self._order = order
+#         self._constitutive_model = None
 
-        self._penalty = 0.0
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+#         self._penalty = 0.0
+#         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
 
-        # self._E = self.mesh.vector.strain_tensor(self.u.sym)
-        self._Estar = None
+#         # self._E = self.mesh.vector.strain_tensor(self.u.sym)
+#         self._Estar = None
 
-        self._constraints = sympy.Matrix((self.div_u,))
+#         self._constraints = sympy.Matrix((self.div_u,))
 
-        ### sets up DuDt and DFDt ...
+#         ### sets up DuDt and DFDt ...
 
-        self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
-            self.mesh,
-            self.u.sym,
-            self.u.sym,
-            vtype=uw.VarType.VECTOR,
-            degree=self.u.degree,
-            continuous=self.u.continuous,
-            varsymbol=self.u.symbol,
-            verbose=self.verbose,
-            bcs=self.essential_bcs,
-            order=self._order,
-            smoothing=0.0,
-        )
+#         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+#             self.mesh,
+#             self.u.sym,
+#             self.u.sym,
+#             vtype=uw.VarType.VECTOR,
+#             degree=self.u.degree,
+#             continuous=self.u.continuous,
+#             varsymbol=self.u.symbol,
+#             verbose=self.verbose,
+#             bcs=self.essential_bcs,
+#             order=self._order,
+#             smoothing=0.0,
+#         )
 
-        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-            self.mesh,
-            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self.u.sym,
-            vtype=uw.VarType.SYM_TENSOR,
-            degree=self.u.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-            verbose=self.verbose,
-            bcs=None,
-            order=self._order,
-            smoothing=0.0,
-        )
+#         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+#             self.mesh,
+#             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+#             self.u.sym,
+#             vtype=uw.VarType.SYM_TENSOR,
+#             degree=self.u.degree - 1,
+#             continuous=True,
+#             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+#             verbose=self.verbose,
+#             bcs=None,
+#             order=self._order,
+#             smoothing=0.0,
+#         )
 
-        self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_slcn_problem_description
+#         self.restore_points_to_domain_func = restore_points_func
+#         self._setup_problem_description = self.navier_stokes_slcn_problem_description
 
-        return
+#         return
 
-    def navier_stokes_slcn_problem_description(self):
-        N = self.mesh.N
+#     def navier_stokes_slcn_problem_description(self):
+#         N = self.mesh.N
 
-        # f0 residual term
-        self._u_f0 = (
-            self.F0
-            - self.bodyforce
-            + self.rho * self.Unknowns.DuDt.bdf() / self.delta_t
-        )
+#         # f0 residual term
+#         self._u_f0 = (
+#             self.F0
+#             - self.bodyforce
+#             + self.rho * self.Unknowns.DuDt.bdf() / self.delta_t
+#         )
 
-        # f1 residual term
-        self._u_f1 = (
-            self.F1
-            + self.Unknowns.DFDt.adams_moulton_flux()
-            - sympy.eye(self.mesh.dim) * (self.p.sym[0])
-        )
-        self._p_f0 = sympy.simplify(self.PF0 + sympy.Matrix((self.constraints)))
+#         # f1 residual term
+#         self._u_f1 = (
+#             self.F1
+#             + self.Unknowns.DFDt.adams_moulton_flux()
+#             - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+#         )
+#         self._p_f0 = sympy.simplify(self.PF0 + sympy.Matrix((self.constraints)))
 
-        return
+#         return
 
-    @property
-    def delta_t(self):
-        return self._delta_t
+#     @property
+#     def delta_t(self):
+#         return self._delta_t
 
-    @delta_t.setter
-    def delta_t(self, value):
-        self.is_setup = False
-        self._delta_t = sympify(value)
+#     @delta_t.setter
+#     def delta_t(self, value):
+#         self.is_setup = False
+#         self._delta_t = sympify(value)
 
-    @property
-    def f(self):
-        return self._f
+#     @property
+#     def f(self):
+#         return self._f
 
-    @f.setter
-    def f(self, value):
-        self.is_setup = False
-        self._f = sympy.Matrix((value,))
+#     @f.setter
+#     def f(self, value):
+#         self.is_setup = False
+#         self._f = sympy.Matrix((value,))
 
-    @property
-    def div_u(self):
-        E = self.strainrate
-        divergence = E.trace()
-        return divergence
+#     @property
+#     def div_u(self):
+#         E = self.strainrate
+#         divergence = E.trace()
+#         return divergence
 
-    @property
-    def strainrate(self):
-        return sympy.Matrix(self.Unknowns.E)
+#     @property
+#     def strainrate(self):
+#         return sympy.Matrix(self.Unknowns.E)
 
-    @property
-    def DuDt(self):
-        return self._DuDt
+#     @property
+#     def DuDt(self):
+#         return self._DuDt
 
-    @DuDt.setter
-    def DuDt(
-        self,
-        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
-    ):
-        self._DuDt = DuDt_value
-        self._solver_is_setup = False
+#     @DuDt.setter
+#     def DuDt(
+#         self,
+#         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+#     ):
+#         self._DuDt = DuDt_value
+#         self._solver_is_setup = False
 
-    @property
-    def DFDt(self):
-        return self._DFDt
+#     @property
+#     def DFDt(self):
+#         return self._DFDt
 
-    @DFDt.setter
-    def DFDt(
-        self,
-        DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
-    ):
-        self._DFDt = DFDt_value
-        self._solver_is_setup = False
+#     @DFDt.setter
+#     def DFDt(
+#         self,
+#         DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+#     ):
+#         self._DFDt = DFDt_value
+#         self._solver_is_setup = False
 
-    @property
-    def constraints(self):
-        return self._constraints
+#     @property
+#     def constraints(self):
+#         return self._constraints
 
-    @constraints.setter
-    def constraints(self, constraints_matrix):
-        self._is_setup = False
-        symval = sympify(constraints_matrix)
-        self._constraints = symval
+#     @constraints.setter
+#     def constraints(self, constraints_matrix):
+#         self._is_setup = False
+#         symval = sympify(constraints_matrix)
+#         self._constraints = symval
 
-    @property
-    def bodyforce(self):
-        return self._bodyforce
+#     @property
+#     def bodyforce(self):
+#         return self._bodyforce
 
-    @bodyforce.setter
-    def bodyforce(self, value):
-        self.is_setup = False
-        self._bodyforce = self.mesh.vector.to_matrix(value)
+#     @bodyforce.setter
+#     def bodyforce(self, value):
+#         self.is_setup = False
+#         self._bodyforce = self.mesh.vector.to_matrix(value)
 
-    @property
-    def saddle_preconditioner(self):
-        return self._saddle_preconditioner
+#     @property
+#     def saddle_preconditioner(self):
+#         return self._saddle_preconditioner
 
-    @saddle_preconditioner.setter
-    def saddle_preconditioner(self, value):
-        self.is_setup = False
-        symval = sympify(value)
-        self._saddle_preconditioner = symval
+#     @saddle_preconditioner.setter
+#     def saddle_preconditioner(self, value):
+#         self.is_setup = False
+#         symval = sympify(value)
+#         self._saddle_preconditioner = symval
 
-    @property
-    def penalty(self):
-        return self._penalty
+#     @property
+#     def penalty(self):
+#         return self._penalty
 
-    @penalty.setter
-    def penalty(self, value):
-        self.is_setup = False
-        symval = sympify(value)
-        self._penalty = symval
+#     @penalty.setter
+#     def penalty(self, value):
+#         self.is_setup = False
+#         symval = sympify(value)
+#         self._penalty = symval
 
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-    ):
-        """
-        Generates solution to constructed system.
+#     @timing.routine_timer_decorator
+#     def solve(
+#         self,
+#         zero_init_guess: bool = True,
+#         timestep: float = None,
+#         _force_setup: bool = False,
+#         verbose=False,
+#     ):
+#         """
+#         Generates solution to constructed system.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
+#         Params
+#         ------
+#         zero_init_guess:
+#             If `True`, a zero initial guess will be used for the
+#             system solution. Otherwise, the current values of `self.u` will be used.
+#         """
 
-        if timestep is not None and timestep != self.delta_t:
-            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+#         if timestep is not None and timestep != self.delta_t:
+#             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
-        if _force_setup:
-            self.is_setup = False
+#         if _force_setup:
+#             self.is_setup = False
 
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.Unknowns.DFDt.psi_fn = self.constitutive_model.flux.T
+#         if not self.constitutive_model._solver_is_setup:
+#             self.is_setup = False
+#             self.Unknowns.DFDt.psi_fn = self.constitutive_model.flux.T
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+#         if not self.is_setup:
+#             self._setup_pointwise_functions(verbose)
+#             self._setup_discretisation(verbose)
+#             self._setup_solver(verbose)
 
-        # Update SemiLagrange Flux terms (May need to update to match pre-post solve pattern)
-        self.Unknowns.DuDt.update(timestep, verbose=verbose)
-        self.Unknowns.DFDt.update(timestep, verbose=verbose)
+#         # Update SemiLagrange Flux terms (May need to update to match pre-post solve pattern)
+#         self.Unknowns.DuDt.update(timestep, verbose=verbose)
+#         self.Unknowns.DFDt.update(timestep, verbose=verbose)
 
-        super().solve(
-            zero_init_guess,
-            _force_setup=_force_setup,
-            verbose=verbose,
-            picard=0,
-        )
+#         super().solve(
+#             zero_init_guess,
+#             _force_setup=_force_setup,
+#             verbose=verbose,
+#             picard=0,
+#         )
 
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
+#         self.is_setup = True
+#         self.constitutive_model._solver_is_setup = True
 
-        return
+#         return
 
 
 # This one is already updated to work with the Lagrange D_Dt
