@@ -1953,7 +1953,6 @@ class NodalPointSwarm(Swarm):
 
         self._nswarm = nswarm
         self._nX0 = nX0
-        self._nCoords = coords
 
         return
 
@@ -1969,7 +1968,7 @@ class NodalPointSwarm(Swarm):
     ):
 
         with self.access(self._X0):
-            self._X0.data[...] = self._nCoords[...]
+            self._X0.data[...] = self._nX0.data[...]
 
         super().advection(
             V_fn,
