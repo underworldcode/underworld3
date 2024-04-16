@@ -2246,34 +2246,33 @@
 </span><span id="L-1953"><a href="#L-1953"><span class="linenos">1953</span></a>
 </span><span id="L-1954"><a href="#L-1954"><span class="linenos">1954</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nswarm</span> <span class="o">=</span> <span class="n">nswarm</span>
 </span><span id="L-1955"><a href="#L-1955"><span class="linenos">1955</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span> <span class="o">=</span> <span class="n">nX0</span>
-</span><span id="L-1956"><a href="#L-1956"><span class="linenos">1956</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span> <span class="o">=</span> <span class="n">coords</span>
-</span><span id="L-1957"><a href="#L-1957"><span class="linenos">1957</span></a>
-</span><span id="L-1958"><a href="#L-1958"><span class="linenos">1958</span></a>        <span class="k">return</span>
-</span><span id="L-1959"><a href="#L-1959"><span class="linenos">1959</span></a>
-</span><span id="L-1960"><a href="#L-1960"><span class="linenos">1960</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
-</span><span id="L-1961"><a href="#L-1961"><span class="linenos">1961</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
-</span><span id="L-1962"><a href="#L-1962"><span class="linenos">1962</span></a>        <span class="bp">self</span><span class="p">,</span>
-</span><span id="L-1963"><a href="#L-1963"><span class="linenos">1963</span></a>        <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="L-1964"><a href="#L-1964"><span class="linenos">1964</span></a>        <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="L-1965"><a href="#L-1965"><span class="linenos">1965</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-</span><span id="L-1966"><a href="#L-1966"><span class="linenos">1966</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-1967"><a href="#L-1967"><span class="linenos">1967</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="L-1968"><a href="#L-1968"><span class="linenos">1968</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-1969"><a href="#L-1969"><span class="linenos">1969</span></a>    <span class="p">):</span>
-</span><span id="L-1970"><a href="#L-1970"><span class="linenos">1970</span></a>
-</span><span id="L-1971"><a href="#L-1971"><span class="linenos">1971</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
-</span><span id="L-1972"><a href="#L-1972"><span class="linenos">1972</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
-</span><span id="L-1973"><a href="#L-1973"><span class="linenos">1973</span></a>
-</span><span id="L-1974"><a href="#L-1974"><span class="linenos">1974</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
-</span><span id="L-1975"><a href="#L-1975"><span class="linenos">1975</span></a>            <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="L-1976"><a href="#L-1976"><span class="linenos">1976</span></a>            <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="L-1977"><a href="#L-1977"><span class="linenos">1977</span></a>            <span class="n">order</span><span class="p">,</span>
-</span><span id="L-1978"><a href="#L-1978"><span class="linenos">1978</span></a>            <span class="n">corrector</span><span class="p">,</span>
-</span><span id="L-1979"><a href="#L-1979"><span class="linenos">1979</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
-</span><span id="L-1980"><a href="#L-1980"><span class="linenos">1980</span></a>            <span class="n">evalf</span><span class="p">,</span>
-</span><span id="L-1981"><a href="#L-1981"><span class="linenos">1981</span></a>        <span class="p">)</span>
-</span><span id="L-1982"><a href="#L-1982"><span class="linenos">1982</span></a>
-</span><span id="L-1983"><a href="#L-1983"><span class="linenos">1983</span></a>        <span class="k">return</span>
+</span><span id="L-1956"><a href="#L-1956"><span class="linenos">1956</span></a>
+</span><span id="L-1957"><a href="#L-1957"><span class="linenos">1957</span></a>        <span class="k">return</span>
+</span><span id="L-1958"><a href="#L-1958"><span class="linenos">1958</span></a>
+</span><span id="L-1959"><a href="#L-1959"><span class="linenos">1959</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
+</span><span id="L-1960"><a href="#L-1960"><span class="linenos">1960</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
+</span><span id="L-1961"><a href="#L-1961"><span class="linenos">1961</span></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="L-1962"><a href="#L-1962"><span class="linenos">1962</span></a>        <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="L-1963"><a href="#L-1963"><span class="linenos">1963</span></a>        <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="L-1964"><a href="#L-1964"><span class="linenos">1964</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+</span><span id="L-1965"><a href="#L-1965"><span class="linenos">1965</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="L-1966"><a href="#L-1966"><span class="linenos">1966</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="L-1967"><a href="#L-1967"><span class="linenos">1967</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="L-1968"><a href="#L-1968"><span class="linenos">1968</span></a>    <span class="p">):</span>
+</span><span id="L-1969"><a href="#L-1969"><span class="linenos">1969</span></a>
+</span><span id="L-1970"><a href="#L-1970"><span class="linenos">1970</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
+</span><span id="L-1971"><a href="#L-1971"><span class="linenos">1971</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
+</span><span id="L-1972"><a href="#L-1972"><span class="linenos">1972</span></a>
+</span><span id="L-1973"><a href="#L-1973"><span class="linenos">1973</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
+</span><span id="L-1974"><a href="#L-1974"><span class="linenos">1974</span></a>            <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="L-1975"><a href="#L-1975"><span class="linenos">1975</span></a>            <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="L-1976"><a href="#L-1976"><span class="linenos">1976</span></a>            <span class="n">order</span><span class="p">,</span>
+</span><span id="L-1977"><a href="#L-1977"><span class="linenos">1977</span></a>            <span class="n">corrector</span><span class="p">,</span>
+</span><span id="L-1978"><a href="#L-1978"><span class="linenos">1978</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
+</span><span id="L-1979"><a href="#L-1979"><span class="linenos">1979</span></a>            <span class="n">evalf</span><span class="p">,</span>
+</span><span id="L-1980"><a href="#L-1980"><span class="linenos">1980</span></a>        <span class="p">)</span>
+</span><span id="L-1981"><a href="#L-1981"><span class="linenos">1981</span></a>
+</span><span id="L-1982"><a href="#L-1982"><span class="linenos">1982</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -6762,34 +6761,33 @@ mesh and velocity configuration.</p>
 </span><span id="NodalPointSwarm-1954"><a href="#NodalPointSwarm-1954"><span class="linenos">1954</span></a>
 </span><span id="NodalPointSwarm-1955"><a href="#NodalPointSwarm-1955"><span class="linenos">1955</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nswarm</span> <span class="o">=</span> <span class="n">nswarm</span>
 </span><span id="NodalPointSwarm-1956"><a href="#NodalPointSwarm-1956"><span class="linenos">1956</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span> <span class="o">=</span> <span class="n">nX0</span>
-</span><span id="NodalPointSwarm-1957"><a href="#NodalPointSwarm-1957"><span class="linenos">1957</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span> <span class="o">=</span> <span class="n">coords</span>
-</span><span id="NodalPointSwarm-1958"><a href="#NodalPointSwarm-1958"><span class="linenos">1958</span></a>
-</span><span id="NodalPointSwarm-1959"><a href="#NodalPointSwarm-1959"><span class="linenos">1959</span></a>        <span class="k">return</span>
-</span><span id="NodalPointSwarm-1960"><a href="#NodalPointSwarm-1960"><span class="linenos">1960</span></a>
-</span><span id="NodalPointSwarm-1961"><a href="#NodalPointSwarm-1961"><span class="linenos">1961</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
-</span><span id="NodalPointSwarm-1962"><a href="#NodalPointSwarm-1962"><span class="linenos">1962</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
-</span><span id="NodalPointSwarm-1963"><a href="#NodalPointSwarm-1963"><span class="linenos">1963</span></a>        <span class="bp">self</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1964"><a href="#NodalPointSwarm-1964"><span class="linenos">1964</span></a>        <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1965"><a href="#NodalPointSwarm-1965"><span class="linenos">1965</span></a>        <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1966"><a href="#NodalPointSwarm-1966"><span class="linenos">1966</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1967"><a href="#NodalPointSwarm-1967"><span class="linenos">1967</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1968"><a href="#NodalPointSwarm-1968"><span class="linenos">1968</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1969"><a href="#NodalPointSwarm-1969"><span class="linenos">1969</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1970"><a href="#NodalPointSwarm-1970"><span class="linenos">1970</span></a>    <span class="p">):</span>
-</span><span id="NodalPointSwarm-1971"><a href="#NodalPointSwarm-1971"><span class="linenos">1971</span></a>
-</span><span id="NodalPointSwarm-1972"><a href="#NodalPointSwarm-1972"><span class="linenos">1972</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
-</span><span id="NodalPointSwarm-1973"><a href="#NodalPointSwarm-1973"><span class="linenos">1973</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
-</span><span id="NodalPointSwarm-1974"><a href="#NodalPointSwarm-1974"><span class="linenos">1974</span></a>
-</span><span id="NodalPointSwarm-1975"><a href="#NodalPointSwarm-1975"><span class="linenos">1975</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
-</span><span id="NodalPointSwarm-1976"><a href="#NodalPointSwarm-1976"><span class="linenos">1976</span></a>            <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1977"><a href="#NodalPointSwarm-1977"><span class="linenos">1977</span></a>            <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1978"><a href="#NodalPointSwarm-1978"><span class="linenos">1978</span></a>            <span class="n">order</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1979"><a href="#NodalPointSwarm-1979"><span class="linenos">1979</span></a>            <span class="n">corrector</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1980"><a href="#NodalPointSwarm-1980"><span class="linenos">1980</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1981"><a href="#NodalPointSwarm-1981"><span class="linenos">1981</span></a>            <span class="n">evalf</span><span class="p">,</span>
-</span><span id="NodalPointSwarm-1982"><a href="#NodalPointSwarm-1982"><span class="linenos">1982</span></a>        <span class="p">)</span>
-</span><span id="NodalPointSwarm-1983"><a href="#NodalPointSwarm-1983"><span class="linenos">1983</span></a>
-</span><span id="NodalPointSwarm-1984"><a href="#NodalPointSwarm-1984"><span class="linenos">1984</span></a>        <span class="k">return</span>
+</span><span id="NodalPointSwarm-1957"><a href="#NodalPointSwarm-1957"><span class="linenos">1957</span></a>
+</span><span id="NodalPointSwarm-1958"><a href="#NodalPointSwarm-1958"><span class="linenos">1958</span></a>        <span class="k">return</span>
+</span><span id="NodalPointSwarm-1959"><a href="#NodalPointSwarm-1959"><span class="linenos">1959</span></a>
+</span><span id="NodalPointSwarm-1960"><a href="#NodalPointSwarm-1960"><span class="linenos">1960</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
+</span><span id="NodalPointSwarm-1961"><a href="#NodalPointSwarm-1961"><span class="linenos">1961</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
+</span><span id="NodalPointSwarm-1962"><a href="#NodalPointSwarm-1962"><span class="linenos">1962</span></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1963"><a href="#NodalPointSwarm-1963"><span class="linenos">1963</span></a>        <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1964"><a href="#NodalPointSwarm-1964"><span class="linenos">1964</span></a>        <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1965"><a href="#NodalPointSwarm-1965"><span class="linenos">1965</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1966"><a href="#NodalPointSwarm-1966"><span class="linenos">1966</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1967"><a href="#NodalPointSwarm-1967"><span class="linenos">1967</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1968"><a href="#NodalPointSwarm-1968"><span class="linenos">1968</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1969"><a href="#NodalPointSwarm-1969"><span class="linenos">1969</span></a>    <span class="p">):</span>
+</span><span id="NodalPointSwarm-1970"><a href="#NodalPointSwarm-1970"><span class="linenos">1970</span></a>
+</span><span id="NodalPointSwarm-1971"><a href="#NodalPointSwarm-1971"><span class="linenos">1971</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
+</span><span id="NodalPointSwarm-1972"><a href="#NodalPointSwarm-1972"><span class="linenos">1972</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
+</span><span id="NodalPointSwarm-1973"><a href="#NodalPointSwarm-1973"><span class="linenos">1973</span></a>
+</span><span id="NodalPointSwarm-1974"><a href="#NodalPointSwarm-1974"><span class="linenos">1974</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
+</span><span id="NodalPointSwarm-1975"><a href="#NodalPointSwarm-1975"><span class="linenos">1975</span></a>            <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1976"><a href="#NodalPointSwarm-1976"><span class="linenos">1976</span></a>            <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1977"><a href="#NodalPointSwarm-1977"><span class="linenos">1977</span></a>            <span class="n">order</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1978"><a href="#NodalPointSwarm-1978"><span class="linenos">1978</span></a>            <span class="n">corrector</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1979"><a href="#NodalPointSwarm-1979"><span class="linenos">1979</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1980"><a href="#NodalPointSwarm-1980"><span class="linenos">1980</span></a>            <span class="n">evalf</span><span class="p">,</span>
+</span><span id="NodalPointSwarm-1981"><a href="#NodalPointSwarm-1981"><span class="linenos">1981</span></a>        <span class="p">)</span>
+</span><span id="NodalPointSwarm-1982"><a href="#NodalPointSwarm-1982"><span class="linenos">1982</span></a>
+</span><span id="NodalPointSwarm-1983"><a href="#NodalPointSwarm-1983"><span class="linenos">1983</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -6870,9 +6868,8 @@ after they have been moved.</p>
 </span><span id="NodalPointSwarm.__init__-1954"><a href="#NodalPointSwarm.__init__-1954"><span class="linenos">1954</span></a>
 </span><span id="NodalPointSwarm.__init__-1955"><a href="#NodalPointSwarm.__init__-1955"><span class="linenos">1955</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nswarm</span> <span class="o">=</span> <span class="n">nswarm</span>
 </span><span id="NodalPointSwarm.__init__-1956"><a href="#NodalPointSwarm.__init__-1956"><span class="linenos">1956</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span> <span class="o">=</span> <span class="n">nX0</span>
-</span><span id="NodalPointSwarm.__init__-1957"><a href="#NodalPointSwarm.__init__-1957"><span class="linenos">1957</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span> <span class="o">=</span> <span class="n">coords</span>
-</span><span id="NodalPointSwarm.__init__-1958"><a href="#NodalPointSwarm.__init__-1958"><span class="linenos">1958</span></a>
-</span><span id="NodalPointSwarm.__init__-1959"><a href="#NodalPointSwarm.__init__-1959"><span class="linenos">1959</span></a>        <span class="k">return</span>
+</span><span id="NodalPointSwarm.__init__-1957"><a href="#NodalPointSwarm.__init__-1957"><span class="linenos">1957</span></a>
+</span><span id="NodalPointSwarm.__init__-1958"><a href="#NodalPointSwarm.__init__-1958"><span class="linenos">1958</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -6913,30 +6910,30 @@ after they have been moved.</p>
 
     </div>
     <a class="headerlink" href="#NodalPointSwarm.advection"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="NodalPointSwarm.advection-1961"><a href="#NodalPointSwarm.advection-1961"><span class="linenos">1961</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
-</span><span id="NodalPointSwarm.advection-1962"><a href="#NodalPointSwarm.advection-1962"><span class="linenos">1962</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
-</span><span id="NodalPointSwarm.advection-1963"><a href="#NodalPointSwarm.advection-1963"><span class="linenos">1963</span></a>        <span class="bp">self</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1964"><a href="#NodalPointSwarm.advection-1964"><span class="linenos">1964</span></a>        <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1965"><a href="#NodalPointSwarm.advection-1965"><span class="linenos">1965</span></a>        <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1966"><a href="#NodalPointSwarm.advection-1966"><span class="linenos">1966</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1967"><a href="#NodalPointSwarm.advection-1967"><span class="linenos">1967</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1968"><a href="#NodalPointSwarm.advection-1968"><span class="linenos">1968</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1969"><a href="#NodalPointSwarm.advection-1969"><span class="linenos">1969</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1970"><a href="#NodalPointSwarm.advection-1970"><span class="linenos">1970</span></a>    <span class="p">):</span>
-</span><span id="NodalPointSwarm.advection-1971"><a href="#NodalPointSwarm.advection-1971"><span class="linenos">1971</span></a>
-</span><span id="NodalPointSwarm.advection-1972"><a href="#NodalPointSwarm.advection-1972"><span class="linenos">1972</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
-</span><span id="NodalPointSwarm.advection-1973"><a href="#NodalPointSwarm.advection-1973"><span class="linenos">1973</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nCoords</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
-</span><span id="NodalPointSwarm.advection-1974"><a href="#NodalPointSwarm.advection-1974"><span class="linenos">1974</span></a>
-</span><span id="NodalPointSwarm.advection-1975"><a href="#NodalPointSwarm.advection-1975"><span class="linenos">1975</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
-</span><span id="NodalPointSwarm.advection-1976"><a href="#NodalPointSwarm.advection-1976"><span class="linenos">1976</span></a>            <span class="n">V_fn</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1977"><a href="#NodalPointSwarm.advection-1977"><span class="linenos">1977</span></a>            <span class="n">delta_t</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1978"><a href="#NodalPointSwarm.advection-1978"><span class="linenos">1978</span></a>            <span class="n">order</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1979"><a href="#NodalPointSwarm.advection-1979"><span class="linenos">1979</span></a>            <span class="n">corrector</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1980"><a href="#NodalPointSwarm.advection-1980"><span class="linenos">1980</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1981"><a href="#NodalPointSwarm.advection-1981"><span class="linenos">1981</span></a>            <span class="n">evalf</span><span class="p">,</span>
-</span><span id="NodalPointSwarm.advection-1982"><a href="#NodalPointSwarm.advection-1982"><span class="linenos">1982</span></a>        <span class="p">)</span>
-</span><span id="NodalPointSwarm.advection-1983"><a href="#NodalPointSwarm.advection-1983"><span class="linenos">1983</span></a>
-</span><span id="NodalPointSwarm.advection-1984"><a href="#NodalPointSwarm.advection-1984"><span class="linenos">1984</span></a>        <span class="k">return</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="NodalPointSwarm.advection-1960"><a href="#NodalPointSwarm.advection-1960"><span class="linenos">1960</span></a>    <span class="nd">@timing</span><span class="o">.</span><span class="n">routine_timer_decorator</span>
+</span><span id="NodalPointSwarm.advection-1961"><a href="#NodalPointSwarm.advection-1961"><span class="linenos">1961</span></a>    <span class="k">def</span> <span class="nf">advection</span><span class="p">(</span>
+</span><span id="NodalPointSwarm.advection-1962"><a href="#NodalPointSwarm.advection-1962"><span class="linenos">1962</span></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1963"><a href="#NodalPointSwarm.advection-1963"><span class="linenos">1963</span></a>        <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1964"><a href="#NodalPointSwarm.advection-1964"><span class="linenos">1964</span></a>        <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1965"><a href="#NodalPointSwarm.advection-1965"><span class="linenos">1965</span></a>        <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1966"><a href="#NodalPointSwarm.advection-1966"><span class="linenos">1966</span></a>        <span class="n">corrector</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1967"><a href="#NodalPointSwarm.advection-1967"><span class="linenos">1967</span></a>        <span class="n">restore_points_to_domain_func</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1968"><a href="#NodalPointSwarm.advection-1968"><span class="linenos">1968</span></a>        <span class="n">evalf</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1969"><a href="#NodalPointSwarm.advection-1969"><span class="linenos">1969</span></a>    <span class="p">):</span>
+</span><span id="NodalPointSwarm.advection-1970"><a href="#NodalPointSwarm.advection-1970"><span class="linenos">1970</span></a>
+</span><span id="NodalPointSwarm.advection-1971"><a href="#NodalPointSwarm.advection-1971"><span class="linenos">1971</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="p">):</span>
+</span><span id="NodalPointSwarm.advection-1972"><a href="#NodalPointSwarm.advection-1972"><span class="linenos">1972</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_X0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nX0</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="o">...</span><span class="p">]</span>
+</span><span id="NodalPointSwarm.advection-1973"><a href="#NodalPointSwarm.advection-1973"><span class="linenos">1973</span></a>
+</span><span id="NodalPointSwarm.advection-1974"><a href="#NodalPointSwarm.advection-1974"><span class="linenos">1974</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">advection</span><span class="p">(</span>
+</span><span id="NodalPointSwarm.advection-1975"><a href="#NodalPointSwarm.advection-1975"><span class="linenos">1975</span></a>            <span class="n">V_fn</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1976"><a href="#NodalPointSwarm.advection-1976"><span class="linenos">1976</span></a>            <span class="n">delta_t</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1977"><a href="#NodalPointSwarm.advection-1977"><span class="linenos">1977</span></a>            <span class="n">order</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1978"><a href="#NodalPointSwarm.advection-1978"><span class="linenos">1978</span></a>            <span class="n">corrector</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1979"><a href="#NodalPointSwarm.advection-1979"><span class="linenos">1979</span></a>            <span class="n">restore_points_to_domain_func</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1980"><a href="#NodalPointSwarm.advection-1980"><span class="linenos">1980</span></a>            <span class="n">evalf</span><span class="p">,</span>
+</span><span id="NodalPointSwarm.advection-1981"><a href="#NodalPointSwarm.advection-1981"><span class="linenos">1981</span></a>        <span class="p">)</span>
+</span><span id="NodalPointSwarm.advection-1982"><a href="#NodalPointSwarm.advection-1982"><span class="linenos">1982</span></a>
+</span><span id="NodalPointSwarm.advection-1983"><a href="#NodalPointSwarm.advection-1983"><span class="linenos">1983</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
