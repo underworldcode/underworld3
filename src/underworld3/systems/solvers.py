@@ -2422,6 +2422,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         return
 
+    @property
+    def f0_sym(self):
+
+        dt = sympy.symbol("delta t")
+
+        f0 = -self.bodyforce + self.rho * self.DuDt.bdf(1) / dt
+
+        return f0
+
     def navier_stokes_problem_description(self):
         # f0 residual term
 

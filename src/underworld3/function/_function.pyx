@@ -213,6 +213,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
+    ## Substitute any uw_constant for their values before calculation
+    expr = uw.function.uw_constant.subsitute(expr)
+
     if simplify:
         expr = sympy.simplify(expr)
 
@@ -550,11 +553,25 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     """
 
-    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix )):
+    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+    if (not coords is None) and not isinstance( coords, np.ndarray ):
+        raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
 
+    if coords.shape[1] not in [2,3]:
+        raise ValueError("Provided `coords` must be 2 dimensional array of coordinates.\n"
+                         "For n coordinates:  [[x_0,y_0,z_0],...,[x_n,y_n,z_n]].\n"
+                         "Note also that it is inefficient to call this function for a single evaluation,\n"
+                         "and you should instead stack up all necessary evaluations into your `coords` array\n"
+                         "and call this function once.")
+    if coords.dtype != np.double:
+        raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
+
+
+    ## Substitute any uw_constant for their values before calculation
+    expr = uw.function.uw_constant.subsitute(expr)
 
     if simplify:
         expr = sympy.simplify(expr)

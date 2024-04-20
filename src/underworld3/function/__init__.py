@@ -6,3 +6,5 @@ from ._function import (
     # evalf_at_coords,
     # _interpolate_all_vars_on_mesh,
 )
+
+from .constants import uw_constant
