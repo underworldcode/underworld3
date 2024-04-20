@@ -407,11 +407,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._degree = degree
         # User-facing operations are matrices / vectors by preference
 
-        # self.Unknowns.E = self.mesh.vector.strain_tensor(self.Unknowns.u.sym)
         self._Estar = None
 
-        # scalar 2nd invariant (incompressible)
-        self._penalty = 0.0
+        self._penalty = uw.function.constants.uw_constant(
+            R"\uplambda", 0, "Numerical Penalty"
+        )
         self._constraints = sympy.Matrix(
             (self.div_u,)
         )  # by default, incompressibility constraint
@@ -420,7 +420,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         self._setup_problem_description = self.stokes_problem_description
 
-        # this attrib records if we need to re-setup
+        # this attrib records if we need to setup the problem (again)
         self.is_setup = False
 
         self._constitutive_model = None
@@ -574,8 +574,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         self.is_setup = False
-        symval = sympify(value)
-        self._penalty = symval
+        self._penalty.value = value
 
 
 class SNES_VE_Stokes(SNES_Stokes):
@@ -2354,17 +2353,21 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         # These are unique to the advection solver
-        self.delta_t = sympy.oo
+        self.delta_t = uw.function.constants.uw_constant(
+            r"\Delta t", sympy.oo, "Navier-Stokes timestep"
+        )
 
         self.is_setup = False
-        self.rho = rho
+        self.rho = uw.function.constants.uw_constant(r"\uprho", sympy.oo, "Density")
         self._first_solve = True
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_problem_description
 
         self._order = order
-        self._penalty = 0.0
+        self._penalty = uw.function.constants.uw_constant(
+            r"\uplambda", 0, "Numerical Penalty"
+        )
 
         self._constitutive_model = None
 
@@ -2455,7 +2458,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @delta_t.setter
     def delta_t(self, value):
         self.is_setup = False
-        self._delta_t = sympify(value)
+        self._delta_t.value = value
 
     @property
     def f(self):
@@ -2536,8 +2539,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         self.is_setup = False
-        symval = sympify(value)
-        self._penalty = symval
+        self._penalty.value = value
 
     @timing.routine_timer_decorator
     def solve(

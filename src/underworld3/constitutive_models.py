@@ -19,6 +19,25 @@ from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
+from underworld3.function.constants import uw_constant as uw_constant
+
+
+def validate_parameters(symbol, input, default=None, allow_number=True):
+
+    if allow_number and isinstance(input, (float, int)):
+
+        input = uw_constant(symbol, input, "(converted from float)")
+
+    if input is None and default is not None:
+        input = uw_constant(symbol, default, "(default value)")
+
+    # That's about all we can fix automagically
+    if not isinstance(input, uw_constant):
+        print(f"Unable to set parameter: {symbol} from {input}")
+        print(f"A `uw constant` or `uw function` is required", flush=True)
+        return None
+
+    return input
 
 
 class Constitutive_Model(uw_object):
@@ -311,14 +330,9 @@ class ViscousFlowModel(Constitutive_Model):
         def __init__(
             inner_self,
             _owning_model,
-            viscosity: Union[float, sympy.Function] = None,
         ):
-            if viscosity is None:
-                viscosity = sympy.sympify(1)
 
             inner_self._owning_model = _owning_model
-
-            inner_self._shear_viscosity_0 = sympy.sympify(viscosity)
 
         @property
         def shear_viscosity_0(inner_self):
@@ -326,11 +340,17 @@ class ViscousFlowModel(Constitutive_Model):
 
         @shear_viscosity_0.setter
         def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-            inner_self._shear_viscosity_0 = value
-            inner_self._reset()
+            inner_self._shear_viscosity_0 = validate_parameters(
+                R"\eta", value, default=None, allow_number=True
+            )
+            if inner_self._shear_viscosity_0 is not None:
+                inner_self._reset()
+
+            return
 
     @property
     def viscosity(self):
+        """Whatever the consistutive model defines as the effective value of viscosity"""
         return self.Parameters.shear_viscosity_0
 
     @property

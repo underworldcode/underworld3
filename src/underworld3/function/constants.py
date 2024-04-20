@@ -52,12 +52,21 @@ class uw_constant(Symbol, uw_object):
         return
 
     @classmethod
-    def subsitute(cls, fn):
+    def substitute_once(cls, fn):
         expr = fn
         for atom in fn.atoms():
             if isinstance(atom, cls):
                 expr = expr.subs(atom, atom.value)
 
+        return expr
+
+    @classmethod
+    def substitute(cls, fn):
+        expr = fn
+        expr_s = cls.substitute_once(expr)
+        while expr is not expr_s:
+            expr = expr_s
+            expr_s = cls.substitute_once(expr)
         return expr
 
     def _object_viewer(self):

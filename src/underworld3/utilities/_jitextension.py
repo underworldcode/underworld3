@@ -368,7 +368,7 @@ def _createext(
         ],  # for two arg Heavisides    (second arg is jump value).
     }
 
-    # Now go ahead and generate C code from subsituted Sympy expressions.
+    # Now go ahead and generate C code from substituted Sympy expressions.
     # from sympy.printing.c import C99CodePrinter
     # printer = C99CodePrinter(user_functions=custom_functions)
     from sympy.printing.c import c_code_printers
@@ -399,7 +399,7 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
-        fn = underworld3.function.uw_constant.subsitute(fn)
+        fn = underworld3.function.uw_constant.substitute(fn)
 
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))
