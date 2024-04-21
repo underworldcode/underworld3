@@ -409,9 +409,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         self._Estar = None
 
-        self._penalty = uw.function.constants.uw_constant(
-            R"\uplambda", 0, "Numerical Penalty"
-        )
+        self._penalty = uw.function.expression(R"\uplambda", 0, "Numerical Penalty")
         self._constraints = sympy.Matrix(
             (self.div_u,)
         )  # by default, incompressibility constraint
@@ -2353,21 +2351,19 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         # These are unique to the advection solver
-        self.delta_t = uw.function.constants.uw_constant(
+        self.delta_t = uw.function.expression(
             r"\Delta t", sympy.oo, "Navier-Stokes timestep"
         )
 
         self.is_setup = False
-        self.rho = uw.function.constants.uw_constant(r"\uprho", sympy.oo, "Density")
+        self.rho = uw.function.expression(r"\uprho", sympy.oo, "Density")
         self._first_solve = True
 
         self.restore_points_to_domain_func = restore_points_func
         self._setup_problem_description = self.navier_stokes_problem_description
 
         self._order = order
-        self._penalty = uw.function.constants.uw_constant(
-            r"\uplambda", 0, "Numerical Penalty"
-        )
+        self._penalty = uw.function.expression(r"\uplambda", 0, "Numerical Penalty")
 
         self._constitutive_model = None
 

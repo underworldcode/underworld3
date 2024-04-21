@@ -7,4 +7,6 @@ from ._function import (
     # _interpolate_all_vars_on_mesh,
 )
 
-from .constants import uw_constant
+from .expressions import UWexpression as expression
+
+# from .expressions import UWconstant_expression as constant

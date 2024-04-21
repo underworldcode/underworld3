@@ -213,8 +213,8 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
-    ## Substitute any uw_constant for their values before calculation
-    expr = uw.function.uw_constant.substitute(expr)
+    ## Substitute any UWExpressions for their values before calculation
+    expr = uw.function.expression.substitute(expr, keep_constants=False)
 
     if simplify:
         expr = sympy.simplify(expr)
@@ -571,7 +571,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
 
     ## Substitute any uw_constant for their values before calculation
-    expr = uw.function.uw_constant.substitute(expr)
+    expr = uw.function.expression.substitute(expr, keep_constants=False)
 
     if simplify:
         expr = sympy.simplify(expr)
