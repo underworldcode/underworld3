@@ -27,14 +27,12 @@ def validate_parameters(
     symbol, input, default=None, allow_number=True, allow_expression=True
 ):
 
-    print(f"Validate parameter {symbol}", flush=True)
-
     if allow_number and isinstance(input, (float, int)):
-        print(f"{symbol}: Converting number to uw expression {input}")
+        # print(f"{symbol}: Converting number to uw expression {input}")
         input = expression(symbol, input, "(converted from float)")
 
     elif allow_expression and isinstance(input, sympy.core.basic.Basic):
-        print(f"{symbol}: Converting sympy fn to uw expression {input}")
+        # print(f"{symbol}: Converting sympy fn to uw expression {input}")
         input = expression(symbol, input, "(imported sympy expression)")
 
     elif input is None and default is not None:
@@ -135,7 +133,6 @@ class Constitutive_Model(uw_object):
     # We probably should not be changing this ever ... does this setter even belong here ?
     @Unknowns.setter
     def Unknowns(self, unknowns):
-        # : uw.cython.generic_solvers.Solver._Unknowns
         self._Unknowns = unknowns
         self._solver_is_setup = False
         return
@@ -173,6 +170,7 @@ class Constitutive_Model(uw_object):
     def DFDt(self):
         return self._DFDt
 
+    # Do we want to lock this down ?
     @DFDt.setter
     def DFDt(
         self,
@@ -342,7 +340,7 @@ class ViscousFlowModel(Constitutive_Model):
         ):
 
             inner_self._owning_model = _owning_model
-            inner_self._shear_viscosity_0 = None
+            inner_self._shear_viscosity_0 = expression("\eta", 1, "Shear viscosity")
 
         @property
         def shear_viscosity_0(inner_self):
@@ -350,6 +348,7 @@ class ViscousFlowModel(Constitutive_Model):
 
         @shear_viscosity_0.setter
         def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
+
             inner_self._shear_viscosity_0 = validate_parameters(
                 R"\eta", value, default=None, allow_number=True
             )
@@ -366,7 +365,6 @@ class ViscousFlowModel(Constitutive_Model):
     @property
     def flux(self):
         edot = self.grad_u
-
         return self._q(edot)
 
     def _q(self, edot):
@@ -492,11 +490,35 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         ):
             inner_self._owning_model = _owning_model
 
-            inner_self._shear_viscosity_0 = None
-            inner_self._yield_stress = sympy.oo
-            inner_self._yield_stress_min = -sympy.oo
-            inner_self._shear_viscosity_min = -sympy.oo
-            inner_self._strainrate_inv_II_min = -sympy.oo
+            # Default / placeholder values for constitutive parameters
+
+            inner_self._shear_viscosity_0 = expression(
+                R"{\eta}",
+                1,
+                "Shear viscosity",
+            )
+            inner_self._shear_viscosity_min = expression(
+                R"{\eta_{\textrm{min}}",
+                -sympy.oo,
+                "Shear viscosity, minimum cutoff",
+            )
+
+            inner_self._yield_stress = expression(
+                R"{\tau_{y}}",
+                sympy.oo,
+                "Yield stress (DP)",
+            )
+            inner_self._yield_stress_min = expression(
+                R"{\tau_{y, \mathrm{min}}}",
+                -sympy.oo,
+                "Yield stress (DP) minimum cutoff ",
+            )
+
+            inner_self._strainrate_inv_II_mi = expression(
+                R"{\dot\varepsilon_{\mathrm{min}}}",
+                0,
+                "Strain rate invariant minimum value ",
+            )
 
             return
 
@@ -732,7 +754,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
             stress_star = sympy.symbols(r"\sigma^*\rightarrow\textrm{not\ defined}")
 
-            inner_self._shear_viscosity_0 = None
+            inner_self._shear_viscosity_0 = 1
             inner_self._shear_modulus = sympy.oo
             inner_self._dt_elastic = sympy.oo
             inner_self._yield_stress = sympy.oo
@@ -798,7 +820,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             )
 
             el_eff_visc_expr = expression(
-                R"eta_\textrm{eff, el}", el_eff_visc, "Elastic effective viscsoity"
+                R"\eta_\textrm{eff, el}", el_eff_visc, "Elastic effective viscsoity"
             )
 
             return sympy.simplify(el_eff_visc_expr)
@@ -843,24 +865,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             inner_self._yield_stress_min = value
             inner_self._reset()
 
-        # # This one should only be set internally
-        # @property
-        # def strainrate_inv_II(inner_self):
-        #     return inner_self._strainrate_inv_II
-
-        # @strainrate_inv_II.setter
-        # def strainrate_inv_II(inner_self, value: sympy.Function):
-        #     inner_self._strainrate_inv_II = value
-        #     inner_self._reset()
-
         @property
         def stress_star(inner_self):
             return inner_self._stress_star
-
-        @stress_star.setter
-        def stress_star(inner_self, value: sympy.Function):
-            inner_self._stress_star = value
-            inner_self._reset()
 
         @property
         def strainrate_inv_II_min(inner_self):
@@ -922,7 +929,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         ## Assume just the one history term
 
         if self.Unknowns.DFDt is not None:
-            stress_star = self.self.Unknowns.DFDt.psi_star[0]
+            stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
                 print("Adding stress history in plastic term", flush=True)
@@ -952,11 +959,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             return sympy.sympify(1)
 
         stress = self.stress_projection()
-
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
-
         stress_II = sympy.sqrt((stress**2).trace() / 2)
-
         correction = parameters.yield_stress / stress_II
 
         return correction
@@ -1171,8 +1175,14 @@ class DiffusionModel(Constitutive_Model):
 
         @diffusivity.setter
         def diffusivity(inner_self, value: Union[float, sympy.Function]):
-            inner_self._diffusivity = value
-            inner_self._reset()
+            inner_self._diffusivity = validate_parameters(
+                R"\upkappa", value, allow_number=True
+            )
+
+            if inner_self._diffusivity is not None:
+                inner_self._reset()
+
+            return
 
     @property
     def K(self):

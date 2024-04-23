@@ -130,8 +130,9 @@ class SolverBaseClass(uw_object):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+
         return
 
     def _reset(self):
@@ -241,23 +242,29 @@ class SolverBaseClass(uw_object):
 
     ## Properties that are common to all solvers
 
-    ## We should probably get rid of the F0, F1 properties
+    ## F0 and F1 are the force / flux terms, respectively
+    ## Solvers over-ride these to describe the problem type
 
     @property
     def F0(self):
-        return self._F0
-    @F0.setter
-    def F0(self, value):
-        self.is_setup = False
-        self._F0 = sympify(value)
+
+        f0 = uw.function.expression(
+            r"\mathbf{f}_0\left( \mathbf{u} \right)",
+            None,
+            "Pointwise force term: f_0(u)",
+        )
+
+        return f0
 
     @property
     def F1(self):
-        return self._F1
-    @F1.setter
-    def F1(self, value):
-        self.is_setup = False
-        self._F1 = sympify(value)
+        f1 = uw.function.expression(
+            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+            None,
+            "Pointwise flux term: F_1(u)",
+        )
+
+        return f1
 
     @property
     def u(self):
@@ -309,6 +316,11 @@ class SolverBaseClass(uw_object):
             raise RuntimeError(
                 "constitutive_model must be a valid class or instance of a valid class"
             )
+
+        # May not work due to flux being incomplete
+        if self.Unknowns.DFDt is not None:
+            self.Unknowns.DFDt.psi_fn = self._constitutive_model.flux.T
+
 
 
     def validate_solver(self):
@@ -598,7 +610,8 @@ class SNES_Scalar(SolverBaseClass):
         ## The residual terms describe the problem and
         ## can be changed by the user in inherited classes
 
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
@@ -606,9 +619,14 @@ class SNES_Scalar(SolverBaseClass):
         f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
+
+
+        f0  = sympy.Array(self.F0.value).reshape(1).as_immutable()
+        F1  = sympy.Array(self.F1.value).reshape(dim).as_immutable()
+
         self._u_f0 = f0
         self._u_F1 = F1
-
+        
         U = sympy.Array(self.u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
         L = sympy.Array(self.Unknowns.L).reshape(cdim).as_immutable() # unpack one index here too
 
@@ -843,6 +861,27 @@ class SNES_Scalar(SolverBaseClass):
             )
 
         return 
+
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        f0 = self.F0.value
+        F1 = self.F1.value
+        
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Poisson system solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+        )
+
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
 
 
@@ -1122,7 +1161,8 @@ class SNES_Vector(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
@@ -1504,7 +1544,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         super().__init__()
 
-
         self.name = solver_name
         self.mesh = mesh
         self.verbose = verbose
@@ -1605,10 +1644,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.mesh._equation_systems_register.append(self)
         self._rebuild_after_mesh_update = self._setup_discretisation # probably just needs to boot the DM and then it should work
 
-        self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
-        self.PF0 = sympy.Matrix.zeros(1, 1)
+        # self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
+        # self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
+        # self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
+        # self.PF0 = sympy.Matrix.zeros(1, 1)
 
         self.essential_bcs = []
 
@@ -1667,6 +1706,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     order=self._order,
                     smoothing=0.0,
                 )
+
+        # we will not have a valid constutituve model
+        # at this point, so the flux term is empty and 
+        # will have to be filled later. 
 
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
@@ -1769,6 +1812,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     @property
     def PF0(self):
         return self._PF0
+
     @PF0.setter
     def PF0(self, value):
         self.is_setup = False
@@ -1792,6 +1836,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def saddle_preconditioner(self, function):
         self.is_setup = False
         self._saddle_preconditioner = function
+
+
+    ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
+    ## don't add new ones uf0, uF1 are redundant
+
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        uf0 = self.F0.value
+        uF1 = self.F1.value
+        pF0 = self.PF0.value
+        
+        if self.penalty.value == 0:
+            uF1 = self.F1.value.subs(self.penalty, self.penalty.value)
+
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( uF1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( uf0 )+"\\color{Black} = 0 $"
+        eqp0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} " + sympy.latex( pF0 ) + " = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Saddle point system solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+            Markdown(f"Constraint: "),
+            Latex(eqp0 ),
+        )
+
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+
+        return
 
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
@@ -1851,18 +1930,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # r = self.mesh.CoordinateSystem.N[0]
 
         # residual terms
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
         F0  = sympy.Array(self._u_f0)  #.reshape(dim)
         F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
-        FP0 = sympy.Array(self._p_f0)# .reshape(1)
+        PF0 = sympy.Array(self._p_f0)# .reshape(1)
+
+        # This is what we really want to do:
+
+        F0  = sympy.Array(self.F0.value)
+        F1  = sympy.Array(self.F1.value)
+        PF0 = sympy.Array(self.PF0.value)
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)
         self._u_F1 = sympy.ImmutableDenseMatrix(F1)
-        self._p_F0 = sympy.ImmutableDenseMatrix(FP0)
+        self._p_F0 = sympy.ImmutableDenseMatrix(PF0)
 
         fns_residual = [self._u_F0, self._u_F1, self._p_F0]
 
@@ -1921,8 +2007,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(FP0, self.u.sym)
-        G1 = sympy.derive_by_array(FP0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(PF0, self.u.sym)
+        G1 = sympy.derive_by_array(PF0, self.Unknowns.L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
         # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
 

@@ -249,7 +249,7 @@ class SemiLagrangian(uw_object):
         else:
             order = max(1, min(self.order, order))
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
@@ -276,7 +276,7 @@ class SemiLagrangian(uw_object):
         else:
             order = max(1, min(self.order, order))
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
@@ -456,7 +456,7 @@ class Lagrangian(uw_object):
         if order is None:
             order = self.order
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 0:  # special case - no history term (catch )
                 bdf0 = sympy.simpify[0]
 
@@ -484,7 +484,7 @@ class Lagrangian(uw_object):
         if order is None:
             order = self.order
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 0:  # Special case - no history term
                 am = self.psi_fn
 

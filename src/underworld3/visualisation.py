@@ -12,7 +12,7 @@ def initialise():
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     try:
-        pv.global_theme.jupyter_backend = "client"
+        pv.global_theme.jupyter_backend = "trame"
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
 

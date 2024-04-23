@@ -108,12 +108,6 @@ def test_stokes_boxmesh(mesh):
     return
 
 
-## Note this one fails because the corner boundary condition is not applied
-## correctly when the regular simplex mesh is used.
-## Mark as xfail for now
-
-
-@pytest.mark.xfail(reason="PetscDMPlex boundary condition issue with gmsh")
 def test_stokes_boxmesh_bc_failure():
     mesh = unstructured_quad_box_regular
 
