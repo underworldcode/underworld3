@@ -12,7 +12,7 @@ def initialise():
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     try:
-        pv.global_theme.jupyter_backend = "client"
+        pv.global_theme.jupyter_backend = "trame"
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
 
@@ -41,7 +41,7 @@ def mesh_to_pv_mesh(mesh):
             vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
             mesh.vtk(vtk_filename)
 
-            pvmesh = pv.read(vtk_filename)
+        pvmesh = pv.read(vtk_filename)
 
     return pvmesh
 
