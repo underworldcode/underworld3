@@ -9,10 +9,12 @@ source:
   git_url: https://github.com/underworldcode/underworld3
   git_tag: development
   git_depth: 1
+#  git_rev: 9e864dba48119c985cdaaec137945386b15505f9
 #  path: ..
 
 build:
   number: 0
+  string: mpi_{{ mpi }}
   script: "{{ PYTHON }} -m pip install . -vv"
 
 requirements:
@@ -24,21 +26,22 @@ requirements:
   host: 
     - {{ compiler('c') }}
     - {{ compiler('cxx') }}
+    - {{ mpi }}
     - pkg-config
     - python
     - setuptools
     - cython
     - mpi4py
-    - petsc4py >=3.20.4
+    - petsc4py>=3.21.0
 
   run:
     - {{ compiler('c') }}
+    - {{ mpi }}
+    - petsc4py>=3.21.0
+    - h5py * mpi_{{ mpi }}_*
+    - mpi4py
     - cython
     - python
-    - petsc
-    - petsc4py >=3.20.4
-    - mpi4py
-    - h5py
     - pint
     - pytest
     - typing_extensions
