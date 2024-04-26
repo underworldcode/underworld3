@@ -106,9 +106,11 @@ class uw_object(uw_object_counter):
             # docstring = docstring.replace("$", "$").replace("$", "$")
             display(Markdown(docstring))
 
+            if class_documentation:
+                display(Markdown("---"))
+
         if not inspect.isclass(self_or_cls):
             display(
-                Markdown("### Information"),
                 Markdown(
                     f"**Class**: {self_or_cls.__class__}",
                 ),
