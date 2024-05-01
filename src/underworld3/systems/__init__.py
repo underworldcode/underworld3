@@ -9,6 +9,7 @@ from underworld3.cython.generic_solvers import (
 from .solvers import SNES_Poisson as Poisson
 from .solvers import SNES_Darcy as SteadyStateDarcy
 from .solvers import SNES_Stokes as Stokes
+from .solvers import SNES_VE_Stokes as VE_Stokes
 from .solvers import SNES_Projection as Projection
 from .solvers import SNES_Vector_Projection as Vector_Projection
 from .solvers import SNES_Tensor_Projection as Tensor_Projection

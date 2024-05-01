@@ -9,7 +9,7 @@ class UWexpression(Symbol, uw_object):
                 before evaluation. In sympy expressions, the symbol form is shown.
 
     ```{python}
-        alpha = uw_constant(
+        alpha = UWexpression(
                         r'\\alpha',
                         value=3.0e-5,
                         description="thermal expansivity"
@@ -31,6 +31,16 @@ class UWexpression(Symbol, uw_object):
 
         self._value = value
         self._description = description
+
+        return
+
+    def copy(self, other):
+        if not isinstance(other, UWexpression):
+            raise ValueError
+        else:
+            self.symbol = other.symbol
+            self.value = other.value
+            self.description = other.description
 
         return
 
@@ -60,7 +70,7 @@ class UWexpression(Symbol, uw_object):
 
     def sub_expr(self, expr, keep_constants=True):
         cls = self.__class__
-        self_s = cls.substitute_one_expr(self, expr, keep_constants=keep_constants)
+        self_s = cls._substitute_one_expr(self, expr, keep_constants=keep_constants)
 
         return self_s
 
@@ -107,28 +117,42 @@ class UWexpression(Symbol, uw_object):
             expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)
         return expr
 
-    def _object_viewer(self):
+    def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
         import sympy
 
-        #         information = f"""
-        #  > ${self}$: {self.value} - {self.description}
-        #         """
-
-        # display(Markdown(f"Symbol: ${self._repr_latex_()}$"))
-        # display(Markdown(f"Value: ${self.value._repr_latex_()}$"))
-        # display(Markdown(f"Description: {self.description}"))
-
         ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad$"
-                + self._repr_latex_()
-                + "$=$"
-                + sympy.sympify(self.value)._repr_latex_()
-            ),
-            Markdown(f"$\quad$ **Description:**  {self.description}"),
-        )
+        if sympy.sympify(self.value) is not None:
+            display(
+                Latex(
+                    r"$"
+                    + "\quad" * level
+                    + "$"
+                    + self._repr_latex_()
+                    + "$=$"
+                    + sympy.sympify(self.value)._repr_latex_()
+                ),
+            )
+            if description == True:
+                display(
+                    Markdown(
+                        r"$"
+                        + "\quad" * level
+                        + "$"
+                        + f"**Description:**  {self.description}"
+                    ),
+                )
+
+        try:
+            atoms = self.value.atoms()
+            for atom in atoms:
+                if atom is not self.value:
+                    try:
+                        atom._object_viewer(description=False, level=level + 1)
+                    except AttributeError:
+                        pass
+        except:
+            pass
 
         return
 

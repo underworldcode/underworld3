@@ -62,6 +62,8 @@ class SNES_Poisson(SNES_Scalar):
         solver_name: str = "",
         verbose=False,
         degree=2,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
         ## Keep track
 
@@ -69,11 +71,11 @@ class SNES_Poisson(SNES_Scalar):
         super().__init__(
             mesh,
             u_Field,
-            None,
-            None,
             degree,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         if solver_name == "":
@@ -191,16 +193,18 @@ class SNES_Darcy(SNES_Scalar):
         degree: int = 2,
         solver_name: str = "",
         verbose=False,
+        DuDt=None,
+        DFDt=None,
     ):
         ## Parent class will set up default values etc
         super().__init__(
             mesh,
             h_Field,
-            None,  # DuDt
-            None,  # DFDt
             degree,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         if solver_name == "":
@@ -434,17 +438,20 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
+        # Not used in Stokes, but may be used in NS, VE etc
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            None,
-            None,
             degree,
             p_continuous,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         # change this to be less generic
@@ -686,47 +693,34 @@ class SNES_VE_Stokes(SNES_Stokes):
         mesh: uw.discretisation.Mesh,
         velocityField: Optional[uw.discretisation.MeshVariable] = None,
         pressureField: Optional[uw.discretisation.MeshVariable] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         degree: Optional[int] = 2,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
+        # DuDt Not used in VE, but may be in child classes
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
+
+        # Stokes is parent (will not build DuDt or DFDt)
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            None,
-            DFDt,
             degree,
             p_continuous,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         # change this to be less generic
         if solver_name == "":
             self.name = "VE_Stokes_{}_".format(self.instance_number)
 
-        self._order = order
-        # User-facing operations are matrices / vectors by preference
-
-        self._Estar = None
-
-        # scalar 2nd invariant (incompressible)
-        self._penalty = 0.0
-        self._constraints = sympy.Matrix(
-            (self.div_u,)
-        )  # by default, incompressibility constraint
-
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
-
-        self._setup_problem_description = self.stokes_problem_description
-
-        # this attrib records if we need to re-setup
-        self.is_setup = False
-        self._constitutive_model = None
+        self._order = order  # VE time-order (I think)
 
         if self.Unknowns.DFDt is None:
             self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
@@ -809,8 +803,6 @@ class SNES_Projection(SNES_Scalar):
         super().__init__(
             mesh,
             u_Field,
-            None,  # DuDt
-            None,  # DFDt
             degree,
             solver_name,
             verbose,
@@ -943,8 +935,6 @@ class SNES_Vector_Projection(SNES_Vector):
         super().__init__(
             mesh,
             u_Field,
-            None,  # DuDt
-            None,  # DFDt
             degree,
             solver_name,
             verbose,
@@ -1093,8 +1083,6 @@ class SNES_Tensor_Projection(SNES_Projection):
         super().__init__(
             mesh=mesh,
             u_Field=scalar_Field,
-            # DuDt=None,  # DuDt #### Not in in SNES_projection class
-            # DFDt=None,  # DFDt #### Not in in SNES_projection class
             degree=degree,
             solver_name=solver_name,
             verbose=verbose,
@@ -1232,21 +1220,22 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         V_fn: Union[
             uw.discretisation.MeshVariable, sympy.Basic
         ],  # Should be a sympy function
-        DuDt: Lagrangian_DDt = None,
         order: int = 1,
         solver_name: str = "",
         restore_points_func: Callable = None,
         verbose=False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
         ## Parent class will set up default values etc
         super().__init__(
             mesh,
             u_Field,
-            None,
-            None,
             u_Field.degree,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         if solver_name == "":
@@ -1559,26 +1548,26 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         mesh: uw.discretisation.Mesh,
         velocityField: uw.discretisation.MeshVariable,
         pressureField: uw.discretisation.MeshVariable,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         rho: Optional[float] = 0.0,
         restore_points_func: Callable = None,
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = False,
         solver_name: Optional[str] = "",
         verbose: Optional[bool] = False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
             mesh,
             velocityField,
             pressureField,
-            DuDt,
-            DFDt,
             order,
             p_continuous,
             solver_name,
             verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
         # These are unique to the advection solver

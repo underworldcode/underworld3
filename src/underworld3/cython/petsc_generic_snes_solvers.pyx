@@ -365,11 +365,11 @@ class SNES_Scalar(SolverBaseClass):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree: int = 2,
                  solver_name: str = "",
                  verbose    = False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
         super().__init__()
@@ -916,11 +916,13 @@ class SNES_Vector(SolverBaseClass):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree     = 2,
                  solver_name: str = "",
-                 verbose    = False):
+                 verbose    = False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 ):
+
 
 
         super().__init__()
@@ -1533,12 +1535,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                  mesh          : underworld3.discretisation.Mesh,
                  velocityField : Optional[underworld3.discretisation.MeshVariable] = None,
                  pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
                  solver_name   : Optional[str]                           ="stokes_pt_",
                  verbose       : Optional[bool]                           =False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                 ):
 
 

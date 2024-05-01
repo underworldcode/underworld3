@@ -76,7 +76,7 @@ class SemiLagrangian(uw_object):
                     vtype=vtype,
                     degree=degree,
                     continuous=continuous,
-                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
                 )
             )
 
