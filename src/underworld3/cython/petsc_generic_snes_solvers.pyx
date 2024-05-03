@@ -2517,7 +2517,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         from mpi4py import MPI
 
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         min_dx = self.mesh.get_min_radius()
