@@ -1257,7 +1257,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 #         from mpi4py import MPI
 
 #         ## get global max dif value
-#         comm = MPI.COMM_WORLD
+#         comm = uw.mpi.comm
 #         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
 #         ### get the velocity values
@@ -1552,7 +1552,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         from mpi4py import MPI
 
         ## get global max dif value
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ### get the velocity values
@@ -1864,7 +1864,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 #         #     max_diffusivity = self.k.data[:, 0].max()
 
 #         ## get global max dif value
-#         comm = MPI.COMM_WORLD
+#         comm = uw.mpi.comm
 #         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
 #         ### get the velocity values
@@ -2623,7 +2623,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         from mpi4py import MPI
 
         ## get global max dif value
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ### get the velocity values

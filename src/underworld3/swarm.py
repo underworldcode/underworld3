@@ -1,10 +1,9 @@
 from typing import Optional, Tuple, Union
-import contextlib
 
 import numpy as np
 import sympy
-import petsc4py.PETSc as PETSc
 from mpi4py import MPI
+import petsc4py.PETSc as PETSc
 
 import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
@@ -16,7 +15,7 @@ import h5py
 import os
 import warnings
 
-comm = MPI.COMM_WORLD
+comm = uw.mpi.comm
 
 from enum import Enum
 
@@ -451,7 +450,7 @@ class SwarmVariable(Stateful, uw_object):
 
         if h5py.h5.get_config().mpi == True and not force_sequential:
             with h5py.File(
-                f"{filename[:-3]}.h5", "w", driver="mpio", comm=MPI.COMM_WORLD
+                f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm
             ) as h5f:
                 with self.swarm.access(self):
                     if compression == True:
@@ -1144,7 +1143,7 @@ class Swarm(Stateful, uw_object):
                 data_copy = self.data[:].copy()
 
             with h5py.File(
-                f"{filename[:-3]}.h5", "w", driver="mpio", comm=MPI.COMM_WORLD
+                f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm
             ) as h5f:
                 if compression == True:
                     h5f.create_dataset(
@@ -1872,7 +1871,6 @@ class Swarm(Stateful, uw_object):
 
         from mpi4py import MPI
 
-        comm = MPI.COMM_WORLD
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         min_dx = self.mesh.get_min_radius()
