@@ -1634,7 +1634,7 @@
 </span><span id="L-1257"><a href="#L-1257"><span class="linenos">1257</span></a><span class="c1">#         from mpi4py import MPI</span>
 </span><span id="L-1258"><a href="#L-1258"><span class="linenos">1258</span></a>
 </span><span id="L-1259"><a href="#L-1259"><span class="linenos">1259</span></a><span class="c1">#         ## get global max dif value</span>
-</span><span id="L-1260"><a href="#L-1260"><span class="linenos">1260</span></a><span class="c1">#         comm = MPI.COMM_WORLD</span>
+</span><span id="L-1260"><a href="#L-1260"><span class="linenos">1260</span></a><span class="c1">#         comm = uw.mpi.comm</span>
 </span><span id="L-1261"><a href="#L-1261"><span class="linenos">1261</span></a><span class="c1">#         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)</span>
 </span><span id="L-1262"><a href="#L-1262"><span class="linenos">1262</span></a>
 </span><span id="L-1263"><a href="#L-1263"><span class="linenos">1263</span></a><span class="c1">#         ### get the velocity values</span>
@@ -1929,7 +1929,7 @@
 </span><span id="L-1552"><a href="#L-1552"><span class="linenos">1552</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="L-1553"><a href="#L-1553"><span class="linenos">1553</span></a>
 </span><span id="L-1554"><a href="#L-1554"><span class="linenos">1554</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="L-1555"><a href="#L-1555"><span class="linenos">1555</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="L-1555"><a href="#L-1555"><span class="linenos">1555</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="L-1556"><a href="#L-1556"><span class="linenos">1556</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="L-1557"><a href="#L-1557"><span class="linenos">1557</span></a>
 </span><span id="L-1558"><a href="#L-1558"><span class="linenos">1558</span></a>        <span class="c1">### get the velocity values</span>
@@ -2241,7 +2241,7 @@
 </span><span id="L-1864"><a href="#L-1864"><span class="linenos">1864</span></a><span class="c1">#         #     max_diffusivity = self.k.data[:, 0].max()</span>
 </span><span id="L-1865"><a href="#L-1865"><span class="linenos">1865</span></a>
 </span><span id="L-1866"><a href="#L-1866"><span class="linenos">1866</span></a><span class="c1">#         ## get global max dif value</span>
-</span><span id="L-1867"><a href="#L-1867"><span class="linenos">1867</span></a><span class="c1">#         comm = MPI.COMM_WORLD</span>
+</span><span id="L-1867"><a href="#L-1867"><span class="linenos">1867</span></a><span class="c1">#         comm = uw.mpi.comm</span>
 </span><span id="L-1868"><a href="#L-1868"><span class="linenos">1868</span></a><span class="c1">#         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)</span>
 </span><span id="L-1869"><a href="#L-1869"><span class="linenos">1869</span></a>
 </span><span id="L-1870"><a href="#L-1870"><span class="linenos">1870</span></a><span class="c1">#         ### get the velocity values</span>
@@ -3000,7 +3000,7 @@
 </span><span id="L-2623"><a href="#L-2623"><span class="linenos">2623</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="L-2624"><a href="#L-2624"><span class="linenos">2624</span></a>
 </span><span id="L-2625"><a href="#L-2625"><span class="linenos">2625</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="L-2626"><a href="#L-2626"><span class="linenos">2626</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="L-2626"><a href="#L-2626"><span class="linenos">2626</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="L-2627"><a href="#L-2627"><span class="linenos">2627</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="L-2628"><a href="#L-2628"><span class="linenos">2628</span></a>
 </span><span id="L-2629"><a href="#L-2629"><span class="linenos">2629</span></a>        <span class="c1">### get the velocity values</span>
@@ -6154,7 +6154,7 @@ $$</p>
 </span><span id="SNES_AdvectionDiffusion-1553"><a href="#SNES_AdvectionDiffusion-1553"><span class="linenos">1553</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="SNES_AdvectionDiffusion-1554"><a href="#SNES_AdvectionDiffusion-1554"><span class="linenos">1554</span></a>
 </span><span id="SNES_AdvectionDiffusion-1555"><a href="#SNES_AdvectionDiffusion-1555"><span class="linenos">1555</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="SNES_AdvectionDiffusion-1556"><a href="#SNES_AdvectionDiffusion-1556"><span class="linenos">1556</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="SNES_AdvectionDiffusion-1556"><a href="#SNES_AdvectionDiffusion-1556"><span class="linenos">1556</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="SNES_AdvectionDiffusion-1557"><a href="#SNES_AdvectionDiffusion-1557"><span class="linenos">1557</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="SNES_AdvectionDiffusion-1558"><a href="#SNES_AdvectionDiffusion-1558"><span class="linenos">1558</span></a>
 </span><span id="SNES_AdvectionDiffusion-1559"><a href="#SNES_AdvectionDiffusion-1559"><span class="linenos">1559</span></a>        <span class="c1">### get the velocity values</span>
@@ -6520,7 +6520,7 @@ or anisotropic.</p></li>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1553"><a href="#SNES_AdvectionDiffusion.estimate_dt-1553"><span class="linenos">1553</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1554"><a href="#SNES_AdvectionDiffusion.estimate_dt-1554"><span class="linenos">1554</span></a>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1555"><a href="#SNES_AdvectionDiffusion.estimate_dt-1555"><span class="linenos">1555</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="SNES_AdvectionDiffusion.estimate_dt-1556"><a href="#SNES_AdvectionDiffusion.estimate_dt-1556"><span class="linenos">1556</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="SNES_AdvectionDiffusion.estimate_dt-1556"><a href="#SNES_AdvectionDiffusion.estimate_dt-1556"><span class="linenos">1556</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1557"><a href="#SNES_AdvectionDiffusion.estimate_dt-1557"><span class="linenos">1557</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1558"><a href="#SNES_AdvectionDiffusion.estimate_dt-1558"><span class="linenos">1558</span></a>
 </span><span id="SNES_AdvectionDiffusion.estimate_dt-1559"><a href="#SNES_AdvectionDiffusion.estimate_dt-1559"><span class="linenos">1559</span></a>        <span class="c1">### get the velocity values</span>
@@ -7045,7 +7045,7 @@ returns (${\delta t}_       extrm{diff}, ${\delta t}_       extrm{adv})
 </span><span id="SNES_NavierStokes-2624"><a href="#SNES_NavierStokes-2624"><span class="linenos">2624</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="SNES_NavierStokes-2625"><a href="#SNES_NavierStokes-2625"><span class="linenos">2625</span></a>
 </span><span id="SNES_NavierStokes-2626"><a href="#SNES_NavierStokes-2626"><span class="linenos">2626</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="SNES_NavierStokes-2627"><a href="#SNES_NavierStokes-2627"><span class="linenos">2627</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="SNES_NavierStokes-2627"><a href="#SNES_NavierStokes-2627"><span class="linenos">2627</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="SNES_NavierStokes-2628"><a href="#SNES_NavierStokes-2628"><span class="linenos">2628</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="SNES_NavierStokes-2629"><a href="#SNES_NavierStokes-2629"><span class="linenos">2629</span></a>
 </span><span id="SNES_NavierStokes-2630"><a href="#SNES_NavierStokes-2630"><span class="linenos">2630</span></a>        <span class="c1">### get the velocity values</span>
@@ -7622,7 +7622,7 @@ of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). <a 
 </span><span id="SNES_NavierStokes.estimate_dt-2624"><a href="#SNES_NavierStokes.estimate_dt-2624"><span class="linenos">2624</span></a>        <span class="kn">from</span> <span class="nn">mpi4py</span> <span class="kn">import</span> <span class="n">MPI</span>
 </span><span id="SNES_NavierStokes.estimate_dt-2625"><a href="#SNES_NavierStokes.estimate_dt-2625"><span class="linenos">2625</span></a>
 </span><span id="SNES_NavierStokes.estimate_dt-2626"><a href="#SNES_NavierStokes.estimate_dt-2626"><span class="linenos">2626</span></a>        <span class="c1">## get global max dif value</span>
-</span><span id="SNES_NavierStokes.estimate_dt-2627"><a href="#SNES_NavierStokes.estimate_dt-2627"><span class="linenos">2627</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">MPI</span><span class="o">.</span><span class="n">COMM_WORLD</span>
+</span><span id="SNES_NavierStokes.estimate_dt-2627"><a href="#SNES_NavierStokes.estimate_dt-2627"><span class="linenos">2627</span></a>        <span class="n">comm</span> <span class="o">=</span> <span class="n">uw</span><span class="o">.</span><span class="n">mpi</span><span class="o">.</span><span class="n">comm</span>
 </span><span id="SNES_NavierStokes.estimate_dt-2628"><a href="#SNES_NavierStokes.estimate_dt-2628"><span class="linenos">2628</span></a>        <span class="n">diffusivity_glob</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">allreduce</span><span class="p">(</span><span class="n">max_diffusivity</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">MPI</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
 </span><span id="SNES_NavierStokes.estimate_dt-2629"><a href="#SNES_NavierStokes.estimate_dt-2629"><span class="linenos">2629</span></a>
 </span><span id="SNES_NavierStokes.estimate_dt-2630"><a href="#SNES_NavierStokes.estimate_dt-2630"><span class="linenos">2630</span></a>        <span class="c1">### get the velocity values</span>
