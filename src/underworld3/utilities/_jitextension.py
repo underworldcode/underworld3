@@ -399,7 +399,7 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
-        fn = underworld3.function.expression.substitute(fn, keep_constants=False)
+        fn = underworld3.function.fn_substitute_expressions(fn, keep_constants=False)
 
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))

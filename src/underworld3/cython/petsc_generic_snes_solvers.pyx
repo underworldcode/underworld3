@@ -616,13 +616,11 @@ class SNES_Scalar(SolverBaseClass):
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
 
-        f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
+        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
+        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
-
-
-        f0  = sympy.Array(self.F0.value).reshape(1).as_immutable()
-        F1  = sympy.Array(self.F1.value).reshape(dim).as_immutable()
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -1171,19 +1169,28 @@ class SNES_Vector(SolverBaseClass):
         ## Convert to arrays for the moment to allow 1D arrays (size dim, not 1xdim)
         ## otherwise we have many size-1 indices that we have to collapse
 
-        F0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
-        F1 = sympy.Array(self._f1).reshape(dim,dim)
+        # f0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
+        # F1 = sympy.Array(self._f1).reshape(dim,dim)
+
+        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
+        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
+
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim,dim).as_immutable()
+
+        self._u_f0 = f0
+        self._u_F1 = F1
 
         # JIT compilation needs immutable, matrix input (not arrays)
-        self._u_f0 = sympy.ImmutableDenseMatrix(F0)
+        self._u_f0 = sympy.ImmutableDenseMatrix(f0)
         self._u_F1 = sympy.ImmutableDenseMatrix(F1)
         fns_residual = [self._u_f0, self._u_F1]
 
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self.u.sym).reshape(dim)
 
-        G0 = sympy.derive_by_array(F0, U)
-        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(f0, U)
+        G1 = sympy.derive_by_array(f0, self.Unknowns.L)
         G2 = sympy.derive_by_array(F1, U)
         G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
@@ -1943,9 +1950,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # This is what we really want to do:
 
-        F0  = sympy.Array(self.F0.value)
-        F1  = sympy.Array(self.F1.value)
-        PF0 = sympy.Array(self.PF0.value)
+        F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value))
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value))
+        PF0 = sympy.Array(uw.function.fn_substitute_expressions(self.PF0.value))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)

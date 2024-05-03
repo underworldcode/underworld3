@@ -737,7 +737,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     """
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, order=1):
 
         ## We just need to add the expressions for the stress history terms in here.\
         ## They are properties to hold expressions that are persistent for this instance
@@ -770,6 +770,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             None,
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
         )
+
+        self._order = order
 
         self._reset()
 
@@ -969,13 +971,30 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
             # Note, 1st order only here but we should add higher order versions of this
 
-            # 1st Order version:
+            # 1st Order version (default)
+            if inner_self._owning_model.order != 2:
+                el_eff_visc = (
+                    inner_self.shear_viscosity_0
+                    * inner_self.shear_modulus
+                    * inner_self.dt_elastic
+                    / (
+                        inner_self.shear_viscosity_0
+                        + inner_self.dt_elastic * inner_self.shear_modulus
+                    )
+                )
 
-            el_eff_visc = inner_self.shear_viscosity_0 / (
-                1
-                + inner_self.shear_viscosity_0
-                / (inner_self.dt_elastic * inner_self.shear_modulus)
-            )
+            # 2nd Order version (need to ask for this one)
+            else:
+                el_eff_visc = (
+                    2
+                    * inner_self.shear_viscosity_0
+                    * inner_self.shear_modulus
+                    * inner_self.dt_elastic
+                    / (
+                        3 * inner_self.shear_viscosity_0
+                        + 2 * inner_self.dt_elastic * inner_self.shear_modulus
+                    )
+                )
 
             inner_self._ve_effective_viscosity.value = el_eff_visc
 
@@ -993,6 +1012,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     ## End of parameters definition
 
+    @property
+    def order(self):
+        return self._order
+
+    @order.setter
+    def order(self, value):
+        self._order = value
+        self._reset()
+        return
+
     # The following should have no setters
     @property
     def stress_star(self):
@@ -1008,9 +1037,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.order >= 2:
-                self._stress_star.value = self.Unknowns.DFDt.psi_star[1].sym
+                self._stress_2star.value = self.Unknowns.DFDt.psi_star[1].sym
             else:
-                self._stress_star.value = sympy.sympify(0)
+                self._stress_2star.value = sympy.sympify(0)
 
         return self._stress_2star
 
@@ -1226,11 +1255,36 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
-                stress += (
-                    self.viscosity
-                    * stress_star.sym
-                    / (self.Parameters.dt_elastic * self.Parameters.shear_modulus)
-                )
+                if self.order != 2:
+                    stress += (
+                        self.Parameters.shear_viscosity_0
+                        * stress_star.sym
+                        / (
+                            self.Parameters.dt_elastic * self.Parameters.shear_modulus
+                            + self.Parameters.shear_viscosity_0
+                        )
+                    )
+                else:
+                    stress += (
+                        4
+                        * self.Parameters.shear_viscosity_0
+                        * stress_star.sym
+                        / (
+                            2
+                            * self.Parameters.dt_elastic
+                            * self.Parameters.shear_modulus
+                            + 3 * self.Parameters.shear_viscosity_0
+                        )
+                        + 1
+                        * self.Parameters.shear_viscosity_0
+                        * stress_2star.sym
+                        / (
+                            2
+                            * self.Parameters.dt_elastic
+                            * self.Parameters.shear_modulus
+                            + 3 * self.Parameters.shear_viscosity_0
+                        )
+                    )
 
         stress = sympy.simplify(stress)
 

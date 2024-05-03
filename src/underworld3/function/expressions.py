@@ -1,5 +1,75 @@
-from sympy import Symbol, simplify
+import sympy
+from sympy import Symbol, simplify, Number
 from underworld3.utilities._api_tools import uw_object
+
+
+def _substitute_all_once(fn, keep_constants=True, return_self=True):
+
+    if keep_constants and return_self and is_constant_expr(fn):
+        return fn
+
+    expr = fn
+    for atom in fn.atoms():
+        if isinstance(atom, UWexpression):
+            if keep_constants and isinstance(atom.value, (float, int, Number)):
+                continue
+            else:
+                expr = expr.subs(atom, atom.value)
+
+    return expr
+
+
+def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
+    expr = fn
+
+    if keep_constants and return_self and is_constant_expr(fn):
+        return fn
+
+    for atom in fn.atoms():
+        if atom is sub_expr:
+            if keep_constants and isinstance(atom.value, (float, int, Number)):
+                continue
+            else:
+                expr = expr.subs(atom, atom.value)
+
+    return expr
+
+
+def substitute(fn, keep_constants=True, return_self=True):
+    expr = fn
+    expr_s = _substitute_all_once(expr, keep_constants, return_self)
+    while expr is not expr_s:
+        expr = expr_s
+        expr_s = _substitute_all_once(expr, keep_constants)
+
+    return expr
+
+
+def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
+    expr = fn
+    expr_s = _substitute_one_expr(expr, sub_expr, keep_constants)
+
+    while expr is not expr_s:
+        expr = expr_s
+        expr_s = _substitute_one_expr(expr, sub_expr, keep_constants)
+    return expr
+
+
+def is_constant_expr(fn):
+
+    deps = extract_expressions(fn)
+
+    for dep in deps:
+        if not isinstance(dep.value, (float, int, sympy.Number)):
+            return False
+
+        return True
+
+
+def extract_expressions(fn):
+
+    subbed_expr = substitute(fn, keep_constants=True, return_self=False)
+    return subbed_expr.atoms(sympy.Symbol)
 
 
 class UWexpression(Symbol, uw_object):
@@ -44,6 +114,16 @@ class UWexpression(Symbol, uw_object):
 
         return
 
+    def constant(self):
+
+        deps = self.dependencies()
+
+        for dep in deps:
+            if not isinstance(dep.value, (float, int, sympy.Number)):
+                return False
+
+        return True
+
     @property
     def value(self):
         return self._value
@@ -52,6 +132,10 @@ class UWexpression(Symbol, uw_object):
     def value(self, new_value):
         self._value = new_value
         return
+
+    @property
+    def expression(self):
+        return self.sub_all()
 
     @property
     def description(self):
@@ -63,59 +147,61 @@ class UWexpression(Symbol, uw_object):
         return
 
     def sub_all(self, keep_constants=True):
-        cls = self.__class__
-        self_s = cls.substitute(self, keep_constants=keep_constants)
+        self_s = substitute(self, keep_constants=keep_constants)
 
         return self_s
 
     def sub_expr(self, expr, keep_constants=True):
-        cls = self.__class__
-        self_s = cls._substitute_one_expr(self, expr, keep_constants=keep_constants)
+        self_s = substitute_expr(self, expr, keep_constants=keep_constants)
 
         return self_s
 
-    @classmethod
-    def _substitute_all_once(cls, fn, keep_constants=True):
-        expr = fn
-        for atom in fn.atoms():
-            if isinstance(atom, cls):
-                if keep_constants and isinstance(atom.value, (float, int)):
-                    continue
-                else:
-                    expr = expr.subs(atom, atom.value)
+    def dependencies(self, keep_constants=True):
+        subbed_expr = substitute(self.value, keep_constants=keep_constants)
+        return subbed_expr.atoms(sympy.Symbol)
 
-        return expr
+    def all_dependencies(self, keep_constants=True):
+        subbed_expr = substitute(self.value, keep_constants=keep_constants)
+        return subbed_expr.atoms(sympy.Symbol, sympy.Function)
 
-    @classmethod
-    def substitute(cls, fn, keep_constants=True):
-        expr = fn
-        expr_s = cls._substitute_all_once(expr, keep_constants)
-        while expr is not expr_s:
-            expr = expr_s
-            expr_s = cls._substitute_all_once(expr, keep_constants)
-        return expr
+    # def _substitute_all_once(fn, keep_constants=True):
+    #     expr = fn
+    #     for atom in fn.atoms():
+    #         if isinstance(atom, UWexpression):
+    #             if keep_constants and isinstance(atom.value, (float, int, Number)):
+    #                 continue
+    #             else:
+    #                 expr = expr.subs(atom, atom.value)
 
-    @classmethod
-    def _substitute_one_expr(cls, fn, sub_expr, keep_constants=True):
-        expr = fn
-        for atom in fn.atoms():
-            if atom is sub_expr:
-                if keep_constants and isinstance(atom.value, (float, int)):
-                    continue
-                else:
-                    expr = expr.subs(atom, atom.value)
+    #     return expr
 
-        return expr
+    # def substitute(fn, keep_constants=True):
+    #     expr = fn
+    #     expr_s = _substitute_all_once(expr, keep_constants)
+    #     while expr is not expr_s:
+    #         expr = expr_s
+    #         expr_s = cls._substitute_all_once(expr, keep_constants)
+    #     return expr
 
-    @classmethod
-    def substitute_expr(cls, fn, sub_expr, keep_constants=True):
-        expr = fn
-        expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)
+    # def _substitute_one_expr(fn, sub_expr, keep_constants=True):
+    #     expr = fn
+    #     for atom in fn.atoms():
+    #         if atom is sub_expr:
+    #             if keep_constants and isinstance(atom.value, (float, int)):
+    #                 continue
+    #             else:
+    #                 expr = expr.subs(atom, atom.value)
 
-        while expr is not expr_s:
-            expr = expr_s
-            expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)
-        return expr
+    #     return expr
+
+    # def substitute_expr(fn, sub_expr, keep_constants=True):
+    #     expr = fn
+    #     expr_s = _substitute_one_expr(expr, sub_expr, keep_constants)
+
+    #     while expr is not expr_s:
+    #         expr = expr_s
+    #         expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)
+    #     return expr
 
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
@@ -155,6 +241,3 @@ class UWexpression(Symbol, uw_object):
             pass
 
         return
-
-
-# class UWConstant_expression(UWexpression):
