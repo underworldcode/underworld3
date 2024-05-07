@@ -720,7 +720,7 @@ class SNES_VE_Stokes(SNES_Stokes):
         if solver_name == "":
             self.name = "VE_Stokes_{}_".format(self.instance_number)
 
-        self._order = order  # VE time-order (I think)
+        self._order = order  # VE time-order
 
         if self.Unknowns.DFDt is None:
             self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
@@ -740,35 +740,78 @@ class SNES_VE_Stokes(SNES_Stokes):
         return
 
     @property
-    def F1(self):
-        dim = self.mesh.dim
+    def delta_t(self):
 
-        DFDt = self.Unknowns.DFDt
+        return self.constitutive_model.Parameters.dt_elastic
 
-        if DFDt is not None:
-            # We can flag to only do this if the constitutive model has been updated
-            DFDt.psi_fn = self._constitutive_model.flux.T
+    ## Solver needs to update the stress history terms as well as call the SNES solve:
 
-            ## Previous
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+        evalf=False,
+        order=None,
+    ):
+        """
+        Generates solution to constructed system.
 
-            F1val = uw.function.expression(
-                r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                DFDt.bdf() - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
-                "VE Stokes stress term: F_1(u)",
-            )
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
 
-        # Is the else condition useful - other than to prevent a crash ?
-        else:
-            F1val = uw.function.expression(
-                r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                self._constitutive_model.flux.T
-                - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
-                "VE Stokes pressure gradient term: F_1(u) - No Stress history provided",
-            )
+        if order is None or order > self._order:
+            order = self._order
 
-        self._u_f1 = F1val
+        if timestep is None:
+            timestep = self.delta_t.value
 
-        return F1val
+        if timestep != self.delta_t:
+            self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"VE Stokes solver - pre-solve DFDt update", flush=True)
+
+        # Update SemiLagrange Flux terms
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"VE Stokes solver - solve Stokes flow", flush=True)
+
+        super().solve(
+            zero_init_guess,
+            _force_setup=_force_setup,
+            verbose=verbose,
+            picard=0,
+        )
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f"VEP Stokes solver - post-solve DFDt update", flush=True)
+
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
 
 
 class SNES_Projection(SNES_Scalar):
@@ -1095,7 +1138,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     ## Need to over-ride solve method to run over all components
 
-    def solve(self):
+    def solve(self, verbose=False):
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -1118,7 +1161,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
                 # solver for the scalar problem
 
-                super().solve()
+                super().solve(verbose=verbose)
 
                 with self.mesh.access(self.t_field):
                     self.t_field[i, j].data[:] = self.u.data[:, 0]
@@ -1127,24 +1170,33 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     # This is re-defined so it uses uw_scalar_function
 
-    @timing.routine_timer_decorator
-    def projection_problem_description(self):
-        # residual terms - defines the problem:
-        # solve for a best fit to the continuous mesh
-        # variable given the values in self.function
-        # F0 is left in place for the user to inject
-        # non-linear constraints if required
+    @property
+    def F0(self):
 
-        self._f0 = (
-            self.F0
-            + (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function
+        f0_val = uw.function.expression(
+            r"f_0 \left( \mathbf{u} \right)",
+            (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
+            "Scalar subproblem of tensor projection: f_0(u)",
         )
 
-        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+        # backward compatibility
+        self._f0 = f0_val
 
-        self._f1 = self.F1 + self.smoothing * self.mesh.vector.gradient(self.u.sym)
+        return f0_val
 
-        return
+    @property
+    def F1(self):
+
+        F1_val = uw.function.expression(
+            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+            self.smoothing * self.mesh.vector.gradient(self.u.sym),
+            "Scalar subproblem of tensor projection (smoothing): F_1(u)",
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
 
     @property
     def uw_scalar_function(self):

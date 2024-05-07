@@ -1727,6 +1727,36 @@ class _MeshVariable(Stateful, uw_object):
 
         return
 
+    def _object_viewer(self):
+        """This will substitute specific information about this object"""
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        # feedback on this instance
+
+        display(
+            Markdown(f"**MeshVariable:**"),
+            Markdown(
+                f"""
+  > symbol:  ${self.symbol}$  
+  > shape:   ${self.shape}$  
+  > degree:  ${self.degree}$  
+  > continuous:  `{self.continuous}`  
+  > type:    `{self.vtype.name}`"""
+            ),
+            Markdown(f"**FE Data:**"),
+            Markdown(
+                f"""
+  > PETSc field id:  ${self.field_id}$  
+  > PETSc field name:   `{self.clean_name}` """
+            ),
+        )
+
+        with self.mesh.access():
+            display(self.data),
+
+        return
+
     def clone(self, name, varsymbol):
         newMeshVariable = MeshVariable(
             varname=name,

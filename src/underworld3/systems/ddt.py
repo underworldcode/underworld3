@@ -124,6 +124,7 @@ class SemiLagrangian(uw_object):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        print(f"DDt psi fn setting -> {new_fn}", flush=True)
         self._psi_fn = new_fn
         self._psi_star_projection_solver.uw_function = self._psi_fn
         return
@@ -205,28 +206,33 @@ class SemiLagrangian(uw_object):
             if i == 0:
                 # Recalculate u_star from u_fn
                 self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.solve()
+                self._psi_star_projection_solver.solve(verbose=verbose)
 
             if evalf:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-                            self.psi_star[i].sym[d], self._nswarm_psi.data
-                        )
+                    # for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[...] = uw.function.evalf(
+                        self.psi_star[i].sym_1d, self._nswarm_psi.data
+                    )
             else:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = (
-                            uw.function.evaluate(
-                                self.psi_star[i].sym[d], self._nswarm_psi.data
-                            )
-                        )
+                    # for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[...] = uw.function.evaluate(
+                        self.psi_star[i].sym_1d, self._nswarm_psi.data
+                    )
+
+            # with self.mesh.access():
+            #     print("1:", self.psi_star[0].data, flush=True)
+
+            # with self._nswarm_psi.access():
+            #     print("1S:", self._nswarm_psi.swarmVariable.data, flush=True)
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
 
             # Now project to the mesh using bc's to obtain u_star
+
             self._psi_star_projection_solver.uw_function = (
                 self._nswarm_psi.swarmVariable.sym
             )

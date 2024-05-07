@@ -26,6 +26,11 @@ def derivative(expression, *args, **kwargs):
         keep_constants=True,
         return_self=True,
     )
+
+    # # Substitution may return another expression
+    # if isinstance(subbed_expr, expression):
+    #     subbed_expr = subbed_expr.value
+
     subbed_derivative = sympy.Derivative(
         subbed_expr,
         *args,

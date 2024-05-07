@@ -142,7 +142,7 @@ def getext(
         )
     else:
         if verbose and underworld3.mpi.rank == 0:
-            print("JIT compiled module cached ... ", flush=True)
+            print(f"JIT compiled module cached ... {jitname} ", flush=True)
 
     ## TODO: Return a dictionary to recover the function pointers from the compiled
     ## functions. Note, keep these by category as the same sympy function has

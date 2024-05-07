@@ -152,7 +152,12 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None, simplify=True, verbose=False ):
+def evaluate(   expr, 
+                np.ndarray coords=None, 
+                coord_sys=None, 
+                other_arguments=None, 
+                simplify=True, 
+                verbose=False, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -199,6 +204,12 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+
+    ## special case
+
+    if uw.function.fn_is_constant_expr(expr):
+        return expr.sub_all(keep_constants=False)
+
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
 
@@ -508,7 +519,12 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 ### ------------------------------
 
-def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, simplify=True):
+def evalf(  expr, 
+            coords=None, 
+            coord_sys=None,  
+            other_arguments=None, 
+            verbose=False, 
+            simplify=True,):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -555,6 +571,10 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+
+    if uw.function.fn_is_constant_expr(expr):
+        return expr.sub_all(keep_constants=False)
+
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
 

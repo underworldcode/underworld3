@@ -6,7 +6,10 @@ from underworld3.utilities._api_tools import uw_object
 def _substitute_all_once(fn, keep_constants=True, return_self=True):
 
     if keep_constants and return_self and is_constant_expr(fn):
-        return fn
+        if isinstance(fn, UWexpression):
+            return fn.value
+        else:
+            return fn
 
     expr = fn
     for atom in fn.atoms():
@@ -23,7 +26,10 @@ def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
     expr = fn
 
     if keep_constants and return_self and is_constant_expr(fn):
-        return fn
+        if isinstance(fn, UWexpression):
+            return fn.value
+        else:
+            return fn
 
     for atom in fn.atoms():
         if atom is sub_expr:
@@ -206,6 +212,8 @@ class UWexpression(Symbol, uw_object):
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
         import sympy
+
+        level = max(1, level)
 
         ## feedback on this instance
         if sympy.sympify(self.value) is not None:

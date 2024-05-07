@@ -747,14 +747,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._stress_star = expression(
             R"{\tau^{*}}",
             None,
-            "Lagrangian Stress at t - \delta_t ",
+            "Lagrangian Stress at $t - \delta_t$",
         )
 
         # This may not be defined at initialisation time, set to None until used
         self._stress_2star = expression(
             R"{\tau^{**}}",
             None,
-            "Lagrangian Stress at t - 2\delta_t ",
+            "Lagrangian Stress at $t - 2\delta_t$",
         )
 
         # This may not be well-defined at initialisation time, set to None until used
@@ -1049,13 +1049,22 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         E = self.Unknowns.E
 
         if self.Unknowns.DFDt is not None:
-            stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
-                # 1st order
-                E += stress_star.sym / (
-                    2 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
-                )
+                if self.order != 2:
+                    stress_star = self.Unknowns.DFDt.psi_star[0].sym
+                    E += stress_star / (
+                        2 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
+                    )
+
+                else:
+                    stress_star = self.Unknowns.DFDt.psi_star[0].sym
+                    stress_2star = self.Unknowns.DFDt.psi_star[1].sym
+                    E += stress_star / (
+                        self.Parameters.dt_elastic * self.Parameters.shear_modulus
+                    ) - stress_2star / (
+                        4 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
+                    )
 
         self._E_eff.value = E
 
@@ -1252,37 +1261,42 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         stress = 2 * self.viscosity * edot
 
         if self.Unknowns.DFDt is not None:
-            stress_star = self.Unknowns.DFDt.psi_star[0]
 
             if self.is_elastic:
                 if self.order != 2:
+                    stress_star = self.Unknowns.DFDt.psi_star[0].sym
                     stress += (
-                        self.Parameters.shear_viscosity_0
-                        * stress_star.sym
-                        / (
-                            self.Parameters.dt_elastic * self.Parameters.shear_modulus
-                            + self.Parameters.shear_viscosity_0
+                        2
+                        * self.viscosity
+                        * (
+                            stress_star
+                            / (
+                                2
+                                * self.Parameters.dt_elastic
+                                * self.Parameters.shear_modulus
+                            )
                         )
                     )
+
                 else:
+                    stress_star = self.Unknowns.DFDt.psi_star[0].sym
+                    stress_2star = self.Unknowns.DFDt.psi_star[1].sym
+
                     stress += (
-                        4
-                        * self.Parameters.shear_viscosity_0
-                        * stress_star.sym
-                        / (
-                            2
-                            * self.Parameters.dt_elastic
-                            * self.Parameters.shear_modulus
-                            + 3 * self.Parameters.shear_viscosity_0
-                        )
-                        + 1
-                        * self.Parameters.shear_viscosity_0
-                        * stress_2star.sym
-                        / (
-                            2
-                            * self.Parameters.dt_elastic
-                            * self.Parameters.shear_modulus
-                            + 3 * self.Parameters.shear_viscosity_0
+                        2
+                        * self.viscosity
+                        * (
+                            stress_star
+                            / (
+                                self.Parameters.dt_elastic
+                                * self.Parameters.shear_modulus
+                            )
+                            - stress_2star
+                            / (
+                                4
+                                * self.Parameters.dt_elastic
+                                * self.Parameters.shear_modulus
+                            )
                         )
                     )
 

@@ -40,6 +40,8 @@ class SolverBaseClass(uw_object):
         self._E = self.Unknowns.E # sym part
         self._W = self.Unknowns.W # asym part
 
+
+        self._order = 0 
         self._constitutive_model = None
 
         return
@@ -306,10 +308,15 @@ class SolverBaseClass(uw_object):
             self._constitutive_model = model_or_class
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
+            self._constitutive_model.order = self._order
+
 
         ### checking if it's a class
         elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class(self.Unknowns)
+            self._constitutive_model.order = self._order
+
+
 
         ### Raise an error if it's neither
         else:
@@ -879,7 +886,19 @@ class SNES_Scalar(SolverBaseClass):
             Latex(eqF1), Latex(eqf0),
         )
 
+
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+
+        
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
 
 
 
@@ -1482,7 +1501,35 @@ class SNES_Vector(SolverBaseClass):
 
         return 
 
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
 
+        f0 = self.F0.value
+        F1 = self.F1.value
+        
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Vector poisson solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+        )
+
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+   
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
 ### =================================
 
@@ -1876,8 +1923,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             Latex(eqp0 ),
         )
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.PF0))
 
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+
+        
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
         return
 
@@ -1944,11 +2001,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        F0  = sympy.Array(self._u_f0)  #.reshape(dim)
-        F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
-        PF0 = sympy.Array(self._p_f0)# .reshape(1)
+        # F0  = sympy.Array(self._u_f0)  #.reshape(dim)
+        # F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
+        # PF0 = sympy.Array(self._p_f0)# .reshape(1)
 
-        # This is what we really want to do:
+        ## We don't need to use these arrays, we can specify the ordering of the indices
+        ## and do these one by one as required by PETSc. However, at the moment, this 
+        ## is working .. so be careful !!
+
 
         F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value))
         F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value))
@@ -1981,7 +2041,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         G2 = sympy.derive_by_array(F1, self.u.sym)
         G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
-        # reorganise indices from sympy to petsc ordering / reshape to Matrix form
+        # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
         # ijkl -> LJKI (hence 3120)
         # ij k -> KJ I (hence 210)
         # i jk -> J KI (hence 201)
