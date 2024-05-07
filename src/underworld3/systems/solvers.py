@@ -1208,6 +1208,7 @@ class SNES_Tensor_Projection(SNES_Projection):
         self._uw_scalar_function = user_uw_function
 
 
+
 # #################################################
 # # Swarm-based advection-diffusion
 # # solver based on SNES_Poisson and swarm-variable
@@ -1448,7 +1449,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         from mpi4py import MPI
 
         ## get global max dif value
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ### get the velocity values
@@ -1527,6 +1528,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.constitutive_model._solver_is_setup = True
 
         return
+
 
 
 # This one is already updated to work with the Lagrange D_Dt
@@ -1948,7 +1950,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         from mpi4py import MPI
 
         ## get global max dif value
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
         ### get the velocity values

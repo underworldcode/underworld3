@@ -81,16 +81,16 @@ def test_stokes_boxmesh(mesh):
         stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
         stokes.add_dirichlet_bc((0.0, 0.0), "Top", 0)
 
-        stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
-        stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
+        stokes.add_dirichlet_bc((0.0, None), "Left")
+        stokes.add_dirichlet_bc((0.0, None), "Right")
     else:
         stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x, 0])
 
         stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Bottom")
         stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Top")
 
-        stokes.add_dirichlet_bc((0.0, sympy.oo, sympy.oo), "Left")
-        stokes.add_dirichlet_bc((0.0, sympy.oo, sympy.oo), "Right")
+        stokes.add_dirichlet_bc((0.0, None, sympy.oo), "Left")
+        stokes.add_dirichlet_bc((0.0, sympy.oo, None), "Right")
 
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Front")
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Back")

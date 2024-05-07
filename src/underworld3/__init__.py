@@ -97,6 +97,7 @@ from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
 
 # Needed everywhere
+import underworld3.mpi
 from underworld3.utilities import _api_tools
 
 import underworld3.adaptivity
@@ -110,7 +111,6 @@ import underworld3.systems
 import underworld3.maths
 import underworld3.utilities
 import underworld3.kdtree
-import underworld3.mpi
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation

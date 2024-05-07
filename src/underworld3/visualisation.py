@@ -41,7 +41,7 @@ def mesh_to_pv_mesh(mesh):
             vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
             mesh.vtk(vtk_filename)
 
-            pvmesh = pv.read(vtk_filename)
+        pvmesh = pv.read(vtk_filename)
 
     return pvmesh
 
