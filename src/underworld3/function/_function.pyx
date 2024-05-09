@@ -289,13 +289,18 @@ def evaluate(   expr,
     # Check the same mesh is used for all mesh variables
     mesh = None
     for varfn in varfns:
-
+        
         if mesh is None:
             mesh = varfn.meshvar().mesh
             #mesh = varfn.mesh
         else:
             if mesh != varfn.meshvar().mesh:
                 raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
+
+    if verbose:
+        print(f"Mesh for evaluations: {mesh.name}", flush=True)
+
+
 
     if (len(varfns)==0) and (coords is None):
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -340,13 +345,18 @@ def evaluate(   expr,
             xxh.update(np.ascontiguousarray(coords))
             coord_hash = xxh.intdigest()
 
+            # Note: special case: re-evaluating at the same points
+            # after updating mesh variables. This is not captured
+            # by a simple coordinate hash. We kill this in the 
+            # .access for mesh variables but this is prone to mistakes
+
             if coord_hash == mesh._evaluation_hash:
                 # if uw.mpi.rank == 0:
-                #     print("Using evaluation cache", flush=True)
+                #     print("Using uw.evaluation cache", flush=True)
                 return mesh._evaluation_interpolated_results
             else:
                 # if uw.mpi.rank == 0:
-                #     print("No evaluation cache", flush=True)
+                #     print("No uw.evaluation cache", flush=True)
                 mesh._evaluation_hash = None
                 mesh._evaluation_interpolated_results = None
 
@@ -596,9 +606,6 @@ def evalf(  expr,
     if simplify:
         expr = sympy.simplify(expr)
 
-    # if coords.shape[0] == 0:
-    #     return np.zeros_like(coords)
-
     # 1. Extract UW variables.
 
     # Let's first collect all the meshvariables present in the expression and check
@@ -644,7 +651,7 @@ def evalf(  expr,
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
-    # Get map of all variable functions from the cache
+    # Get map of all variable functions (no cache) 
     interpolated_results = {}
 
     for varfn in varfns:
@@ -657,6 +664,7 @@ def evalf(  expr,
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
+
     import string
     import random
     varfns_symbols = {}
@@ -670,7 +678,6 @@ def evalf(  expr,
     from sympy import lambdify
     from sympy.vector import CoordSys3D
     dim = coords.shape[1]
-
 
     ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
 
@@ -711,6 +718,7 @@ def evalf(  expr,
 
     # If passed a constant / constant matrix, then the result will not span the coordinates 
     # and we'll need to address that explicitly
+
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
@@ -723,15 +731,12 @@ def evalf(  expr,
 
     # 6. Return results
 
-
-
-
-
     return results
 
 
 # Go ahead and substitute for the timed version.
-# Note that we don't use the @decorator sugar here so that
+# Note that we don't use the @decorator here so that
 # we can pass in the `class_name` parameter.
+
 evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 

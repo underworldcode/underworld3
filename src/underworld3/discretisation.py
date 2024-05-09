@@ -626,6 +626,10 @@ class Mesh(Stateful, uw_object):
         timing._incrementDepth()
         stime = time.time()
 
+        if writeable_vars is not None:
+            self._evaluation_hash = None
+            self._evaluation_interpolated_results = None
+
         self._accessed = True
         deaccess_list = []
         for var in self.vars.values():
@@ -1447,7 +1451,7 @@ def MeshVariable(
         mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
 
     new_meshVariable = _MeshVariable(
-        varname, mesh, num_components, vtype, degree, continuous, varsymbol
+        name, mesh, num_components, vtype, degree, continuous, varsymbol
     )
 
     if mesh._accessed:
@@ -1575,8 +1579,17 @@ class _MeshVariable(Stateful, uw_object):
         self._is_accessed = False
         self._available = False
 
+        ## Note sympy needs a unique symbol even across different meshes
+        ## or it will get confused when it clones objects. We try this: add
+        ## a label to the variable that is not rendered - CHECK this works !!!
+
         self.name = name
         self.symbol = symbol
+
+        if mesh.instance_number > 1:
+            invisible = "\,\!" * mesh.instance_number
+            self.symbol = f"{{ {{ {invisible} }} {symbol} }}"
+
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
         # ToDo: Suggest we deprecate this and require it to be set explicitly

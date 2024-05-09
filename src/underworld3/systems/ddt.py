@@ -124,7 +124,6 @@ class SemiLagrangian(uw_object):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
-        print(f"DDt psi fn setting -> {new_fn}", flush=True)
         self._psi_fn = new_fn
         self._psi_star_projection_solver.uw_function = self._psi_fn
         return
@@ -210,16 +209,18 @@ class SemiLagrangian(uw_object):
 
             if evalf:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    # for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[...] = uw.function.evalf(
-                        self.psi_star[i].sym_1d, self._nswarm_psi.data
-                    )
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
+                        )
             else:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    # for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[...] = uw.function.evaluate(
-                        self.psi_star[i].sym_1d, self._nswarm_psi.data
-                    )
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = (
+                            uw.function.evaluate(
+                                self.psi_star[i].sym[d], self._nswarm_psi.data
+                            )
+                        )
 
             # with self.mesh.access():
             #     print("1:", self.psi_star[0].data, flush=True)

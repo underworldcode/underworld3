@@ -26,10 +26,11 @@ class SolverBaseClass(uw_object):
     """
 
 
-    def __init__(self):
+    def __init__(self, mesh):
 
         super().__init__()
 
+        self.mesh = mesh
         self.Unknowns = self._Unknowns(self)
 
         self._u = self.Unknowns.u
@@ -406,7 +407,7 @@ class SNES_Scalar(SolverBaseClass):
                  DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
-        super().__init__()
+        super().__init__(mesh)
 
         ## Keep track
 
@@ -469,7 +470,6 @@ class SNES_Scalar(SolverBaseClass):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-        self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
         self.dm = None
@@ -969,7 +969,7 @@ class SNES_Vector(SolverBaseClass):
 
 
 
-        super().__init__()
+        super().__init__(mesh)
 
         self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
@@ -1028,8 +1028,6 @@ class SNES_Vector(SolverBaseClass):
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
-        
-        self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
         self._F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.dm = None
@@ -1625,10 +1623,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 ):
 
 
-        super().__init__()
+        super().__init__(mesh)
 
         self.name = solver_name
-        self.mesh = mesh
         self.verbose = verbose
         self.dm = None
 

@@ -898,7 +898,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         def dt_elastic(inner_self, value):
             expr = validate_parameters(R"{\Delta t_e}", value, allow_number=True)
             inner_self._dt_elastic.copy(expr)
-            del expr
             inner_self._reset()
 
             return
@@ -968,6 +967,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         def ve_effective_viscosity(inner_self):
             # the dt_elastic defaults to infinity, t_relax to zero,
             # so this should be well behaved in the viscous limit
+
+            if inner_self.shear_modulus == sympy.oo:
+                return inner_self.shear_viscosity_0
 
             # Note, 1st order only here but we should add higher order versions of this
 
@@ -1501,19 +1503,22 @@ class DarcyFlowModel(Constitutive_Model):
         def __init__(
             inner_self,
             _owning_model,
-            diffusivity: Union[float, sympy.Function] = 1,
+            permeabililty: Union[float, sympy.Function] = 1,
         ):
-            inner_self._diffusivity = diffusivity
+
+            inner_self._s = expression(
+                R"{s}",
+                0,
+                "Gravitational forcing",
+            )
+
+            inner_self._permeability = expression(
+                R"{\kappa}",
+                1,
+                "Permeability",
+            )
+
             inner_self._owning_model = _owning_model
-
-        @property
-        def permeability(inner_self):
-            return inner_self._permeability
-
-        @permeability.setter
-        def permeability(inner_self, value: Union[float, sympy.Function]):
-            inner_self._permeability = value
-            inner_self._reset()
 
         @property
         def s(inner_self):
@@ -1523,6 +1528,23 @@ class DarcyFlowModel(Constitutive_Model):
         def s(inner_self, value: sympy.Matrix):
             inner_self._s = value
             inner_self._reset()
+
+        @property
+        def permeability(inner_self):
+            return inner_self._permeability
+
+        @permeability.setter
+        def permeability(inner_self, value: Union[int, float, sympy.Function]):
+
+            perm = validate_parameters(
+                R"{\upkappa}", value, "Permeability", allow_number=True
+            )
+
+            if perm is not None:
+                inner_self._permeability.copy(perm)
+                inner_self._reset()
+
+            return
 
     @property
     def K(self):

@@ -1208,7 +1208,6 @@ class SNES_Tensor_Projection(SNES_Projection):
         self._uw_scalar_function = user_uw_function
 
 
-
 # #################################################
 # # Swarm-based advection-diffusion
 # # solver based on SNES_Poisson and swarm-variable
@@ -1435,12 +1434,20 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         """
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            k = uw.function.evaluate(
-                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
-                self.mesh._centroids,
-                self.mesh.N,
-            )
-            max_diffusivity = k.max()
+            if uw.function.fn_is_constant_expr(
+                self.constitutive_model.Parameters.diffusivity
+            ):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.Parameters.diffusivity
+                )
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
         else:
             k = self.constitutive_model.Parameters.diffusivity
             max_diffusivity = k
@@ -1528,7 +1535,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.constitutive_model._solver_is_setup = True
 
         return
-
 
 
 # This one is already updated to work with the Lagrange D_Dt
