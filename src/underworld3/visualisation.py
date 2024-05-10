@@ -1,5 +1,5 @@
 ## pyvista helper routines
-
+import os
 
 def initialise():
 
@@ -12,7 +12,10 @@ def initialise():
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     try:
-        pv.global_theme.jupyter_backend = "trame"
+        if 'BINDER_LAUNCH_HOST' in os.environ or 'BINDER_REPO_URL' in os.environ:
+            pv.global_theme.jupyter_backend = "client"
+        else:
+            pv.global_theme.jupyter_backend = "trame"
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
 
