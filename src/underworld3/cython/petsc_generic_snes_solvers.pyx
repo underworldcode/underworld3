@@ -183,7 +183,7 @@ class SolverBaseClass(uw_object):
             eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
         boundary: string
             The label name to apply the BC. To find a boundary name run something like 
-            [print(x) for x in mesh.boundaries]
+            mesh.view()
         components: array_like, single int value or None.
             (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
             If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
