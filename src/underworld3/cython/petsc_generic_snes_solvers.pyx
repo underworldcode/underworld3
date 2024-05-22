@@ -154,27 +154,6 @@ class SolverBaseClass(uw_object):
 
         return
 
-    def _handle_none_bcs(self, conds):
-        # converts bcs put as None to sympy.oo 
-        # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
-
-        import numpy as np
-
-        in_type = type(conds)
-        c_list = [sympy.oo if f is None else f for f in conds]
-
-        # convert to original type
-        if in_type is np.ndarray: # numpy array needs special handling
-            conv_fn = np.array(c_list)
-        else:
-            conv_fn = in_type(c_list)
-
-        # handle sympy matrices auto transpose
-        if isinstance(conds, (sympy.Matrix)):
-            conv_fn = conv_fn.T
-
-        return conv_fn
-            
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
