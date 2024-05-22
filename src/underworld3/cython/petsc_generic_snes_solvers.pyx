@@ -153,7 +153,7 @@ class SolverBaseClass(uw_object):
         self._is_setup = False
 
         return
-    
+
     def _handle_none_bcs(self, conds):
         # converts bcs put as None to sympy.oo 
         # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
@@ -194,18 +194,41 @@ class SolverBaseClass(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_natural_bc(self, conds, boundary, components=None):
-        
+    def add_bc(self, bc_type, conds, boundary, components):
+        """
+        Parameters
+        ----------
+        type: string
+            BC type. Either dirichlet (essential) or neumman (natural) conditions.
+        conds: array_like of floats or a sympy.Matrix
+            eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
+        boundary: string
+            The label name to apply the BC. To find a boundary name run something like 
+            [print(x) for x in mesh.boundaries]
+        components: array_like, single int value or None.
+            (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
+            If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
+            eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
+        """
+
+        if bc_type not in ['dirichlet', 'neumann']:
+            raise("'bc_type' unknown. Value must be either 'dirichlet' or 'neumann'")
+
         self.is_setup = False
         import numpy as np
 
-        try:
-            iter(conds)
-        except:
+        # process conds and error check
+        if isinstance(conds, (tuple, list)):
+            # remove all None for sympy.oo
+            conds = [sympy.oo if x is None else x for x in conds]
+        elif isinstance(conds, float):
             conds = (conds,)
-
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
+        elif isinstance(conds, sympy.Matrix):
+            conds = conds.T
+        else:
+            raise("Unsupported BC conds: " +
+                  "array_like,   i.e. conds = [None, 5, 1.2]" +
+                  "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 
         if components is None:
             cpts_list = []
@@ -215,56 +238,85 @@ class SolverBaseClass(uw_object):
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
 
-        else:
+        elif isinstance(components, (tuple, list)):
             components = np.array(tuple(components), dtype=np.int32, ndmin=1)
+        elif isinstance(components, int):
+            components = np.array(components, dtype=np.int32, ndmin=1)
+        else:
+            raise("Unsupported BC 'components' argument")
 
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
         from collections import namedtuple
-        BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
-        self.natural_bcs.append(BC(components, sympy_fn, boundary, -1, "natural", -1, {}))
+        if bc_type == 'neumann':
+            BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
+            self.natural_bcs.append(BC(components, sympy_fn, boundary, -1, "natural", -1, {}))
+        elif bc_type == 'dirichlet':
+            BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+            self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
+
 
     # Use FE terminology 
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
-        self.add_dirichlet_bc(conds, boundary, components)
+        self.add_bc('dirichlet', conds, boundary, components)
         return
 
     @timing.routine_timer_decorator
+    def add_natural_bc(self, conds, boundary, components=None):
+        self.add_bc('neumann', conds, boundary, components)
+
+    @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
-        # switch to numpy arrays
-        # ndmin arg forces an array to be generated even
-        # where comps/indices is a single value.
+        self.add_bc('dirichlet', conds, boundary, components)
 
-        self.is_setup = False
-        import numpy as np
+        # """
+        # Parameters
+        # ----------
+        # conds: array_like of floats or a sympy.Matrix
+        #     eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
+        # boundary: string
+        #     The label name to apply the BC. To find a boundary name run something like 
+        #     [print(x) for x in mesh.boundaries]
+        # components: array_like
+        #     (optional) tuple of indicies to representing the active conds components. 
+        #     eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
+        # """
 
-        try:
-            iter(conds)
-        except:
-            conds = (conds,)
+        # self.is_setup = False
+        # import numpy as np
 
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
+        # # process conds and error check
+        # if isinstance(conds, (tuple, list)):
+        #     # remove all None for sympy.oo
+        #     conds = [sympy.oo if x is None else x for x in conds]
+        # elif isinstance(conds, float):
+        #     conds = (conds,)
+        # elif isinstance(conds, sympy.Matrix):
+        #     conds = conds.T
+        # else:
+        #     raise("Unsupported BC conds: " +
+        #           "array_like,   i.e. conds = [None, 5, 1.2]" +
+        #           "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 
-        if components is None:
-            cpts_list = []
-            for i, bc_fn in enumerate(conds):
-                if bc_fn != sympy.oo and conds != -sympy.oo:
-                    cpts_list.append(i)
-                
-            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
+        # if components is None:
+        #     cpts_list = []
+        #     for i, bc_fn in enumerate(conds):
+        #         if bc_fn != sympy.oo and bc_fn != -sympy.oo:
+        #             cpts_list.append(i)
+        #         
+        #     components = np.array(cpts_list, dtype=np.int32, ndmin=1)
 
-        else:
-            components = np.array(components, dtype=np.int32, ndmin=1)
+        # else:
+        #     components = np.array(components, dtype=np.int32, ndmin=1)
 
 
-        sympy_fn = sympy.Matrix(conds).as_immutable()
+        # sympy_fn = sympy.Matrix(conds).as_immutable()
 
-        from collections import namedtuple
-        BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
+        # from collections import namedtuple
+        # BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+        # self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
 
     ## Properties that are common to all solvers
 
