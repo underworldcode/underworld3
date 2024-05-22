@@ -205,10 +205,13 @@ def evaluate(   expr,
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
 
+
+    sympy.core.cache.clear_cache()
+
     ## special case
 
     if uw.function.fn_is_constant_expr(expr):
-        return expr.sub_all(keep_constants=False)
+        return uw.function.fn_substitute_expressions(expr, keep_constants=False)
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -289,7 +292,7 @@ def evaluate(   expr,
     # Check the same mesh is used for all mesh variables
     mesh = None
     for varfn in varfns:
-        
+
         if mesh is None:
             mesh = varfn.meshvar().mesh
             #mesh = varfn.mesh
@@ -581,6 +584,9 @@ def evalf(  expr,
 
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+
+    sympy.core.cache.clear_cache()
+
 
     if uw.function.fn_is_constant_expr(expr):
         return expr.sub_all(keep_constants=False)

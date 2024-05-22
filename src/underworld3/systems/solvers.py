@@ -1600,7 +1600,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
         display(Latex(r"$\quad\mathbf{p} = $ " + self.p.sym._repr_latex_()))
         display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
-        display(Latex(rf"$\quad\rho = $ {self.rho}"))
+        display(Latex(rf"$\quad\rho = $" + self.rho._repr_latex_()))
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1636,12 +1636,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         self.is_setup = False
-        self.rho = uw.function.expression(r"\uprho", sympy.oo, "Density")
+        self._rho = uw.function.expression(R"{\uprho}", rho, "Density")
         self._first_solve = True
 
         self._order = order
         self._penalty = uw.function.expression(
-            r"\uplambda", 0, "Incompressibility Penalty"
+            R"{\uplambda}", 0, "Incompressibility Penalty"
         )
 
         self.restore_points_to_domain_func = restore_points_func
@@ -1697,7 +1697,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         return
 
     @property
-    def uf0(self):
+    def F0(self):
 
         DuDt = self.Unknowns.DuDt
 
@@ -1715,7 +1715,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         return f0
 
     @property
-    def uF1(self):
+    def F1(self):
         dim = self.mesh.dim
 
         DFDt = self.Unknowns.DFDt
@@ -1744,13 +1744,13 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         return F1
 
     @property
-    def pf0(self):
+    def PF0(self):
 
         dim = self.mesh.dim
 
         f0 = uw.function.expression(
             r"\mathbf{F}_1\left( \mathbf{p} \right)",
-            sympy.simplify(self.PF0 + sympy.Matrix((self.constraints))),
+            sympy.simplify(sympy.Matrix((self.constraints))),
             "NStokes pointwise flux term: f_0(p)",
         )
 
@@ -1760,13 +1760,13 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     def navier_stokes_problem_description(self):
         # f0 residual term
-        self._u_f0 = self.uf0.value
+        self._u_f0 = self.F0.value
 
         # f1 residual term
-        self._u_f1 = self.uF1.value
+        self._u_f1 = self.F1.value
 
         # p1 residual term
-        self._p_f0 = self.pf0.value
+        self._p_f0 = self.PF0.value
 
         return
 
@@ -1778,6 +1778,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def delta_t(self, value):
         self.is_setup = False
         self._delta_t.value = value
+
+    @property
+    def rho(self):
+        return self._rho
+
+    @rho.setter
+    def rho(self, value):
+        self.is_setup = False
+        self._rho.value = value
 
     @property
     def f(self):
@@ -1851,17 +1860,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def penalty(self, value):
         self.is_setup = False
         self._penalty.value = value
-
-    # @property
-    # def constitutive_model(self):
-    #     return self._constitutive_model
-
-    # @constitutive_model.setter
-    # def constitutive_model(self, model):
-    #     if model is not None:
-    #         self._is_setup = False
-    #         self._constitutive_model = model
-    #     return
 
     @timing.routine_timer_decorator
     def solve(
@@ -1941,13 +1939,20 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         """
 
+        # cf advection-diffusion. Here the diffusivity is represented by viscosity
         if isinstance(self.constitutive_model.viscosity, sympy.Expr):
-            k = uw.function.evaluate(
-                sympy.sympify(self.constitutive_model.viscosity / self.rho),
-                self.mesh._centroids,
-                self.mesh.N,
-            )
-            max_diffusivity = k.max()
+            if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.viscosity
+                )
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.viscosity),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
         else:
             k = self.constitutive_model.viscosity / self.rho
             max_diffusivity = k

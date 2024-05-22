@@ -99,13 +99,13 @@ class UWexpression(Symbol, uw_object):
     def __new__(cls, name, value, description="No description provided"):
 
         obj = Symbol.__new__(cls, name)
-        obj.value = value
+        obj.value = sympy.sympify(value)
         obj.symbol = name
         return obj
 
     def __init__(self, name, value, description="No description provided"):
 
-        self._value = value
+        self._value = sympy.sympify(value)
         self._description = description
 
         return
@@ -136,7 +136,7 @@ class UWexpression(Symbol, uw_object):
 
     @value.setter
     def value(self, new_value):
-        self._value = new_value
+        self._value = sympy.sympify(new_value)
         return
 
     @property
