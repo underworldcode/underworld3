@@ -100,13 +100,28 @@ def getext(
 
     time_s = time.time()
 
-    fns = (
+    raw_fns = (
         tuple(fns_residual)
         + tuple(fns_bcs)
         + tuple(fns_jacobian)
         + tuple(fns_bd_residual)
         + tuple(fns_bd_jacobian)
     )
+
+    ## Expand all functions to ensure that changes in constants are recognised
+    ## in the caching process.
+
+    expanded_fns = []
+
+    for fn in raw_fns:
+        expanded_fns.append(
+            underworld3.function.expressions.substitute(
+                fn, keep_constants=False, return_self=False
+            )
+        )
+
+    fns = tuple(expanded_fns)
+
     import os
 
     # if verbose and uw.mpi.rank == 0:
