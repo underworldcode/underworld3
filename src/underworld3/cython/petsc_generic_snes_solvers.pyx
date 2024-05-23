@@ -217,9 +217,7 @@ class SolverBaseClass(uw_object):
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
 
-        elif isinstance(components, (tuple, list)):
-            components = np.array(tuple(components), dtype=np.int32, ndmin=1)
-        elif isinstance(components, int):
+        elif isinstance(components, (tuple, list, int)):
             components = np.array(components, dtype=np.int32, ndmin=1)
         else:
             raise("Unsupported BC 'components' argument")
