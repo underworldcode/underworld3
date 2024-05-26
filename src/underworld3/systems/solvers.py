@@ -1683,7 +1683,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
             vtype=uw.VarType.SYM_TENSOR,
-            degree=self.u.degree - 1,
+            degree=1,  # self.u.degree - 1,
             continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=self.verbose,
@@ -1934,8 +1934,11 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         mesh and viscosity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:
 
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
             - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+        returns: ${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv}
+
 
         """
 
@@ -1971,6 +1974,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.mesh.N,
         )
 
+        v_degree = self.u.degree
+
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
@@ -1981,13 +1986,13 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ## estimate dt of adv and diff components
 
         if max_magvel_glob == 0.0:
-            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
             dt_estimate = dt_diff
         elif diffusivity_glob == 0.0:
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = dt_adv
         else:
-            dt_diff = (min_dx**2) / diffusivity_glob
+            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
