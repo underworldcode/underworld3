@@ -1726,7 +1726,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
             F1 = uw.function.expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                DFDt.adams_moulton_flux() - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
+                DFDt.adams_moulton_flux()
+                - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+                + self.penalty * self.div_u * sympy.eye(dim),
                 "NStokes pointwise flux term: F_1(u)",
             )
         # Is the else condition useful - other than to prevent a crash ?
