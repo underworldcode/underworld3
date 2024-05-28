@@ -1983,8 +1983,8 @@ class _MeshVariable(Stateful, uw_object):
                 print(f"Reading data file {data_file}", flush=True)
 
             h5f = h5py.File(data_file)
-            D = h5f["fields"][data_name][()]
-            X = h5f["fields"]["coordinates"][()]
+            D = h5f["fields"][data_name][()].reshape(-1, self.shape[1])
+            X = h5f["fields"]["coordinates"][()].reshape(-1, self.mesh.dim)
 
             h5f.close()
 
