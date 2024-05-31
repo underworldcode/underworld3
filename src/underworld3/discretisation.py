@@ -206,8 +206,6 @@ class Mesh(Stateful, uw_object):
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
-
-        self.dm0 = self.dm.clone()
         self.sf1 = None
 
         ## This is where we can refine the dm if required, and rebuild / redistribute

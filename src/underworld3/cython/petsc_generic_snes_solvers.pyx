@@ -30,7 +30,10 @@ class SolverBaseClass(uw_object):
 
         super().__init__()
 
+
         self.mesh = mesh
+        self.mesh_dm_coordinate_hash = None
+
         self.Unknowns = self._Unknowns(self)
 
         self._u = self.Unknowns.u
@@ -40,7 +43,6 @@ class SolverBaseClass(uw_object):
         self._L = self.Unknowns.L # grad(u)
         self._E = self.Unknowns.E # sym part
         self._W = self.Unknowns.W # asym part
-
 
         self._order = 0 
         self._constitutive_model = None
@@ -631,7 +633,7 @@ class SNES_Scalar(SolverBaseClass):
         return
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False, debug=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
 
         mesh = self.mesh
@@ -819,7 +821,8 @@ class SNES_Scalar(SolverBaseClass):
               zero_init_guess: bool =True,
               _force_setup:    bool =False,
               verbose:         bool=False,
-              debug:           bool=False, ):
+              debug:           bool=False,
+              debug_name:      str=None ):
         """
         Generates solution to constructed system.
 
@@ -838,9 +841,19 @@ class SNES_Scalar(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose, debug=debug)
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
+                            # can insert new functions in template (surface integrals problematic in 
+                            # the current implementation )
+
+            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         gvec = self.dm.getGlobalVec()
 
@@ -1196,7 +1209,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False, debug=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
 
         N = self.mesh.N
@@ -1440,6 +1453,7 @@ class SNES_Vector(SolverBaseClass):
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
+              debug_name=None,
                ):
         """
         Generates solution to constructed system.
@@ -1456,9 +1470,19 @@ class SNES_Vector(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose, debug=debug)
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
+                            # can insert new functions in template (surface integrals problematic in 
+                            # the current implementation )
+
+            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         gvec = self.dm.getGlobalVec()
 
@@ -2216,8 +2240,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         Most of what is in the init phase that is not called by _setup_terms()
         """
 
-        if self.dm is not None:
+        # Grab the mesh
+        mesh = self.mesh
+        
+        import xxhash
+        import numpy as np
+
+        xxh = xxhash.xxh64()
+        xxh.update(np.ascontiguousarray(mesh.data))
+        mesh_dm_coord_hash = xxh.intdigest()
+
+        # if we already set up the dm and the coordinates in the mesh dm have not
+        # changed then we do not need to do everything here
+
+        if self.dm is not None and self.mesh_dm_coordinate_hash == mesh_dm_coord_hash:
             return
+
+        # Keep a note of the coordinates that we use for this setup
+        self.mesh_dm_coordinate_hash == mesh_dm_coord_hash
 
         cdef PtrContainer ext = self.compiled_extensions
 
@@ -2520,12 +2560,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self.dm = None  # Should be able to avoid nuking this if we 
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
                             # can insert new functions in template (surface integrals problematic in 
                             # the current implementation )
+
             self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         # Keep a record of these set-up parameters
         tolerance = self.tolerance
