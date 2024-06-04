@@ -73,10 +73,16 @@
                     <a class="class" href="#SolverBaseClass">SolverBaseClass</a>
                             <ul class="memberlist">
                         <li>
-                                <a class="function" href="#SolverBaseClass.add_natural_bc">add_natural_bc</a>
+                                <a class="function" href="#SolverBaseClass.__init__">SolverBaseClass</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#SolverBaseClass.add_condition">add_condition</a>
                         </li>
                         <li>
                                 <a class="function" href="#SolverBaseClass.add_essential_bc">add_essential_bc</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#SolverBaseClass.add_natural_bc">add_natural_bc</a>
                         </li>
                         <li>
                                 <a class="function" href="#SolverBaseClass.add_dirichlet_bc">add_dirichlet_bc</a>
@@ -208,17 +214,49 @@
 </div>
 
 
-                            <div id="SolverBaseClass.add_natural_bc" class="classattr">
+                            <div id="SolverBaseClass.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="def">def</span>
-        <span class="name">add_natural_bc</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">conds</span>, </span><span class="param"><span class="n">boundary</span>, </span><span class="param"><span class="n">components</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+        <span class="name">SolverBaseClass</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">mesh</span></span>)</span>
 
         
     </div>
-    <a class="headerlink" href="#SolverBaseClass.add_natural_bc"></a>
+    <a class="headerlink" href="#SolverBaseClass.__init__"></a>
     
     
+
+                            </div>
+                            <div id="SolverBaseClass.add_condition" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">add_condition</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">f_id</span>, </span><span class="param"><span class="n">c_type</span>, </span><span class="param"><span class="n">conds</span>, </span><span class="param"><span class="n">label</span>, </span><span class="param"><span class="n">components</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#SolverBaseClass.add_condition"></a>
+    
+            <div class="docstring"><p>Add a dirichlet or neumann condition to the mesh.</p>
+
+<p>This function prepares UW data to use PetscDSAddBoundary().</p>
+
+<h2 id="parameters">Parameters</h2>
+
+<p>f_id: int
+    Index of the solver's field (equation) to apply the condition.
+c_type: string
+    BC type. Either dirichlet (essential) or neumann (natural) conditions.
+conds: array_like of floats or a sympy.Matrix
+    eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
+label: string
+    The label name to apply the BC. To find a label/boundary name run something like 
+    mesh.view()
+components: array_like, single int value or None.
+    (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
+    If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
+    eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.</p>
+</div>
+
 
                             </div>
                             <div id="SolverBaseClass.add_essential_bc" class="classattr">
@@ -231,7 +269,24 @@
     </div>
     <a class="headerlink" href="#SolverBaseClass.add_essential_bc"></a>
     
+            <div class="docstring"><p>see add_condtion() docstring</p>
+</div>
+
+
+                            </div>
+                            <div id="SolverBaseClass.add_natural_bc" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">add_natural_bc</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">conds</span>, </span><span class="param"><span class="n">boundary</span>, </span><span class="param"><span class="n">components</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#SolverBaseClass.add_natural_bc"></a>
     
+            <div class="docstring"><p>see add_condtion() docstring</p>
+</div>
+
 
                             </div>
                             <div id="SolverBaseClass.add_dirichlet_bc" class="classattr">
@@ -244,7 +299,9 @@
     </div>
     <a class="headerlink" href="#SolverBaseClass.add_dirichlet_bc"></a>
     
-    
+            <div class="docstring"><p>see add_condtion() docstring</p>
+</div>
+
 
                             </div>
                             <div id="SolverBaseClass.F0" class="classattr">
@@ -373,7 +430,7 @@ physical conservation laws into this general mathematical form.</p>
                             <div id="SNES_Scalar.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">SNES_Scalar</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">u_Field</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">function</span> <span class="n">MeshVariable</span><span class="o">&gt;</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span></span>)</span>
+        <span class="name">SNES_Scalar</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">u_Field</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">function</span> <span class="n">MeshVariable</span><span class="o">&gt;</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></span>)</span>
 
         
     </div>
@@ -397,7 +454,7 @@ physical conservation laws into this general mathematical form.</p>
                                 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">solve</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">zero_init_guess</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">_force_setup</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span></span><span class="return-annotation">):</span></span>
+        <span class="name">solve</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">zero_init_guess</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">_force_setup</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">debug_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">):</span></span>
 
         
     </div>
@@ -423,9 +480,14 @@ physical conservation laws into this general mathematical form.</p>
                 <dd id="SNES_Scalar.total_instances" class="function"><a href="../utilities/_api_tools.html#uw_object.total_instances">total_instances</a></dd>
 
             </div>
+            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
+                                <dd id="SNES_Scalar.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
+
+            </div>
             <div><dt><a href="#SolverBaseClass">SolverBaseClass</a></dt>
-                                <dd id="SNES_Scalar.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
+                                <dd id="SNES_Scalar.add_condition" class="function"><a href="#SolverBaseClass.add_condition">add_condition</a></dd>
                 <dd id="SNES_Scalar.add_essential_bc" class="function"><a href="#SolverBaseClass.add_essential_bc">add_essential_bc</a></dd>
+                <dd id="SNES_Scalar.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
                 <dd id="SNES_Scalar.add_dirichlet_bc" class="function"><a href="#SolverBaseClass.add_dirichlet_bc">add_dirichlet_bc</a></dd>
                 <dd id="SNES_Scalar.F0" class="variable"><a href="#SolverBaseClass.F0">F0</a></dd>
                 <dd id="SNES_Scalar.F1" class="variable"><a href="#SolverBaseClass.F1">F1</a></dd>
@@ -434,10 +496,6 @@ physical conservation laws into this general mathematical form.</p>
                 <dd id="SNES_Scalar.DFDt" class="variable"><a href="#SolverBaseClass.DFDt">DFDt</a></dd>
                 <dd id="SNES_Scalar.constitutive_model" class="variable"><a href="#SolverBaseClass.constitutive_model">constitutive_model</a></dd>
                 <dd id="SNES_Scalar.validate_solver" class="function"><a href="#SolverBaseClass.validate_solver">validate_solver</a></dd>
-
-            </div>
-            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
-                                <dd id="SNES_Scalar.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
 
             </div>
                                 </dl>
@@ -476,7 +534,7 @@ physical conservation laws into this general mathematical form.</p>
                             <div id="SNES_Vector.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">SNES_Vector</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">u_Field</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">function</span> <span class="n">MeshVariable</span><span class="o">&gt;</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="o">=</span><span class="mi">2</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span></span>)</span>
+        <span class="name">SNES_Vector</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">u_Field</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">function</span> <span class="n">MeshVariable</span><span class="o">&gt;</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="o">=</span><span class="mi">2</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></span>)</span>
 
         
     </div>
@@ -500,7 +558,7 @@ physical conservation laws into this general mathematical form.</p>
                                 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">solve</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">zero_init_guess</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">_force_setup</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="o">=</span><span class="kc">False</span></span><span class="return-annotation">):</span></span>
+        <span class="name">solve</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">zero_init_guess</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">_force_setup</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
 
         
     </div>
@@ -526,9 +584,14 @@ physical conservation laws into this general mathematical form.</p>
                 <dd id="SNES_Vector.total_instances" class="function"><a href="../utilities/_api_tools.html#uw_object.total_instances">total_instances</a></dd>
 
             </div>
+            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
+                                <dd id="SNES_Vector.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
+
+            </div>
             <div><dt><a href="#SolverBaseClass">SolverBaseClass</a></dt>
-                                <dd id="SNES_Vector.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
+                                <dd id="SNES_Vector.add_condition" class="function"><a href="#SolverBaseClass.add_condition">add_condition</a></dd>
                 <dd id="SNES_Vector.add_essential_bc" class="function"><a href="#SolverBaseClass.add_essential_bc">add_essential_bc</a></dd>
+                <dd id="SNES_Vector.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
                 <dd id="SNES_Vector.add_dirichlet_bc" class="function"><a href="#SolverBaseClass.add_dirichlet_bc">add_dirichlet_bc</a></dd>
                 <dd id="SNES_Vector.F0" class="variable"><a href="#SolverBaseClass.F0">F0</a></dd>
                 <dd id="SNES_Vector.F1" class="variable"><a href="#SolverBaseClass.F1">F1</a></dd>
@@ -537,10 +600,6 @@ physical conservation laws into this general mathematical form.</p>
                 <dd id="SNES_Vector.DFDt" class="variable"><a href="#SolverBaseClass.DFDt">DFDt</a></dd>
                 <dd id="SNES_Vector.constitutive_model" class="variable"><a href="#SolverBaseClass.constitutive_model">constitutive_model</a></dd>
                 <dd id="SNES_Vector.validate_solver" class="function"><a href="#SolverBaseClass.validate_solver">validate_solver</a></dd>
-
-            </div>
-            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
-                                <dd id="SNES_Vector.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
 
             </div>
                                 </dl>
@@ -585,7 +644,7 @@ physical conservation laws into this general mathematical form.</p>
                             <div id="SNES_Stokes_SaddlePt.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">SNES_Stokes_SaddlePt</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">velocityField</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">MeshVariable</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">pressureField</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">MeshVariable</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="mi">2</span>,</span><span class="param">	<span class="n">p_continuous</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;stokes_pt_&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span></span>)</span>
+        <span class="name">SNES_Stokes_SaddlePt</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span><span class="p">:</span> <span class="n"><a href="../discretisation.html#Mesh">underworld3.discretisation.Mesh</a></span>,</span><span class="param">	<span class="n">velocityField</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">MeshVariable</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">pressureField</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">MeshVariable</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">degree</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="mi">2</span>,</span><span class="param">	<span class="n">p_continuous</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">solver_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;stokes_pt_&#39;</span>,</span><span class="param">	<span class="n">verbose</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">DuDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">DFDt</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n"><a href="../systems/ddt.html#SemiLagrangian">underworld3.systems.ddt.SemiLagrangian</a></span><span class="p">,</span> <span class="n"><a href="../systems/ddt.html#Lagrangian">underworld3.systems.ddt.Lagrangian</a></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></span>)</span>
 
         
     </div>
@@ -710,9 +769,14 @@ mesh and velocity configuration.</p>
                 <dd id="SNES_Stokes_SaddlePt.total_instances" class="function"><a href="../utilities/_api_tools.html#uw_object.total_instances">total_instances</a></dd>
 
             </div>
+            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
+                                <dd id="SNES_Stokes_SaddlePt.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
+
+            </div>
             <div><dt><a href="#SolverBaseClass">SolverBaseClass</a></dt>
-                                <dd id="SNES_Stokes_SaddlePt.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
+                                <dd id="SNES_Stokes_SaddlePt.add_condition" class="function"><a href="#SolverBaseClass.add_condition">add_condition</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.add_essential_bc" class="function"><a href="#SolverBaseClass.add_essential_bc">add_essential_bc</a></dd>
+                <dd id="SNES_Stokes_SaddlePt.add_natural_bc" class="function"><a href="#SolverBaseClass.add_natural_bc">add_natural_bc</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.add_dirichlet_bc" class="function"><a href="#SolverBaseClass.add_dirichlet_bc">add_dirichlet_bc</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.F0" class="variable"><a href="#SolverBaseClass.F0">F0</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.F1" class="variable"><a href="#SolverBaseClass.F1">F1</a></dd>
@@ -720,10 +784,6 @@ mesh and velocity configuration.</p>
                 <dd id="SNES_Stokes_SaddlePt.DuDt" class="variable"><a href="#SolverBaseClass.DuDt">DuDt</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.DFDt" class="variable"><a href="#SolverBaseClass.DFDt">DFDt</a></dd>
                 <dd id="SNES_Stokes_SaddlePt.constitutive_model" class="variable"><a href="#SolverBaseClass.constitutive_model">constitutive_model</a></dd>
-
-            </div>
-            <div><dt><a href="../utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
-                                <dd id="SNES_Stokes_SaddlePt.instance_number" class="variable"><a href="../utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
 
             </div>
                                 </dl>
