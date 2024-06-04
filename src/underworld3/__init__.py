@@ -169,7 +169,7 @@ __pdoc__ = {}
 
 __pdoc__["kdtree"] = False
 __pdoc__["cython"] = False
-__pdoc__["function.analytic"] = False
+# __pdoc__["function.analytic"] = False
 
 # Here we nuke some of the placeholders in the parent class so that they do not mask the
 # child class modifications

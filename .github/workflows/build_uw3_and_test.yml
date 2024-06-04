@@ -62,11 +62,9 @@ jobs:
           pytest tests/test_100[0-9]*py
 
           # Stokes solver tests
-          # Note: test_1011 will not work with petsc 3.20.4 or below 
-          # (boundary integral bugs). Drop it until conda-forge catches up
-
+      
           pytest tests/test_1010*py
-          # pytest tests/test_1011*py
+          pytest tests/test_1011*py
           pytest tests/test_1050*py
 
           # Advection/Diffusion solvers

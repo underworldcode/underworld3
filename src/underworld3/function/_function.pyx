@@ -152,7 +152,12 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None, simplify=True, verbose=False ):
+def evaluate(   expr, 
+                np.ndarray coords=None, 
+                coord_sys=None, 
+                other_arguments=None, 
+                simplify=True, 
+                verbose=False, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -199,6 +204,15 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
 
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
+
+
+    sympy.core.cache.clear_cache()
+
+    ## special case
+
+    if uw.function.fn_is_constant_expr(expr):
+        return uw.function.fn_substitute_expressions(expr, keep_constants=False)
+
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
 
@@ -212,6 +226,9 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
+
+    ## Substitute any UWExpressions for their values before calculation
+    expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
 
     if simplify:
         expr = sympy.simplify(expr)
@@ -283,6 +300,11 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             if mesh != varfn.meshvar().mesh:
                 raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
 
+    if verbose:
+        print(f"Mesh for evaluations: {mesh.name}", flush=True)
+
+
+
     if (len(varfns)==0) and (coords is None):
         raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
                            "Mesh variables can only be interpolated at coordinates.")
@@ -326,13 +348,18 @@ def evaluate( expr, np.ndarray coords=None, coord_sys=None, other_arguments=None
             xxh.update(np.ascontiguousarray(coords))
             coord_hash = xxh.intdigest()
 
+            # Note: special case: re-evaluating at the same points
+            # after updating mesh variables. This is not captured
+            # by a simple coordinate hash. We kill this in the 
+            # .access for mesh variables but this is prone to mistakes
+
             if coord_hash == mesh._evaluation_hash:
                 # if uw.mpi.rank == 0:
-                #     print("Using evaluation cache", flush=True)
+                #     print("Using uw.evaluation cache", flush=True)
                 return mesh._evaluation_interpolated_results
             else:
                 # if uw.mpi.rank == 0:
-                #     print("No evaluation cache", flush=True)
+                #     print("No uw.evaluation cache", flush=True)
                 mesh._evaluation_hash = None
                 mesh._evaluation_interpolated_results = None
 
@@ -505,7 +532,12 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 ### ------------------------------
 
-def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, simplify=True):
+def evalf(  expr, 
+            coords=None, 
+            coord_sys=None,  
+            other_arguments=None, 
+            verbose=False, 
+            simplify=True,):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -550,17 +582,35 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     """
 
-    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix )):
+    if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
 
+    sympy.core.cache.clear_cache()
+
+
+    if uw.function.fn_is_constant_expr(expr):
+        return expr.sub_all(keep_constants=False)
+
+    if (not coords is None) and not isinstance( coords, np.ndarray ):
+        raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
+
+    if coords.shape[1] not in [2,3]:
+        raise ValueError("Provided `coords` must be 2 dimensional array of coordinates.\n"
+                         "For n coordinates:  [[x_0,y_0,z_0],...,[x_n,y_n,z_n]].\n"
+                         "Note also that it is inefficient to call this function for a single evaluation,\n"
+                         "and you should instead stack up all necessary evaluations into your `coords` array\n"
+                         "and call this function once.")
+    if coords.dtype != np.double:
+        raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
+
+    ## Substitute any uw_expressions for their values before calculation
+    expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+
     if simplify:
         expr = sympy.simplify(expr)
-
-    # if coords.shape[0] == 0:
-    #     return np.zeros_like(coords)
 
     # 1. Extract UW variables.
 
@@ -607,7 +657,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
-    # Get map of all variable functions from the cache
+    # Get map of all variable functions (no cache) 
     interpolated_results = {}
 
     for varfn in varfns:
@@ -620,6 +670,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.
+
     import string
     import random
     varfns_symbols = {}
@@ -633,7 +684,6 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
     from sympy import lambdify
     from sympy.vector import CoordSys3D
     dim = coords.shape[1]
-
 
     ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
 
@@ -674,6 +724,7 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     # If passed a constant / constant matrix, then the result will not span the coordinates 
     # and we'll need to address that explicitly
+
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
@@ -686,15 +737,12 @@ def evalf( expr, coords, coord_sys=None,  other_arguments=None, verbose=False, s
 
     # 6. Return results
 
-
-
-
-
     return results
 
 
 # Go ahead and substitute for the timed version.
-# Note that we don't use the @decorator sugar here so that
+# Note that we don't use the @decorator here so that
 # we can pass in the `class_name` parameter.
+
 evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 

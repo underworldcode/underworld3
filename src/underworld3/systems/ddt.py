@@ -76,7 +76,7 @@ class SemiLagrangian(uw_object):
                     vtype=vtype,
                     degree=degree,
                     continuous=continuous,
-                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
                 )
             )
 
@@ -205,7 +205,7 @@ class SemiLagrangian(uw_object):
             if i == 0:
                 # Recalculate u_star from u_fn
                 self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.solve()
+                self._psi_star_projection_solver.solve(verbose=verbose)
 
             if evalf:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
@@ -222,11 +222,18 @@ class SemiLagrangian(uw_object):
                             )
                         )
 
+            # with self.mesh.access():
+            #     print("1:", self.psi_star[0].data, flush=True)
+
+            # with self._nswarm_psi.access():
+            #     print("1S:", self._nswarm_psi.swarmVariable.data, flush=True)
+
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
 
             # Now project to the mesh using bc's to obtain u_star
+
             self._psi_star_projection_solver.uw_function = (
                 self._nswarm_psi.swarmVariable.sym
             )
@@ -249,7 +256,7 @@ class SemiLagrangian(uw_object):
         else:
             order = max(1, min(self.order, order))
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
@@ -276,7 +283,7 @@ class SemiLagrangian(uw_object):
         else:
             order = max(1, min(self.order, order))
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
@@ -456,7 +463,7 @@ class Lagrangian(uw_object):
         if order is None:
             order = self.order
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 0:  # special case - no history term (catch )
                 bdf0 = sympy.simpify[0]
 
@@ -484,7 +491,7 @@ class Lagrangian(uw_object):
         if order is None:
             order = self.order
 
-        with sympy.core.evaluate(False):
+        with sympy.core.evaluate(True):
             if order == 0:  # Special case - no history term
                 am = self.psi_fn
 

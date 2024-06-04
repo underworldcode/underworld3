@@ -52,6 +52,8 @@ def test_stokes_boxmesh(mesh):
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    stokes.constitutive_model.Parameters.shear_modulus = 1
+    stokes.constitutive_model.Parameters.dt_elastic = sympy.sympify(1) / 10
 
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.petsc_options["ksp_type"] = "fgmres"
@@ -120,9 +122,8 @@ def test_stokes_boxmesh(mesh):
         unstructured_quad_box_regular,
     ],
 )
-@pytest.mark.xfail(reason="PeetscDMPlex boundary condition issue with gmsh")
 def test_stokes_boxmesh_bc_failure(mesh):
-    #mesh = unstructured_quad_box_regular
+    # mesh = unstructured_quad_box_regular
 
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
     mesh.dm.view()
@@ -142,6 +143,8 @@ def test_stokes_boxmesh_bc_failure(mesh):
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    stokes.constitutive_model.Parameters.shear_modulus = 1
+    stokes.constitutive_model.Parameters.dt_elastic = sympy.sympify(1) / 10
 
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.petsc_options["ksp_type"] = "fgmres"

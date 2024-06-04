@@ -28,7 +28,7 @@ def test_adv_diff_annulus():
         mesh,
         u_Field=t_soln,
         V_fn=v_soln,
-        solver_name="adv_diff",
+        solver_name="adv_diff_annulus",
     )
 
     adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
