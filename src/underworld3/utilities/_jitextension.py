@@ -100,13 +100,28 @@ def getext(
 
     time_s = time.time()
 
-    fns = (
+    raw_fns = (
         tuple(fns_residual)
         + tuple(fns_bcs)
         + tuple(fns_jacobian)
         + tuple(fns_bd_residual)
         + tuple(fns_bd_jacobian)
     )
+
+    ## Expand all functions to ensure that changes in constants are recognised
+    ## in the caching process.
+
+    expanded_fns = []
+
+    for fn in raw_fns:
+        expanded_fns.append(
+            underworld3.function.expressions.substitute(
+                fn, keep_constants=False, return_self=False
+            )
+        )
+
+    fns = tuple(expanded_fns)
+
     import os
 
     # if verbose and uw.mpi.rank == 0:
@@ -142,7 +157,7 @@ def getext(
         )
     else:
         if verbose and underworld3.mpi.rank == 0:
-            print("JIT compiled module cached ... ", flush=True)
+            print(f"JIT compiled module cached ... {jitname} ", flush=True)
 
     ## TODO: Return a dictionary to recover the function pointers from the compiled
     ## functions. Note, keep these by category as the same sympy function has
@@ -368,7 +383,7 @@ def _createext(
         ],  # for two arg Heavisides    (second arg is jump value).
     }
 
-    # Now go ahead and generate C code from subsituted Sympy expressions.
+    # Now go ahead and generate C code from substituted Sympy expressions.
     # from sympy.printing.c import C99CodePrinter
     # printer = C99CodePrinter(user_functions=custom_functions)
     from sympy.printing.c import c_code_printers
@@ -398,6 +413,8 @@ def _createext(
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0 : mesh.dim]
         else:
             fn = sympy.Matrix([fn])
+
+        fn = underworld3.function.fn_substitute_expressions(fn, keep_constants=False)
 
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))

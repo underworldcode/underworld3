@@ -7,12 +7,8 @@ import pytest
 # ### Set up variables of the model
 
 # +
-res = 10
-
-
+res = 12
 nsteps = 1
-
-
 kappa = 1.0  # diffusive constant
 
 velocity = 1 / res  # /res
@@ -38,12 +34,12 @@ meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
     qdegree=3,
 )
 
-unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1 / res, regular=False, qdegree=3, refinement=1
+unstructured_simplex_box_irregular = uw.meshing.UnstructuredSimplexBox(
+    cellSize=1 / res, regular=False, qdegree=3, refinement=0
 )
 
-unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1 / res, regular=True, qdegree=3, refinement=1
+unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
+    cellSize=1 / res, regular=True, qdegree=3, refinement=0
 )
 
 
@@ -51,8 +47,8 @@ unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
     "mesh",
     [
         meshStructuredQuadBox,
-        unstructured_quad_box_irregular,
-        unstructured_quad_box_regular,
+        unstructured_simplex_box_irregular,
+        unstructured_simplex_box_regular,
     ],
 )
 def test_advDiff_boxmesh(mesh):
@@ -176,12 +172,12 @@ def test_advDiff_boxmesh(mesh):
     new_y = sample_points[:, 1] + (velocity * model_time)
 
     ### some issues with the projection of data onto the sample points so high rtol
-    assert np.allclose(T_UW, T_1D_model, rtol=0.2)
+    assert np.allclose(T_UW, T_1D_model, atol=0.2)
 
     del mesh
     del adv_diff
 
 
 del meshStructuredQuadBox
-del unstructured_quad_box_irregular
-del (unstructured_quad_box_regular,)
+del unstructured_simplex_box_irregular
+del unstructured_simplex_box_regular

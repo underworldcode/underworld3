@@ -71,23 +71,52 @@ class uw_object(uw_object_counter):
         from textwrap import dedent
         import inspect
 
-        ## Docstring (static)
-        docstring = dedent(self_or_cls.__doc__)
-        # docstring = docstring.replace("$", "$").replace("$", "$")
-        display(Markdown(docstring))
+        ## Docstring (static / class documentation)
 
         if inspect.isclass(self_or_cls):
-            return
 
-        # if this is an object, call the object-specific view method
-        self_or_cls._object_viewer()
+            docstring = dedent(self_or_cls.__doc__)
+            # docstring = docstring.replace("$", "$").replace("$", "$")
+            display(Markdown(docstring))
+
+        else:
+            display(
+                Markdown(
+                    f"**Class**: {self_or_cls.__class__}",
+                )
+            )
+            self_or_cls._object_viewer()
 
         return
+
+    # View is similar but we can give it arguments to force the
+    # class documentation for an instance.
 
     @class_or_instance_method
-    def view(self_or_cls):
-        self_or_cls._ipython_display_()
-        return
+    def view(self_or_cls, class_documentation=False):
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+        import inspect
+
+        ## Docstring (static / class documentation)
+
+        if inspect.isclass(self_or_cls) or class_documentation == True:
+
+            docstring = dedent(self_or_cls.__doc__)
+            # docstring = docstring.replace("$", "$").replace("$", "$")
+            display(Markdown(docstring))
+
+            if class_documentation:
+                display(Markdown("---"))
+
+        if not inspect.isclass(self_or_cls):
+            display(
+                Markdown(
+                    f"**Class**: {self_or_cls.__class__}",
+                ),
+            )
+
+            self_or_cls._object_viewer()
 
     @classmethod
     def total_instances(cls):
