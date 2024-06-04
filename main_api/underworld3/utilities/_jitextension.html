@@ -189,9 +189,9 @@
 </span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a>    <span class="n">fns_bd_jacobian</span><span class="p">,</span>
 </span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a>    <span class="n">primary_field_list</span><span class="p">,</span>
 </span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a>    <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a>    <span class="n">clear_cache</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>    <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a>    <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>    <span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="n">cache</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 </span><span id="L-94"><a href="#L-94"><span class="linenos"> 94</span></a><span class="p">):</span>
 </span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 </span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a><span class="sd">    Check if we&#39;ve already created an equivalent extension</span>
@@ -227,7 +227,7 @@
 </span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>        <span class="n">jitname</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">hash</span><span class="p">((</span><span class="n">mesh</span><span class="p">,</span> <span class="n">fns</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">vars</span><span class="o">.</span><span class="n">keys</span><span class="p">()))))</span>
 </span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>
 </span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>    <span class="c1"># Create the module if not in dictionary</span>
-</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>    <span class="k">if</span> <span class="n">jitname</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_ext_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
+</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>    <span class="k">if</span> <span class="n">jitname</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_ext_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">cache</span><span class="p">:</span>
 </span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>        <span class="n">_createext</span><span class="p">(</span>
 </span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>            <span class="n">jitname</span><span class="p">,</span>
 </span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>            <span class="n">mesh</span><span class="p">,</span>
@@ -899,7 +899,7 @@
                     <div class="decorator">@timing.routine_timer_decorator</div>
 
         <span class="def">def</span>
-        <span class="name">getext</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span>,</span><span class="param">	<span class="n">fns_residual</span>,</span><span class="param">	<span class="n">fns_jacobian</span>,</span><span class="param">	<span class="n">fns_bcs</span>,</span><span class="param">	<span class="n">fns_bd_residual</span>,</span><span class="param">	<span class="n">fns_bd_jacobian</span>,</span><span class="param">	<span class="n">primary_field_list</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">clear_cache</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+        <span class="name">getext</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">mesh</span>,</span><span class="param">	<span class="n">fns_residual</span>,</span><span class="param">	<span class="n">fns_jacobian</span>,</span><span class="param">	<span class="n">fns_bcs</span>,</span><span class="param">	<span class="n">fns_bd_residual</span>,</span><span class="param">	<span class="n">fns_bd_jacobian</span>,</span><span class="param">	<span class="n">primary_field_list</span>,</span><span class="param">	<span class="n">verbose</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug</span><span class="o">=</span><span class="kc">False</span>,</span><span class="param">	<span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">cache</span><span class="o">=</span><span class="kc">True</span></span><span class="return-annotation">):</span></span>
 
                 <label class="view-source-button" for="getext-view-source"><span>View Source</span></label>
 
@@ -915,9 +915,9 @@
 </span><span id="getext-89"><a href="#getext-89"><span class="linenos"> 89</span></a>    <span class="n">fns_bd_jacobian</span><span class="p">,</span>
 </span><span id="getext-90"><a href="#getext-90"><span class="linenos"> 90</span></a>    <span class="n">primary_field_list</span><span class="p">,</span>
 </span><span id="getext-91"><a href="#getext-91"><span class="linenos"> 91</span></a>    <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="getext-92"><a href="#getext-92"><span class="linenos"> 92</span></a>    <span class="n">clear_cache</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="getext-93"><a href="#getext-93"><span class="linenos"> 93</span></a>    <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="getext-94"><a href="#getext-94"><span class="linenos"> 94</span></a>    <span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="getext-92"><a href="#getext-92"><span class="linenos"> 92</span></a>    <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="getext-93"><a href="#getext-93"><span class="linenos"> 93</span></a>    <span class="n">debug_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="getext-94"><a href="#getext-94"><span class="linenos"> 94</span></a>    <span class="n">cache</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 </span><span id="getext-95"><a href="#getext-95"><span class="linenos"> 95</span></a><span class="p">):</span>
 </span><span id="getext-96"><a href="#getext-96"><span class="linenos"> 96</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 </span><span id="getext-97"><a href="#getext-97"><span class="linenos"> 97</span></a><span class="sd">    Check if we&#39;ve already created an equivalent extension</span>
@@ -953,7 +953,7 @@
 </span><span id="getext-127"><a href="#getext-127"><span class="linenos">127</span></a>        <span class="n">jitname</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">hash</span><span class="p">((</span><span class="n">mesh</span><span class="p">,</span> <span class="n">fns</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">vars</span><span class="o">.</span><span class="n">keys</span><span class="p">()))))</span>
 </span><span id="getext-128"><a href="#getext-128"><span class="linenos">128</span></a>
 </span><span id="getext-129"><a href="#getext-129"><span class="linenos">129</span></a>    <span class="c1"># Create the module if not in dictionary</span>
-</span><span id="getext-130"><a href="#getext-130"><span class="linenos">130</span></a>    <span class="k">if</span> <span class="n">jitname</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_ext_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
+</span><span id="getext-130"><a href="#getext-130"><span class="linenos">130</span></a>    <span class="k">if</span> <span class="n">jitname</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_ext_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">cache</span><span class="p">:</span>
 </span><span id="getext-131"><a href="#getext-131"><span class="linenos">131</span></a>        <span class="n">_createext</span><span class="p">(</span>
 </span><span id="getext-132"><a href="#getext-132"><span class="linenos">132</span></a>            <span class="n">jitname</span><span class="p">,</span>
 </span><span id="getext-133"><a href="#getext-133"><span class="linenos">133</span></a>            <span class="n">mesh</span><span class="p">,</span>
