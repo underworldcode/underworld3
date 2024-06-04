@@ -206,8 +206,6 @@ class Mesh(Stateful, uw_object):
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
-
-        self.dm0 = self.dm.clone()
         self.sf1 = None
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
@@ -625,6 +623,10 @@ class Mesh(Stateful, uw_object):
 
         timing._incrementDepth()
         stime = time.time()
+
+        if writeable_vars is not None:
+            self._evaluation_hash = None
+            self._evaluation_interpolated_results = None
 
         self._accessed = True
         deaccess_list = []
@@ -1447,7 +1449,7 @@ def MeshVariable(
         mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
 
     new_meshVariable = _MeshVariable(
-        varname, mesh, num_components, vtype, degree, continuous, varsymbol
+        name, mesh, num_components, vtype, degree, continuous, varsymbol
     )
 
     if mesh._accessed:
@@ -1575,8 +1577,17 @@ class _MeshVariable(Stateful, uw_object):
         self._is_accessed = False
         self._available = False
 
+        ## Note sympy needs a unique symbol even across different meshes
+        ## or it will get confused when it clones objects. We try this: add
+        ## a label to the variable that is not rendered - CHECK this works !!!
+
         self.name = name
         self.symbol = symbol
+
+        if mesh.instance_number > 1:
+            invisible = "\,\!" * mesh.instance_number
+            self.symbol = f"{{ {{ {invisible} }} {symbol} }}"
+
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
         # ToDo: Suggest we deprecate this and require it to be set explicitly
@@ -1724,6 +1735,36 @@ class _MeshVariable(Stateful, uw_object):
 
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
+
+        return
+
+    def _object_viewer(self):
+        """This will substitute specific information about this object"""
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        # feedback on this instance
+
+        display(
+            Markdown(f"**MeshVariable:**"),
+            Markdown(
+                f"""
+  > symbol:  ${self.symbol}$  
+  > shape:   ${self.shape}$  
+  > degree:  ${self.degree}$  
+  > continuous:  `{self.continuous}`  
+  > type:    `{self.vtype.name}`"""
+            ),
+            Markdown(f"**FE Data:**"),
+            Markdown(
+                f"""
+  > PETSc field id:  ${self.field_id}$  
+  > PETSc field name:   `{self.clean_name}` """
+            ),
+        )
+
+        with self.mesh.access():
+            display(self.data),
 
         return
 
@@ -1940,8 +1981,8 @@ class _MeshVariable(Stateful, uw_object):
                 print(f"Reading data file {data_file}", flush=True)
 
             h5f = h5py.File(data_file)
-            D = h5f["fields"][data_name][()]
-            X = h5f["fields"]["coordinates"][()]
+            D = h5f["fields"][data_name][()].reshape(-1, self.shape[1])
+            X = h5f["fields"]["coordinates"][()].reshape(-1, self.mesh.dim)
 
             h5f.close()
 

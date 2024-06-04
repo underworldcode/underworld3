@@ -26,9 +26,13 @@ class SolverBaseClass(uw_object):
     """
 
 
-    def __init__(self):
+    def __init__(self, mesh):
 
         super().__init__()
+
+
+        self.mesh = mesh
+        self.mesh_dm_coordinate_hash = None
 
         self.Unknowns = self._Unknowns(self)
 
@@ -40,6 +44,7 @@ class SolverBaseClass(uw_object):
         self._E = self.Unknowns.E # sym part
         self._W = self.Unknowns.W # asym part
 
+        self._order = 0 
         self._constitutive_model = None
 
         return
@@ -130,8 +135,9 @@ class SolverBaseClass(uw_object):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+
         return
 
     def _reset(self):
@@ -153,28 +159,7 @@ class SolverBaseClass(uw_object):
         self._is_setup = False
 
         return
-    
-    def _handle_none_bcs(self, conds):
-        # converts bcs put as None to sympy.oo 
-        # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
 
-        import numpy as np
-
-        in_type = type(conds)
-        c_list = [sympy.oo if f is None else f for f in conds]
-
-        # convert to original type
-        if in_type is np.ndarray: # numpy array needs special handling
-            conv_fn = np.array(c_list)
-        else:
-            conv_fn = in_type(c_list)
-
-        # handle sympy matrices auto transpose
-        if isinstance(conds, (sympy.Matrix)):
-            conv_fn = conv_fn.T
-
-        return conv_fn
-            
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
@@ -194,97 +179,128 @@ class SolverBaseClass(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_natural_bc(self, conds, boundary, components=None):
-        
+    def add_condition(self, f_id, c_type, conds, label, components=None):
+        """
+        Add a dirichlet or neumann condition to the mesh.
+
+        This function prepares UW data to use PetscDSAddBoundary().
+
+        Parameters
+        ----------
+        f_id: int
+            Index of the solver's field (equation) to apply the condition.
+        c_type: string
+            BC type. Either dirichlet (essential) or neumann (natural) conditions.
+        conds: array_like of floats or a sympy.Matrix
+            eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
+        label: string
+            The label name to apply the BC. To find a label/boundary name run something like 
+            mesh.view()
+        components: array_like, single int value or None.
+            (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
+            If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
+            eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
+        """
+        if not isinstance(f_id, int):
+            raise("Error: f_id argument must be of type 'int' representing the solver's fields")
+
+        if c_type not in ['dirichlet', 'neumann']:
+            raise("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
+
         self.is_setup = False
         import numpy as np
 
-        try:
-            iter(conds)
-        except:
+        # process conds and error check
+        if isinstance(conds, (tuple, list)):
+            # remove all None for sympy.oo
+            conds = [sympy.oo if x is None else x for x in conds]
+        elif isinstance(conds, float):
             conds = (conds,)
+        elif isinstance(conds, sympy.Matrix):
+            conds = conds.T
+        else:
+            raise("Unsupported BC conds: " +
+                  "array_like,   i.e. conds = [None, 5, 1.2]" +
+                  "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
+        if isinstance(components, (tuple, list, int)):
+            # TODO: DECPRECATE
+            import warnings
+            warnings.warn(category=DeprecationWarning,
+                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
+                                  "The same functionality can be setup with the 'conds' argument and using\n" +
+                                  "'sympy.oo' or 'None', see docstring")
+            components = np.array(components, dtype=np.int32, ndmin=1)
 
-        if components is None:
+        elif components is None:
             cpts_list = []
             for i, fn in enumerate(conds):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
-
         else:
-            components = np.array(tuple(components), dtype=np.int32, ndmin=1)
+            raise("Unsupported BC 'components' argument")
 
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
         from collections import namedtuple
-        BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
-        self.natural_bcs.append(BC(components, sympy_fn, boundary, -1, "natural", -1, {}))
+        if c_type == 'neumann':
+            BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
+            self.natural_bcs.append(BC(f_id, components, sympy_fn, label, -1, "natural", -1, {}))
+        elif c_type == 'dirichlet':
+            BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+            self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
-    # Use FE terminology 
+
+    # Use FE terminology note f_id is 0. 
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
-        self.add_dirichlet_bc(conds, boundary, components)
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
 
     @timing.routine_timer_decorator
+    def add_natural_bc(self, conds, boundary, components=None):
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'neumann', conds, boundary, components)
+
+    @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
-        # switch to numpy arrays
-        # ndmin arg forces an array to be generated even
-        # where comps/indices is a single value.
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'dirichlet', conds, boundary, components)
 
-        self.is_setup = False
-        import numpy as np
-
-        try:
-            iter(conds)
-        except:
-            conds = (conds,)
-
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
-
-        if components is None:
-            cpts_list = []
-            for i, bc_fn in enumerate(conds):
-                if bc_fn != sympy.oo and conds != -sympy.oo:
-                    cpts_list.append(i)
-                
-            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
-
-        else:
-            components = np.array(components, dtype=np.int32, ndmin=1)
-
-
-        sympy_fn = sympy.Matrix(conds).as_immutable()
-
-        from collections import namedtuple
-        BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
 
     ## Properties that are common to all solvers
-
-    ## We should probably get rid of the F0, F1 properties
-
+    ## F0 and F1 are the force / flux terms, respectively
+    ## Solvers over-ride these to describe the problem type
     @property
     def F0(self):
-        return self._F0
-    @F0.setter
-    def F0(self, value):
-        self.is_setup = False
-        self._F0 = sympify(value)
+
+        f0 = uw.function.expression(
+            r"\mathbf{f}_0\left( \mathbf{u} \right)",
+            None,
+            "Pointwise force term: f_0(u)",
+        )
+
+        return f0
 
     @property
     def F1(self):
-        return self._F1
-    @F1.setter
-    def F1(self, value):
-        self.is_setup = False
-        self._F1 = sympify(value)
+        f1 = uw.function.expression(
+            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+            None,
+            "Pointwise flux term: F_1(u)",
+        )
+
+        return f1
 
     @property
     def u(self):
@@ -326,16 +342,26 @@ class SolverBaseClass(uw_object):
             self._constitutive_model = model_or_class
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
+            self._constitutive_model.order = self._order
+
 
         ### checking if it's a class
         elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class(self.Unknowns)
+            self._constitutive_model.order = self._order
+
+
 
         ### Raise an error if it's neither
         else:
             raise RuntimeError(
                 "constitutive_model must be a valid class or instance of a valid class"
             )
+
+        # May not work due to flux being incomplete
+        if self.Unknowns.DFDt is not None:
+            self.Unknowns.DFDt.psi_fn = self._constitutive_model.flux.T
+
 
 
     def validate_solver(self):
@@ -380,14 +406,14 @@ class SNES_Scalar(SolverBaseClass):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree: int = 2,
                  solver_name: str = "",
                  verbose    = False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
-        super().__init__()
+        super().__init__(mesh)
 
         ## Keep track
 
@@ -450,7 +476,6 @@ class SNES_Scalar(SolverBaseClass):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-        self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1,1)
         self._F1 = sympy.Matrix.zeros(1,mesh.dim)
         self.dm = None
@@ -540,6 +565,7 @@ class SNES_Scalar(SolverBaseClass):
             components = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
+                print(" - field:      {}".format(bc.f_id))
                 print(" - components: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
@@ -562,7 +588,7 @@ class SNES_Scalar(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -579,7 +605,8 @@ class SNES_Scalar(SolverBaseClass):
             component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -598,7 +625,7 @@ class SNES_Scalar(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
@@ -612,7 +639,7 @@ class SNES_Scalar(SolverBaseClass):
         return
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False, debug=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
 
         mesh = self.mesh
@@ -625,17 +652,21 @@ class SNES_Scalar(SolverBaseClass):
         ## The residual terms describe the problem and
         ## can be changed by the user in inherited classes
 
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
 
-        f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
+        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
+        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
+
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
-
+        
         U = sympy.Array(self.u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
         L = sympy.Array(self.Unknowns.L).reshape(cdim).as_immutable() # unpack one index here too
 
@@ -796,7 +827,8 @@ class SNES_Scalar(SolverBaseClass):
               zero_init_guess: bool =True,
               _force_setup:    bool =False,
               verbose:         bool=False,
-              debug:           bool=False, ):
+              debug:           bool=False,
+              debug_name:      str=None ):
         """
         Generates solution to constructed system.
 
@@ -815,9 +847,19 @@ class SNES_Scalar(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose, debug=debug)
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
+                            # can insert new functions in template (surface integrals problematic in 
+                            # the current implementation )
+
+            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         gvec = self.dm.getGlobalVec()
 
@@ -871,6 +913,39 @@ class SNES_Scalar(SolverBaseClass):
 
         return 
 
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        f0 = self.F0.value
+        F1 = self.F1.value
+        
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Poisson system solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+        )
+
+
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+
+        
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+
 
 
 
@@ -904,14 +979,16 @@ class SNES_Vector(SolverBaseClass):
     def __init__(self,
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree     = 2,
                  solver_name: str = "",
-                 verbose    = False):
+                 verbose    = False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 ):
 
 
-        super().__init__()
+
+        super().__init__(mesh)
 
         self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
@@ -970,8 +1047,6 @@ class SNES_Vector(SolverBaseClass):
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
-        
-        self.mesh = mesh
         self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
         self._F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.dm = None
@@ -1056,7 +1131,8 @@ class SNES_Vector(SolverBaseClass):
             component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1078,7 +1154,7 @@ class SNES_Vector(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -1093,7 +1169,8 @@ class SNES_Vector(SolverBaseClass):
         for index,bc in enumerate(self.essential_bcs):
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1112,7 +1189,7 @@ class SNES_Vector(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
@@ -1140,7 +1217,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     @timing.routine_timer_decorator
-    def _setup_pointwise_functions(self, verbose=False, debug=False):
+    def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
 
         N = self.mesh.N
@@ -1149,26 +1226,36 @@ class SNES_Vector(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
         ## Convert to arrays for the moment to allow 1D arrays (size dim, not 1xdim)
         ## otherwise we have many size-1 indices that we have to collapse
 
-        F0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
-        F1 = sympy.Array(self._f1).reshape(dim,dim)
+        # f0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
+        # F1 = sympy.Array(self._f1).reshape(dim,dim)
+
+        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
+        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
+
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim,dim).as_immutable()
+
+        self._u_f0 = f0
+        self._u_F1 = F1
 
         # JIT compilation needs immutable, matrix input (not arrays)
-        self._u_f0 = sympy.ImmutableDenseMatrix(F0)
+        self._u_f0 = sympy.ImmutableDenseMatrix(f0)
         self._u_F1 = sympy.ImmutableDenseMatrix(F1)
         fns_residual = [self._u_f0, self._u_F1]
 
         # This is needed to eliminate extra dims in the tensor
         U = sympy.Array(self.u.sym).reshape(dim)
 
-        G0 = sympy.derive_by_array(F0, U)
-        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(f0, U)
+        G1 = sympy.derive_by_array(f0, self.Unknowns.L)
         G2 = sympy.derive_by_array(F1, U)
         G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
@@ -1374,6 +1461,7 @@ class SNES_Vector(SolverBaseClass):
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
+              debug_name=None,
                ):
         """
         Generates solution to constructed system.
@@ -1390,9 +1478,19 @@ class SNES_Vector(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self._setup_pointwise_functions(verbose, debug=debug)
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
+                            # can insert new functions in template (surface integrals problematic in 
+                            # the current implementation )
+
+            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         gvec = self.dm.getGlobalVec()
 
@@ -1460,7 +1558,35 @@ class SNES_Vector(SolverBaseClass):
 
         return 
 
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
 
+        f0 = self.F0.value
+        F1 = self.F1.value
+        
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Vector poisson solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+        )
+
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+   
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
 ### =================================
 
@@ -1520,20 +1646,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                  mesh          : underworld3.discretisation.Mesh,
                  velocityField : Optional[underworld3.discretisation.MeshVariable] = None,
                  pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
                  solver_name   : Optional[str]                           ="stokes_pt_",
                  verbose       : Optional[bool]                           =False,
+                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                 ):
 
 
-        super().__init__()
-
+        super().__init__(mesh)
 
         self.name = solver_name
-        self.mesh = mesh
         self.verbose = verbose
         self.dm = None
 
@@ -1632,10 +1756,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.mesh._equation_systems_register.append(self)
         self._rebuild_after_mesh_update = self._setup_discretisation # probably just needs to boot the DM and then it should work
 
-        self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
-        self.PF0 = sympy.Matrix.zeros(1, 1)
+        # self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
+        # self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
+        # self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
+        # self.PF0 = sympy.Matrix.zeros(1, 1)
 
         self.essential_bcs = []
 
@@ -1694,6 +1818,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     order=self._order,
                     smoothing=0.0,
                 )
+
+        # we will not have a valid constutituve model
+        # at this point, so the flux term is empty and 
+        # will have to be filled later. 
 
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
@@ -1796,6 +1924,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     @property
     def PF0(self):
         return self._PF0
+
     @PF0.setter
     def PF0(self, value):
         self.is_setup = False
@@ -1819,6 +1948,51 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def saddle_preconditioner(self, function):
         self.is_setup = False
         self._saddle_preconditioner = function
+
+
+    ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
+    ## don't add new ones uf0, uF1 are redundant
+
+    def _object_viewer(self):
+        '''This will add specific information about this object to the generic class viewer
+        '''
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        uf0 = self.F0.value
+        uF1 = self.F1.value
+        pF0 = self.PF0.value
+        
+        if self.penalty.value == 0:
+            uF1 = self.F1.value.subs(self.penalty, self.penalty.value)
+
+        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( uF1 )+"$ + "
+        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( uf0 )+"\\color{Black} = 0 $"
+        eqp0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} " + sympy.latex( pF0 ) + " = 0 $"
+
+        # feedback on this instance
+        display(
+            Markdown(f"**Saddle point system solver**"),
+            Markdown(f"Primary problem: "),
+            Latex(eqF1), Latex(eqf0),
+            Markdown(f"Constraint: "),
+            Latex(eqp0 ),
+        )
+
+        exprs = uw.function.fn_extract_expressions(self.F0)
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
+        exprs = exprs.union(uw.function.fn_extract_expressions(self.PF0))
+
+        if len(exprs) != 0:
+            display(Markdown("*Where:*"))
+        
+            for expr in exprs:
+                expr._object_viewer(description=False)    
+
+        
+        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+
+        return
 
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
@@ -1878,18 +2052,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # r = self.mesh.CoordinateSystem.N[0]
 
         # residual terms
-        self._setup_problem_description()
+        if callable(self._setup_problem_description):
+            self._setup_problem_description()
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        F0  = sympy.Array(self._u_f0)  #.reshape(dim)
-        F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
-        FP0 = sympy.Array(self._p_f0)# .reshape(1)
+        # F0  = sympy.Array(self._u_f0)  #.reshape(dim)
+        # F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
+        # PF0 = sympy.Array(self._p_f0)# .reshape(1)
+
+        ## We don't need to use these arrays, we can specify the ordering of the indices
+        ## and do these one by one as required by PETSc. However, at the moment, this 
+        ## is working .. so be careful !!
+
+
+        F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value))
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value))
+        PF0 = sympy.Array(uw.function.fn_substitute_expressions(self.PF0.value))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)
         self._u_F1 = sympy.ImmutableDenseMatrix(F1)
-        self._p_F0 = sympy.ImmutableDenseMatrix(FP0)
+        self._p_F0 = sympy.ImmutableDenseMatrix(PF0)
 
         fns_residual = [self._u_F0, self._u_F1, self._p_F0]
 
@@ -1913,7 +2097,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         G2 = sympy.derive_by_array(F1, self.u.sym)
         G3 = sympy.derive_by_array(F1, self.Unknowns.L)
 
-        # reorganise indices from sympy to petsc ordering / reshape to Matrix form
+        # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
         # ijkl -> LJKI (hence 3120)
         # ij k -> KJ I (hence 210)
         # i jk -> J KI (hence 201)
@@ -1948,8 +2132,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(FP0, self.u.sym)
-        G1 = sympy.derive_by_array(FP0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(PF0, self.u.sym)
+        G1 = sympy.derive_by_array(PF0, self.Unknowns.L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
         # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
 
@@ -2064,8 +2248,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         Most of what is in the init phase that is not called by _setup_terms()
         """
 
-        if self.dm is not None:
+        # Grab the mesh
+        mesh = self.mesh
+        
+        import xxhash
+        import numpy as np
+
+        xxh = xxhash.xxh64()
+        xxh.update(np.ascontiguousarray(mesh.data))
+        mesh_dm_coord_hash = xxh.intdigest()
+
+        # if we already set up the dm and the coordinates in the mesh dm have not
+        # changed then we do not need to do everything here
+
+        if self.dm is not None and self.mesh_dm_coordinate_hash == mesh_dm_coord_hash:
             return
+
+        # Keep a note of the coordinates that we use for this setup
+        self.mesh_dm_coordinate_hash == mesh_dm_coord_hash
 
         cdef PtrContainer ext = self.compiled_extensions
 
@@ -2112,7 +2312,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn_f))
 
@@ -2134,7 +2335,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str("UW_Boundaries").encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -2150,7 +2351,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         for index,bc in enumerate(self.essential_bcs):
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
                 print(flush=True)
@@ -2170,7 +2372,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0, 
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0],  
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
@@ -2368,12 +2570,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.is_setup = False
 
         if (not self.is_setup):
-            self.dm = None  # Should be able to avoid nuking this if we 
+            if self.dm is not None:
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we 
                             # can insert new functions in template (surface integrals problematic in 
                             # the current implementation )
+
             self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
+        else:
+            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+            self._setup_discretisation(verbose)
+
 
         # Keep a record of these set-up parameters
         tolerance = self.tolerance

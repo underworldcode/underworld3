@@ -79,10 +79,13 @@ def test_stokes_boxmesh(mesh):
         stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x])
 
         stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
-        stokes.add_dirichlet_bc((0.0, 0.0), "Top", 0)
+        stokes.add_dirichlet_bc((0.0, None), "Top")
 
         stokes.add_dirichlet_bc((0.0, None), "Left")
-        stokes.add_dirichlet_bc((0.0, None), "Right")
+        stokes.add_condition(conds=(0.0, None), 
+                             label="Right",
+                             f_id=0, 
+                             c_type='dirichlet' )
     else:
         stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x, 0])
 
@@ -108,12 +111,6 @@ def test_stokes_boxmesh(mesh):
     return
 
 
-## Note this one fails because the corner boundary condition is not applied
-## correctly when the regular simplex mesh is used.
-## Mark as xfail for now
-
-
-@pytest.mark.xfail(reason="PetscDMPlex boundary condition issue with gmsh")
 def test_stokes_boxmesh_bc_failure():
     mesh = unstructured_quad_box_regular
 

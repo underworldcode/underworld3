@@ -101,11 +101,19 @@ class CoordinateSystem:
             self._x = self._X
 
             x, y = self.N
-            r = sympy.sqrt(x**2 + y**2)
-            t = sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True))
-            self._R = sympy.Matrix([[r, t]])
+            r = underworld3.function.expression(
+                R"r", sympy.sqrt(x**2 + y**2), "Radial Coordinate"
+            )
 
+            t = underworld3.function.expression(
+                R"\theta",
+                sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True)),
+                "Angular coordinate",
+            )
+
+            self._R = sympy.Matrix([[r, t]])
             self._r = sympy.Matrix([sympy.symbols(R"r, \theta")], real=True)
+
             th = self._r[1]
             self._rRotN_sym = sympy.Matrix(
                 [
