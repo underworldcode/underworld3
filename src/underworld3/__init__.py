@@ -60,6 +60,7 @@ This API documentation is build with
 Open `uw3_api_docs/index.html` to browse. 
 
 """
+
 from mpi4py import MPI  # for initialising MPI
 import petsc4py as _petsc4py
 import sys
@@ -74,6 +75,20 @@ from petsc4py import PETSc
 
 PETSc.Sys.popErrorHandler()
 
+
+def view():
+    from IPython.display import Latex, Markdown, display
+    from textwrap import dedent
+    import inspect
+
+    ## Docstring (static)
+    docstring = dedent(__doc__)
+    # docstring = docstring.replace("$", "$").replace("$", "$")
+    display(Markdown(docstring))
+
+    return
+
+
 # PETSc.Log().begin()
 
 # Bundle these utils
@@ -82,6 +97,7 @@ from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
 
 # Needed everywhere
+import underworld3.mpi
 from underworld3.utilities import _api_tools
 
 import underworld3.adaptivity
@@ -95,7 +111,6 @@ import underworld3.systems
 import underworld3.maths
 import underworld3.utilities
 import underworld3.kdtree
-import underworld3.mpi
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation

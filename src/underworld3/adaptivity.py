@@ -43,7 +43,8 @@ def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
         lab_is = lab.getStratumIS(b.value)
 
         # Load this up on the stack
-        stacked_bc_label.setStratumIS(b.value, lab_is)
+        if lab_is:
+            stacked_bc_label.setStratumIS(b.value, lab_is)
 
 
 def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):

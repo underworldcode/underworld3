@@ -41,6 +41,7 @@ class SemiLagrangian(uw_object):
         order=1,
         smoothing=0.0,
         under_relaxation=0.0,
+        bc_mask_fn=1,
     ):
         super().__init__()
 
@@ -62,6 +63,7 @@ class SemiLagrangian(uw_object):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
+        self.bc_mask_fn = bc_mask_fn
 
         psi_star = []
         self.psi_star = psi_star
@@ -146,8 +148,9 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional = None,
     ):
-        self.update_pre_solve(dt, evalf, verbose)
+        self.update_pre_solve(dt, evalf, verbose, dt_physical)
         return
 
     def update_post_solve(
@@ -155,6 +158,7 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
     ):
         return
 
@@ -163,21 +167,23 @@ class SemiLagrangian(uw_object):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
     ):
-        # if average_over_dt:
-        #     phi = min(1.0, dt / self.dt_physical)
-        # else:
-        #     phi = 1.0
-
-        if verbose and uw.mpi.rank == 0:
-            print(f"Update {self.psi_fn}", flush=True)
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain
 
+        if dt_physical is not None:
+            phi = min(1, dt / dt_physical)
+        else:
+            phi = sympy.sympify(1)
+
         for i in range(self.order - 1, 0, -1):
             with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+                self.psi_star[i].data[...] = (
+                    phi * self.psi_star[i - 1].data[...]
+                    + (1 - phi) * self.psi_star[i].data[...]
+                )
 
         # 2. Compute the upstream values
 
@@ -193,6 +199,7 @@ class SemiLagrangian(uw_object):
                 order=2,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+                evalf=evalf,
             )
 
             if i == 0:
@@ -200,20 +207,30 @@ class SemiLagrangian(uw_object):
                 self._psi_star_projection_solver.uw_function = self.psi_fn
                 self._psi_star_projection_solver.solve()
 
-            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
-                        self.psi_star[i].sym[d], self._nswarm_psi.data
-                    )
+            if evalf:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
+                        )
+            else:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = (
+                            uw.function.evaluate(
+                                self.psi_star[i].sym[d], self._nswarm_psi.data
+                            )
+                        )
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
-                self._nswarm_psi.data[...] = self._nswarm_psi._X0.data[...]
+                self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
 
             # Now project to the mesh using bc's to obtain u_star
             self._psi_star_projection_solver.uw_function = (
                 self._nswarm_psi.swarmVariable.sym
             )
+
             self._psi_star_projection_solver.solve()
 
             # Copy data from the projection operator if required
@@ -280,7 +297,7 @@ class SemiLagrangian(uw_object):
 
 
 ## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but
-## sets up the swarm for itself. This does not have much use - the swarm version
+## sets up the swarm for itself. This does not have a practical use-case - the swarm version
 ## is slower, more cumbersome, and less stable / accurate. The only reason to use
 ## it is if there is an existing swarm that we can re-purpose.
 
@@ -438,11 +455,12 @@ class Lagrangian(uw_object):
 
         if order is None:
             order = self.order
-        else:
-            order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order <= 1:
+            if order == 0:  # special case - no history term (catch )
+                bdf0 = sympy.simpify[0]
+
+            if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
@@ -465,11 +483,12 @@ class Lagrangian(uw_object):
     def adams_moulton_flux(self, order=None):
         if order is None:
             order = self.order
-        else:
-            order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order == 1:
+            if order == 0:  # Special case - no history term
+                am = self.psi_fn
+
+            elif order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:

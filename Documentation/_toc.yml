@@ -1,8 +1,0 @@
-format: jb-book
-root: Introduction
-parts:
-  - caption: Implementation details
-    chapters:
-      - file: ConstitutiveModels_Introduction.md
-      - file: ConstitutiveModels_Anisotropy.md
-      - file: Ex_Anisotropy.ipynb

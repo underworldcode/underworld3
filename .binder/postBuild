@@ -37,6 +37,8 @@ export PYTHONPATH=$CONDA_PREFIX/lib
 # python -c "import petsc4py; print(petsc4py.get_config())"
 # python -c "from petsc4py import PETSc; print('Imported PETSc')"
 
+# Build / install the uw3 in this repo
+
 pip install .
 
 

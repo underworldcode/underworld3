@@ -1,4 +1,25 @@
 ## pyvista helper routines
+import os
+
+def initialise():
+
+    import pyvista as pv
+
+    pv.global_theme.background = "white"
+    pv.global_theme.anti_aliasing = "msaa"
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
+
+    try:
+        if 'BINDER_LAUNCH_HOST' in os.environ or 'BINDER_REPO_URL' in os.environ:
+            pv.global_theme.jupyter_backend = "client"
+        else:
+            pv.global_theme.jupyter_backend = "trame"
+    except RuntimeError:
+        pv.global_theme.jupyter_backend = "panel"
+
+    return
 
 
 def mesh_to_pv_mesh(mesh):
@@ -6,21 +27,14 @@ def mesh_to_pv_mesh(mesh):
 
     # # Required in notebooks
     # import nest_asyncio
-
     # nest_asyncio.apply()
+
+    initialise()
 
     import os
     import shutil
     import tempfile
     import pyvista as pv
-
-    pv.global_theme.background = "white"
-    pv.global_theme.anti_aliasing = "msaa"
-    pv.global_theme.jupyter_backend = "client"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     with tempfile.TemporaryDirectory() as tmp:
         if type(mesh) == str:  # reading msh file directly
@@ -30,12 +44,7 @@ def mesh_to_pv_mesh(mesh):
             vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
             mesh.vtk(vtk_filename)
 
-        try:
-            pv.global_theme.jupyter_backend = "trame"
-            pvmesh = pv.read(vtk_filename)
-        except RuntimeError:
-            pv.global_theme.jupyter_backend = "panel"
-            pvmesh = pv.read(vtk_filename)
+        pvmesh = pv.read(vtk_filename)
 
     return pvmesh
 

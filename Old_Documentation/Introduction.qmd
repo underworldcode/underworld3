@@ -1,0 +1,26 @@
+---
+title: "Underworld 3"
+# keywords: []
+authors: 
+- name: Underworld Team
+
+exports:
+- format: pdf
+- template: arxiv_nips 
+---
+
++++
+
+Not much content in the intro at this point
+
+Update the `_toc.yml` first, then fix the rest
+
+<!-- 
+```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
+:width: 100%
+:align: center
+
+Caption
+``` 
+-->
+

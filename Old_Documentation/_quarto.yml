@@ -1,0 +1,56 @@
+project:
+  type: book
+  output-dir: _build/book
+
+book:
+  title: "Underworld3 Documentation"
+  author: "Louis Moresi"
+  date: "06/03/2024"
+  bread-crumbs: false
+  chapters:
+    - part: "Introduction"
+      chapters:
+        - index.qmd
+        - Introduction.qmd
+    - part: "Constitutive Models"
+      chapters:
+      - ConstitutiveModels_Introduction.qmd
+      - ConstitutiveModels_Anisotropy.qmd
+    - part: "Analysis of Results"
+      chapters:
+      - Visualisation.qmd
+
+  navbar:
+    search: true
+    logo: media/MansoursNightmare.png
+    background: "white"
+    foreground: "#C58812" # ANU honey colour
+
+  sidebar:
+    # logo: Images/COS-EarthSciences-800.jpg
+    # logo: Images/ANU-logo.jpg
+    background: "white"
+    # foreground: "#C58812" # ANU honey colour
+
+
+bibliography: UnderworldDocumentation.bib
+
+format:
+  html:
+    theme: flatly # united / simplex
+    linkcolor: "#C58812"
+
+    code-links:
+      - text: Open in Binder
+        icon: rocket-takeoff
+        href: https://mybinder.org/v2/gh/ANU-RSES-Education/EMSC-QuartoBook/HEAD?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
+    other-links:
+      - text: Github Repository
+        icon: github
+        href: https://github.com/ANU-RSES-Education/EMSC-QuartoBook
+  
+  pdf:
+    documentclass: scrreprt
+
+
+

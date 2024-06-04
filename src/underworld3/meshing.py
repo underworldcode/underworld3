@@ -27,7 +27,8 @@ def UnstructuredSimplexBox(
     regular: bool = False,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     """
     Generates a 2 or 3-dimensional box mesh.
@@ -48,6 +49,7 @@ def UnstructuredSimplexBox(
         Top = 12
         Right = 13
         Left = 14
+        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -56,6 +58,7 @@ def UnstructuredSimplexBox(
         Left = 14
         Front = 15
         Back = 16
+        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -93,7 +96,7 @@ def UnstructuredSimplexBox(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Box")
 
         if dim == 2:
@@ -202,6 +205,28 @@ def UnstructuredSimplexBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def box_return_coords_to_bounds(coords):
+
+        x00s = coords[:, 0] < minCoords[0]
+        x01s = coords[:, 0] > maxCoords[0]
+        x10s = coords[:, 1] < minCoords[1]
+        x11s = coords[:, 1] > maxCoords[1]
+
+        if dim == 3:
+            x20s = coords[:, 1] < minCoords[2]
+            x21s = coords[:, 1] > maxCoords[2]
+
+        coords[x00s, :] = minCoords[0]
+        coords[x01s, :] = maxCoords[0]
+        coords[x10s, :] = minCoords[1]
+        coords[x11s, :] = maxCoords[1]
+
+        if dim == 3:
+            coords[x20s, :] = minCoords[2]
+            coords[x21s, :] = maxCoords[2]
+
+        return coords
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -214,6 +239,8 @@ def UnstructuredSimplexBox(
         markVertices=True,
         refinement=refinement,
         refinement_callback=None,
+        return_coords_to_bounds=box_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     return new_mesh
@@ -228,7 +255,8 @@ def StructuredQuadBox(
     qdegree: int = 2,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     """
     Generates a 2 or 3-dimensional box mesh.
@@ -256,6 +284,7 @@ def StructuredQuadBox(
         Top = 12
         Right = 13
         Left = 14
+        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -264,6 +293,7 @@ def StructuredQuadBox(
         Left = 14
         Front = 15
         Back = 16
+        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -301,7 +331,7 @@ def StructuredQuadBox(
 
     if uw.mpi.rank == 0:
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Box")
 
         # Create Box Geometry
@@ -492,6 +522,28 @@ def StructuredQuadBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def box_return_coords_to_bounds(coords):
+
+        x00s = coords[:, 0] < minCoords[0]
+        x01s = coords[:, 0] > maxCoords[0]
+        x10s = coords[:, 1] < minCoords[1]
+        x11s = coords[:, 1] > maxCoords[1]
+
+        if dim == 3:
+            x20s = coords[:, 1] < minCoords[2]
+            x21s = coords[:, 1] > maxCoords[2]
+
+        coords[x00s, :] = minCoords[0]
+        coords[x01s, :] = maxCoords[0]
+        coords[x10s, :] = minCoords[1]
+        coords[x11s, :] = maxCoords[1]
+
+        if dim == 3:
+            coords[x20s, :] = minCoords[2]
+            coords[x21s, :] = maxCoords[2]
+
+        return coords
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -504,6 +556,8 @@ def StructuredQuadBox(
         markVertices=True,
         refinement=refinement,
         refinement_callback=None,
+        return_coords_to_bounds=box_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     return new_mesh
@@ -518,12 +572,14 @@ def SphericalShell(
     qdegree: int = 2,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 11
         Upper = 12
         Centre = 1
+        All_Boundaries = 1001
 
     import gmsh
 
@@ -537,7 +593,7 @@ def SphericalShell(
 
     if uw.mpi.rank == 0:
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Sphere")
 
         p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -557,20 +613,28 @@ def SphericalShell(
         volume = gmsh.model.getEntities(3)[0]
 
         if radiusInner > 0.0:
-            outerSurface, innerSurface = surfaces
+            for surface in surfaces:
+                if np.isclose(
+                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
+                ):
+                    gmsh.model.addPhysicalGroup(
+                        surface[0],
+                        [surface[1]],
+                        boundaries.Lower.value,
+                        name=boundaries.Lower.name,
+                    )
+                    print("Created inner boundary surface")
+                elif np.isclose(
+                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
+                ):
+                    gmsh.model.addPhysicalGroup(
+                        surface[0],
+                        [surface[1]],
+                        boundaries.Upper.value,
+                        name=boundaries.Upper.name,
+                    )
+                    print("Created outer boundary surface")
 
-            gmsh.model.addPhysicalGroup(
-                innerSurface[0],
-                [innerSurface[1]],
-                boundaries.Lower.value,
-                name=boundaries.Lower.name,
-            )
-            gmsh.model.addPhysicalGroup(
-                outerSurface[0],
-                [outerSurface[1]],
-                boundaries.Upper.value,
-                name=boundaries.Upper.name,
-            )
             gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
             gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
 
@@ -649,6 +713,7 @@ def SphericalShell(
         boundary_normals=None,
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -669,7 +734,8 @@ def QuarterAnnulus(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 1
@@ -677,6 +743,7 @@ def QuarterAnnulus(
         Left = 3
         Right = 4
         Centre = 10
+        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -692,7 +759,7 @@ def QuarterAnnulus(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("QuarterAnnulus")
 
         p0 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
@@ -807,6 +874,7 @@ def QuarterAnnulus(
         boundaries=boundaries,
         boundary_normals=None,
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        verbose=verbose,
     )
 
     # add boundary normal information to the new mesh
@@ -837,12 +905,14 @@ def Annulus(
     qdegree: int = 2,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 1
         Upper = 2
         Centre = 10
+        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -864,7 +934,7 @@ def Annulus(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Annulus")
 
         p1 = gmsh.model.geo.add_point(0.00, 0.00, 0.00, meshSize=cellSizeInner)
@@ -982,6 +1052,7 @@ def Annulus(
         refinement=refinement,
         refinement_callback=annulus_mesh_refinement_callback,
         return_coords_to_bounds=annulus_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -1006,7 +1077,8 @@ def AnnulusWithSpokes(
     qdegree: int = 2,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 10
@@ -1015,6 +1087,7 @@ def AnnulusWithSpokes(
         UpperPlus = 21
         Centre = 1
         Spokes = 99
+        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1031,7 +1104,7 @@ def AnnulusWithSpokes(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Annulus")
 
         theta = 2 * np.pi / spokes
@@ -1233,6 +1306,7 @@ def AnnulusWithSpokes(
         refinement=refinement,
         refinement_callback=annulus_mesh_refinement_callback,
         return_coords_to_bounds=annulus_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -1264,13 +1338,15 @@ def AnnulusInternalBoundary(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 1
         Internal = 2
         Upper = 3
         Centre = 10
+        All_Boundaries = 1001
 
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
@@ -1293,7 +1369,7 @@ def AnnulusInternalBoundary(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("AnnulusFS")
 
         p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize_Inner)
@@ -1448,6 +1524,7 @@ def AnnulusInternalBoundary(
         coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
         refinement_callback=annulus_internal_mesh_refinement_callback,
         return_coords_to_bounds=annulus_internal_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -1474,7 +1551,8 @@ def CubedSphere(
     simplex: bool = False,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
     The number of elements is the edge of each cube"""
@@ -1482,6 +1560,7 @@ def CubedSphere(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
+        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -1497,7 +1576,7 @@ def CubedSphere(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Cubed Sphere")
 
@@ -1665,6 +1744,7 @@ def CubedSphere(
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
         return_coords_to_bounds=sphere_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -1689,7 +1769,8 @@ def RegionalSphericalBox(
     simplex: bool = False,
     filename=None,
     refinement=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     """One section of the cube-sphere mesh - currently there is no choice of the lateral extent"""
 
@@ -1700,6 +1781,7 @@ def RegionalSphericalBox(
         South = 4
         East = 5
         West = 6
+        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -1715,7 +1797,7 @@ def RegionalSphericalBox(
         import gmsh
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Cubed Sphere")
 
@@ -1873,6 +1955,7 @@ def RegionalSphericalBox(
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
         return_coords_to_bounds=sphere_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -1907,7 +1990,8 @@ def SegmentedSphericalSurface2D(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     num_segments = numSegments
     meshRes = cellSize
@@ -1929,7 +2013,7 @@ def SegmentedSphericalSurface2D(
         options["dm_plex_gmsh_mark_vertices"] = None
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Segmented Sphere 2D Surface")
 
         # Mesh like an orange
@@ -2040,11 +2124,13 @@ def SegmentedSphericalSurface2D(
 
     # Now do this collectively
 
+    # TODO: add callbacks for refinement and out-of-box returns
     new_mesh = Mesh(
         uw_filename + ".h5",
         degree=degree,
         qdegree=qdegree,
         coordinate_system_type=CoordinateSystemType.SPHERE_SURFACE_NATIVE,
+        verbose=verbose,
     )
 
     #### May have been causing the script to hang - BK
@@ -2068,7 +2154,8 @@ def SegmentedSphericalShell(
     filename=None,
     refinement=None,
     coordinatesNative=False,
-    verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Lower = 20
@@ -2077,6 +2164,7 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
+        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments
@@ -2104,7 +2192,7 @@ def SegmentedSphericalShell(
         ## Follow the lead of the cubed sphere and make copies of a segment
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Segmented Sphere 3D")
 
@@ -2436,6 +2524,7 @@ def SegmentedSphericalShell(
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=coordinate_system,
         return_coords_to_bounds=sphere_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):
@@ -2471,12 +2560,15 @@ def SegmentedSphericalBall(
     refinement=None,
     coordinatesNative=False,
     verbosity=0,
+    gmsh_verbosity=0,
+    verbose=False,
 ):
     class boundaries(Enum):
         Upper = 30
         UpperPlus = 31
         Centre = 1
         Slices = 40
+        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments
@@ -2504,7 +2596,7 @@ def SegmentedSphericalBall(
         ## Follow the lead of the cubed sphere and make copies of a segment
 
         gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", verbosity)
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.option.setNumber("Mesh.Algorithm3D", 4)
         gmsh.model.add("Segmented Sphere 3D")
 
@@ -2802,6 +2894,7 @@ def SegmentedSphericalBall(
         refinement_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=coordinate_system,
         return_coords_to_bounds=sphere_return_coords_to_bounds,
+        verbose=verbose,
     )
 
     class boundary_normals(Enum):

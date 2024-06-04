@@ -153,6 +153,27 @@ class SolverBaseClass(uw_object):
         self._is_setup = False
 
         return
+    
+    def _handle_none_bcs(self, conds):
+        # converts bcs put as None to sympy.oo 
+        # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
+
+        import numpy as np
+
+        in_type = type(conds)
+        c_list = [sympy.oo if f is None else f for f in conds]
+
+        # convert to original type
+        if in_type is np.ndarray: # numpy array needs special handling
+            conv_fn = np.array(c_list)
+        else:
+            conv_fn = in_type(c_list)
+
+        # handle sympy matrices auto transpose
+        if isinstance(conds, (sympy.Matrix)):
+            conv_fn = conv_fn.T
+
+        return conv_fn
             
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
@@ -173,19 +194,22 @@ class SolverBaseClass(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_natural_bc(self, fn_f, boundary, components=None):
+    def add_natural_bc(self, conds, boundary, components=None):
         
         self.is_setup = False
         import numpy as np
 
         try:
-            iter(fn_f)
+            iter(conds)
         except:
-            fn_f = (fn_f,)
+            conds = (conds,)
+
+        conv_fn = self._handle_none_bcs(conds)
+        conds = conv_fn
 
         if components is None:
             cpts_list = []
-            for i, fn in enumerate(fn_f):
+            for i, fn in enumerate(conds):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
@@ -195,7 +219,7 @@ class SolverBaseClass(uw_object):
             components = np.array(tuple(components), dtype=np.int32, ndmin=1)
 
 
-        sympy_fn = sympy.Matrix(fn_f).as_immutable()
+        sympy_fn = sympy.Matrix(conds).as_immutable()
 
         from collections import namedtuple
         BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
@@ -203,12 +227,12 @@ class SolverBaseClass(uw_object):
 
     # Use FE terminology 
     @timing.routine_timer_decorator
-    def add_essential_bc(self, fn, boundary, components=None):
-        self.add_dirichlet_bc(fn, boundary, components)
+    def add_essential_bc(self, conds, boundary, components=None):
+        self.add_dirichlet_bc(conds, boundary, components)
         return
 
     @timing.routine_timer_decorator
-    def add_dirichlet_bc(self, fn, boundary, components=None):
+    def add_dirichlet_bc(self, conds, boundary, components=None):
         # switch to numpy arrays
         # ndmin arg forces an array to be generated even
         # where comps/indices is a single value.
@@ -217,14 +241,17 @@ class SolverBaseClass(uw_object):
         import numpy as np
 
         try:
-            iter(fn)
+            iter(conds)
         except:
-            fn = (fn,)
+            conds = (conds,)
+
+        conv_fn = self._handle_none_bcs(conds)
+        conds = conv_fn
 
         if components is None:
             cpts_list = []
-            for i, bc_fn in enumerate(fn):
-                if bc_fn != sympy.oo and fn != -sympy.oo:
+            for i, bc_fn in enumerate(conds):
+                if bc_fn != sympy.oo and conds != -sympy.oo:
                     cpts_list.append(i)
                 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
@@ -233,7 +260,7 @@ class SolverBaseClass(uw_object):
             components = np.array(components, dtype=np.int32, ndmin=1)
 
 
-        sympy_fn = sympy.Matrix(fn).as_immutable()
+        sympy_fn = sympy.Matrix(conds).as_immutable()
 
         from collections import namedtuple
         BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
@@ -646,9 +673,9 @@ class SNES_Scalar(SolverBaseClass):
 
             bc_label = mesh.dm.getLabel(boundary)
             bc_is = bc_label.getStratumIS(value)
-            if bc_is is None:
-                print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-                continue
+            # if bc_is is None:
+            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
+            #     continue
 
             if bc.fn_f is not None:
 
@@ -1050,7 +1077,7 @@ class SNES_Vector(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -1084,7 +1111,7 @@ class SNES_Vector(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -1272,7 +1299,8 @@ class SNES_Vector(SolverBaseClass):
             boundary_id = bc.PETScID
             
             value = self.mesh.boundaries[bc.boundary].value
-            bc_label = self.dm.getLabel(boundary)
+            bc_label = self.dm.getLabel("UW_Boundaries")
+            #bc_label = self.dm.getLabel(boundary)
             
             label_val = value            
 
@@ -2092,9 +2120,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
-            self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
+            # bc_label = self.dm.getLabel(boundary)
+            # bc_is = bc_label.getStratumIS(value)
+            # self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
@@ -2105,7 +2133,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm, 
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+                                str("UW_Boundaries").encode('utf8'), 
                                 0,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
@@ -2197,7 +2225,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary_id = bc.PETScID
             
             value = self.mesh.boundaries[bc.boundary].value
-            bc_label = self.dm.getLabel(boundary)
+            bc_label = self.dm.getLabel("UW_Boundaries")
+            # bc_label = self.dm.getLabel(boundary)
             
             label_val = value            
 
@@ -2359,6 +2388,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         if not zero_init_guess:
 
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES pre-solve - non-zero initial guess", flush=True)
+
+
             self.petsc_options.setValue("snes_max_it", 0)
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
@@ -2376,7 +2409,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         else:
             self.atol = 0.0
 
-        
+        if verbose and uw.mpi.rank == 0:
+            print(f"SNES solve - picard = {picard}", flush=True)
 
         # Picard solves if requested
 
@@ -2407,6 +2441,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef Vec clvec
         cdef DM csdm
+
+        if verbose and uw.mpi.rank == 0:
+                print(f"SNES post-solve - bcs", flush=True)
 
         # Copy solution back into user facing variables 
 
@@ -2439,7 +2476,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = lvec.array[:]
 
                 sdm.restoreLocalVec(lvec)
-
                 # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
 
 
@@ -2481,7 +2517,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         from mpi4py import MPI
 
-        comm = MPI.COMM_WORLD
+        comm = uw.mpi.comm
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         min_dx = self.mesh.get_min_radius()

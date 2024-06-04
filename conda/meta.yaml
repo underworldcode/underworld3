@@ -1,0 +1,67 @@
+{% set name = "underworld3" %}
+{% set version = "0.9b" %}
+
+package:
+  name: "{{ name|lower }}"
+  version: "{{ version }}"
+
+source:
+  git_url: https://github.com/underworldcode/underworld3
+  git_tag: development
+  git_depth: 1
+#  git_rev: 9e864dba48119c985cdaaec137945386b15505f9
+#  path: ..
+
+build:
+  number: 0
+  string: mpi_{{ mpi }}
+  script: "{{ PYTHON }} -m pip install . -vv"
+
+requirements:
+
+  build:
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+
+  host: 
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - {{ mpi }}
+    - pkg-config
+    - python
+    - setuptools
+    - cython
+    - mpi4py
+    - petsc4py>=3.21.0
+
+  run:
+    - {{ compiler('c') }}
+    - {{ mpi }}
+    - petsc4py>=3.21.0
+    - h5py * mpi_{{ mpi }}_*
+    - mpi4py
+    - cython
+    - python
+    - pint
+    - pytest
+    - typing_extensions
+    - sympy
+    - python-xxhash
+    - python-gmsh
+    - ipython
+    - typeguard
+    - nest-asyncio
+    - pyvista
+
+about:
+  home: "https://github.com/underworldcode/underworld3"
+  license: LGPL-2.0-or-later
+  license_family: GPL
+  license_file: LICENSE.md
+  summary: "Underworld3 Geodynamics code"
+  dev_url: https://github.com/underworldcode/underworld3
+
+extra:
+  maintainers:
+    - jgiordani
+    - lmoresi

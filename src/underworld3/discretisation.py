@@ -15,22 +15,9 @@ from underworld3.cython import petsc_discretisation
 
 import underworld3.timing as timing
 
-
 ## Introduce these two specific types of coordinate tracking vector objects
 
 from sympy.vector import CoordSys3D
-
-
-# class MeshBasisVec(CoordSys3D):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         return
-
-
-# class MeshSurfaceNormalVec(CoordSys3D):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         return
 
 
 @timing.routine_timer_decorator
@@ -49,6 +36,7 @@ def _from_gmsh(
 
     comm = comm or PETSc.COMM_WORLD
     options = PETSc.Options()
+    options["dm_plex_hash_location"] = None
 
     # This option allows objects to be in multiple physical groups
     # Rather than just the first one found.
@@ -150,6 +138,7 @@ class Mesh(Stateful, uw_object):
         boundaries=None,
         boundary_normals=None,
         name=None,
+        verbose=False,
         *args,
         **kwargs,
     ):
@@ -159,6 +148,8 @@ class Mesh(Stateful, uw_object):
         comm = PETSc.COMM_WORLD
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
+            if verbose and uw.mpi.rank == 0:
+                print(f"Constructing UW mesh from DMPlex object", flush=True)
             name = "plexmesh"
             self.dm = plex_or_meshfile
             self.sf0 = None  # Should we build one ?
@@ -169,6 +160,11 @@ class Mesh(Stateful, uw_object):
 
             # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
+                if verbose and uw.mpi.rank == 0:
+                    print(
+                        f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True
+                    )
+
                 self.sf0, self.dm = _from_gmsh(
                     plex_or_meshfile,
                     comm,
@@ -177,6 +173,11 @@ class Mesh(Stateful, uw_object):
                     useMultipleTags=useMultipleTags,
                 )
             elif ext.lower() == ".h5":
+                if verbose and uw.mpi.rank == 0:
+                    print(
+                        f"Constructing UW mesh from DMPlex h5 file {plex_or_meshfile}",
+                        flush=True,
+                    )
                 self.sf0, self.dm = _from_plexh5(
                     plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
                 )
@@ -187,14 +188,20 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
-        # Use grid hashing for point location
-        options = PETSc.Options()
-        options["dm_plex_hash_location"] = None
-        self.dm.setFromOptions()
-
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
+
+        ## Calling setFromOptions here causes a seg fault in the conda-forge
+        ## installation. Very strange ... what else is in the options database at
+        ## this point ?
+
+        # options.delValue("dm_plex_gmsh_mark_vertices")
+        # options.delValue("dm_plex_gmsh_multiple_tags")
+        # options.delValue("dm_plex_gmsh_use_regions")
+        # # self.dm.setFromOptions()
+
+        uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
         self.refinement_callback = refinement_callback
         self.return_coords_to_bounds = return_coords_to_bounds
@@ -205,7 +212,16 @@ class Mesh(Stateful, uw_object):
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh refinement levels: {refinement}",
+                flush=True,
+            )
+
+        uw.mpi.barrier()
+
         if not refinement is None and refinement > 0:
+
             self.dm.setRefinementUniform()
             self.dm.distribute()
 
@@ -238,7 +254,9 @@ class Mesh(Stateful, uw_object):
             self.dm = self.dm_h.clone()
 
         else:
+
             self.dm.distribute()
+
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
 
@@ -320,7 +338,19 @@ class Mesh(Stateful, uw_object):
         self.degree = degree
         self.qdegree = qdegree
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Populating mesh coordinate data",
+                flush=True,
+            )
+
         self.nuke_coords_and_rebuild()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Populating mesh coordinates {coordinate_system_type}",
+                flush=True,
+            )
 
         ## Coordinate System
 
@@ -352,6 +382,12 @@ class Mesh(Stateful, uw_object):
         else:
             self.vector = uw.maths.vector_calculus(mesh=self)
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh construction complete",
+                flush=True,
+            )
+
         super().__init__()
 
     @property
@@ -369,22 +405,56 @@ class Mesh(Stateful, uw_object):
         return self.dm.getCoordinateDim()
 
     def view(self):
+
+        import numpy as np
+
         if uw.mpi.rank == 0:
-            print(f"Mesh {self.instance}")
+            print(f"\n")
+            print(f"Mesh # {self.instance}: {self.name}\n")
 
             if len(self.vars) > 0:
-                print(f"| Variable Name       | component | degree | type        |")
-                print(f"| ------------------------------------------------------ |")
+                print(f"| Variable Name       | component | degree |     type        |")
+                print(f"| ---------------------------------------------------------- |")
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^11} |"
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
                     )
 
+                print(f"| ---------------------------------------------------------- |")
+                print("\n", flush=True)
+            else:
+                print(f"No variables are defined on the mesh\n", flush=True)
+
+        ## Boundary information
+
+        if uw.mpi.rank == 0:
+            if len(self.boundaries) > 0:
+                print(f"| Boundary Name            | ID    | Min Size | Max Size |")
+                print(f"| ------------------------------------------------------ |")
+            else:
+                print(f"No boundary labels are defined on the mesh\n")
+
+        for bd in self.boundaries:
+            l = self.dm.getLabel(bd.name)
+            if l:
+                i = l.getStratumSize(bd.value)
+            else:
+                i = 0
+
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+            if uw.mpi.rank == 0:
                 print(
-                    f"| ------------------------------------------------------ |",
-                    flush=True,
+                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
                 )
+
+        if uw.mpi.rank == 0:
+            print(f"| ------------------------------------------------------ |")
+            print("\n", flush=True)
+
+        ## Information on the mesh DM
+        self.dm.view()
 
     def clone_dm_hierarchy(self):
         """
@@ -425,7 +495,6 @@ class Mesh(Stateful, uw_object):
             self.isSimplex,
             self.qdegree,
             "meshproj_{}_".format(self.mesh_instances),
-            PETSc.COMM_SELF,
         )
 
         if (
@@ -435,18 +504,6 @@ class Mesh(Stateful, uw_object):
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
-
-        ## LM ToDo: check if this is still a valid issue under 3.18.x / 3.19.x
-        # if self.degree == 1:
-        #     # We have to be careful as a projection onto an equivalent PETScFE can cause problematic
-        #     # issues with petsc that we see in parallel - in which case there is a fallback, pass no
-        #     # PETScFE and let PETSc decide. Note that the petsc4py wrapped version does not allow this
-        #     # (but it should !)
-
-        #     self.dm.projectCoordinates(self.petsc_fe)
-
-        # else:
-        #     uw.cython.petsc_discretisation.petsc_dm_project_coordinates(self.dm)
 
         # now set copy of this array into dictionary
 
@@ -728,9 +785,22 @@ class Mesh(Stateful, uw_object):
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
 
-        import os
-
         output_base_name = os.path.join(outputPath, filename)
+
+        # check the directory where we will write checkpoint
+        dir_path = os.path.dirname(output_base_name)  # get directory
+
+        # check if path exists
+        if os.path.exists(os.path.abspath(dir_path)):  # easier to debug abs
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")
+
+        # check if we have write access
+        if os.access(os.path.abspath(dir_path), os.W_OK):
+            pass
+        else:
+            raise RuntimeError(f"No write access to {os.path.abspath(dir_path)}")
 
         # Checkpoint the mesh file itself if required
 
@@ -905,6 +975,9 @@ class Mesh(Stateful, uw_object):
 
         viewer(self.dm)
 
+        # Not sure if the files are correctly written if we do not explicitly destroy the viewer
+        viewer.destroy()
+
     def vtk(self, filename: str):
         """
         Save mesh to the specified file
@@ -912,6 +985,7 @@ class Mesh(Stateful, uw_object):
 
         viewer = PETSc.Viewer().createVTK(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self.dm)
+        viewer.destroy()
 
     def generate_xdmf(self, filename: str):
         """
@@ -1013,6 +1087,7 @@ class Mesh(Stateful, uw_object):
         return arrcopy
 
     def _build_kd_tree_index(self):
+
         if hasattr(self, "_index") and self._index is not None:
             return
 
@@ -1025,66 +1100,38 @@ class Mesh(Stateful, uw_object):
         # at gauss points. These will then be used as basis for
         # kd-tree indexing back to owning cells.
 
-        tempSwarm = Swarm(self)
+        from petsc4py import PETSc
+
+        tempSwarm = PETSc.DMSwarm().create()
+        tempSwarm.setDimension(self.dim)
+        tempSwarm.setCellDM(self.dm)
+        tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
+
         # 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
+
+        tempSwarm.finalizeFieldRegister()
+        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 4)
 
         # We can't use our own populate function since this needs THIS kd_tree to exist
         # We will need to use a standard layout instead
 
-        tempSwarm.dm.finalizeFieldRegister()
-        tempSwarm.dm.insertPointUsingCellDM(SwarmPICLayout.GAUSS.value, 3)
+        ## ?? is this required given no migration ??
+        tempSwarm.migrate(remove_sent_points=True)
 
-        with tempSwarm.access():
-            # Build index on particle coords
-            self._indexCoords = tempSwarm.particle_coordinates.data.copy()
-            self._index = uw.kdtree.KDTree(self._indexCoords)
-            self._index.build_index()
+        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
+        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
 
-            # Grab mapping back to cell_ids.
-            # Note that this is the numpy array that we eventually return from this
-            # method. As such, we take measures to ensure that we use `numpy.int64` here
-            # because we cast from this type in  `_function.evaluate` to construct
-            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
-            # will cause bugs that are difficult to find.
+        self._indexCoords = PIC_coords.copy()
+        self._index = uw.kdtree.KDTree(self._indexCoords)
+        self._index.build_index()
+        self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
 
-            self._indexMap = numpy.array(
-                tempSwarm.particle_cellid.data[:, 0], dtype=numpy.int64
-            )
+        tempSwarm.restoreField("DMSwarmPIC_coor")
+        tempSwarm.restoreField("DMSwarm_cellid")
 
-        # Use the "OK" version above to find these lengths
-        (
-            self._min_size,
-            self._radii,
-            self._centroids,
-            self._search_lengths,
-        ) = self._get_mesh_sizes()
+        tempSwarm.destroy()
 
-        ## Now, we can use this information to rebuild the index more carefully
-        """
-        tempSwarm2 = Swarm(self)
-        tempSwarm2.populate(fill_param=4)
-
-        with tempSwarm2.access():
-            # Build index on particle coords
-            self._indexCoords = tempSwarm2.particle_coordinates.data.copy()
-            self._index = uw.kdtree.KDTree(self._indexCoords)
-            self._index.build_index()
-
-            # Grab mapping back to cell_ids.
-            # Note that this is the numpy array that we eventually return from this
-            # method. As such, we take measures to ensure that we use `numpy.int64` here
-            # because we cast from this type in  `_function.evaluate` to construct
-            # the PETSc cell-sf datasets, and if instead a `numpy.int32` is used it
-            # will cause bugs that are difficult to find.
-
-            self._indexMap = numpy.array(
-                tempSwarm2.particle_cellid.data[:, 0], dtype=numpy.int64
-            )
-
-        # update these
-        self._min_sizes, self._radii, self._centroids, self._search_lengths = self._get_mesh_sizes()
-        """
         return
 
     @timing.routine_timer_decorator
@@ -1307,6 +1354,32 @@ class Mesh(Stateful, uw_object):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
+    def meshVariable_mask_from_label(self, label_name, label_value):
+        """Extract single label value and make a point mask"""
+
+        meshVar = MeshVariable(
+            f"Mask_{label_name}_{label_value}",
+            self,
+            vtype=uw.VarType.SCALAR,
+            degree=1,
+            continuous=True,
+            varsymbol=rf"\cal{{M}}^{{[{label_name:.4}]}}",
+        )
+
+        point_indices = petsc_dm_find_labeled_points_local(
+            self.dm,
+            label_name,
+            label_value,
+            sectionIndex=False,
+        )
+
+        with self.access(meshVar):
+            meshVar.data[...] = 0.0
+            if point_indices is not None:
+                meshVar.data[point_indices] = 1.0
+
+        return meshVar
+
 
 ## Here we check the existence of the meshVariable and so on before defining a new one
 ## (and potentially losing the handle to the old one)
@@ -1385,8 +1458,6 @@ def MeshVariable(
         dm0.copyFields(dm1)
         dm1.createDS()
 
-        # print(f"{uw.mpi.rank}: Here 1", flush=True)
-
         mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
 
         mesh._lvec.destroy()
@@ -1397,8 +1468,6 @@ def MeshVariable(
         # Copy the array data and push to gvec
         new_gvec_sub.array[...] = old_gvec.array[...]
         new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
-
-        # print(f"{uw.mpi.rank}: Here 2", flush=True)
 
         # Copy the data to mesh._lvec and delete gvec
         dm1.globalToLocal(new_gvec, mesh._lvec)
@@ -1849,6 +1918,12 @@ class _MeshVariable(Stateful, uw_object):
         output_base_name = os.path.join(outputPath, data_filename)
         data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
 
+        # check if data_file exists
+        if os.path.isfile(os.path.abspath(data_file)):
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(data_file)} does not exist")
+
         import h5py
         import numpy as np
 
@@ -1860,6 +1935,9 @@ class _MeshVariable(Stateful, uw_object):
             data_name=None,
         ):
             """Read the mesh data as a swarm-like value"""
+
+            if verbose and uw.mpi.rank == 0:
+                print(f"Reading data file {data_file}", flush=True)
 
             h5f = h5py.File(data_file)
             D = h5f["fields"][data_name][()]
@@ -2459,3 +2537,80 @@ def meshVariable_lookup_by_symbol(mesh, sympy_object):
                     return meshvar, comp
 
     return None
+
+
+def petsc_dm_find_labeled_points_local(
+    dm, label_name, label_value, sectionIndex=False, verbose=False
+):
+    """Identify local points associated with "Label"
+
+    dm -> expects a petscDM object
+    label_name -> "String Name for Label"
+    sectionIndex -> False: leave points as indexed by the relevant section on the dm
+                    True: index into the local coordinate array
+
+    NOTE: Assumes uniform element types
+    """
+
+    import numpy as np
+
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    fStart, fEnd = dm.getDepthStratum(2)
+
+    # print(f"Label: {label_name} / {label_value}")
+    # print(f"points: {pStart}: {pEnd}")
+    # print(f"edges : {eStart}: {eEnd}")
+    # print(f"faces : {fStart}: {fEnd}")
+    # print(f"", flush=True)
+
+    label = dm.getLabel(label_name)
+    if not label:
+        if uw.mpi.rank == 0:
+            print(f"Label {label_name} is not present on the dm")
+        return np.array([0])
+
+    pointIS = dm.getStratumIS("depth", 0)
+    edgeIS = dm.getStratumIS("depth", 1)
+    faceIS = dm.getStratumIS("depth", 2)
+
+    point_indices = pointIS.getIndices()
+    edge_indices = edgeIS.getIndices()
+    face_indices = faceIS.getIndices()
+
+    # _, iset_lab = label.convertToSection()
+    iset_lab = label.getStratumIS(label_value)
+    if not iset_lab:
+        return None
+
+    # We need to associate edges and faces with their point indices to
+    # build a field representation
+
+    IndicesP = np.intersect1d(iset_lab.getIndices(), pointIS.getIndices())
+    IndicesE = np.intersect1d(iset_lab.getIndices(), edgeIS.getIndices())
+    IndicesF = np.intersect1d(iset_lab.getIndices(), faceIS.getIndices())
+
+    # print(f"Label {label_name}")
+    # print(f"P -> {len(IndicesP)}, E->{len(IndicesE)}, F->{len(IndicesF)},")
+
+    IndicesFe = np.empty((IndicesF.shape[0], dm.getConeSize(fStart)), dtype=int)
+    for f in range(IndicesF.shape[0]):
+        IndicesFe[f] = dm.getCone(IndicesF[f])
+
+    IndicesFE = np.union1d(IndicesE, IndicesFe)
+
+    # All faces are now recorded as edges
+
+    IndicesFEP = np.empty((IndicesFE.shape[0], dm.getConeSize(eStart)), dtype=int)
+
+    for e in range(IndicesFE.shape[0]):
+        IndicesFEP[e] = dm.getCone(IndicesFE[e])
+
+    # all faces / edges are now points
+
+    if sectionIndex:
+        Indices = np.union1d(IndicesP, IndicesFEP)
+    else:
+        Indices = np.union1d(IndicesP, IndicesFEP) - pStart
+
+    return Indices
