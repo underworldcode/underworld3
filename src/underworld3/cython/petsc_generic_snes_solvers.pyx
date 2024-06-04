@@ -159,28 +159,7 @@ class SolverBaseClass(uw_object):
         self._is_setup = False
 
         return
-    
-    def _handle_none_bcs(self, conds):
-        # converts bcs put as None to sympy.oo 
-        # assumes that all bc are inputted as either list, tuple, numpy array, sympy matrix
 
-        import numpy as np
-
-        in_type = type(conds)
-        c_list = [sympy.oo if f is None else f for f in conds]
-
-        # convert to original type
-        if in_type is np.ndarray: # numpy array needs special handling
-            conv_fn = np.array(c_list)
-        else:
-            conv_fn = in_type(c_list)
-
-        # handle sympy matrices auto transpose
-        if isinstance(conds, (sympy.Matrix)):
-            conv_fn = conv_fn.T
-
-        return conv_fn
-            
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
@@ -200,83 +179,108 @@ class SolverBaseClass(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_natural_bc(self, conds, boundary, components=None):
-        
+    def add_condition(self, f_id, c_type, conds, label, components=None):
+        """
+        Add a dirichlet or neumann condition to the mesh.
+
+        This function prepares UW data to use PetscDSAddBoundary().
+
+        Parameters
+        ----------
+        f_id: int
+            Index of the solver's field (equation) to apply the condition.
+        c_type: string
+            BC type. Either dirichlet (essential) or neumann (natural) conditions.
+        conds: array_like of floats or a sympy.Matrix
+            eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
+        label: string
+            The label name to apply the BC. To find a label/boundary name run something like 
+            mesh.view()
+        components: array_like, single int value or None.
+            (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
+            If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
+            eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
+        """
+        if not isinstance(f_id, int):
+            raise("Error: f_id argument must be of type 'int' representing the solver's fields")
+
+        if c_type not in ['dirichlet', 'neumann']:
+            raise("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
+
         self.is_setup = False
         import numpy as np
 
-        try:
-            iter(conds)
-        except:
+        # process conds and error check
+        if isinstance(conds, (tuple, list)):
+            # remove all None for sympy.oo
+            conds = [sympy.oo if x is None else x for x in conds]
+        elif isinstance(conds, float):
             conds = (conds,)
+        elif isinstance(conds, sympy.Matrix):
+            conds = conds.T
+        else:
+            raise("Unsupported BC conds: " +
+                  "array_like,   i.e. conds = [None, 5, 1.2]" +
+                  "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
+        if isinstance(components, (tuple, list, int)):
+            # TODO: DECPRECATE
+            import warnings
+            warnings.warn(category=DeprecationWarning,
+                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
+                                  "The same functionality can be setup with the 'conds' argument and using\n" +
+                                  "'sympy.oo' or 'None', see docstring")
+            components = np.array(components, dtype=np.int32, ndmin=1)
 
-        if components is None:
+        elif components is None:
             cpts_list = []
             for i, fn in enumerate(conds):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
-
         else:
-            components = np.array(tuple(components), dtype=np.int32, ndmin=1)
+            raise("Unsupported BC 'components' argument")
 
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
         from collections import namedtuple
-        BC = namedtuple('NaturalBC', ['components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
-        self.natural_bcs.append(BC(components, sympy_fn, boundary, -1, "natural", -1, {}))
+        if c_type == 'neumann':
+            BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
+            self.natural_bcs.append(BC(f_id, components, sympy_fn, label, -1, "natural", -1, {}))
+        elif c_type == 'dirichlet':
+            BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
+            self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
-    # Use FE terminology 
+
+    # Use FE terminology note f_id is 0. 
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
-        self.add_dirichlet_bc(conds, boundary, components)
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
 
     @timing.routine_timer_decorator
+    def add_natural_bc(self, conds, boundary, components=None):
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'neumann', conds, boundary, components)
+
+    @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
-        # switch to numpy arrays
-        # ndmin arg forces an array to be generated even
-        # where comps/indices is a single value.
+        """
+        see add_condtion() docstring
+        """
+        self.add_condition(0, 'dirichlet', conds, boundary, components)
 
-        self.is_setup = False
-        import numpy as np
-
-        try:
-            iter(conds)
-        except:
-            conds = (conds,)
-
-        conv_fn = self._handle_none_bcs(conds)
-        conds = conv_fn
-
-        if components is None:
-            cpts_list = []
-            for i, bc_fn in enumerate(conds):
-                if bc_fn != sympy.oo and conds != -sympy.oo:
-                    cpts_list.append(i)
-                
-            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
-
-        else:
-            components = np.array(components, dtype=np.int32, ndmin=1)
-
-
-        sympy_fn = sympy.Matrix(conds).as_immutable()
-
-        from collections import namedtuple
-        BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-        self.essential_bcs.append(BC(components,sympy_fn, boundary, -1,  'essential', -1))
 
     ## Properties that are common to all solvers
-
     ## F0 and F1 are the force / flux terms, respectively
     ## Solvers over-ride these to describe the problem type
-
     @property
     def F0(self):
 
@@ -561,6 +565,7 @@ class SNES_Scalar(SolverBaseClass):
             components = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
+                print(" - field:      {}".format(bc.f_id))
                 print(" - components: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
@@ -583,7 +588,7 @@ class SNES_Scalar(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -600,7 +605,8 @@ class SNES_Scalar(SolverBaseClass):
             component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -619,7 +625,7 @@ class SNES_Scalar(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
@@ -1125,7 +1131,8 @@ class SNES_Vector(SolverBaseClass):
             component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1147,7 +1154,7 @@ class SNES_Vector(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -1162,7 +1169,8 @@ class SNES_Vector(SolverBaseClass):
         for index,bc in enumerate(self.essential_bcs):
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
 
@@ -1181,7 +1189,7 @@ class SNES_Vector(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
@@ -2304,7 +2312,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn_f))
 
@@ -2326,7 +2335,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str("UW_Boundaries").encode('utf8'), 
-                                0,  # field ID in the DM
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0], 
                                 <void (*)() noexcept>NULL, 
@@ -2342,7 +2351,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         for index,bc in enumerate(self.essential_bcs):
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
-                print(" - component: {}".format(bc.components))
+                print(" - field:      {}".format(bc.f_id))
+                print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
                 print(" - fn:         {} ".format(bc.fn))
                 print(flush=True)
@@ -2362,7 +2372,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 bc_type, 
                                 str(boundary+f"{bc.components}").encode('utf8'), 
                                 str(boundary).encode('utf8'), 
-                                0, 
+                                bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0],  
                                 <void (*)() noexcept>ext.fns_bcs[fn_index], 
