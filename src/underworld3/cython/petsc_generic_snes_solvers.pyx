@@ -173,18 +173,22 @@ class SolverBaseClass(uw_object):
         return
 
     @timing.routine_timer_decorator
-    def add_condition(self, f_id, c_type, conds, boundary, components):
+    def add_condition(self, f_id, c_type, conds, label, components=None):
         """
+        Add a dirichlet or neumann condition to the mesh.
+
+        This function prepares UW data to use PetscDSAddBoundary().
+
         Parameters
         ----------
         f_id: int
-            Index of the sovle's field to apply the condition.
+            Index of the solver's field (equation) to apply the condition.
         c_type: string
-            BC type. Either dirichlet (essential) or neumman (natural) conditions.
+            BC type. Either dirichlet (essential) or neumann (natural) conditions.
         conds: array_like of floats or a sympy.Matrix
             eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
-        boundary: string
-            The label name to apply the BC. To find a boundary name run something like 
+        label: string
+            The label name to apply the BC. To find a label/boundary name run something like 
             mesh.view()
         components: array_like, single int value or None.
             (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
@@ -213,16 +217,22 @@ class SolverBaseClass(uw_object):
                   "array_like,   i.e. conds = [None, 5, 1.2]" +
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 
-        if components is None:
+        if isinstance(components, (tuple, list, int)):
+            # TODO: DECPRECATE
+            import warnings
+            warnings.warn(category=DeprecationWarning,
+                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
+                                  "The same functionality can be setup with the 'conds' argument and using\n" +
+                                  "'sympy.oo' or 'None', see docstring")
+            components = np.array(components, dtype=np.int32, ndmin=1)
+
+        elif components is None:
             cpts_list = []
             for i, fn in enumerate(conds):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
-
-        elif isinstance(components, (tuple, list, int)):
-            components = np.array(components, dtype=np.int32, ndmin=1)
         else:
             raise("Unsupported BC 'components' argument")
 
@@ -232,25 +242,33 @@ class SolverBaseClass(uw_object):
         from collections import namedtuple
         if c_type == 'neumann':
             BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
-            self.natural_bcs.append(BC(f_id, components, sympy_fn, boundary, -1, "natural", -1, {}))
+            self.natural_bcs.append(BC(f_id, components, sympy_fn, label, -1, "natural", -1, {}))
         elif c_type == 'dirichlet':
             BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-            self.essential_bcs.append(BC(f_id, components,sympy_fn, boundary, -1,  'essential', -1))
+            self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
 
     # Use FE terminology note f_id is 0. 
-    # The solver needs the to record unknown's indicies. Will add later - JG
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
+        """
+        see add_condtion() docstring
+        """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
 
     @timing.routine_timer_decorator
     def add_natural_bc(self, conds, boundary, components=None):
+        """
+        see add_condtion() docstring
+        """
         self.add_condition(0, 'neumann', conds, boundary, components)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
+        """
+        see add_condtion() docstring
+        """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
 
     @property
