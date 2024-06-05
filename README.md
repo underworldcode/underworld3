@@ -40,4 +40,9 @@ To clean the git repository or all files ... be careful.
 ./clean.sh
 ```
 
+## Testing
 
+Run the script
+```shell
+./test.sh
+```

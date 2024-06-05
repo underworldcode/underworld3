@@ -1,19 +1,17 @@
-from typing import Optional, Tuple, Union
+import petsc4py.PETSc as PETSc
 
 import numpy as np
 import sympy
-from mpi4py import MPI
-import petsc4py.PETSc as PETSc
+import h5py
+import os
+import warnings
+from typing import Optional, Tuple
 
 import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 
 import underworld3.timing as timing
-
-import h5py
-import os
-import warnings
 
 comm = uw.mpi.comm
 
