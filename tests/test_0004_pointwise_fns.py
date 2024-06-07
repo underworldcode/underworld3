@@ -139,7 +139,7 @@ def test_getext_meshVar():
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2/cy_ext.h")
     assert (
-        r"Processing JIT    5 / Matrix([[\mathbf{v}_{ 0,1}(N.x, N.y)/\mathbf{v}_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
+        r"Processing JIT    5 / Matrix([[{\mathbf{v}}_{ 0,1}(N.x, N.y)/{\mathbf{v}}_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
         in captured_setup_solver
     )
 
