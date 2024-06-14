@@ -32,13 +32,15 @@ requirements:
     - setuptools
     - cython
     - mpi4py
+    - petsc>=3.21.0
     - petsc4py>=3.21.0
 
   run:
     - {{ compiler('c') }}
     - {{ mpi }}
-    - petsc4py>=3.21.0
     - h5py * mpi_{{ mpi }}_*
+    - petsc>=3.21.0
+    - petsc4py>=3.21.0
     - mpi4py
     - cython
     - python
