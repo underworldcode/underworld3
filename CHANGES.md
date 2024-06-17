@@ -2,23 +2,28 @@ CHANGES: Underworld3
 ====================
 
 
-```{note}
-Test
-```
+
+# 2024-04-30
+
+  - uw expressions (sympy symbols that contain other expressions / functions)
+  - use uw expressions for viscoplastic / viscoelastic constitutive models.
+
+# 2024-01-31 
+
+ - Introduce particle sub-steps along path to improve accuracy in advection schemes
+ - Bug fixes associated with benchmarking
+ - Finalise the ability to create Meshvariables / Swarmvariables (with proxies) on the fly
 
 
-```python
+# 2023-12-12
 
-```
-
-```python
-
-```
+  - Surface integrals implementation in weak form (integrated into boundary conditions)
+  - DDt interface (Semi-Lagrangian, Lagrangian)
+  - Solver base class, add an Unknowns class to manage generic form of unknowns
 
 # 2023-08-27
 
   - Geometrical multigrid (necessary changes to DM setup)
-
 
 ## 2023-05-20
 
@@ -26,7 +31,6 @@ Test
   - function.evalf is the rbf equivalent to function.evaluate it is fast but approximate
 
 ## 2023-03-29
-
 
   - Swarm reading using kd-tree to speed up locations
   - Swarm cycling now reverts to positions defined on the mesh and uses randomness to avoid 
@@ -45,7 +49,6 @@ Test
 
 ## 2023-01-15
 
-
  - >10000 core runs / timings
  - swarm checkpointing
  - mesh checkpointing
@@ -57,10 +60,7 @@ Test
 
 ## Release 0.3.0 
 
-
- * Um
-
-
+ * Quarterly tidy up
 
 ## 2021-08-12
 
@@ -74,6 +74,7 @@ Test
   the swarm variable. Currently we use the SciPy
   kdtree methods to map from swarm variables to 
   mesh variable nodes. 
+
 * Added the `Stateful` mixin which helps to keep 
   track of the state of objects. 
 
@@ -87,9 +88,7 @@ Test
 
 ## Release 0.0.2 []
 
-
-* Addition of `underworld3.maths.Integral` class for calculating
-  integrals via PETSc & UW3 JIT method. 
+* Addition of `underworld3.maths.Integral` class for calculating integrals via PETSc & UW3 JIT method. 
 * Rearrangement of UW3 classes to closer align with UW2.
 * Addition of Rayleigh-Taylor model.
 

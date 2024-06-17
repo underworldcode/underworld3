@@ -1,5 +1,11 @@
 #!/bin/bash -x
 
+## Testing script (runs pytest in batches)
+#
+#  We do not run one monolithic pytest because tests produce a large number of 
+#  PETSc objects which we cannot always guarantee to free. This may be a bug / design
+#  problem with the current implementation of petsc4py 
+
 # Run simple tests
 pytest tests/test_00*py
 
@@ -14,4 +20,4 @@ pytest tests/test_1010*py tests/test_1011*py tests/test_1050*py
 
 # Diffusion / Advection tests
 pytest tests/test_1100*py
-# pytest tests/test_1110*py # Interpolation issue
+pytest tests/test_1110*py # Interpolation issue
