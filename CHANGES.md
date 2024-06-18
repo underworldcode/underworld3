@@ -3,6 +3,13 @@ CHANGES: Underworld3
 
 
 
+# 2024-06-15
+
+  - Add JOSS submission information 
+  - Add licence file (licensing code and documentation in line with UW1 and UW2)
+  - Add quickstart guide (and test on binder)
+  - Clean up repository files
+
 # 2024-04-30
 
   - uw expressions (sympy symbols that contain other expressions / functions)
