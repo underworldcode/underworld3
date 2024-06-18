@@ -14,20 +14,20 @@ authors:
     affiliation: "1" # (Multiple affiliations must be quoted)
   - name: John Mansour
     equal-contrib: true # (This is how you can denote equal contributions between multiple authors)
-    affiliation: 2
+    affiliation: "2"
   - name: Julian Giordani
     corresponding: true # (This is how to denote the corresponding author)
-    affiliation: 3
+    affiliation: "3"
   - name: Ben Knight
-    affiliation: 4
+    affiliation: "4"
 affiliations:
  - name: Research School of Earth Sciences, Australian National University, Canberra, Australia
    index: 1
  - name: In the Navy, People Village, Melbourne, Australia
    index: 2
- - name: Crapola University, Sydney, Australia
+ - name: University of Kidney, Sydney, Australia
    index: 3
- - name: Curtains University, Perth, Australia
+ - name: Its Curtains for You University, Perth, Australia
    index: 4
  - name: Crappier than number 1, 2 or 3 (maybe 4), Someplace, Australia
    index: 5
@@ -70,12 +70,12 @@ format.
 
 # Figures
 
-Figures can be included like this:
+<!-- Figures can be included like this:
 ![Caption for example figure.\label{fig:example}](figure.png)
 and referenced from text using \autoref{fig:example}.
 
 Figure sizes can be customized by adding an optional second parameter:
-![Caption for example figure.](figure.png){ width=20% }
+![Caption for example figure.](figure.png){ width=20% } -->
 
 # Acknowledgements
 
