@@ -26,6 +26,20 @@ Underworld3 leans heavily on the `petsc4py` and `sympy` packages. `petsc4py` wra
 
 In Underworld3, we prefer to use snake_case naming for functions, properties and variables, camelCase for classes. We also know that we are not completely consistent at present. Sorry !
 
+## Type safety / variable-type hints
+
+We use `typing` for this.
+
+*[To Do: Add instructions and explain how to avoid circular import problems when using uw3 types]*
+
+## Cython considerations
+
+Many `underworld3` objects carry underlying `C` objects that they manage and there is usually some `cython` code that handles the interaction between the two. We use `cython` explicitly for some of this wrapper code and it is present implictly because we make heavy use of the `petsc4py` module. 
+
+`cython` objects may require explicit deletion (because python cannot always drill down to the `C` layer to find objects that are ready for automatic deletion). We strongly encourage the use of the `destroy()` method that is available for many `petsc4py` objects when you are sure the object is no longer required by you. Be aware that lists of pointers to `PETSc` objects may prevent them being automatically deleted and use the `weakref` module to avoid this problem.
+
+Where possible, keep pure python functions in separate source files from `cython` functions as this improves our ability to run the `pdoc` automatic documentation correctly. Generally speaking, the `cython` level of the API is the furthest from the end-user and the least likely to need continual updating. Let's work to keep this code concise, precise, and rarely changed.
+
 ## API-level Documentation
 
 The best way to develop `Underworld3` python programs is within the [`jupyter`](jupyter.org) notebook environment. The documentation of the `Underworld3` API assumes that rendered markdown formatting will be available for code highlighting and mathematical equations when the user asks (interactively) for help. 

@@ -1,34 +1,32 @@
-CHANGES: Underworld3
-====================
+# CHANGES: Underworld3
 
-
-
-# 2024-06-15
+## 2024-06-15
 
   - Add JOSS submission information 
   - Add licence file (licensing code and documentation in line with UW1 and UW2)
   - Add quickstart guide (and test on binder)
   - Clean up repository files
+  - Update the version numbering to match 3.x.x (consistent with UW2)
 
-# 2024-04-30
+## 2024-04-30
 
   - uw expressions (sympy symbols that contain other expressions / functions)
   - use uw expressions for viscoplastic / viscoelastic constitutive models.
 
-# 2024-01-31 
+## 2024-01-31 
 
  - Introduce particle sub-steps along path to improve accuracy in advection schemes
  - Bug fixes associated with benchmarking
  - Finalise the ability to create Meshvariables / Swarmvariables (with proxies) on the fly
 
 
-# 2023-12-12
+## 2023-12-12
 
   - Surface integrals implementation in weak form (integrated into boundary conditions)
   - DDt interface (Semi-Lagrangian, Lagrangian)
   - Solver base class, add an Unknowns class to manage generic form of unknowns
 
-# 2023-08-27
+## 2023-08-27
 
   - Geometrical multigrid (necessary changes to DM setup)
 
@@ -62,12 +60,10 @@ CHANGES: Underworld3
  - read back from mesh using kd-tree in order to provide flexible reading across different decompositions / mesh resolutions
 
 
-2022-09-01
-----------
+## 2022-09-01
 
-## Release 0.3.0 
-
- * Quarterly tidy up
+ - Release 0.3.0 
+ - Quarterly tidy up
 
 ## 2021-08-12
 
