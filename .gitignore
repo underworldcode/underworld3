@@ -36,9 +36,6 @@ documentation/index.tex
 documentation/index.log
 documentation/index.toc
 
-
-
-
 # Jupyter Book build relics
 
 Jupyterbook/_build
@@ -53,6 +50,13 @@ package-lock.json
 
 Documentation/_build
 Documentation/_build/templates
+
+# joss-build-bot relics
+
+joss-paper/paper.crossref
+joss-paper/paper.pdf
+
+.ash_history
 
 
 # Mesh files etc

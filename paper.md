@@ -1,1 +1,0 @@
-joss-paper/paper.md
