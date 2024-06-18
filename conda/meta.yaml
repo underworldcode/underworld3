@@ -24,35 +24,40 @@ requirements:
     - {{ compiler('cxx') }}
 
   host: 
-    - {{ compiler('c') }}
-    - {{ compiler('cxx') }}
+    - {{ mpi }}-mpicc
+    - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - pkg-config
-    - python
-    - setuptools
-    - cython
+    - python 
     - mpi4py
     - petsc>=3.21.0
     - petsc4py>=3.21.0
+    - numpy
+    - scipy
+    - cython
 
   run:
-    - {{ compiler('c') }}
+    - {{ mpi }}-mpicc
+    - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - h5py * mpi_{{ mpi }}_*
+    - python 
+    - numpy
+    - mpi4py
+    - sympy
     - petsc>=3.21.0
     - petsc4py>=3.21.0
-    - mpi4py
+    - numpy
+    - scipy
     - cython
-    - python
+    - h5py * mpi_{{ mpi }}_*
     - pint
+    - sympy
     - pytest
     - typing_extensions
-    - sympy
     - python-xxhash
     - python-gmsh
     - ipython
-    - typeguard
     - nest-asyncio
+    - typeguard
     - pyvista
 
 about:
