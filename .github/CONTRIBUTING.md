@@ -6,12 +6,14 @@ For contributions to Underworld models please go https://github.com/underworld-c
 
 We welcome contributions to Underworld’s codebase in the form of:
 
-* Code changes.
-* Bug reports.
-* Suggestions / Requests.
-* Documentation modifications.
+  * Code improvements or completion of missing functionality
+  * Bug reports and bug fixes
+  * Suggestions / Requests
+  * Documentation modifications (including docstrings)
 
-For Bug reports and Suggestions / Requests please submit an Issue on the Underworld GitHub Issue Tracker. Please tag the Issue with a given Label to help us assess the issue.
+For Bug reports and Suggestions / Requests please submit an Issue on the Underworld GitHub Issue Tracker. 
+Please tag the Issue with a given Label to help us assess the issue and provide simple scripts that explain how to 
+reproduce the problem.
 
 Click here to submit an Issue https://github.com/underworldcode/underworld3/issues
 
