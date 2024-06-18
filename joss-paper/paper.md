@@ -56,11 +56,11 @@ $$\Theta(x) = \left\{\begin{array}{l}
 1\textrm{ else}
 \end{array}\right.$$
 
-You can also use plain \LaTeX for equations
+<!-- You can also use plain \LaTeX for equations
 \begin{equation}\label{eq:fourier}
 \hat f(\omega) = \int_{-\infty}^{\infty} f(x) e^{i\omega x} dx
 \end{equation}
-and refer to \autoref{eq:fourier} from text.
+and refer to \autoref{eq:fourier} from text. -->
 
 # Citations
 
