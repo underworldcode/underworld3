@@ -5,11 +5,11 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 ## Repository format / content
 
     - [ ] paper.md
+    - [ ] paper.bib
     - [x] Install GitHub workflow
-    - [ ] Validate workflow
-    - [ ] Open source licence file
+    - [x] Validate workflow 
+    - [x] Open source licence file
     - [?] Publication branch (this is acceptable, must be kept up to date on submission). 
-    
     - [x] The software must have an obvious research application.
     - [x] You must be a major contributor to the software you are submitting, and have a GitHub account to participate in the review process.
     - [x] Your paper must not focus on new research results accomplished with the software.

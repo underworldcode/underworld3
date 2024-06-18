@@ -1,5 +1,5 @@
 ---
-title: 'Underworld3: Self-Describing Mathematical Models in Python'
+title: 'Underworld3: Mathematically Self-Describing Modelling in Python for Desktop, HPC and Cloud'
 tags:
   - Python
   - Geodynamics
@@ -11,15 +11,19 @@ authors:
   - name: Louis Moresi
     orcid: 0000-0003-3685-174X
     equal-contrib: true
+    corresponding: true # (This is how to denote the corresponding author)
     affiliation: "1" # (Multiple affiliations must be quoted)
   - name: John Mansour
-    equal-contrib: true # (This is how you can denote equal contributions between multiple authors)
+    equal-contrib: true 
     affiliation: "2"
   - name: Julian Giordani
-    corresponding: true # (This is how to denote the corresponding author)
+    equal-contrib: true 
     affiliation: "3"
   - name: Ben Knight
     affiliation: "4"
+  - name: Romain Beucher
+    affiliation: "5"
+
 affiliations:
  - name: Research School of Earth Sciences, Australian National University, Canberra, Australia
    index: 1
@@ -29,7 +33,7 @@ affiliations:
    index: 3
  - name: Its Curtains for You University, Perth, Australia
    index: 4
- - name: Crappier than number 1, 2 or 3 (maybe 4), Someplace, Australia
+ - name: Access-NFI
    index: 5
 
 date: 30 June 666
