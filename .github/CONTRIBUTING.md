@@ -24,7 +24,7 @@ More specifically:
 
 ``` bash
 
-    git clone https://github.com/YOUR_GITHUB_ACCOUNT/underworld3
+    git clone https://github.com/{YOUR_GITHUB_ACCOUNT}/underworld3
 ```
 
 2. Add the master Underworld repository as an additional remote source (named `uwmaster`) for your local repo and pull down its latest changesets. Checkout to the master/development repo state, and then create a new local branch which will contain your forthcoming changes.
