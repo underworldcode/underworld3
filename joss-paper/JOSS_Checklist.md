@@ -16,7 +16,9 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 
     - [ ] Audit GitHub issues / clear where possible
     - [ ] Clear outdated PRs 
-    - [ ] ??
+    - [ ] Merge dev into main
+        - [ ] create joss-submission branch from main at submission time
+        - [ ] joss-submission branch may need restructuring in order to build (e.g. paper in the root directory)
 
 ## Software checklist
 
