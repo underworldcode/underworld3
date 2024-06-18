@@ -33,7 +33,7 @@ affiliations:
    index: 5
 
 date: 30 June 666
-bibliography: uw3-joss-paper.bib
+bibliography: paper.bib
 ---
 
 # Summary
