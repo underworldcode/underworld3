@@ -27,6 +27,10 @@ authors:
   - name: Ben Knight
     orcid: 0000-0001-7919-2575
     affiliation: "5"
+  - name: Juan Carlos Graciosa
+    affiliation: "1"
+  - name: Thyagarajulu Gollapalli
+    affiliation: "6"
   - name: Neng Lu
     orcid: 0000-0001-9424-2315
     affiliation: "1"
@@ -45,8 +49,10 @@ affiliations:
    index: 4
  - name: Curtin University, Perth, Australia
    index: 5
- - name: Access-NRI, Australian National University, Canberra, Australia
+ - name: School of Earth, Atmospheric & Environmental Science, Monash University
    index: 6
+ - name: Access-NRI, Australian National University, Canberra, Australia
+   index: 7
 
 
 date: 30 June 2024
