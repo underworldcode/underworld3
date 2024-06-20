@@ -1538,6 +1538,215 @@ def AnnulusInternalBoundary(
     return new_mesh
 
 
+@timing.routine_timer_decorator
+def DiscInternalBoundaries(
+    radiusUpper: float = 1.5,
+    radiusInternal: float = 1.0,
+    radiusLower: float = 0.547,
+    cellSize: float = 0.1,
+    cellSize_Upper: float = None,
+    cellSize_Lower: float = None,
+    cellSize_Internal: float = None,
+    cellSize_Centre: float = None,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    gmsh_verbosity=0,
+    verbose=False,
+):
+    class boundaries(Enum):
+        Lower = 1
+        Internal = 2
+        Upper = 3
+        Centre = 10
+        All_Boundaries = 1001
+
+    if cellSize_Lower is None:
+        cellSize_Lower = cellSize
+
+    if cellSize_Upper is None:
+        cellSize_Upper = cellSize
+
+    if cellSize_Internal is None:
+        cellSize_Internal = cellSize
+
+    if cellSize_Centre is None:
+        cellSize_Centre = cellSize
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = f".meshes/uw_disc_internalBoundaries_rO{radiusUpper}rInt{radiusInternal}_rI{radiusLower}_csize{cellSize}_csizefs{cellSize_Upper}.msh"
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("AnnulusFS")
+
+        p1 = gmsh.model.geo.add_point(1.0e-16, 0.0, 0.0, meshSize=cellSize_Centre)
+
+        loops = []
+
+        p2 = gmsh.model.geo.add_point(radiusLower, 0.0, 0.0, meshSize=cellSize_Lower)
+        p3 = gmsh.model.geo.add_point(-radiusLower, 0.0, 0.0, meshSize=cellSize_Lower)
+
+        c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
+        c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
+
+        cl1 = gmsh.model.geo.add_curve_loop([c1, c2], tag=boundaries.Lower.value)
+
+        # loops = [cl1] + loops
+
+        p4 = gmsh.model.geo.add_point(
+            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
+        )
+        p5 = gmsh.model.geo.add_point(
+            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
+        )
+
+        c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
+        c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
+
+        cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries.Internal.value)
+
+        # Outermost mesh
+
+        p6 = gmsh.model.geo.add_point(radiusUpper, 0.0, 0.0, meshSize=cellSize_Upper)
+        p7 = gmsh.model.geo.add_point(-radiusUpper, 0.0, 0.0, meshSize=cellSize_Upper)
+
+        c5 = gmsh.model.geo.add_circle_arc(p6, p1, p7)
+        c6 = gmsh.model.geo.add_circle_arc(p7, p1, p6)
+
+        cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries.Upper.value)
+
+        loops = [cl3] + loops
+
+        s = gmsh.model.geo.add_plane_surface(loops)
+
+        ## Now add embedded surfaces
+
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(0, [p1], 2, s)
+
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(1, [c1, c2], 2, s)
+
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(1, [c3, c4], 2, s)
+
+        gmsh.model.geo.synchronize()
+
+        gmsh.model.addPhysicalGroup(
+            1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
+        )
+
+        gmsh.model.addPhysicalGroup(
+            0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+        )
+
+        gmsh.model.addPhysicalGroup(
+            1,
+            [c3, c4],
+            boundaries.Internal.value,
+            name=boundaries.Internal.name,
+        )
+        gmsh.model.addPhysicalGroup(
+            1,
+            [c5, c6],
+            boundaries.Upper.value,
+            name=boundaries.Upper.name,
+        )
+
+        gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
+        gmsh.model.geo.synchronize()
+
+        gmsh.model.mesh.generate(2)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    ## This is the same as the simple annulus
+    def annulus_internal_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+
+        return coords
+
+    ## This has an additional step to move the inner boundary
+    def annulus_internal_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+        r_int = radiusInternal
+
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 2)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        internalIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Internal"
+            )
+        )
+
+        coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        refinement_callback=annulus_internal_mesh_refinement_callback,
+        return_coords_to_bounds=annulus_internal_return_coords_to_bounds,
+        verbose=verbose,
+    )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Internal = new_mesh.CoordinateSystem.unit_e_0
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh
+
+
 ## ToDo: Not sure if this works really ...
 
 

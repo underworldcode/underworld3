@@ -1357,7 +1357,8 @@ class Mesh(Stateful, uw_object):
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
     def meshVariable_mask_from_label(self, label_name, label_value):
-        """Extract single label value and make a point mask"""
+        """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
+        assumes a 1st order mesh. Cell labels are not respected in this function."""
 
         meshVar = MeshVariable(
             f"Mask_{label_name}_{label_value}",
@@ -1406,7 +1407,7 @@ def MeshVariable(
     Parameters
     ----------
     varname :
-        A textual name for this variable.
+        A text name for this variable. Use an R-string if a latex-expression is used
     mesh :
         The supporting underworld mesh.
     num_components :
@@ -1420,7 +1421,7 @@ def MeshVariable(
     degree :
         The polynomial degree for this variable.
     varsymbol:
-        A symbolic form for printing etc (sympy / latex)
+        Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
 
     """
 
@@ -1429,7 +1430,7 @@ def MeshVariable(
     else:
         name = varname
 
-    ## Smash if already defined (we should check this BEFORE the old meshVariable object is destroyed)
+    ## Smash if already defined (we need to check this BEFORE the old meshVariable object is destroyed)
 
     import re
 
@@ -1497,7 +1498,7 @@ class _MeshVariable(Stateful, uw_object):
     Parameters
     ----------
     varname :
-        A textual name for this variable.
+        A text name for this variable. Use an R-string if a latex-expression is used
     mesh :
         The supporting underworld mesh.
     num_components :
@@ -1511,7 +1512,7 @@ class _MeshVariable(Stateful, uw_object):
     degree :
         The polynomial degree for this variable.
     varsymbol:
-        A symbolic form for printing etc (sympy / latex)
+        Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
 
     """
 
@@ -1536,8 +1537,7 @@ class _MeshVariable(Stateful, uw_object):
         Parameters
         ----------
         varname :
-            A textual name for this variable.
-
+            A text name for this variable. Use an R-string if a latex-expression is used
         mesh :
             The supporting underworld mesh.
         num_components :
@@ -1554,21 +1554,24 @@ class _MeshVariable(Stateful, uw_object):
             True for continuous element discretisation across element boundaries.
             False for discontinuous values across element boundaries.
         varsymbol :
-            A symbolic form for printing etc (sympy / latex)
+            Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
         """
 
         import re
         import math
 
-        if varsymbol is None:
-            varsymbol = varname
+        # if varsymbol is None and not isinstance(varname, list):
+        #     varsymbol = "{" + repr(varname)[1:-1] + "}"
 
         if isinstance(varname, list):
-            name = varname[0] + R" ... "
-            symbol = varsymbol[0] + R"\cdots"
+            name = varname[0] + " ... "
+            symbol = "{" + varname[0]+ R"\cdots" + "}"
         else:
             name = varname
-            symbol = varsymbol
+            if varsymbol is not None:
+                symbol = "{" + varsymbol + "}"
+            else:
+                symbol = "{" + varname + "}"
 
         self._lvec = None
         self._gvec = None
