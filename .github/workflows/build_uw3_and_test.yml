@@ -62,13 +62,10 @@ jobs:
           pytest tests/test_100[0-9]*py
 
           # Stokes solver tests
-      
           pytest tests/test_1010*py
           pytest tests/test_1011*py
           pytest tests/test_1050*py
 
           # Advection/Diffusion solvers
           pytest tests/test_1100*py
-          
-          # An interpolation bug in this one
-          # pytest tests/test_1110*py
+          pytest tests/test_1110*py

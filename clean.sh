@@ -1,5 +1,7 @@
 #!/bin/bash -x
 
+## Clean-up script (removes build artifacts etc)
+
 rm -fr build
 rm -fr cython_debug
 find . -name \*.so -exec rm {} +

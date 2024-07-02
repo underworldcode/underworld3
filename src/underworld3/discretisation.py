@@ -472,6 +472,11 @@ class Mesh(Stateful, uw_object):
 
     def nuke_coords_and_rebuild(self):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
+        #
+        #
+
+        self.dm.clearDS()
+        self.dm.createDS()
 
         self._coord_array = {}
 
@@ -525,6 +530,8 @@ class Mesh(Stateful, uw_object):
             self._search_lengths,
         ) = self._get_mesh_sizes()
 
+        self.dm.copyDS(self.dm_hierarchy[-1])
+
         return
 
     @timing.routine_timer_decorator
@@ -576,7 +583,7 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
-    def deform_mesh(self, new_coords: numpy.ndarray):
+    def deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
         """
         This method will update the mesh coordinates and reset any cached coordinates in
         the mesh and in equation systems that are registered on the mesh.
@@ -591,8 +598,12 @@ class Mesh(Stateful, uw_object):
         self.dm.setCoordinatesLocal(coord_vec)
         self.nuke_coords_and_rebuild()
 
-        for eq_system in self._equation_systems_register:
-            eq_system._rebuild_after_mesh_update()
+        # This should not be necessary any more as we now check the
+        # coordinates on the DM to see if they have changed (and we rebuild the
+        # discretisation as needed)
+        #
+        # for eq_system in self._equation_systems_register:
+        #     eq_system._rebuild_after_mesh_update(verbose)
 
         return
 
@@ -1483,6 +1494,7 @@ def MeshVariable(
 
         # Set new dm on mesh
         mesh.dm = dm1
+        mesh.dm_hierarchy[-1] = dm1
 
     return new_meshVariable
 
@@ -1752,16 +1764,16 @@ class _MeshVariable(Stateful, uw_object):
             Markdown(f"**MeshVariable:**"),
             Markdown(
                 f"""
-  > symbol:  ${self.symbol}$  
-  > shape:   ${self.shape}$  
-  > degree:  ${self.degree}$  
-  > continuous:  `{self.continuous}`  
+  > symbol:  ${self.symbol}$
+  > shape:   ${self.shape}$
+  > degree:  ${self.degree}$
+  > continuous:  `{self.continuous}`
   > type:    `{self.vtype.name}`"""
             ),
             Markdown(f"**FE Data:**"),
             Markdown(
                 f"""
-  > PETSc field id:  ${self.field_id}$  
+  > PETSc field id:  ${self.field_id}$
   > PETSc field name:   `{self.clean_name}` """
             ),
         )

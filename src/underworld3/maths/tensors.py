@@ -34,7 +34,10 @@ def rank2_symmetric_sym(name, dim):
     return T
 
 
-def rank4_symmetric_sym(name, dim):
+def rank4_symmetric_sym(
+    name,
+    dim,
+):
     r"""Rank 4 symmetric tensor (as symbolic matrix), name is a sympy latex expression"""
 
     d = dim
@@ -50,7 +53,10 @@ def rank4_symmetric_sym(name, dim):
     return mandel_to_rank4(TT, dim)
 
 
-def tensor_rotation(R, T):
+def tensor_rotation(
+    R,
+    T,
+):
     r"""Rotate tensor of any rank using matrix R"""
 
     rank = T.rank()
@@ -61,7 +67,11 @@ def tensor_rotation(R, T):
     return T
 
 
-def _rank2_to_unscaled_matrix(v_ij, dim, covariant=True):
+def _rank2_to_unscaled_matrix(
+    v_ij,
+    dim,
+    covariant=True,
+):
     r"""Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
 
     imapping = idxmap
@@ -78,7 +88,10 @@ def _rank2_to_unscaled_matrix(v_ij, dim, covariant=True):
     return V_I
 
 
-def _rank4_to_unscaled_matrix(c_ijkl, dim):
+def _rank4_to_unscaled_matrix(
+    c_ijkl,
+    dim,
+):
     r"""Convert rank 4 tensor (c_ijkl) to matrix form (C_IJ)"""
 
     imapping = idxmap
@@ -97,7 +110,10 @@ def _rank4_to_unscaled_matrix(c_ijkl, dim):
     return C_IJ
 
 
-def _unscaled_matrix_to_rank2(V_I, dim):
+def _unscaled_matrix_to_rank2(
+    V_I,
+    dim,
+):
     r"""Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
 
     # convert Voight form V_I to v_ij (matrix)
@@ -113,7 +129,10 @@ def _unscaled_matrix_to_rank2(V_I, dim):
     return v_ij
 
 
-def _unscaled_matrix_to_rank4(C_IJ, dim):
+def _unscaled_matrix_to_rank4(
+    C_IJ,
+    dim,
+):
     r"""Convert to rank 4 tensor (c_ijkl) from matrix form (C_IJ)"""
 
     imapping = idxmap
@@ -136,8 +155,12 @@ def _unscaled_matrix_to_rank4(C_IJ, dim):
     return c_ijkl
 
 
-def rank2_to_voigt(v_ij, dim, covariant=True):
-    r"""Convert rank 2 tensor (v_ij) to voigt (vector) form (V_I)"""
+def rank2_to_voigt(
+    v_ij,
+    dim,
+    covariant=True,
+):
+    r"""Convert rank 2 tensor ($v_{ij}$) to Voigt (vector) form ($V_I$)"""
 
     imapping = idxmap
     vdim = imapping[dim][0]
@@ -150,7 +173,11 @@ def rank2_to_voigt(v_ij, dim, covariant=True):
     return V_I
 
 
-def voigt_to_rank2(V_I, dim, covariant=True):
+def voigt_to_rank2(
+    V_I,
+    dim,
+    covariant=True,
+):
     r"""Convert to rank 2 tensor (v_ij) from voigt (vector) form (V_I)"""
 
     imapping = idxmap

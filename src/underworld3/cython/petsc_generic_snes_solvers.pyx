@@ -33,6 +33,7 @@ class SolverBaseClass(uw_object):
 
         self.mesh = mesh
         self.mesh_dm_coordinate_hash = None
+        self.compiled_extensions = None
 
         self.Unknowns = self._Unknowns(self)
 
@@ -44,8 +45,10 @@ class SolverBaseClass(uw_object):
         self._E = self.Unknowns.E # sym part
         self._W = self.Unknowns.W # asym part
 
-        self._order = 0 
+        self._order = 0
         self._constitutive_model = None
+
+        self._rebuild_after_mesh_update = self._build
 
         return
 
@@ -86,7 +89,7 @@ class SolverBaseClass(uw_object):
 
                     inner_self._Einv2 = sympy.sqrt((sympy.Matrix(inner_self._E) ** 2).trace() / 2)
 
-                inner_self._owning_solver._is_setup = False
+                inner_self._owning_solver.is_setup = False
             return
 
         @property
@@ -96,7 +99,7 @@ class SolverBaseClass(uw_object):
         @DuDt.setter
         def DuDt(inner_self, new_DuDt):
             inner_self._DuDt = new_DuDt
-            inner_self._owning_solver._is_setup = False
+            inner_self._owning_solver.is_setup = False
             return
 
         @property
@@ -106,9 +109,9 @@ class SolverBaseClass(uw_object):
         @DFDt.setter
         def DFDt(inner_self, new_DFDt):
             inner_self._DFDt = new_DFDt
-            inner_self._owning_solver._is_setup = False
+            inner_self._owning_solver.is_setup = False
             return
-        
+
         @property
         def E(inner_self):
             return inner_self._E
@@ -156,10 +159,40 @@ class SolverBaseClass(uw_object):
             self.dm = None
             self.dm_hierarchy = [None]
 
-        self._is_setup = False
+        self.is_setup = False
 
         return
 
+    @timing.routine_timer_decorator
+    def _build(self,
+                    verbose: bool = False,
+                    debug: bool = False,
+                    debug_name: str = None,
+                    ):
+
+        if (not self.is_setup):
+            if self.dm is not None:
+                if verbose and uw.mpi.rank == 0:
+                    print(f"Destroy solver DM", flush=True)
+
+                self.dm.destroy()
+                self.dm = None  # Should be able to avoid nuking this if we
+                            # can insert new functions in template (surface integrals problematic in
+                            # the current implementation )
+
+
+        self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+        self.is_setup = True
+
+        return
+
+
+
+    # Deprecate in favour of properties for solver.F0, solver.F1
+    #
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
 
@@ -194,7 +227,7 @@ class SolverBaseClass(uw_object):
         conds: array_like of floats or a sympy.Matrix
             eg. For a 3D model with an unconstraint x component: (None, 5, 1.2) or sympy.Matrix([sympy.oo, 5, 1.2])
         label: string
-            The label name to apply the BC. To find a label/boundary name run something like 
+            The label name to apply the BC. To find a label/boundary name run something like
             mesh.view()
         components: array_like, single int value or None.
             (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
@@ -254,7 +287,7 @@ class SolverBaseClass(uw_object):
             self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
 
-    # Use FE terminology note f_id is 0. 
+    # Use FE terminology note f_id is 0.
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
         """
@@ -419,10 +452,10 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
-            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim, 
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
                                                       varname="Us{}".format(SNES_Scalar._total_instances),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
-            
+
         self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
@@ -449,7 +482,7 @@ class SNES_Scalar(SolverBaseClass):
         # Here we can set some defaults for this set of KSP / SNES solvers
 
         ## FAST as possible for simple problems:
-        ## MG, 
+        ## MG,
 
         # ROBUST and general GAMG, heavy-duty solvers in the suite
 
@@ -489,7 +522,7 @@ class SNES_Scalar(SolverBaseClass):
 
         self.verbose = verbose
 
-        self._rebuild_after_mesh_update = self._setup_discretisation  # Maybe just reboot the dm
+        self._rebuild_after_mesh_update = self._build  # Maybe just reboot the dm
 
         # Some other setup
 
@@ -512,8 +545,27 @@ class SNES_Scalar(SolverBaseClass):
     @timing.routine_timer_decorator
     def _setup_discretisation(self, verbose=False):
 
-        if self.dm is not None:
+        # Grab the mesh
+        mesh = self.mesh
+
+        import xxhash
+        import numpy as np
+
+        xxh = xxhash.xxh64()
+        xxh.update(np.ascontiguousarray(mesh.data))
+        mesh_dm_coord_hash = xxh.intdigest()
+
+        # if we already set up the dm and the coordinates in the mesh dm have not
+        # changed then we do not need to do everything here
+
+        if self.dm is not None and self.mesh_dm_coordinate_hash == mesh_dm_coord_hash:
+            if verbose and uw.mpi.rank == 0:
+                print("SNES_Scalar: Discretisation does not need to be rebuilt", flush=True)
             return
+
+        # Keep a note of the coordinates that we use for this setup
+        self.mesh_dm_coordinate_hash == mesh_dm_coord_hash
+
 
         degree = self.u.degree
         mesh = self.mesh
@@ -529,9 +581,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm_hierarchy = mesh.clone_dm_hierarchy()
         self.dm = self.dm_hierarchy[-1]
 
-
         if self.verbose:
-            print(f"{uw.mpi.rank}: Building FE / quadrature for {self.name}")
+            print(f"{uw.mpi.rank}: Building FE / quadrature for {self.name}", flush=True)
 
         # create private variables using standard quadrature order from the mesh
 
@@ -548,7 +599,7 @@ class SNES_Scalar(SolverBaseClass):
         if self.verbose:
             print(f"{uw.mpi.rank}: Building DS for {self.name}")
 
-        ## This part is done once on the solver dm ... not required every time we update the functions ... 
+        ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
         self.dm.createDS()
@@ -579,29 +630,29 @@ class SNES_Scalar(SolverBaseClass):
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
 
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
+                                str(boundary).encode('utf8'),
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>NULL, 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
-            
+
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=ind)
 
 
         for index,bc in enumerate(self.essential_bcs):
-            
+
             component = bc.components
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
@@ -615,23 +666,23 @@ class SNES_Scalar(SolverBaseClass):
             ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
 
             bc_type = 5
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
+                                str(boundary).encode('utf8'),
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>ext.fns_bcs[fn_index],
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
@@ -641,6 +692,16 @@ class SNES_Scalar(SolverBaseClass):
     @timing.routine_timer_decorator
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
+
+        # Any property changes will trigger this
+        if self.is_setup:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Scalar ({self.name}): Pointwise functions do not need to be rebuilt", flush=True)
+            return
+        else:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Scalar ({self.name}): Pointwise functions need to be built", flush=True)
+
 
         mesh = self.mesh
         N = mesh.N
@@ -666,7 +727,7 @@ class SNES_Scalar(SolverBaseClass):
 
         self._u_f0 = f0
         self._u_F1 = F1
-        
+
         U = sympy.Array(self.u.sym).reshape(1).as_immutable() # scalar works better in derive_by_array
         L = sympy.Array(self.Unknowns.L).reshape(cdim).as_immutable() # unpack one index here too
 
@@ -692,7 +753,7 @@ class SNES_Scalar(SolverBaseClass):
 
 
         # Now natural bcs (compiled into boundary integral terms)
-        # Need to loop on them all ... 
+        # Need to loop on them all ...
 
         fns_bd_residual = []
         fns_bd_jacobian = []
@@ -722,7 +783,7 @@ class SNES_Scalar(SolverBaseClass):
                 fns_bd_residual += [self._bd_f0]
                 fns_bd_jacobian += [self._bd_G0, self._bd_G1]
 
-  
+
             if bc.fn_F is not None:
 
                 bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
@@ -756,14 +817,14 @@ class SNES_Scalar(SolverBaseClass):
             print(f"Scalar SNES: Jacobians complete, now compile", flush=True)
 
         prim_field_list = [self.u]
-        self.compiled_extensions, self.ext_dict = getext(self.mesh, 
-                                       tuple(fns_residual), 
-                                       tuple(fns_jacobian), 
-                                       [x.fn for x in self.essential_bcs], 
-                                       tuple(fns_bd_residual), 
-                                       tuple(fns_bd_jacobian), 
-                                       primary_field_list=prim_field_list, 
-                                       verbose=verbose, 
+        self.compiled_extensions, self.ext_dict = getext(self.mesh,
+                                       tuple(fns_residual),
+                                       tuple(fns_jacobian),
+                                       [x.fn for x in self.essential_bcs],
+                                       tuple(fns_bd_residual),
+                                       tuple(fns_bd_jacobian),
+                                       primary_field_list=prim_field_list,
+                                       verbose=verbose,
                                        debug=debug,)
 
         return
@@ -771,6 +832,11 @@ class SNES_Scalar(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def _setup_solver(self, verbose=False):
+
+        if self.is_setup == True:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Scalar ({self.name}): SNES solver does not need to be rebuilt", flush=True)
+            return
 
         # set functions
         cdef int ind=1
@@ -786,11 +852,11 @@ class SNES_Scalar(SolverBaseClass):
         # identically `zero` pointwise functions instead of setting to `NULL`
 
         i_jac = self.ext_dict.jac
-        PetscDSSetJacobian(ds.ds, 0, 0, 
-                ext.fns_jacobian[i_jac[self._G0]], 
-                ext.fns_jacobian[i_jac[self._G1]], 
-                ext.fns_jacobian[i_jac[self._G2]], 
-                ext.fns_jacobian[i_jac[self._G3]], 
+        PetscDSSetJacobian(ds.ds, 0, 0,
+                ext.fns_jacobian[i_jac[self._G0]],
+                ext.fns_jacobian[i_jac[self._G1]],
+                ext.fns_jacobian[i_jac[self._G2]],
+                ext.fns_jacobian[i_jac[self._G3]],
                 )
 
         ## Now add the boundary residual / jacobian terms
@@ -846,19 +912,21 @@ class SNES_Scalar(SolverBaseClass):
         if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
-        if (not self.is_setup):
-            if self.dm is not None:
-                self.dm.destroy()
-                self.dm = None  # Should be able to avoid nuking this if we 
-                            # can insert new functions in template (surface integrals problematic in 
-                            # the current implementation )
+        self._build(verbose, debug, debug_name)
 
-            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-        else:
-            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
-            self._setup_discretisation(verbose)
+        # if (not self.is_setup):
+        #     if self.dm is not None:
+        #         self.dm.destroy()
+        #         self.dm = None  # Should be able to avoid nuking this if we
+        #                     # can insert new functions in template (surface integrals problematic in
+        #                     # the current implementation )
+
+        #     self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
+        #     self._setup_discretisation(verbose)
+        #     self._setup_solver(verbose)
+        # else:
+        #     # If the mesh has changed, this will rebuild (and do nothing if unchanged)
+        #     self._setup_discretisation(verbose)
 
 
         gvec = self.dm.getGlobalVec()
@@ -899,8 +967,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason() 
-        iterations = self.snes.getIterationNumber() 
+        converged = self.snes.getConvergedReason()
+        iterations = self.snes.getIterationNumber()
 
         if not converged and uw.mpi.rank == 0:
             print(f"Convergence problems after {iterations} its in SNES solver use:\n",
@@ -911,7 +979,7 @@ class SNES_Scalar(SolverBaseClass):
                   flush=True
             )
 
-        return 
+        return
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
@@ -921,7 +989,7 @@ class SNES_Scalar(SolverBaseClass):
 
         f0 = self.F0.value
         F1 = self.F1.value
-        
+
         eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
         eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
 
@@ -938,11 +1006,11 @@ class SNES_Scalar(SolverBaseClass):
 
         if len(exprs) != 0:
             display(Markdown("*Where:*"))
-        
-            for expr in exprs:
-                expr._object_viewer(description=False)    
 
-        
+            for expr in exprs:
+                expr._object_viewer(description=False)
+
+
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
 
@@ -1042,7 +1110,7 @@ class SNES_Vector(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
-            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, 
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
                         num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._total_instances),
                         vtype=uw.VarType.VECTOR, degree=degree )
 
@@ -1067,7 +1135,7 @@ class SNES_Vector(SolverBaseClass):
         self.verbose = verbose
 
         # Build the DM / FE structures (should be done on remeshing)
-        self._rebuild_after_mesh_update = self._setup_discretisation
+        self._rebuild_after_mesh_update = self._build
 
         # Some other setup
 
@@ -1092,8 +1160,27 @@ class SNES_Vector(SolverBaseClass):
         Most of what is in the init phase that is not called by _setup_terms()
         """
 
-        if self.dm is not None:
+        # Grab the mesh
+        mesh = self.mesh
+
+        import xxhash
+        import numpy as np
+
+        xxh = xxhash.xxh64()
+        xxh.update(np.ascontiguousarray(mesh.data))
+        mesh_dm_coord_hash = xxh.intdigest()
+
+        # if we already set up the dm and the coordinates in the mesh dm have not
+        # changed then we do not need to do everything here
+
+
+        if self.dm is not None and self.mesh_dm_coordinate_hash == mesh_dm_coord_hash:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Vector ({self.name}): Discretisation does not need to be rebuilt", flush=True)
             return
+
+        # Keep a note of the coordinates that we use for this setup
+        self.mesh_dm_coordinate_hash == mesh_dm_coord_hash
 
         cdef PtrContainer ext = self.compiled_extensions
 
@@ -1119,7 +1206,7 @@ class SNES_Vector(SolverBaseClass):
         self.dm.createDS()
 
 
-        ## This part is done once on the solver dm ... not required every time we update the functions ... 
+        ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
         cdef int ind=1
@@ -1145,24 +1232,24 @@ class SNES_Vector(SolverBaseClass):
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
 
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>NULL, 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
-            
+
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=ind)
 
 
@@ -1179,23 +1266,23 @@ class SNES_Vector(SolverBaseClass):
             ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
 
             bc_type = 5
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>ext.fns_bcs[fn_index],
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
@@ -1219,6 +1306,15 @@ class SNES_Vector(SolverBaseClass):
     @timing.routine_timer_decorator
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
+
+        # Any property changes will trigger this
+        if self.is_setup:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Vector ({self.name}): Pointwise functions do not need to be rebuilt", flush=True)
+            return
+        else:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Vector ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
         dim = self.mesh.dim
@@ -1275,10 +1371,10 @@ class SNES_Vector(SolverBaseClass):
         fns_jacobian = (self._G0, self._G1, self._G2, self._G3)
 
         # Now natural bcs (compiled into boundary integral terms)
-        # Need to loop on them all ... 
+        # Need to loop on them all ...
 
         # Now natural bcs (compiled into boundary integral terms)
-        # Need to loop on them all ... 
+        # Need to loop on them all ...
 
         fns_bd_residual = []
         fns_bd_jacobian = []
@@ -1298,7 +1394,7 @@ class SNES_Vector(SolverBaseClass):
 
                 fns_bd_residual += [bc.fns["u_f0"]]
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
-                
+
 
             # Going to leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
 
@@ -1336,14 +1432,14 @@ class SNES_Vector(SolverBaseClass):
         # note also that the order here is important.
 
         prim_field_list = [self.u,]
-        self.compiled_extensions, self.ext_dict = getext(self.mesh, 
-                                       tuple(fns_residual), 
-                                       tuple(fns_jacobian), 
-                                       [x.fn for x in self.essential_bcs], 
-                                       tuple(fns_bd_residual), 
-                                       tuple(fns_bd_jacobian), 
-                                       primary_field_list=prim_field_list, 
-                                       verbose=verbose, 
+        self.compiled_extensions, self.ext_dict = getext(self.mesh,
+                                       tuple(fns_residual),
+                                       tuple(fns_jacobian),
+                                       [x.fn for x in self.essential_bcs],
+                                       tuple(fns_bd_residual),
+                                       tuple(fns_bd_jacobian),
+                                       primary_field_list=prim_field_list,
+                                       verbose=verbose,
                                        debug=debug,)
 
         cdef PtrContainer ext = self.compiled_extensions
@@ -1353,6 +1449,12 @@ class SNES_Vector(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def _setup_solver(self, verbose=False):
+
+
+        if self.is_setup == True:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Vector ({self.name}): SNES solver does not need to be rebuilt", flush=True)
+            return
 
         # set functions
         cdef int ind=1
@@ -1369,27 +1471,27 @@ class SNES_Vector(SolverBaseClass):
         # identically `zero` pointwise functions instead of setting to `NULL`
 
         i_jac = self.ext_dict.jac
-        PetscDSSetJacobian(ds.ds, 0, 0, 
-                ext.fns_jacobian[i_jac[self._G0]], 
-                ext.fns_jacobian[i_jac[self._G1]], 
-                ext.fns_jacobian[i_jac[self._G2]], 
-                ext.fns_jacobian[i_jac[self._G3]], 
+        PetscDSSetJacobian(ds.ds, 0, 0,
+                ext.fns_jacobian[i_jac[self._G0]],
+                ext.fns_jacobian[i_jac[self._G1]],
+                ext.fns_jacobian[i_jac[self._G2]],
+                ext.fns_jacobian[i_jac[self._G3]],
                 )
 
         ## SNES VECTOR ADD Boundary terms
 
         cdef DMLabel c_label
- 
+
         for bc in self.natural_bcs:
 
             boundary = bc.boundary
             boundary_id = bc.PETScID
-            
+
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
             #bc_label = self.dm.getLabel(boundary)
-            
-            label_val = value            
+
+            label_val = value
 
             i_bd_res = self.ext_dict.bd_res
             i_bd_jac = self.ext_dict.bd_jac
@@ -1399,28 +1501,28 @@ class SNES_Vector(SolverBaseClass):
             if True: #  c_label and label_val != -1:
                 if bc.fn_f is not None:
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
-                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    ) 
+                                    )
 
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
-                                
+
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
@@ -1455,6 +1557,8 @@ class SNES_Vector(SolverBaseClass):
         self.constitutive_model._solver_is_setup = True
 
 
+
+
     @timing.routine_timer_decorator
     def solve(self,
               zero_init_guess: bool =True,
@@ -1477,19 +1581,21 @@ class SNES_Vector(SolverBaseClass):
         if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
-        if (not self.is_setup):
-            if self.dm is not None:
-                self.dm.destroy()
-                self.dm = None  # Should be able to avoid nuking this if we 
-                            # can insert new functions in template (surface integrals problematic in 
-                            # the current implementation )
+        self._build(verbose, debug, debug_name)
 
-            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-        else:
-            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
-            self._setup_discretisation(verbose)
+        # if (not self.is_setup):
+        #     if self.dm is not None:
+        #         self.dm.destroy()
+        #         self.dm = None  # Should be able to avoid nuking this if we
+        #                     # can insert new functions in template (surface integrals problematic in
+        #                     # the current implementation )
+
+        #     self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
+        #     self._setup_discretisation(verbose)
+        #     self._setup_solver(verbose)
+        # else:
+        #     # If only the mesh has changed, this will rebuild (and do nothing if unchanged)
+        #     self._setup_discretisation(verbose)
 
 
         gvec = self.dm.getGlobalVec()
@@ -1544,8 +1650,8 @@ class SNES_Vector(SolverBaseClass):
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason() 
-        iterations = self.snes.getIterationNumber() 
+        converged = self.snes.getConvergedReason()
+        iterations = self.snes.getIterationNumber()
 
         if not converged and uw.mpi.rank == 0:
             print(f"Convergence problems after {iterations} its in SNES solver use:\n",
@@ -1556,7 +1662,7 @@ class SNES_Vector(SolverBaseClass):
                   flush=True
             )
 
-        return 
+        return
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
@@ -1566,7 +1672,7 @@ class SNES_Vector(SolverBaseClass):
 
         f0 = self.F0.value
         F1 = self.F1.value
-        
+
         eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
         eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
 
@@ -1582,10 +1688,10 @@ class SNES_Vector(SolverBaseClass):
 
         if len(exprs) != 0:
             display(Markdown("*Where:*"))
-        
+
             for expr in exprs:
-                expr._object_viewer(description=False)    
-   
+                expr._object_viewer(description=False)
+
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
 ### =================================
@@ -1637,9 +1743,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         @p.setter
         def p(inner_self, new_p):
             inner_self._p = new_p
-            inner_self._owning_solver._is_setup = False
+            inner_self._owning_solver.is_setup = False
             return
-        
+
 
     @timing.routine_timer_decorator
     def __init__(self,
@@ -1754,7 +1860,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Some other setup
 
         self.mesh._equation_systems_register.append(self)
-        self._rebuild_after_mesh_update = self._setup_discretisation # probably just needs to boot the DM and then it should work
+        self._rebuild_after_mesh_update = self._build # probably just needs to boot the DM and then it should work
 
         # self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
         # self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
@@ -1793,7 +1899,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #         iter(fn)
     #     except:
     #         fn = (fn,)
-          
+
     #     components = np.array([0], dtype=np.int32, ndmin=1)
 
     #     sympy_fn = sympy.Matrix(fn).as_immutable()
@@ -1820,8 +1926,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 )
 
         # we will not have a valid constutituve model
-        # at this point, so the flux term is empty and 
-        # will have to be filled later. 
+        # at this point, so the flux term is empty and
+        # will have to be filled later.
 
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
@@ -1859,7 +1965,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @strategy.setter
     def strategy(self, value):
-        # self.is_setup = False 
+        # self.is_setup = False
         self._strategy = value
 
         # All strategies: reset to preferred
@@ -1886,7 +1992,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             pass
 
-        
+
         else: # "default"
 
             pass
@@ -1962,7 +2068,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         uf0 = self.F0.value
         uF1 = self.F1.value
         pF0 = self.PF0.value
-        
+
         if self.penalty.value == 0:
             uF1 = self.F1.value.subs(self.penalty, self.penalty.value)
 
@@ -1985,11 +2091,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         if len(exprs) != 0:
             display(Markdown("*Where:*"))
-        
-            for expr in exprs:
-                expr._object_viewer(description=False)    
 
-        
+            for expr in exprs:
+                expr._object_viewer(description=False)
+
+
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
         return
@@ -2040,8 +2146,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         import sympy
 
         # Any property changes will trigger this
-        if self.is_setup: 
+        if self.is_setup:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Stokes_SaddlePt ({self.name}): Pointwise functions do not need to be rebuilt", flush=True)
             return
+        else:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Stokes_SaddlePt ({self.name}): Pointwise functions need to be built", flush=True)
 
         dim  = self.mesh.dim
         cdim = self.mesh.cdim
@@ -2062,7 +2173,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # PF0 = sympy.Array(self._p_f0)# .reshape(1)
 
         ## We don't need to use these arrays, we can specify the ordering of the indices
-        ## and do these one by one as required by PETSc. However, at the moment, this 
+        ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
 
@@ -2155,7 +2266,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         fns_jacobian.append(self._pp_G0)
 
         # Now natural bcs (compiled into boundary integral terms)
-        # Need to loop on them all ... 
+        # Need to loop on them all ...
 
         fns_bd_residual = []
         fns_bd_jacobian = []
@@ -2189,7 +2300,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"],]
 
                 # Set this explicitly to zero initially
-                # fn_F = sympy.Matrix([[0,0],[0,0]]) 
+                # fn_F = sympy.Matrix([[0,0],[0,0]])
 
                 # bd_F1  = sympy.Array(fn_F).reshape(dim,dim)
                 # bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
@@ -2229,16 +2340,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             print(f"Stokes: Jacobians complete, now compile", flush=True)
 
         prim_field_list = [self.u, self.p]
-        self.compiled_extensions, self.ext_dict = getext(self.mesh, 
-                                       tuple(fns_residual), 
-                                       tuple(fns_jacobian), 
-                                       [x.fn for x in self.essential_bcs], 
-                                       tuple(fns_bd_residual), 
-                                       tuple(fns_bd_jacobian), 
-                                       primary_field_list=prim_field_list, 
-                                       verbose=verbose, 
+        self.compiled_extensions, self.ext_dict = getext(self.mesh,
+                                       tuple(fns_residual),
+                                       tuple(fns_jacobian),
+                                       [x.fn for x in self.essential_bcs],
+                                       tuple(fns_bd_residual),
+                                       tuple(fns_bd_jacobian),
+                                       primary_field_list=prim_field_list,
+                                       verbose=verbose,
                                        debug=debug,
                                        debug_name=debug_name)
+
+
+        self.is_setup = False
 
         return
 
@@ -2250,7 +2364,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Grab the mesh
         mesh = self.mesh
-        
+
         import xxhash
         import numpy as np
 
@@ -2262,7 +2376,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # changed then we do not need to do everything here
 
         if self.dm is not None and self.mesh_dm_coordinate_hash == mesh_dm_coord_hash:
+            if verbose and uw.mpi.rank == 0:
+                print(f"SNES_Stokes_SaddlePt ({self.name}): Discretisation does not need to be rebuilt", flush=True)
             return
+
+        if self.verbose:
+            print(f"{uw.mpi.rank}: Building dm for {self.name}")
 
         # Keep a note of the coordinates that we use for this setup
         self.mesh_dm_coordinate_hash == mesh_dm_coord_hash
@@ -2282,7 +2401,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm = self.dm_hierarchy[-1]
 
         if self.dm.getNumFields() == 0:
-        
+
+            if self.verbose:
+               print(f"{uw.mpi.rank}: Building FE / quadrature for {self.name}", flush=True)
+
+
             options = PETSc.Options()
             options.setValue("private_{}_u_petscspace_degree".format(self.petsc_options_prefix), u_degree) # for private variables
             self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
@@ -2301,7 +2424,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.dm.createDS()
 
-        ## This part is done once on the solver dm ... not required every time we update the functions ... 
+        ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
         cdef int ind=1
@@ -2326,25 +2449,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
 
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
-                                str("UW_Boundaries").encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
+                                str("UW_Boundaries").encode('utf8'),
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0], 
-                                <void (*)() noexcept>NULL, 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
 
-            
+
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
 
@@ -2363,27 +2486,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             ind = value
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum  
+            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
             bc_type = 5
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm, 
-                                bc_type, 
-                                str(boundary+f"{bc.components}").encode('utf8'), 
-                                str(boundary).encode('utf8'), 
+            bc = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary+f"{bc.components}").encode('utf8'),
+                                str(boundary).encode('utf8'),
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
-                                <const PetscInt *> &comps_view[0],  
-                                <void (*)() noexcept>ext.fns_bcs[fn_index], 
-                                NULL, 
-                                1, 
-                                <const PetscInt *> &ind, 
+                                <const PetscInt *> &comps_view[0],
+                                <void (*)() noexcept>ext.fns_bcs[fn_index],
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
- 
+
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
@@ -2396,6 +2519,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def _setup_solver(self, verbose=False):
+
+        if self.is_setup == True:
+            if verbose and uw.mpi.rank == 0:
+                print(f"Stokes Saddle Pt ({self.name}): SNES solver does not need to be rebuilt", flush=True)
+            return
 
         # set functions
         cdef int ind=1
@@ -2425,12 +2553,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             boundary = bc.boundary
             boundary_id = bc.PETScID
-            
+
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
             # bc_label = self.dm.getLabel(boundary)
-            
-            label_val = value            
+
+            label_val = value
 
             i_bd_res = self.ext_dict.bd_res
             i_bd_jac = self.ext_dict.bd_jac
@@ -2441,66 +2569,66 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 if bc.fn_f is not None:
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
-                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]], 
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    ) 
+                                    )
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL) 
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
 
 
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
 
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                                    0, 1, 0,                                     
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]], 
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                     #                 1, 0, 0,
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]], 
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]], 
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
                     #                 NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                    #                 1, 1, 0, 
-                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],  
+                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    #                 1, 1, 0,
+                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
                     #                 NULL, NULL, NULL)
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]], 
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]], 
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
                                     )
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                                    0, 1, 0, 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]], 
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]], 
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
-                    #                 1, 0, 0, 
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]], 
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]], 
+                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    #                 1, 0, 0,
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
                     #                 NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id, 
+                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                     #                 1, 1, 0,
-                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],  
-                    #                 NULL, 
-                    #                 NULL, 
-                    #                 NULL)                                   
+                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                    #                 NULL,
+                    #                 NULL,
+                    #                 NULL)
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
@@ -2569,20 +2697,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if _force_setup or not self.constitutive_model._solver_is_setup:
             self.is_setup = False
 
-        if (not self.is_setup):
-            if self.dm is not None:
-                self.dm.destroy()
-                self.dm = None  # Should be able to avoid nuking this if we 
-                            # can insert new functions in template (surface integrals problematic in 
-                            # the current implementation )
-
-            self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-        else:
-            # If the mesh has changed, this will rebuild (and do nothing if unchanged)
-            self._setup_discretisation(verbose)
-
+        self._build(verbose, debug, debug_name)
 
         # Keep a record of these set-up parameters
         tolerance = self.tolerance
@@ -2614,7 +2729,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
             self.atol = self.snes.getFunctionNorm() * self.tolerance
-        
+
         else:
             self.atol = 0.0
 
@@ -2625,12 +2740,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         if picard != 0:
             self.petsc_options.setValue("snes_max_it", abs(picard))
-            self.tolerance = tolerance 
+            self.tolerance = tolerance
             self.snes.atol = self.atol
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
-        
+
         # Now go back to the original plan
             self.snes.setType(snes_type)
             self.tolerance = tolerance
@@ -2639,7 +2754,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-        else: 
+        else:
         # Standard Newton solve
             self.snes.setType(snes_type)
             self.tolerance = tolerance
@@ -2654,7 +2769,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if verbose and uw.mpi.rank == 0:
                 print(f"SNES post-solve - bcs", flush=True)
 
-        # Copy solution back into user facing variables 
+        # Copy solution back into user facing variables
 
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
             # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
@@ -2677,7 +2792,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 clvec = lvec
                 csdm = sdm
-                
+
                 # print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
                 ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
 
@@ -2690,8 +2805,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason() 
-        iterations = self.snes.getIterationNumber() 
+        converged = self.snes.getConvergedReason()
+        iterations = self.snes.getIterationNumber()
 
         if not converged and uw.mpi.rank == 0:
             print(f"Convergence problems after {iterations} its in SNES solver use:\n",
@@ -2702,7 +2817,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                   flush=True
             )
 
-        return 
+        return
 
     @timing.routine_timer_decorator
     def estimate_dt(self):

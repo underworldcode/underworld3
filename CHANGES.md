@@ -1,24 +1,34 @@
-CHANGES: Underworld3
-====================
+# CHANGES: Underworld3
+
+## 2024-06-15
+
+  - Add JOSS submission information 
+  - Add licence file (licensing code and documentation in line with UW1 and UW2)
+  - Add quickstart guide (and test on binder)
+  - Clean up repository files
+  - Update the version numbering to match 3.x.x (consistent with UW2)
+
+## 2024-04-30
+
+  - uw expressions (sympy symbols that contain other expressions / functions)
+  - use uw expressions for viscoplastic / viscoelastic constitutive models.
+
+## 2024-01-31 
+
+ - Introduce particle sub-steps along path to improve accuracy in advection schemes
+ - Bug fixes associated with benchmarking
+ - Finalise the ability to create Meshvariables / Swarmvariables (with proxies) on the fly
 
 
-```{note}
-Test
-```
+## 2023-12-12
 
+  - Surface integrals implementation in weak form (integrated into boundary conditions)
+  - DDt interface (Semi-Lagrangian, Lagrangian)
+  - Solver base class, add an Unknowns class to manage generic form of unknowns
 
-```python
-
-```
-
-```python
-
-```
-
-# 2023-08-27
+## 2023-08-27
 
   - Geometrical multigrid (necessary changes to DM setup)
-
 
 ## 2023-05-20
 
@@ -26,7 +36,6 @@ Test
   - function.evalf is the rbf equivalent to function.evaluate it is fast but approximate
 
 ## 2023-03-29
-
 
   - Swarm reading using kd-tree to speed up locations
   - Swarm cycling now reverts to positions defined on the mesh and uses randomness to avoid 
@@ -45,22 +54,16 @@ Test
 
 ## 2023-01-15
 
-
  - >10000 core runs / timings
  - swarm checkpointing
  - mesh checkpointing
  - read back from mesh using kd-tree in order to provide flexible reading across different decompositions / mesh resolutions
 
 
-2022-09-01
-----------
+## 2022-09-01
 
-## Release 0.3.0 
-
-
- * Um
-
-
+ - Release 0.3.0 
+ - Quarterly tidy up
 
 ## 2021-08-12
 
@@ -74,6 +77,7 @@ Test
   the swarm variable. Currently we use the SciPy
   kdtree methods to map from swarm variables to 
   mesh variable nodes. 
+
 * Added the `Stateful` mixin which helps to keep 
   track of the state of objects. 
 
@@ -87,9 +91,7 @@ Test
 
 ## Release 0.0.2 []
 
-
-* Addition of `underworld3.maths.Integral` class for calculating
-  integrals via PETSc & UW3 JIT method. 
+* Addition of `underworld3.maths.Integral` class for calculating integrals via PETSc & UW3 JIT method. 
 * Rearrangement of UW3 classes to closer align with UW2.
 * Addition of Rayleigh-Taylor model.
 

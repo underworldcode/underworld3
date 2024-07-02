@@ -3,22 +3,13 @@ project:
   output-dir: _build/book
 
 book:
-  title: "Underworld3 Documentation"
+  title: "Underworld3 Quick Start Guide"
   author: "Louis Moresi"
-  date: "06/03/2024"
+  date: "15/06/2024"
   bread-crumbs: false
   chapters:
-    - part: "Introduction"
-      chapters:
-        - index.qmd
-        - Introduction.qmd
-    - part: "Constitutive Models"
-      chapters:
-      - ConstitutiveModels_Introduction.qmd
-      - ConstitutiveModels_Anisotropy.qmd
-    - part: "Analysis of Results"
-      chapters:
-      - Visualisation.qmd
+      - index.qmd
+      - Introduction.qmd
 
   navbar:
     search: true
@@ -43,11 +34,11 @@ format:
     code-links:
       - text: Open in Binder
         icon: rocket-takeoff
-        href: https://mybinder.org/v2/gh/ANU-RSES-Education/EMSC-QuartoBook/HEAD?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
+        href: https://mybinder.org/v2/gh/underworld/underworld3/HEAD?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
     other-links:
       - text: Github Repository
         icon: github
-        href: https://github.com/ANU-RSES-Education/EMSC-QuartoBook
+        href: https://github.com/underworld/underworld3
   
   pdf:
     documentclass: scrreprt
