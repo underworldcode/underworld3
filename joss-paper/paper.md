@@ -59,14 +59,13 @@ bibliography: paper.bib
 
 # Summary
 
+`underworld3` is a finite element, geophysical-fluid-dynamics modelling framework designed to be both straightforward to use and highly scalable to peak high-performance computing environments. It implements the Lagrangian particle finite element methodology outlined in @moresi.etal.Lagrangian.2003.
 
-`Underworld3` is a finite element, geophysical-fluid-dynamics modelling framework
- designed to be both straightforward to use and highly scalable to peak high-performance computing environments.
- `Underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` and `petsc4py`, (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
+ `underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balay.etal.PETSc.2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
 
-The symbolic forms in (2,3) are used to construct a finite element representation, using `sympy` and `cython` to compile the `C` function pointers that are required by PETSc to describe finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions.
+The symbolic forms in (2,3) are used to construct a finite element representation, using `sympy` [@meurer.etal.SymPy.2017] and `cython` [@behnel2011cython] to compile the `C` function pointers that are required by `PETSc` to describe finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions. Compilation is always delayed until expressions are required for the weak form. This allows `sympy` to be responsible for composition of `underworld3` objects and offers the greatest opportunity for expressions to be simplified.
 
-Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects as well as mathematical ones. This allows symbolic prototyping and validation of PDE solvers in scripts that can immediately be deployed in a parallel HPC environment.
+Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects and as mathematical ones. This allows symbolic prototyping and user-validation of PDE solvers in python scripts that can immediately be deployed in a parallel HPC environment.
 
 # Statement of need
 
@@ -84,21 +83,20 @@ Introspection at the mathematical level is important because problems typically 
 
 Time discretisation is complicated because it may introduce history terms in both fluxes (derivatives of unknowns including material history) and the unknowns themselves.
 
-
 PETSc is just impossible, isn't it ? Need I say more ?
-
 
 # Mathematical Framework
 
-PETSc provides a template form for the automatic generation of weak forms. The strong-form of the problem is defined through the functional $\cal{F}$ that expresses the balance between fluxes and unknowns:
+`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. The strong-form of the problem is defined through the functional $\cal{F}$ that expresses the balance between fluxes and unknowns:
 
 $$
 \cal{F}(\mathbf{u}) \sim \color{Black}{\nabla \cdot \mathbf{f}_1 (u, \nabla u)} - \color{Black}{{f_0} (u, \nabla u)} = 0
+\label{petsc-point-strong}
 $$
 
 The discrete weak form and its Jacobian derivative can be expressed as follows
 
-$$ \cal{F}(\cal{u}) \sim \sum_e \epsilon_e^T \left[ B^T W f_0(u^q, \nabla u^q) + \sum_k D_k^T W \mathbf{f}_1^k (u^q, \nabla u^q) \right] = 0
+$$ \cal{F}(\cal{u}) \sim \sum_e \epsilon_e^T \left[ B^T W f_0(u^q, \nabla u^q) + \sum_k D_k^T W \mathbf{f}_1^k (u^q, \nabla u^q) \right] = 0 \label{petsc-point-weak}
 $$
 
 $$ \cal{F'}(\cal{u}) \sim \sum_e \epsilon_e^T
@@ -120,9 +118,10 @@ $$ \cal{F'}(\cal{u}) \sim \sum_e \epsilon_e^T
                     \partial f_0 / \partial u & \partial f_0 / \partial \nabla u \\
                     \partial \mathbf{f}_1 / \partial u & \partial \mathbf{f}_1 / \partial \nabla u
                 \end{array}\right]
+\label{petsc-point-jacobian}
 $$
 
-The symbolic form corresponding to [ ref above ] is
+The symbolic representation of the strong-form that is encoded in `underworld3` is:
 
 $$
 \color{DarkGreen}{\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{\mathbf{f} } } }
@@ -131,15 +130,12 @@ $$
 - \color {Maroon}{\underbrace{\Bigl[
    \mathrm{H}(\mathbf{x},t) \Bigr]}_{\mathbf{f}}}
 = 0
+\label{sympy-strong}
 $$
 
-This symbolic form contains material / time derivatives of the unknowns which are not present in [ ref above ] because, after discretisation, they simplify to produce terms that are combinations of fluxes and flux history terms (which modify $\mathrm{F}$) and forces (which modify $\mathbf{f}$. In `Underworld3` this simplification is handled by sympy which allows arbitrary combinations of numerical time-discretisation with constitutive models that have history terms or the force-like terms which often occur in non-Cartesian coordinate systems.
+Referencing: sympy equation: \ref{sympy-strong}
 
-# Design Patterns
-
-
-# Documentation
-
+This symbolic form contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $\mathrm{F}$) and forces (which modify $\mathbf{f}$. In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians.
 
 # Discussion
 
@@ -151,7 +147,10 @@ Double dollars make self-standing equations:
 $$\Theta(x) = \left\{\begin{array}{l}
 0\textrm{ if } x < 0\cr
 1\textrm{ else}
-\end{array}\right.$$
+\end{array}\right. $${label="eq:example"}
+
+Reference to the example equation: @eq:example or \ref{eq:example}
+
 
 <!-- You can also use plain \LaTeX for equations
 \begin{equation}\label{eq:fourier}
