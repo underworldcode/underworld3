@@ -18,5 +18,21 @@ def _is_notebook() -> bool:
     except NameError:
         return False  # Probably standard Python interpreter
 
+def _is_interactive_vis() -> bool:
+    """
+        Function to determine if interactive visualisation is available.
+        Returns 'True' is possible, 'False' is otherwise
+    """
+    try:
+        import pyvista
+    except:
+        return False
+
+    import underworld3 as uw
+    if uw.mpi.size != 1:
+        return False
+
+    return True
 
 is_notebook = _is_notebook()
+is_interactive_vis = _is_interactive_vis()
