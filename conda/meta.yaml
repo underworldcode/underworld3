@@ -15,7 +15,7 @@ source:
 build:
   number: 0
   string: mpi_{{ mpi }}
-  script: "{{ PYTHON }} -m pip install . -vv"
+  script: "{{ python }} -m pip install . -vv"
 
 requirements:
 
@@ -27,7 +27,7 @@ requirements:
     - {{ mpi }}-mpicc
     - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - python 
+    - {{ python }}
     - mpi4py
     - petsc>=3.21.0
     - petsc4py>=3.21.0
@@ -39,7 +39,7 @@ requirements:
     - {{ mpi }}-mpicc
     - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - python 
+    - {{ python }}
     - numpy
     - mpi4py
     - sympy
@@ -53,8 +53,8 @@ requirements:
     - sympy
     - pytest
     - typing_extensions
-    - python-xxhash
-    - python-gmsh
+    - {{ python }}-xxhash
+    - {{ python }}-gmsh
     - ipython
     - nest-asyncio
     - typeguard
