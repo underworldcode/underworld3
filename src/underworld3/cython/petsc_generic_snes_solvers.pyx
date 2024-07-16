@@ -252,9 +252,9 @@ class SolverBaseClass(uw_object):
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
-            raise ValueError("Unsupported BC conds: " +
-                  "array_like,   i.e. conds = [None, 5, 1.2]" +
-                  "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
+            raise ValueError("Unsupported BC conds: \n" +
+                  "array_like,   i.e. conds = [None, 5, 1.2]\n" +
+                  "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
             # TODO: DECPRECATE
