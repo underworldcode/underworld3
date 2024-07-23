@@ -9,7 +9,7 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
     - [x] Install GitHub workflow
     - [x] Validate workflow
     - [x] Open source licence file
-    - [?] Publication branch (this is acceptable to JOSS, must be kept up to date on submission).
+    - [?] Publication branch (this is acceptable, must be kept up to date on submission).
     - [ ] Check Insights / Community Standards for GitHub repo / put into line with UW2
 
 ## Clean up checklist
@@ -24,7 +24,7 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 
 Can I submit ?
 
-    - [x] The software must have an obvious research application.4
+    - [x] The software must have an obvious research application.
     - [x] You must be a major contributor to the software you are submitting, and have a GitHub account to participate in the review process.
     - [x] Your paper must not focus on new research results accomplished with the software.
 

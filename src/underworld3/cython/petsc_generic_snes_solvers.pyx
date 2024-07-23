@@ -252,7 +252,7 @@ class SolverBaseClass(uw_object):
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
-            raise("Unsupported BC conds: " +
+            raise ValueError("Unsupported BC conds: " +
                   "array_like,   i.e. conds = [None, 5, 1.2]" +
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])")
 

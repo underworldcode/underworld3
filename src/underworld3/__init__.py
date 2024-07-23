@@ -92,12 +92,12 @@ def view():
 # PETSc.Log().begin()
 
 # Bundle these utils
+# Needed everywhere
+import underworld3.mpi
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
 
-# Needed everywhere
-import underworld3.mpi
 from underworld3.utilities import _api_tools
 
 import underworld3.adaptivity

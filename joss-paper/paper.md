@@ -52,20 +52,19 @@ affiliations:
  - name: Curtin University, Perth, Australia
    index: 5
 
-
 date: 30 June 2024
 bibliography: paper.bib
 ---
 
 # Summary
 
-`underworld3` is a finite element, geophysical-fluid-dynamics modelling framework designed to be both straightforward to use and highly scalable to peak high-performance computing environments. It implements the Lagrangian particle finite element methodology outlined in @moresi.etal.Lagrangian.2003.
+`Underworld3` is a finite element, geophysical-fluid-dynamics modelling framework designed to be both straightforward to use and highly scalable to peak high-performance computing environments. It implements the Lagrangian-particle finite element methodology outlined in @moresi.etal.Lagrangian.2003.
 
- `underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balay.etal.PETSc.2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
+ `Underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balay.etal.PETSc.2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
 
-The symbolic forms in (2,3) are used to construct a finite element representation, using `sympy` [@meurer.etal.SymPy.2017] and `cython` [@behnel2011cython] to compile the `C` function pointers that are required by `PETSc` to describe finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions. Compilation is always delayed until expressions are required for the weak form. This allows `sympy` to be responsible for composition of `underworld3` objects and offers the greatest opportunity for expressions to be simplified.
+The symbolic forms in (2,3) are used to construct a finite element representation using `sympy` [@meurer.etal.SymPy.2017] and `cython` [@behnel2011cython]. These forms are just-in-time (JIT) compiled as `C` functions libraries and pointers to these libraries are given to PETSc to describe the finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions.
 
-Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects and as mathematical ones. This allows symbolic prototyping and user-validation of PDE solvers in python scripts that can immediately be deployed in a parallel HPC environment.
+Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects as well as mathematical ones. This allows symbolic prototyping and validation of PDE solvers in scripts that can immediately be deployed in a parallel HPC environment.
 
 # Statement of need
 
@@ -115,18 +114,13 @@ The symbolic representation of the strong-form that is encoded in `underworld3` 
 - \nabla \cdot \underbrace{\Bigl[ \mathrm{F}(u, \nabla u) \Bigr]}_{\mathbf{F}}}
 - \color {Maroon}{\underbrace{\Bigl[
    \mathrm{H}(\mathbf{x},t) \Bigr]}_{\mathbf{f}}}
-\color{Black}{= 0}
+   \color{Black}{= 0}
 \end{equation}
 
 This symbolic form (\ref{eq:sympy-strong-form})
 contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $f$. In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
 
 # Discussion
-
-
-
-
-
 
 <!-- Figures can be included like this:
 ![Caption for example figure.\label{fig:example}](figure.png)
