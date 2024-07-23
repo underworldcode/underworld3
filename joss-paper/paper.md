@@ -109,16 +109,14 @@ The discrete weak form and its Jacobian derivative can be expressed as follows
 The symbolic representation of the strong-form that is encoded in `underworld3` is:
 
 \begin{equation}\label{eq:sympy-strong-form}
-\color{DarkGreen}{\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{\mathbf{f} } } }
- \color{Blue}{
-- \nabla \cdot \underbrace{\Bigl[ \mathrm{F}(u, \nabla u) \Bigr]}_{\mathbf{F}}}
-- \color {Maroon}{\underbrace{\Bigl[
-   \mathrm{H}(\mathbf{x},t) \Bigr]}_{\mathbf{f}}}
-   \color{Black}{= 0}
+\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{f} }
+-\nabla \cdot \underbrace{\Bigl[ \mathrm{F}(u, \nabla u) \Bigr]}_{\mathbf{F}}
+-\underbrace{\Bigl[ \mathrm{H}(\mathbf{x},t) \Bigr]}_{f}
+= 0
 \end{equation}
 
 This symbolic form (\ref{eq:sympy-strong-form})
-contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $f$. In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
+contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $f$). In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
 
 # Discussion
 
