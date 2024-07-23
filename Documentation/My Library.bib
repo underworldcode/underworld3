@@ -282,7 +282,7 @@
   primaryclass = {astro-ph, physics:physics},
   urldate = {2021-08-29},
   abstract = {Traditionally, 1D models based on scaling laws have been used to parameterized convective heat transfer rocks in the interior of terrestrial planets like Earth, Mars, Mercury and Venus to tackle the computational bottleneck of high-fidelity forward runs in 2D or 3D. However, these are limited in the amount of physics they can model (e.g. depth dependent material properties) and predict only mean quantities such as the mean mantle temperature. We recently showed that feedforward neural networks (FNN) trained using a large number of 2D simulations can overcome this limitation and reliably predict the evolution of entire 1D laterally-averaged temperature profile in time for complex models [Agarwal et al. 2020]. We now extend that approach to predict the full 2D temperature field, which contains more information in the form of convection structures such as hot plumes and cold downwellings. Using a dataset of 10,525 two-dimensional simulations of the thermal evolution of the mantle of a Mars-like planet, we show that deep learning techniques can produce reliable parameterized surrogates (i.e. surrogates that predict state variables such as temperature based only on parameters) of the underlying partial differential equations. We first use convolutional autoencoders to compress the temperature fields by a factor of 142 and then use FNN and long-short term memory networks (LSTM) to predict the compressed fields. On average, the FNN predictions are 99.30\% and the LSTM predictions are 99.22\% accurate with respect to unseen simulations. Proper orthogonal decomposition (POD) of the LSTM and FNN predictions shows that despite a lower mean absolute relative accuracy, LSTMs capture the flow dynamics better than FNNs. When summed, the POD coefficients from FNN predictions and from LSTM predictions amount to 96.51\% and 97.66\% relative to the coefficients of the original simulations, respectively.},
-  archiveprefix = {arxiv},
+  archiveprefix = {arXiv},
   keywords = {Astrophysics - Earth and Planetary Astrophysics,Computer Science - Machine Learning,No DOI found,Physics - Fluid Dynamics,Physics - Geophysics},
   file = {/Users/lmoresi/Zotero/storage/6NFZPQ6K/Agarwal et al. - 2021 - Deep learning for surrogate modelling of 2D mantle.pdf;/Users/lmoresi/Zotero/storage/F37FHRVV/2108.html}
 }
@@ -1167,6 +1167,30 @@ ZSCC: 0000020},
   doi = {10.1007/978-1-4612-1986-6_8}
 }
 
+@techreport{balay.etal.PETSc.2023,
+  title = {{{PETSc}}/{{TAO Users Manual}} ({{Rev}}. 3.20)},
+  author = {Balay, S. and Abhyankar, S. and Adams, M. and Benson, S. and Brown, J. and Brune, P. and Buschelman, K. and Constantinescu, E. and Dalcin, L. and Dener, A. and Eijkhout, V. and Faibussowitsch, J. and Gropp, W. and Hapla, V. and Isaac, T. and Jolivet, P. and Karpeev, D. and Kaushik, D. and Knepley, M. and Kong, F. and Kruger, S. and May, D. and McInnes, L. and Mills, R. and Mitchell, L. and Munson, T. and Roman, J. and Rupp, K. and Sanan, P. and Sarich, J. and Smith, B. and Zampini, S. and Zhang, H. and Zhang, J.},
+  year = {2023},
+  month = nov,
+  number = {ANL--21/39 Rev. 3-20, 2205494, 185712},
+  pages = {ANL--21/39 Rev. 3-20, 2205494, 185712},
+  doi = {10.2172/2205494},
+  urldate = {2024-07-03},
+  file = {/Users/lmoresi/Zotero/storage/B7WW4EWE/Balay et al. - 2023 - PETScTAO Users Manual (Rev. 3.20).pdf}
+}
+
+@techreport{balay.etal.PETSc.2024,
+  title = {{{PETSc}}/{{TAO Users Manual V}}.3.21},
+  author = {Balay, S. and Abhyankar, S. and Adams, M. and Benson, S. and Brown, J. and Brune, P. and Buschelman, K. and Constantinescu, E. and Dalcin, L. and Dener, A. and Eijkhout, V. and Faibussowitsch, J. and Gropp, W. and Hapla, V. and Isaac, T. and Jolivet, P. and Karpeev, D. and Kaushik, D. and Knepley, M. and Kong, F. and Kruger, S. and May, D. and McInnes, L. and Mills, R. and Mitchell, L. and Munson, T. and Roman, J. and Rupp, K. and Sanan, P. and Sarich, J. and Smith, B. and Zampini, S. and Zhang, H. and Zhang, H. and Zhang, J.},
+  year = {2024},
+  month = mar,
+  number = {ANL--21/39-Rev-3.21, 2337606, 188499},
+  pages = {ANL--21/39-Rev-3.21, 2337606, 188499},
+  doi = {10.2172/2337606},
+  urldate = {2024-07-03},
+  file = {/Users/lmoresi/Zotero/storage/FTX49W6P/Balay et al. - 2024 - PETScTAO Users Manual V.3.21.pdf}
+}
+
 @techreport{balayPETScTAOUsers2023,
   title = {{{PETSc}}/{{TAO Users Manual}} ({{Rev}}. 3.19)},
   author = {Balay, S. and Abhyankar, S. and Adams, Mark and Benson, S. and Brown, J. and Brune, P. and Buschelman, K. and Constantinescu, E. and Dalcin, L. and Dener, A. and Eijkhout, V. and Faibussowitsch, J. and Gropp, W. and Hapla, V. and Isaac, T. and Jolivet, P. and Karpeev, D. and Kaushik, D. and Knepley, M. and Kong, F. and Kruger, S. and May, D. and McInnes, L. and Mills, R. and Mitchell, L. and Munson, T. and Roman, J. and Rupp, K. and Sanan, P. and Sarich, J. and Smith, B. and Zampini, S. and Zhang, H. and Zhang, H. and Zhang, J.},
@@ -1792,6 +1816,17 @@ ZSCC: 0000008},
   issn = {0040-1951},
   doi = {10/d98dhq},
   abstract = {With new equipment it is now possible to obtain borehole logs which allow resolution of temperature gradients differing by 0.1--0.2 mK/m over a distance of about 0.5 m at a logging rate of 8 m/min. Since such a detailed profile of temperature gradient versus depth is easily obtained, disturbances to the equilibrium gradient can now be readily identified.}
+}
+
+@article{behnel2011cython,
+  title = {Cython: {{The}} Best of Both Worlds},
+  author = {Behnel, Stefan and Bradshaw, Robert and Citro, Craig and Dalcin, Lisandro and Seljebotn, Dag Sverre and Smith, Kurt},
+  year = {2011},
+  journal = {Computing in Science \& Engineering},
+  volume = {13},
+  number = {2},
+  pages = {31--39},
+  publisher = {IEEE}
 }
 
 @article{behnImplicationsGrainSize2009,
@@ -2432,6 +2467,23 @@ ZSCC: NoCitationData[s0]},
   keywords = {comparison of methods,mantle convection,numerical analysis},
   annotation = {ZSCC: 0000281},
   file = {/Users/lmoresi/Zotero/storage/PVT6K3AC/Blankenbach et al. - 1989 - A benchmark comparison for mantle convection codes.pdf}
+}
+
+@article{blay-roger.etal.Natural.2024,
+  title = {Natural Hydrogen in the Energy Transition: {{Fundamentals}}, Promise, and Enigmas},
+  shorttitle = {Natural Hydrogen in the Energy Transition},
+  author = {{Blay-Roger}, Rub{\'e}n and Bach, Wolfgang and Bobadilla, Luis F. and Reina, Tomas Ramirez and Odriozola, Jos{\'e} A. and Amils, Ricardo and Blay, Vincent},
+  year = {2024},
+  month = jan,
+  journal = {Renewable and Sustainable Energy Reviews},
+  volume = {189},
+  pages = {113888},
+  issn = {13640321},
+  doi = {10.1016/j.rser.2023.113888},
+  urldate = {2024-07-16},
+  abstract = {Beyond its role as an energy vector, a growing number of natural hydrogen sources and reservoirs are being discovered all over the globe, which could represent a clean energy source. Although the hydrogen amounts in reservoirs are uncertain, they could be vast, and they could help decarbonize energy-intensive economic sectors and facilitate the energy transition. Natural hydrogen is mainly produced through a geochemical process known as serpentinization, which involves the reaction of water with low-silica, ferrous minerals. In favorable locations, the hydrogen produced can become trapped by impermeable rocks on its way to the atmosphere, forming a reservoir. The safe exploitation of numerous natural hydrogen reservoirs seems feasible with current technology, and several demonstration plants are being commissioned. Natural hydrogen may show variable composition and require custom separation, purification, storage, and distribution facilities, depending on the location and intended use. By investing in research, in the mid-term, more hydrogen sources could become exploitable and geochemical processes could be artificially stimulated in new locations. In the long term, it may be possible to leverage or engineer the interplay between microorganisms and geological substrates to obtain hydrogen and other chemicals in a sustainable manner.},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/35VLLJZ5/Blay-Roger et al. - 2024 - Natural hydrogen in the energy transition Fundame.pdf}
 }
 
 @article{blundell.etal.Interpreting.2019,
@@ -5472,6 +5524,22 @@ ZSCC: NoCitationData[s0]},
   keywords = {Deformation,Lithosphere,Mantle convection,Plate tectonics,Review,Rheology}
 }
 
+@book{committeeontheplanetaryscienceandastrobiologydecadalsurvey.etal.Origins.2023,
+  title = {Origins, {{Worlds}}, and {{Life}}: {{A Decadal Strategy}} for {{Planetary Science}} and {{Astrobiology}} 2023-2032},
+  shorttitle = {Origins, {{Worlds}}, and {{Life}}},
+  author = {{Committee on the Planetary Science and Astrobiology Decadal Survey} and {Space Studies Board} and {Division on Engineering and Physical Sciences} and {National Academies of Sciences, Engineering, and Medicine}},
+  year = {2023},
+  month = oct,
+  pages = {26522},
+  publisher = {National Academies Press},
+  address = {Washington, D.C.},
+  doi = {10.17226/26522},
+  urldate = {2024-07-18},
+  isbn = {978-0-309-47578-5},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/6TIP9VFP/Committee on the Planetary Science and Astrobiology Decadal Survey et al. - 2023 - Origins, Worlds, and Life A Decadal Strategy for .pdf}
+}
+
 @article{condieContinentalGrowth9Ga2002,
   title = {Continental Growth during a 1.9-{{Ga}} Superplume Event},
   author = {Condie, Kent C},
@@ -6307,6 +6375,18 @@ ZSCC: 0000010},
   annotation = {394 citations (Semantic Scholar/DOI) [2022-06-08]}
 }
 
+@article{dalcinpazklercosimo2011,
+  title = {Parallel Distributed Computing Using {{Python}}},
+  author = {Dalcin, Lisandro D. and Paz, Rodrigo R. and Kler, Pablo A. and Cosimo, Alejandro},
+  year = {2011},
+  journal = {Advances in Water Resources},
+  volume = {34},
+  number = {9},
+  pages = {1124--1139},
+  issn = {0309-1708},
+  doi = {10.1016/j.advwatres.2011.04.013}
+}
+
 @article{dalyTectonicEvolutionExploration1998,
   title = {Tectonic Evolution and Exploration Potential for the {{Gawler Craton}}, {{South Australia}}},
   shorttitle = {Tectonic Evolution and Exploration Potential for t},
@@ -6492,6 +6572,17 @@ ZSCC: 0000010},
   doi = {10/ghzx3j},
   abstract = {The Geological Survey of NSW (GSNSW) has created a 3D geological model of the Sydney-Gunnedah Basin that includes best available geological mapping and new 3D modelling.The onshore Sydney Basin comprises the southern section of the Permo-Triassic Sydney-Gunnedah-Bowen system, which overlies the Lachlan Orogen and Late Carboniferous volcaniclastic rocks. The Hunter-Bowen Orogeny formed the adjacent New England Orogen and resulted in uplift and erosion that deposited Jurassic sedimentary sequences of the Surat Basin over large parts of the Gunnedah Basin.Model generation followed GSNSW?s map development workflow, developed as part of the larger project: 3D Mapping of NSW.The integrated Sydney-Gunnedah Basin 3D model was developed with the aim of advancing the understanding of the geological and structural setting of the region. This will inform areas of investigation such as coal and hydrocarbon prospectivity, groundwater management and exploration, and environmental and land use decision making.},
   file = {/Users/lmoresi/Zotero/storage/2B882Q39/Davidson and Oliveira - 2018 - 3D Mapping of NSW Project Sydney-Gunnedah Basin.pdf}
+}
+
+@book{davies.Dynamic.2009,
+  title = {Dynamic {{Earth}}},
+  author = {Davies, Geoffrey F.},
+  year = {2009},
+  publisher = {Cambridge University Press},
+  address = {Cambridge, GBR},
+  isbn = {978-0-511-60580-2},
+  langid = {english},
+  annotation = {OCLC: 958550137}
 }
 
 @book{daviesDynamicEarthPlates1999,
@@ -8709,6 +8800,20 @@ ZSCC: 0000016},
   doi = {10/chvqrf}
 }
 
+@book{fowler.Solid.2004,
+  title = {The {{Solid Earth}}: {{An Introduction}} to {{Global Geophysics}}},
+  shorttitle = {The {{Solid Earth}}},
+  author = {Fowler, C. M. R.},
+  year = {2004},
+  month = dec,
+  edition = {2},
+  publisher = {Cambridge University Press},
+  doi = {10.1017/CBO9780511819643},
+  urldate = {2024-07-02},
+  copyright = {https://www.cambridge.org/core/terms},
+  isbn = {978-0-521-89307-7 978-0-521-58409-8 978-0-511-81964-3}
+}
+
 @article{foxAbruptChangesRate2015,
   title = {Abrupt Changes in the Rate of {{Andean Plateau}} Uplift from Reversible Jump {{Markov Chain Monte Carlo}} Inversion of River Profiles},
   author = {Fox, Matthew and Bodin, Thomas and Shuster, David L.},
@@ -10253,6 +10358,17 @@ ZSCC: 0000048},
   institution = {GasFields Commission Queensland},
   langid = {english},
   file = {/Users/lmoresi/Zotero/storage/S8ZSXHJY/Groundwater Aquifer Connectivity in Queensland, Au.pdf}
+}
+
+@book{gubbins.Seismology.1990,
+  title = {Seismology and Plate Tectonics},
+  author = {Gubbins, David},
+  year = {1990},
+  publisher = {Cambridge University Press},
+  address = {Cambridge [England] ; New York},
+  isbn = {978-0-521-37141-4 978-0-521-37995-3},
+  lccn = {QE534.2 .G83 1990},
+  keywords = {Earthquakes,Plate tectonics,Seismology}
 }
 
 @article{gubbinsThermochemicalBoundaryLayer2008,
@@ -12508,6 +12624,23 @@ OCLC: 255229482}
   abstract = {Summary Lees's topographic correction for a simple idealized hill is discussed and extended to a monoclinal structure. It is valuable as giving very simply the order of magnitude of the correction. A number of new measurements of temperature in Tasmanian boreholes has been made and the previous rather high value of over 2{$\mu$} cal/cm2 sec for the heat flux has been confirmed. The variation of thermal conductivity through the thickness of a differentiated tholeiite sheet has been measured and found to be in reasonably good agreement with values calculated from chemical and modal analyses.}
 }
 
+@article{jahanbakhsh.etal.Underground.2024,
+  title = {Underground Hydrogen Storage: {{A UK}} Perspective},
+  shorttitle = {Underground Hydrogen Storage},
+  author = {Jahanbakhsh, Amir and {Louis Potapov-Crighton}, Alexander and Mosallanezhad, Abdolali and Tohidi Kaloorazi, Nina and {Maroto-Valer}, M. Mercedes},
+  year = {2024},
+  month = jan,
+  journal = {Renewable and Sustainable Energy Reviews},
+  volume = {189},
+  pages = {114001},
+  issn = {13640321},
+  doi = {10.1016/j.rser.2023.114001},
+  urldate = {2024-07-17},
+  abstract = {Hydrogen is anticipated to play a key role in global decarbonization and within the UK's pathway to achieving net zero targets. However, as the production of hydrogen expands in line with government strategies a key concern is where this hydrogen will be stored for later use. This study assesses the different large-scale storage options in geological structures available to the UK and addresses the surrounding uncertainties moving towards establishing a hydrogen economy. Currently, salt caverns look to be the most favourable option, considering their proven experience in the storage of hydrogen, especially high purity hydrogen, natural sealing properties, low cushion gas requirement and high charge and discharge rates. However, their geographical availability within the UK can act as a major constraint. Additionally, a substantial increase in the number of new caverns will be necessary to meet the UK's storage demand. Salt caverns have greater applicability as a good short-term storage solution, however, storage in porous media, such as depleted hydrocarbon reservoirs and saline aquifers, can be seen as a long-term and strategic solution to meet energy demand and achieve energy security. Porous media storage solutions are estimated to have capacities which far exceed projected storage demand. Depleted fields have generally been well explored prior to hydrocarbon extraction. Although many saline aquifers are available offshore UK, geological characterizations are still required to identify the right candidates for hydrogen storage. Currently, the advantages of depleted gas reservoirs over saline aquifers make them the favoured option after salt caverns.},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/GIFF25DP/Jahanbakhsh et al. - 2024 - Underground hydrogen storage A UK perspective.pdf}
+}
+
 @inproceedings{jamesonNumericalSolutionEuler1981,
   title = {Numerical Solution of the {{Euler}} Equations by Finite Volume Methods Using {{Runge Kutta}} Time Stepping Schemes},
   booktitle = {14th {{Fluid}} and {{Plasma Dynamics Conference}}},
@@ -13975,7 +14108,7 @@ ZSCC: 0000001},
   primaryclass = {cs},
   urldate = {2022-02-07},
   abstract = {We examine residual evaluation, perhaps the most basic operation in numerical simulation. By raising the level of abstraction in this operation, we can eliminate specialized code, enable optimization, and greatly increase the extensibility of existing code.},
-  archiveprefix = {arxiv},
+  archiveprefix = {arXiv},
   langid = {english},
   keywords = {Computer Science - Computational Engineering Finance and Science,Computer Science - Mathematical Software,No DOI found},
   annotation = {9 citations (Semantic Scholar/arXiv) [2022-04-21]},
@@ -15648,7 +15781,7 @@ ZSCC: 0000143},
   primaryclass = {cs, math},
   urldate = {2020-10-22},
   abstract = {The classical development of neural networks has primarily focused on learning mappings between finite-dimensional Euclidean spaces. Recently, this has been generalized to neural operators that learn mappings between function spaces. For partial differential equations (PDEs), neural operators directly learn the mapping from any functional parametric dependence to the solution. Thus, they learn an entire family of PDEs, in contrast to classical methods which solve one instance of the equation. In this work, we formulate a new neural operator by parameterizing the integral kernel directly in Fourier space, allowing for an expressive and efficient architecture. We perform experiments on Burgers' equation, Darcy flow, and the Navier-Stokes equation (including the turbulent regime). Our Fourier neural operator shows state-of-the-art performance compared to existing neural network methodologies and it is up to three orders of magnitude faster compared to traditional PDE solvers.},
-  archiveprefix = {arxiv},
+  archiveprefix = {arXiv},
   keywords = {Computer Science - Machine Learning,Mathematics - Numerical Analysis},
   annotation = {ZSCC: NoCitationData[s0]},
   file = {/Users/lmoresi/Zotero/storage/AKA9E6N9/Li et al. - 2020 - Fourier Neural Operator for Parametric Partial Dif.pdf}
@@ -17282,16 +17415,7 @@ ZSCC: 0000000},
   keywords = {cooper-eromanga basin,exhumation,hydrocarbon exploration}
 }
 
-@book{mayerjWelcomeElectronicEdition2015,
-  title = {Welcome to the Electronic Edition Of},
-  author = {{Mayer J}},
-  year = {2015},
-  journal = {Coastal Management},
-  abstract = {The book opens with the bookmark panel and you will see the contents pages. Click on these anytime to return to the contents. You can also add your own bookmarks. Each chapter heading in the contents table is clickable and will take you direct to the chapter. Return using the contents link in the bookmarks. The whole document is fully searchable. Enjoy.},
-  isbn = {978-0-9807230-3-8}
-}
-
-@article{mayOptimalScalableForward2011,
+@article{may.knepley.Optimal.2011,
   title = {Optimal, Scalable Forward Models for Computing Gravity Anomalies},
   author = {May, Dave A. and Knepley, Matthew G.},
   year = {2011},
@@ -17306,11 +17430,20 @@ ZSCC: 0000000},
   doi = {10.1111/j.1365-246X.2011.05167.x},
   urldate = {2023-02-08},
   abstract = {We describe three approaches for computing a gravity signal from a density anomaly. The first approach consists of the classical "summation" technique, whilst the remaining two methods solve the Poisson problem for the gravitational potential using either a Finite Element (FE) discretization employing a multilevel preconditioner, or a Green's function evaluated with the Fast Multipole Method (FMM). The methods utilizing the PDE formulation described here differ from previously published approaches used in gravity modeling in that they are optimal, implying that both the memory and computational time required scale linearly with respect to the number of unknowns in the potential field. Additionally, all of the implementations presented here are developed such that the computations can be performed in a massively parallel, distributed memory computing environment. Through numerical experiments, we compare the methods on the basis of their discretization error, CPU time and parallel scalability. We demonstrate the parallel scalability of all these techniques by running forward models with up to \$10{\textasciicircum}8\$ voxels on 1000's of cores.},
-  archiveprefix = {arxiv},
+  archiveprefix = {arXiv},
   keywords = {Computer Science - Computational Engineering Finance and Science,Computer Science - Distributed Parallel and Cluster Computing,Physics - Geophysics},
   annotation = {21 citations (Semantic Scholar/arXiv) [2023-02-09]\\
 21 citations (Semantic Scholar/DOI) [2023-02-09]},
   file = {/Users/lmoresi/Zotero/storage/8Z7728YB/May and Knepley - 2011 - Optimal, scalable forward models for computing gra.pdf;/Users/lmoresi/Zotero/storage/6M3NXYFT/1107.html}
+}
+
+@book{mayerjWelcomeElectronicEdition2015,
+  title = {Welcome to the Electronic Edition Of},
+  author = {{Mayer J}},
+  year = {2015},
+  journal = {Coastal Management},
+  abstract = {The book opens with the bookmark panel and you will see the contents pages. Click on these anytime to return to the contents. You can also add your own bookmarks. Each chapter heading in the contents table is clickable and will take you direct to the chapter. Return using the contents link in the bookmarks. The whole document is fully searchable. Enjoy.},
+  isbn = {978-0-9807230-3-8}
 }
 
 @article{mayOverviewAdaptiveFinite2013,
@@ -21499,6 +21632,19 @@ ZSCC: 0000039},
   pages = {291--325},
   issn = {0040-1951},
   doi = {10/fvwjrk}
+}
+
+@book{poirier.Introduction.2000,
+  title = {Introduction to the Physics of the {{Earth}}'s Interior},
+  author = {Poirier, Jean-Paul},
+  year = {2000},
+  edition = {2nd ed},
+  publisher = {Cambridge University Press},
+  address = {Cambridge},
+  abstract = {"Introduction to the Physics of the Earth's Interior describes the structure, composition and temperature of the deep Earth in one comprehensive volume." "Like the first edition, this will be a useful textbook for graduate and advanced undergraduate students in geophysics and mineralogy. It will also be of great value to researchers in Earth sciences, physics and materials sciences."--Jacket},
+  isbn = {978-0-511-01034-7},
+  langid = {english},
+  annotation = {OCLC: 51029121}
 }
 
 @article{pokornyFeedbacksSubductionDynamics2021,
@@ -25892,6 +26038,18 @@ ZSCC: 0000141},
   keywords = {crust,geothermal gradient,stochastic process,therm}
 }
 
+@book{stacey.Physics.2008,
+  title = {Physics of the Earth},
+  author = {Stacey, F. D.},
+  year = {2008},
+  edition = {4th ed},
+  publisher = {Cambridge University Press},
+  address = {Cambridge ; New York},
+  isbn = {978-0-521-87362-8},
+  lccn = {QC806 .S65 2008},
+  keywords = {Geophysics}
+}
+
 @article{stahlerSeismicDetectionMartian2021,
   title = {Seismic Detection of the Martian Core},
   author = {St{\"a}hler, Simon C. and Khan, Amir and Banerdt, W. Bruce and Lognonn{\'e}, Philippe and Giardini, Domenico and Ceylan, Savas and Drilleau, M{\'e}lanie and Duran, A. Cecilia and Garcia, Rapha{\"e}l F. and Huang, Quancheng and Kim, Doyeon and Lekic, Vedran and Samuel, Henri and Schimmel, Martin and Schmerr, Nicholas and Sollberger, David and Stutzmann, {\'E}l{\'e}onore and Xu, Zongbo and Antonangeli, Daniele and Charalambous, Constantinos and Davis, Paul M. and Irving, Jessica C. E. and Kawamura, Taichi and Knapmeyer, Martin and Maguire, Ross and Marusiak, Angela G. and Panning, Mark P. and Perrin, Cl{\'e}ment and Plesa, Ana-Catalina and Rivoldini, Attilio and Schmelzbach, C{\'e}dric and Zenh{\"a}usern, G{\'e}raldine and Beucler, {\'E}ric and Clinton, John and Dahmen, Nikolaj and {van Driel}, Martin and Gudkova, Tamara and Horleston, Anna and Pike, W. Thomas and Plasman, Matthieu and Smrekar, Suzanne E.},
@@ -27293,6 +27451,19 @@ ZSCC: 0000290},
   number = {1},
   pages = {33--66},
   doi = {10.1017/S0022112067001880}
+}
+
+@book{turcotte.schubert.Geodynamics.2014,
+  title = {Geodynamics},
+  author = {Turcotte, Donald Lawson and Schubert, Gerald},
+  year = {2014},
+  edition = {Third edition},
+  publisher = {Cambridge University Press},
+  address = {Cambridge},
+  abstract = {Essential reading for any Earth scientist, this classic textbook has been providing advanced undergraduate and graduate students with the fundamentals needed to develop a quantitative understanding of the physical processes of the solid earth for over thirty years. This third edition has two completely new chapters covering numerical modelling and geophysical MATLAB{\textregistered} applications, and the text is now supported by a suite of online MATLAB{\textregistered} codes that will enable students to grasp the practical aspects of computational modelling. The book has been brought fully up to date with the inclusion of new material on planetary geophysics and other cutting edge topics. Exercises within the text allow students to put the theory into practice as they progress through each chapter and carefully selected further reading sections guide and encourage them to delve deeper into topics of interest. Answers to problems available within the book and also online, for self-testing, complete the textbook package},
+  isbn = {978-0-511-84387-7},
+  langid = {english},
+  annotation = {OCLC: 1105719921}
 }
 
 @book{turcotteGeodynamics2002,
@@ -29720,6 +29891,23 @@ ZSCC: 0000007},
   doi = {10/bvkdnx}
 }
 
+@article{zgonnik.Occurrence.2020,
+  title = {The Occurrence and Geoscience of Natural Hydrogen: {{A}} Comprehensive Review},
+  shorttitle = {The Occurrence and Geoscience of Natural Hydrogen},
+  author = {Zgonnik, Viacheslav},
+  year = {2020},
+  month = apr,
+  journal = {Earth-Science Reviews},
+  volume = {203},
+  pages = {103140},
+  issn = {00128252},
+  doi = {10.1016/j.earscirev.2020.103140},
+  urldate = {2024-07-16},
+  abstract = {Using an interdisciplinary approach, this paper reviews current knowledge in the field of natural hydrogen. For the first time, it combines perspectives on hydrogen from the literature of the former Eastern bloc with that of the West, including rare hardcopies and recent studies. Data are summarized and classified in three main sections: hydrogen as a free gas in different environments, as inclusions in various rock types, and as dissolved gas in ground water. This review conclusively demonstrates that molecular hydrogen is much more widespread in nature than was previously thought. Hydrogen has been detected at high concentrations, often as the major gas, in all types of geologic environment. A critical evaluation of all the proposed mechanisms regarding the origin of natural hydrogen shows that a deep-seated origin is potentially the most likely explanation for its abundance in nature. By combining available data, an estimate of 23 Tg/year for the total annual flow of hydrogen from geologic sources is proposed. This value is an order of magnitude greater than previous estimate but most likely still not large enough to account for recently discovered worldwide diffusive seepages. Hydrogen could play a critical role in mechanisms taking place in both the shallow and deep geospheres and it can influence a very wide range of natural phenomena. Hydrogen is an essential energy source for many microorganisms. Sampling for hydrogen can be a useful tool in studying natural environments, geologic mapping, monitoring of earthquakes, plotting fault traces and resource exploration. Hydrogen of geologic origin has the potential to become the renewable energy source of the future, with exploratory projects ongoing at the present time. The topic of natural hydrogen is therefore relevant from many different perspectives.},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/NNV7HV2U/Zgonnik - 2020 - The occurrence and geoscience of natural hydrogen.pdf}
+}
+
 @article{zhang.etal.Unraveling.2022,
   title = {Unraveling an Enigmatic Boundary along the {{Sunda-Banda}} Volcanic Arc},
   author = {Zhang, Ping and Miller, Meghan S. and Eakin, Caroline M.},
@@ -30163,7 +30351,7 @@ ZSCC: 0000036},
   publisher = {arXiv},
   urldate = {2024-02-29},
   abstract = {Numerical simulations of seismic wave propagation in heterogeneous 3D media are central to investigating subsurface structures and understanding earthquake processes, yet are computationally expensive for large problems. This is particularly problematic for full waveform inversion, which typically involves numerous runs of the forward process. In machine learning there has been considerable recent work in the area of operator learning, with a new class of models called neural operators allowing for data-driven solutions to partial differential equations. Recent works in seismology have shown that when neural operators are adequately trained, they can significantly shorten the compute time for wave propagation. However, the memory required for the 3D time domain equations may be prohibitive. In this study, we show that these limitations can be overcome by solving the wave equations in the frequency domain, also known as the Helmholtz equations, since the solutions for a set of frequencies can be determined in parallel. The 3D Helmholtz neural operator is 40 times more memory-efficient than an equivalent time-domain version. We employ a U-shaped neural operator for 2D and 3D elastic wave modeling, achieving two orders of magnitude acceleration compared to a baseline spectral element method. The neural operator accurately generalizes to variable velocity structures and can be evaluated on denser input meshes than used in the training simulations. We also show that when solving for wavefields strictly on the surface, the accuracy can be significantly improved via a graph neural operator layer. In leveraging automatic differentiation, the proposed method can serve as an alternative to the adjoint-state approach for 3D full-waveform inversion, reducing the computation time by a factor of 350.},
-  archiveprefix = {arxiv},
+  archiveprefix = {arXiv},
   langid = {english},
   keywords = {Physics - Geophysics},
   file = {/Users/lmoresi/Zotero/storage/N9EX8KUT/Zou et al. - 2023 - Deep Neural Helmholtz Operators for 3D Elastic Wav.pdf}
