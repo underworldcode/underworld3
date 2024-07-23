@@ -94,9 +94,10 @@ class SemiLagrangian(uw_object):
         elif vtype == uw.VarType.VECTOR:
             self._psi_star_projection_solver = (
                 uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh, self.psi_star[0], verbose=False
+                    self.mesh, self.psi_star[0], verbose=False,
                 )
             )
+
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
             self._WorkVar = uw.discretisation.MeshVariable(
                 f"W_star_slcn_{self.instance_number}",
