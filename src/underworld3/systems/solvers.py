@@ -1147,10 +1147,11 @@ class SNES_Tensor_Projection(SNES_Projection):
         #         "Tensor shapes for uw_function and MeshVariable are not the same"
         #     )
 
-        symm = self.t_field.sym.is_symmetric
+        symm = self.t_field.sym.is_symmetric()
 
         for i in range(self.uw_function.shape[0]):
             for j in range(self.uw_function.shape[1]):
+
                 if symm and j > i:
                     continue
 
@@ -1159,8 +1160,7 @@ class SNES_Tensor_Projection(SNES_Projection):
                 with self.mesh.access(self.u):
                     self.u.data[:, 0] = self.t_field[i, j].data[:]
 
-                # solver for the scalar problem
-
+                # solve the projection for the scalar sub-problem
                 super().solve(verbose=verbose)
 
                 with self.mesh.access(self.t_field):
@@ -1760,6 +1760,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         return f0
 
+    ## Deprecate this function
     def navier_stokes_problem_description(self):
         # f0 residual term
         self._u_f0 = self.F0.value
