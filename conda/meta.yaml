@@ -1,5 +1,5 @@
 {% set name = "underworld3" %}
-{% set version = "0.97b" %}
+{% set version = "0.98b" %}
 
 package:
   name: "{{ name|lower }}"
@@ -8,14 +8,14 @@ package:
 source:
   git_url: https://github.com/underworldcode/underworld3
   git_depth: 1
-#  git_tag: development
+  git_tag: development
 #  git_rev: 9e864dba48119c985cdaaec137945386b15505f9
 #  path: ..
 
 build:
   number: 0
   string: mpi_{{ mpi }}
-  script: "{{ python }} -m pip install . -vv"
+  script: "python -m pip install . -vv"
 
 requirements:
 
@@ -27,7 +27,7 @@ requirements:
     - {{ mpi }}-mpicc
     - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - {{ python }}
+    - python
     - mpi4py
     - petsc>=3.21.0
     - petsc4py>=3.21.0
@@ -39,7 +39,7 @@ requirements:
     - {{ mpi }}-mpicc
     - {{ mpi }}-mpicxx
     - {{ mpi }}
-    - {{ python }}
+    - python
     - numpy
     - mpi4py
     - sympy
@@ -53,8 +53,8 @@ requirements:
     - sympy
     - pytest
     - typing_extensions
-    - {{ python }}-xxhash
-    - {{ python }}-gmsh
+    - python-xxhash
+    - python-gmsh
     - ipython
     - nest-asyncio
     - typeguard
