@@ -15,3 +15,7 @@ from .uw_petsc_gen_xdmf import *
 from .uw_swarmIO import *
 
 from ._utils import *
+
+from .read_medit_ascii import *
+from .create_dmplex_from_medit import *
+from .create_exo_from_medit import *
