@@ -15,8 +15,8 @@ import time
 
 
 # %%
-from underworld3.utilities.read_medit_ascii import read
-from underworld3.utilities.read_medit_ascii import print_mesh_info
+from underworld3.utilities.read_medit_ascii import read as read_medit_mesh
+from underworld3.utilities.read_medit_ascii import print_medit_mesh_info
 
 
 # %%
@@ -24,25 +24,26 @@ from underworld3.utilities.read_medit_ascii import print_mesh_info
 # Mesh_from_Gmsh
 
 # %%
-def create_dmplex_from_medit(medit_file):
+def create_dmplex_from_medit(medit_file, print_medit_mesh_info=False):
     """
     Reads medit file (.mesh)
     Returns DMPlex of medit file with labels 
     """
     # print mesh file info
-    print_mesh_info(medit_file)
+    if print_medit_mesh_info:
+        print_medit_mesh_info(medit_file)
     
     # reading mesh vertices and indices
-    vertices, vert_indx = read(medit_file, 'Vertices')
+    vertices, vert_indx = read_medit_mesh(medit_file, 'Vertices')
 
     # reading mesh cells and indices
-    cells, cells_indx = read(medit_file, 'Tetrahedra')
+    cells, cells_indx = read_medit_mesh(medit_file, 'Tetrahedra')
 
     # reading mesh triangles and indices
-    triangles, tria_indx = read(medit_file, 'Triangles')
+    triangles, tria_indx = read_medit_mesh(medit_file, 'Triangles')
 
     # reading mesh edges and indices
-    edges, edges_indx = read(medit_file, 'Edges')
+    edges, edges_indx = read_medit_mesh(medit_file, 'Edges')
 
     # Note: default petsc installation requires int32 
     dim = vertices.shape[1]
@@ -193,44 +194,3 @@ def create_dmplex_from_medit(medit_file):
             plex.setLabelValue("LineLabels", i, 200 + line_label[0])
     
     return plex
-
-# %%
-# # filename
-# medit_file = '../meshout.mesh'
-
-# %%
-# # print mesh file info
-# print_mesh_info(medit_file)
-
-# %%
-# # reading mesh vertices and indices
-# vertices, vert_indx = read(medit_file, 'Vertices')
-# vertices, vert_indx
-
-
-# %%
-# # reading mesh cells and indices
-# cells, cells_indx = read(medit_file, 'Tetrahedra')
-# cells, cells_indx
-
-# %%
-# # reading mesh triangles and indices
-# triangles, tria_indx = read(medit_file, 'Triangles')
-# triangles, tria_indx
-
-# %%
-# # reading mesh edges and indices
-# edges, edges_indx = read(medit_file, 'Edges')
-# # edges, edges_indx
-
-# %% [markdown]
-# #### Write plex data to vtk file
-
-# %%
-# viewer = PETSc.Viewer().createVTK("mesh_to_dmplex.vtk", "w")
-# viewer(plex)
-
-
-# %%
-# viewer = PETSc.Viewer().createHDF5("mesh_to_dmplex.h5", "w")
-# viewer(plex)

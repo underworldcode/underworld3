@@ -16,5 +16,6 @@ from .uw_swarmIO import *
 
 from ._utils import *
 
-from .read_medit_ascii import *
-from .create_dmplex_from_medit import *
+from .read_medit_ascii import read
+from .read_medit_ascii import print_medit_mesh_info
+from .create_dmplex_from_medit import create_dmplex_from_medit
