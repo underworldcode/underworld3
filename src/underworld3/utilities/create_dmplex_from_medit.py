@@ -15,8 +15,8 @@ import time
 
 
 # %%
-from read_medit_ascii import read
-from read_medit_ascii import print_mesh_info
+from underworld3.utilities.read_medit_ascii import read
+from underworld3.utilities.read_medit_ascii import print_mesh_info
 
 
 # %%
