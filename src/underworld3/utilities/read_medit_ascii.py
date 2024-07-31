@@ -42,7 +42,7 @@ def open_file(path_or_buf, mode="r"):
             yield f
 
 
-def read(filename, mesh_data_name):
+def read_medit_ascii(filename, mesh_data_name):
     """ 
     Function to read a medit mesh file in ascii format.
     Return mesh data and their indices if found.
@@ -202,12 +202,5 @@ def read_ascii_buffer(f, mesh_data_name, int_type=np.int32):
             return data[:, :points_per_cell]-1, data[:, -1]
         else:
             return data-1
-
-# +
-# # Example usage
-# file_path = '../meshout.mesh'
-# print_medit_mesh_info(file_path)
-# read(file_path, 'Corners')
-# -
 
 

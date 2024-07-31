@@ -15,7 +15,7 @@ import time
 
 
 # %%
-from underworld3.utilities.read_medit_ascii import read as read_medit_mesh
+from underworld3.utilities.read_medit_ascii import read_medit_ascii
 from underworld3.utilities.read_medit_ascii import print_medit_mesh_info
 
 
@@ -34,16 +34,16 @@ def create_dmplex_from_medit(medit_file, print_medit_mesh_info=False):
         print_medit_mesh_info(medit_file)
     
     # reading mesh vertices and indices
-    vertices, vert_indx = read_medit_mesh(medit_file, 'Vertices')
+    vertices, vert_indx = read_medit_ascii(medit_file, 'Vertices')
 
     # reading mesh cells and indices
-    cells, cells_indx = read_medit_mesh(medit_file, 'Tetrahedra')
+    cells, cells_indx = read_medit_ascii(medit_file, 'Tetrahedra')
 
     # reading mesh triangles and indices
-    triangles, tria_indx = read_medit_mesh(medit_file, 'Triangles')
+    triangles, tria_indx = read_medit_ascii(medit_file, 'Triangles')
 
     # reading mesh edges and indices
-    edges, edges_indx = read_medit_mesh(medit_file, 'Edges')
+    edges, edges_indx = read_medit_ascii(medit_file, 'Edges')
 
     # Note: default petsc installation requires int32 
     dim = vertices.shape[1]
