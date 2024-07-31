@@ -15,3 +15,7 @@ from .uw_petsc_gen_xdmf import *
 from .uw_swarmIO import *
 
 from ._utils import *
+
+from .read_medit_ascii import read_medit_ascii
+from .read_medit_ascii import print_medit_mesh_info
+from .create_dmplex_from_medit import create_dmplex_from_medit
