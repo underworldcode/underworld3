@@ -190,27 +190,6 @@ class SolverBaseClass(uw_object):
         return
 
 
-
-    # Deprecate in favour of properties for solver.F0, solver.F1
-    #
-    @timing.routine_timer_decorator
-    def _setup_problem_description(self):
-
-        ## Derived classes may over-ride these methods to better match the equation template.
-
-        # We might choose to modify the definition of F0  / F1
-        # by changing this function in a sub-class
-        # For example, to simplify the user interface by pre-definining
-        # the form of the input. See the projector class for an example
-
-        # f0 residual term (weighted integration) - scalar RHS function
-        self._f0 = self.F0 # some_expression_F0(self.u.sym, self.Unknowns.L)
-
-        # f1 residual term (integration by parts / gradients)
-        self._f1 = self.F1 # some_expresion_F1(self.u.sym, self.Unknowns.L)
-
-        return
-
     @timing.routine_timer_decorator
     def add_condition(self, f_id, c_type, conds, label, components=None):
         """
@@ -709,15 +688,6 @@ class SNES_Scalar(SolverBaseClass):
         cdim = mesh.cdim
 
         sympy.core.cache.clear_cache()
-
-        ## The residual terms describe the problem and
-        ## can be changed by the user in inherited classes
-
-        if callable(self._setup_problem_description):
-            self._setup_problem_description()
-
-        ## The jacobians are determined from the above (assuming we
-        ## do not concern ourselves with the zeros)
 
         # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
@@ -1321,9 +1291,6 @@ class SNES_Vector(SolverBaseClass):
         cdim = self.mesh.cdim
 
         sympy.core.cache.clear_cache()
-
-        if callable(self._setup_problem_description):
-            self._setup_problem_description()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
@@ -2100,23 +2067,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         return
 
-    @timing.routine_timer_decorator
-    def _setup_problem_description(self):
-
-        # residual terms can be redefined by
-        # writing your own version of this method
-
-        # terms that become part of the weighted integral
-        self._u_f0 = self.F0  # some_expression_u_f0(_V,_P. L, _G)
-
-        # Integration by parts into the stiffness matrix
-        self._u_f1 = self.F1  # some_expression_u_f1(_V,_P, L, _G)
-
-        # rhs in the constraint (pressure) equations
-        self._p_f0 = self.PF0  # some_expression_p_f0(_V,_P, L, _G)
-
-        return
-
     def validate_solver(self):
         """Checks to see if the required properties have been set"""
 
@@ -2161,10 +2111,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         sympy.core.cache.clear_cache()
 
         # r = self.mesh.CoordinateSystem.N[0]
-
-        # residual terms
-        if callable(self._setup_problem_description):
-            self._setup_problem_description()
 
         # Array form to work well with what is below
         # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
