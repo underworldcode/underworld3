@@ -1508,9 +1508,10 @@ class DarcyFlowModel(Constitutive_Model):
 
             inner_self._s = expression(
                 R"{s}",
-                0,
+                sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),
                 "Gravitational forcing",
             )
+            print(f"Owning model is:{_owning_model} and it's dim is {_owning_model.dim}")
 
             inner_self._permeability = expression(
                 R"{\kappa}",
@@ -1581,7 +1582,7 @@ class DarcyFlowModel(Constitutive_Model):
         may be required to evaluate the flux.
         """
 
-        ddu = self.grad_u - self.Parameters.s
+        ddu = self.grad_u - self.Parameters.s.sym
 
         return self._q(ddu)
 
