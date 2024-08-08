@@ -90,7 +90,7 @@ class UWexpression(Symbol, uw_object):
                         value=3.0e-5,
                         description="thermal expansivity"
                             )
-        print(alpha.value)
+        print(alpha.sym)
         print(alpha.description)
     ```
 
@@ -235,7 +235,7 @@ class UWexpression(Symbol, uw_object):
             display(
                 Latex(
                     r"$"
-                    + "\quad" * level
+                    + r"\quad" * level
                     + "$"
                     + self._repr_latex_()
                     + "$=$"
@@ -246,7 +246,7 @@ class UWexpression(Symbol, uw_object):
                 display(
                     Markdown(
                         r"$"
-                        + "\quad" * level
+                        + r"\quad" * level
                         + "$"
                         + f"**Description:**  {self.description}"
                     ),

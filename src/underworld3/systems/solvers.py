@@ -1410,7 +1410,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
-        """
+        r"""
         Calculates an appropriate timestep for the given
         mesh and diffusivity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:
@@ -1920,7 +1920,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
-        """
+        r"""
         Calculates an appropriate timestep for the given
         mesh and viscosity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:

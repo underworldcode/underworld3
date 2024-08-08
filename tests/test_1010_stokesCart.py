@@ -157,7 +157,7 @@ def test_stokes_boxmesh_bc_failure():
         stokes.bodyforce = 1.0e6 * sympy.Matrix([0, x])
 
         stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
-        stokes.add_dirichlet_bc((0.0, 0.0), "Top", 0)
+        stokes.add_dirichlet_bc((0.0, 0.0), "Top")
 
         stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
         stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
