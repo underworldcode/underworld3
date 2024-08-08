@@ -1511,7 +1511,6 @@ class DarcyFlowModel(Constitutive_Model):
                 sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),
                 "Gravitational forcing",
             )
-            print(f"Owning model is:{_owning_model} and it's dim is {_owning_model.dim}")
 
             inner_self._permeability = expression(
                 R"{\kappa}",
@@ -1527,7 +1526,7 @@ class DarcyFlowModel(Constitutive_Model):
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
-            inner_self._s = value
+            inner_self._s.sym = value
             inner_self._reset()
 
         @property

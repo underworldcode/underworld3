@@ -214,11 +214,8 @@ class SNES_Darcy(SNES_Scalar):
         self._setup_problem_description = self.darcy_problem_description
 
         # default values for properties
-        self._f = sympy.Matrix([[0]])
+        self._f = sympy.Matrix([0])
         self._k = 1
-
-        self._s = sympy.Matrix.zeros(rows=1, cols=self.mesh.dim).T
-        self._s[1] = -1
 
         self._constitutive_model = None
 
@@ -289,15 +286,6 @@ class SNES_Darcy(SNES_Scalar):
     def f(self, value):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
-
-    @property
-    def s(self):
-        return self._s
-
-    @s.setter
-    def s(self, value):
-        self.is_setup = False
-        self._s = sympy.Matrix((value,))
 
     @property
     def darcy_flux(self):
