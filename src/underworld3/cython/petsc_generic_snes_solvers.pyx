@@ -692,8 +692,8 @@ class SNES_Scalar(SolverBaseClass):
         # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(1).as_immutable()
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim).as_immutable()
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -957,8 +957,8 @@ class SNES_Scalar(SolverBaseClass):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        f0 = self.F0.value
-        F1 = self.F1.value
+        f0 = self.F0.sym
+        F1 = self.F1.sym
 
         eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
         eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
@@ -1303,8 +1303,8 @@ class SNES_Vector(SolverBaseClass):
         # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value)).reshape(dim).as_immutable()
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value)).reshape(dim,dim).as_immutable()
+        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -1637,8 +1637,8 @@ class SNES_Vector(SolverBaseClass):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        f0 = self.F0.value
-        F1 = self.F1.value
+        f0 = self.F0.sym
+        F1 = self.F1.sym
 
         eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
         eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
@@ -2032,12 +2032,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        uf0 = self.F0.value
-        uF1 = self.F1.value
-        pF0 = self.PF0.value
+        uf0 = self.F0.sym
+        uF1 = self.F1.sym
+        pF0 = self.PF0.sym
 
-        if self.penalty.value == 0:
-            uF1 = self.F1.value.subs(self.penalty, self.penalty.value)
+        if self.penalty.sym == 0:
+            uF1 = self.F1.sym.subs(self.penalty, self.penalty.sym)
 
         eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( uF1 )+"$ + "
         eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( uf0 )+"\\color{Black} = 0 $"
@@ -2123,9 +2123,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## is working .. so be careful !!
 
 
-        F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.value))
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.value))
-        PF0 = sympy.Array(uw.function.fn_substitute_expressions(self.PF0.value))
+        F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym))
+        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym))
+        PF0 = sympy.Array(uw.function.fn_substitute_expressions(self.PF0.sym))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)

@@ -7,17 +7,17 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
 
     if keep_constants and return_self and is_constant_expr(fn):
         if isinstance(fn, UWexpression):
-            return fn.value
+            return fn.sym
         else:
             return fn
 
     expr = fn
     for atom in fn.atoms():
         if isinstance(atom, UWexpression):
-            if keep_constants and isinstance(atom.value, (float, int, Number)):
+            if keep_constants and isinstance(atom.sym, (float, int, Number)):
                 continue
             else:
-                expr = expr.subs(atom, atom.value)
+                expr = expr.subs(atom, atom.sym)
 
     return expr
 
@@ -27,16 +27,16 @@ def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
 
     if keep_constants and return_self and is_constant_expr(fn):
         if isinstance(fn, UWexpression):
-            return fn.value
+            return fn.sym
         else:
             return fn
 
     for atom in fn.atoms():
         if atom is sub_expr:
-            if keep_constants and isinstance(atom.value, (float, int, Number)):
+            if keep_constants and isinstance(atom.sym, (float, int, Number)):
                 continue
             else:
-                expr = expr.subs(atom, atom.value)
+                expr = expr.subs(atom, atom.sym)
 
     return expr
 
@@ -66,7 +66,7 @@ def is_constant_expr(fn):
     deps = extract_expressions(fn)
 
     for dep in deps:
-        if not isinstance(dep.value, (float, int, sympy.Number)):
+        if not isinstance(dep.sym, (float, int, sympy.Number)):
             return False
 
         return True
@@ -90,7 +90,7 @@ class UWexpression(Symbol, uw_object):
                         value=3.0e-5,
                         description="thermal expansivity"
                             )
-        print(alpha.value)
+        print(alpha.sym)
         print(alpha.description)
     ```
 
@@ -99,13 +99,13 @@ class UWexpression(Symbol, uw_object):
     def __new__(cls, name, value, description="No description provided"):
 
         obj = Symbol.__new__(cls, name)
-        obj.value = sympy.sympify(value)
+        obj.sym = sympy.sympify(value)
         obj.symbol = name
         return obj
 
     def __init__(self, name, value, description="No description provided"):
 
-        self._value = sympy.sympify(value)
+        self._sym = sympy.sympify(value)
         self._description = description
 
         return
@@ -115,7 +115,7 @@ class UWexpression(Symbol, uw_object):
             raise ValueError
         else:
             self.symbol = other.symbol
-            self.value = other.value
+            self.sym = other.sym
             self.description = other.description
 
         return
@@ -125,18 +125,33 @@ class UWexpression(Symbol, uw_object):
         deps = self.dependencies()
 
         for dep in deps:
-            if not isinstance(dep.value, (float, int, sympy.Number)):
+            if not isinstance(dep.sym, (float, int, sympy.Number)):
                 return False
 
         return True
 
     @property
+    def sym(self):
+        return self._sym
+
+    @sym.setter
+    def sym(self, new_value):
+        self._sym = sympy.sympify(new_value)
+        return
+
+    #TODO: DEPRECATION
+    # The value attribute is no longer needed in the offical release of Underworld3
+    @property
     def value(self):
-        return self._value
+        import warnings
+        warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute")
+        return self._sym
 
     @value.setter
     def value(self, new_value):
-        self._value = sympy.sympify(new_value)
+        import warnings
+        warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {new_value}, please use 'sym' attribute")
+        self._sym = sympy.sympify(new_value)
         return
 
     @property
@@ -163,11 +178,11 @@ class UWexpression(Symbol, uw_object):
         return self_s
 
     def dependencies(self, keep_constants=True):
-        subbed_expr = substitute(self.value, keep_constants=keep_constants)
+        subbed_expr = substitute(self.sym, keep_constants=keep_constants)
         return subbed_expr.atoms(sympy.Symbol)
 
     def all_dependencies(self, keep_constants=True):
-        subbed_expr = substitute(self.value, keep_constants=keep_constants)
+        subbed_expr = substitute(self.sym, keep_constants=keep_constants)
         return subbed_expr.atoms(sympy.Symbol, sympy.Function)
 
     # def _substitute_all_once(fn, keep_constants=True):
@@ -216,31 +231,31 @@ class UWexpression(Symbol, uw_object):
         level = max(1, level)
 
         ## feedback on this instance
-        if sympy.sympify(self.value) is not None:
+        if sympy.sympify(self.sym) is not None:
             display(
                 Latex(
                     r"$"
-                    + "\quad" * level
+                    + r"\quad" * level
                     + "$"
                     + self._repr_latex_()
                     + "$=$"
-                    + sympy.sympify(self.value)._repr_latex_()
+                    + sympy.sympify(self.sym)._repr_latex_()
                 ),
             )
             if description == True:
                 display(
                     Markdown(
                         r"$"
-                        + "\quad" * level
+                        + r"\quad" * level
                         + "$"
                         + f"**Description:**  {self.description}"
                     ),
                 )
 
         try:
-            atoms = self.value.atoms()
+            atoms = self.sym.atoms()
             for atom in atoms:
-                if atom is not self.value:
+                if atom is not self.sym:
                     try:
                         atom._object_viewer(description=False, level=level + 1)
                     except AttributeError:

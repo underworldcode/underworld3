@@ -120,11 +120,11 @@ class SNES_Poisson(SNES_Scalar):
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
         # f1 residual term (weighted integration) - scalar function
-        self._f0 = self.F0.value
+        self._f0 = self.F0.sym
 
         # f1 residual term (integration by parts / gradients)
         # isotropic
-        self._f1 = self.F1.value
+        self._f1 = self.F1.sym
 
         return
 
@@ -214,11 +214,8 @@ class SNES_Darcy(SNES_Scalar):
         self._setup_problem_description = self.darcy_problem_description
 
         # default values for properties
-        self._f = sympy.Matrix([[0]])
+        self._f = sympy.Matrix([0])
         self._k = 1
-
-        self._s = sympy.Matrix.zeros(rows=1, cols=self.mesh.dim)
-        self._s[1] = -1
 
         self._constitutive_model = None
 
@@ -249,7 +246,7 @@ class SNES_Darcy(SNES_Scalar):
         )
 
         # backward compatibility
-        self._f0 = f0_val.value
+        self._f0 = f0_val.sym
 
         return f0_val
 
@@ -263,21 +260,21 @@ class SNES_Darcy(SNES_Scalar):
         )
 
         # backward compatibility
-        self._f1 = F1_val.value
-        self._v_projector.uw_function = -F1_val.value
+        self._f1 = F1_val.sym
+        self._v_projector.uw_function = -F1_val.sym
 
         return F1_val
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
         # f1 residual term (weighted integration)
-        self._f0 = self.F0.value
+        self._f0 = self.F0.sym
 
         # f1 residual term (integration by parts / gradients)
-        self._f1 = self.F1.value
+        self._f1 = self.F1.sym
 
         # Flow calculation
-        self._v_projector.uw_function = -self.F1.value
+        self._v_projector.uw_function = -self.F1.sym
 
         return
 
@@ -289,15 +286,6 @@ class SNES_Darcy(SNES_Scalar):
     def f(self, value):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
-
-    @property
-    def s(self):
-        return self._s
-
-    @s.setter
-    def s(self, value):
-        self.is_setup = False
-        self._s = sympy.Matrix((value,))
 
     @property
     def darcy_flux(self):
@@ -532,13 +520,13 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def stokes_problem_description(self):
 
         # f0 residual term
-        self._u_f0 = self.F0.value
+        self._u_f0 = self.F0.sym
 
         # f1 residual term
-        self._u_f1 = self.F1.value
+        self._u_f1 = self.F1.sym
 
         # p0 residual term
-        self._p_f0 = self.PF0.value
+        self._p_f0 = self.PF0.sym
 
         return
 
@@ -619,7 +607,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         self.is_setup = False
-        self._penalty.value = value
+        self._penalty.sym = value
 
 
 class SNES_VE_Stokes(SNES_Stokes):
@@ -770,7 +758,7 @@ class SNES_VE_Stokes(SNES_Stokes):
             order = self._order
 
         if timestep is None:
-            timestep = self.delta_t.value
+            timestep = self.delta_t.sym
 
         if timestep != self.delta_t:
             self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
@@ -900,11 +888,11 @@ class SNES_Projection(SNES_Scalar):
         # F0 is left in place for the user to inject
         # non-linear constraints if required
 
-        self._f0 = self.F0.value
+        self._f0 = self.F0.sym
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        self._f1 = self.F1.value
+        self._f1 = self.F1.sym
 
         return
 
@@ -1036,12 +1024,12 @@ class SNES_Vector_Projection(SNES_Vector):
         # F0 is left in place for the user to inject
         # non-linear constraints if required
 
-        self._f0 = self.F0.value
+        self._f0 = self.F0.sym
 
         # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
         self._f1 = (
-            self.F1.value
+            self.F1.sym
             + self.smoothing * self.Unknowns.E
             + self.penalty
             * self.mesh.vector.divergence(self.u.sym)
@@ -1391,10 +1379,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     def adv_diff_slcn_problem_description(self):
         # f0 residual term
-        self._f0 = self.F0.value
+        self._f0 = self.F0.sym
 
         # f1 residual term
-        self._f1 = self.F1.value
+        self._f1 = self.F1.sym
 
         return
 
@@ -1418,11 +1406,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         self.is_setup = False
-        self._delta_t.value = value
+        self._delta_t.sym = value
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
-        """
+        r"""
         Calculates an appropriate timestep for the given
         mesh and diffusivity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:
@@ -1763,13 +1751,13 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     ## Deprecate this function
     def navier_stokes_problem_description(self):
         # f0 residual term
-        self._u_f0 = self.F0.value
+        self._u_f0 = self.F0.sym
 
         # f1 residual term
-        self._u_f1 = self.F1.value
+        self._u_f1 = self.F1.sym
 
         # p1 residual term
-        self._p_f0 = self.PF0.value
+        self._p_f0 = self.PF0.sym
 
         return
 
@@ -1780,7 +1768,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @delta_t.setter
     def delta_t(self, value):
         self.is_setup = False
-        self._delta_t.value = value
+        self._delta_t.sym = value
 
     @property
     def rho(self):
@@ -1789,7 +1777,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @rho.setter
     def rho(self, value):
         self.is_setup = False
-        self._rho.value = value
+        self._rho.sym = value
 
     @property
     def f(self):
@@ -1862,7 +1850,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         self.is_setup = False
-        self._penalty.value = value
+        self._penalty.sym = value
 
     @timing.routine_timer_decorator
     def solve(
@@ -1932,7 +1920,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
-        """
+        r"""
         Calculates an appropriate timestep for the given
         mesh and viscosity configuration. This is an implicit solver
         so the $\delta_t$ should be interpreted as:

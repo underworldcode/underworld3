@@ -344,7 +344,7 @@ class ViscousFlowModel(Constitutive_Model):
         ):
 
             inner_self._owning_model = _owning_model
-            inner_self._shear_viscosity_0 = expression("\eta", 1, "Shear viscosity")
+            inner_self._shear_viscosity_0 = expression(r"\eta", 1, "Shear viscosity")
 
         @property
         def shear_viscosity_0(inner_self):
@@ -445,7 +445,7 @@ class ViscousFlowModel(Constitutive_Model):
         display(
             Latex(
                 r"$\quad\eta_\textrm{eff} = $ "
-                + sympy.sympify(self.viscosity.value)._repr_latex_()
+                + sympy.sympify(self.viscosity.sym)._repr_latex_()
             )
         )
 
@@ -625,13 +625,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         inner_self = self.Parameters
         # detect if values we need are defined or are placeholder symbols
 
-        if inner_self.yield_stress.value == sympy.oo:
+        if inner_self.yield_stress.sym == sympy.oo:
             return inner_self._shear_viscosity_0
 
         # Don't put conditional behaviour in the constitutive law
         # when it is not needed
 
-        if inner_self.yield_stress_min.value is not 0:
+        if inner_self.yield_stress_min.sym != 0:
             yield_stress = sympy.Max(
                 inner_self.yield_stress_min, inner_self.yield_stress
             )
@@ -660,7 +660,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # If we want to apply limits to the viscosity but see caveat above
         # Keep this as an sub-expression for clarity
 
-        if inner_self.shear_viscosity_min.value != -sympy.oo:
+        if inner_self.shear_viscosity_min.sym != -sympy.oo:
             effective_viscosity_ltd = uw.function.expression(
                 R"{\eta_\textrm{eff,p}}",
                 sympy.simplify(
@@ -707,11 +707,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\eta_\textrm{0} = $"
-                + sympy.sympify(self.Parameters.shear_viscosity_0.value)._repr_latex_()
+                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
             ),
             Latex(
                 r"$\quad\tau_\textrm{y} = $"
-                + sympy.sympify(self.Parameters.yield_stress.value)._repr_latex_(),
+                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
             ),
         )
 
@@ -745,28 +745,28 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         # This may not be defined at initialisation time, set to None until used
         self._stress_star = expression(
-            R"{\tau^{*}}",
+            r"{\tau^{*}}",
             None,
-            "Lagrangian Stress at $t - \delta_t$",
+            r"Lagrangian Stress at $t - \delta_t$",
         )
 
         # This may not be defined at initialisation time, set to None until used
         self._stress_2star = expression(
-            R"{\tau^{**}}",
+            r"{\tau^{**}}",
             None,
-            "Lagrangian Stress at $t - 2\delta_t$",
+            r"Lagrangian Stress at $t - 2\delta_t$",
         )
 
         # This may not be well-defined at initialisation time, set to None until used
         self._E_eff = expression(
-            R"{\dot{\varepsilon}_{\textrm{eff}}}",
+            r"{\dot{\varepsilon}_{\textrm{eff}}}",
             None,
             "Equivalent value of strain rate (accounting for stress history)",
         )
 
         # This may not be well-defined at initialisation time, set to None until used
         self._E_eff_inv_II = expression(
-            R"{\dot{\varepsilon}_{II,\textrm{eff}}}",
+            r"{\dot{\varepsilon}_{II,\textrm{eff}}}",
             None,
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
         )
@@ -998,7 +998,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                     )
                 )
 
-            inner_self._ve_effective_viscosity.value = el_eff_visc
+            inner_self._ve_effective_viscosity.sym = el_eff_visc
 
             return inner_self._ve_effective_viscosity
 
@@ -1007,7 +1007,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # shear modulus defaults to infinity so t_relax goes to zero
             # in the viscous limit
 
-            inner_self._t_relax.value = (
+            inner_self._t_relax.sym = (
                 inner_self.shear_viscosity_0 / inner_self.shear_modulus
             )
             return inner_self._t_relax
@@ -1028,7 +1028,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     @property
     def stress_star(self):
         if self.Unknowns.DFDt is not None:
-            self._stress_star.value = self.Unknowns.DFDt.psi_star[0].sym
+            self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
 
         return self._stress_star
 
@@ -1039,9 +1039,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.order >= 2:
-                self._stress_2star.value = self.Unknowns.DFDt.psi_star[1].sym
+                self._stress_2star.sym = self.Unknowns.DFDt.psi_star[1].sym
             else:
-                self._stress_2star.value = sympy.sympify(0)
+                self._stress_2star.sym = sympy.sympify(0)
 
         return self._stress_2star
 
@@ -1068,15 +1068,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                         4 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
                     )
 
-        self._E_eff.value = E
+        self._E_eff.sym = E
 
         return self._E_eff
 
     @property
     def E_eff_inv_II(self):
 
-        E_eff = self.E_eff.value
-        self._E_eff_inv_II.value = sympy.sqrt((E_eff**2).trace() / 2)
+        E_eff = self.E_eff.sym
+        self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
 
         return self._E_eff_inv_II
 
@@ -1093,7 +1093,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         inner_self = self.Parameters
 
-        if inner_self.yield_stress.value == sympy.oo:
+        if inner_self.yield_stress.sym == sympy.oo:
             return inner_self.ve_effective_viscosity
 
         effective_viscosity = inner_self.ve_effective_viscosity
@@ -1110,7 +1110,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         # If we want to apply limits to the viscosity but see caveat above
 
-        if inner_self.shear_viscosity_min.value != -sympy.oo:
+        if inner_self.shear_viscosity_min.sym != -sympy.oo:
             return sympy.Max(
                 effective_viscosity,
                 inner_self.shear_viscosity_min,
@@ -1143,14 +1143,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Strain rate 2nd Invariant including elastic strain rate term",
         )
 
-        if parameters.yield_stress_min.value != 0:
+        if parameters.yield_stress_min.sym != 0:
             yield_stress = sympy.Max(
                 parameters.yield_stress_min, parameters.yield_stress
             )  # .rewrite(sympy.Piecewise)
         else:
             yield_stress = parameters.yield_stress
 
-        if parameters.strainrate_inv_II_min.value != 0:
+        if parameters.strainrate_inv_II_min.sym != 0:
             viscosity_yield = yield_stress / (
                 2 * (strainrate_inv_II + parameters.strainrate_inv_II_min)
             )
@@ -1336,7 +1336,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\eta_\textrm{0} = $ "
-                + sympy.sympify(self.Parameters.shear_viscosity_0.value)._repr_latex_()
+                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
             ),
         )
 
@@ -1344,11 +1344,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\mu = $ "
-                + sympy.sympify(self.Parameters.shear_modulus.value)._repr_latex_(),
+                + sympy.sympify(self.Parameters.shear_modulus.sym)._repr_latex_(),
             ),
             Latex(
                 r"$\quad\Delta t_e = $ "
-                + sympy.sympify(self.Parameters.dt_elastic.value)._repr_latex_(),
+                + sympy.sympify(self.Parameters.dt_elastic.sym)._repr_latex_(),
             ),
         )
 
@@ -1356,7 +1356,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         display(
             Latex(
                 r"$\quad\tau_\textrm{y} = $ "
-                + sympy.sympify(self.Parameters.yield_stress.value)._repr_latex_(),
+                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
             )
             ## Todo: add all the other properties in here
         )
@@ -1365,10 +1365,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def is_elastic(self):
         # If any of these is not defined, elasticity is switched off
 
-        if self.Parameters.dt_elastic.value is sympy.oo:
+        if self.Parameters.dt_elastic.sym is sympy.oo:
             return False
 
-        if self.Parameters.shear_modulus.value is sympy.oo:
+        if self.Parameters.shear_modulus.sym is sympy.oo:
             return False
 
         return True
@@ -1508,7 +1508,7 @@ class DarcyFlowModel(Constitutive_Model):
 
             inner_self._s = expression(
                 R"{s}",
-                0,
+                sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),
                 "Gravitational forcing",
             )
 
@@ -1526,7 +1526,7 @@ class DarcyFlowModel(Constitutive_Model):
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
-            inner_self._s = value
+            inner_self._s.sym = value
             inner_self._reset()
 
         @property
@@ -1581,7 +1581,7 @@ class DarcyFlowModel(Constitutive_Model):
         may be required to evaluate the flux.
         """
 
-        ddu = self.grad_u - self.Parameters.s
+        ddu = self.grad_u - self.Parameters.s.sym
 
         return self._q(ddu)
 
