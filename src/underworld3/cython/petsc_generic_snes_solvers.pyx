@@ -1,5 +1,6 @@
 from xmlrpc.client import Boolean
 
+from abc import ABC, abstractmethod
 import sympy
 from sympy import sympify
 
@@ -190,6 +191,12 @@ class SolverBaseClass(uw_object):
         return
 
 
+    # Deprecate in favour of properties for solver.F0, solver.F1
+    #
+    @timing.routine_timer_decorator
+    def _setup_problem_description(self):
+        raise RuntimeError("Contact Developers - shouldn't be calling SolveBaseClass _setup_problem_description")
+
     @timing.routine_timer_decorator
     def add_condition(self, f_id, c_type, conds, label, components=None):
         """
@@ -295,24 +302,11 @@ class SolverBaseClass(uw_object):
     ## Solvers over-ride these to describe the problem type
     @property
     def F0(self):
-
-        f0 = uw.function.expression(
-            r"\mathbf{f}_0\left( \mathbf{u} \right)",
-            None,
-            "Pointwise force term: f_0(u)",
-        )
-
-        return f0
+        raise RuntimeError("Contact Developers - SolveBaseClass F0 is being used")
 
     @property
     def F1(self):
-        f1 = uw.function.expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            None,
-            "Pointwise flux term: F_1(u)",
-        )
-
-        return f1
+        raise RuntimeError("Contact Developers - SolveBaseClass F0 is being used")
 
     @property
     def u(self):
