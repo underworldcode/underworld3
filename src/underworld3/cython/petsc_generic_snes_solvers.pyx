@@ -433,16 +433,11 @@ class SNES_Scalar(SolverBaseClass):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
-        # self.u = u_Field
-        # self.DuDt = DuDt
-        # self.DFDt = DFDt
-
         self.name = solver_name
         self.verbose = verbose
         self._tolerance = 1.0e-4
 
         ## Todo: this is obviously not particularly robust
-
         if solver_name != "" and not solver_name.endswith("_"):
             self.petsc_options_prefix = solver_name+"_"
         else:
@@ -482,8 +477,6 @@ class SNES_Scalar(SolverBaseClass):
             self.petsc_options.delValue("snes_monitor_short")
             self.petsc_options.delValue("snes_converged_reason")
 
-        self._F0 = sympy.Matrix.zeros(1,1)
-        self._F1 = sympy.Matrix.zeros(1,mesh.dim)
         self.dm = None
 
 
@@ -1079,8 +1072,6 @@ class SNES_Vector(SolverBaseClass):
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
-        self._F0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        self._F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
         self.dm = None
 
         ## sympy.Matrix
