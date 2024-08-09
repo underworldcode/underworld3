@@ -1,10 +1,9 @@
 from xmlrpc.client import Boolean
 
-from abc import ABC, abstractmethod
 import sympy
 from sympy import sympify
 
-from typing import Optional, Union
+from typing import Optional, Union, TypeAlias
 from petsc4py import PETSc
 
 import underworld3
@@ -37,14 +36,6 @@ class SolverBaseClass(uw_object):
         self.compiled_extensions = None
 
         self.Unknowns = self._Unknowns(self)
-
-        self._u = self.Unknowns.u
-        self._DuDt = self.Unknowns.DuDt
-        self._DFDt = self.Unknowns.DFDt
-
-        self._L = self.Unknowns.L # grad(u)
-        self._E = self.Unknowns.E # sym part
-        self._W = self.Unknowns.W # asym part
 
         self._order = 0
         self._constitutive_model = None
@@ -192,10 +183,9 @@ class SolverBaseClass(uw_object):
 
 
     # Deprecate in favour of properties for solver.F0, solver.F1
-    #
     @timing.routine_timer_decorator
     def _setup_problem_description(self):
-        raise RuntimeError("Contact Developers - shouldn't be calling SolveBaseClass _setup_problem_description")
+        raise RuntimeError("Contact Developers - shouldn't be calling SolverBaseClass _setup_problem_description")
 
     @timing.routine_timer_decorator
     def add_condition(self, f_id, c_type, conds, label, components=None):
@@ -208,6 +198,7 @@ class SolverBaseClass(uw_object):
         ----------
         f_id: int
             Index of the solver's field (equation) to apply the condition.
+            Note: The solvers field id is usually different to the mesh's field ids.
         c_type: string
             BC type. Either dirichlet (essential) or neumann (natural) conditions.
         conds: array_like of floats or a sympy.Matrix
@@ -296,17 +287,13 @@ class SolverBaseClass(uw_object):
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
 
-
-    ## Properties that are common to all solvers
-    ## F0 and F1 are the force / flux terms, respectively
-    ## Solvers over-ride these to describe the problem type
     @property
     def F0(self):
-        raise RuntimeError("Contact Developers - SolveBaseClass F0 is being used")
+        raise RuntimeError("Contact Developers - SolverBaseClass F0 is being used")
 
     @property
     def F1(self):
-        raise RuntimeError("Contact Developers - SolveBaseClass F0 is being used")
+        raise RuntimeError("Contact Developers - SolverBaseClass F0 is being used")
 
     @property
     def u(self):
