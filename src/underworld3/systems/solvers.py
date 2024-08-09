@@ -81,9 +81,6 @@ class SNES_Poisson(SNES_Scalar):
         if solver_name == "":
             solver_name = "Poisson_{}_".format(self.instance_number)
 
-        # Register the problem setup function
-        self._setup_problem_description = self.poisson_problem_description
-
         # default values for properties
         self.f = sympy.Matrix.zeros(1, 1)
 
@@ -209,9 +206,6 @@ class SNES_Darcy(SNES_Scalar):
 
         if solver_name == "":
             self.solver_name = "Darcy_{}_".format(self.instance_number)
-
-        # Register the problem setup function
-        self._setup_problem_description = self.darcy_problem_description
 
         # default values for properties
         self._f = sympy.Matrix([0])
@@ -457,8 +451,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         )  # by default, incompressibility constraint
 
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
-
-        self._setup_problem_description = self.stokes_problem_description
 
         # this attrib records if we need to setup the problem (again)
         self.is_setup = False
@@ -842,7 +834,6 @@ class SNES_Projection(SNES_Scalar):
         if solver_name == "":
             self.name = "SProj_{}_".format(self.instance_number)
 
-        self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
         self._uw_weighting_function = 1.0
@@ -974,7 +965,6 @@ class SNES_Vector_Projection(SNES_Vector):
         if solver_name == "":
             solver_name = "VProj{}_".format(self.instance_number)
 
-        self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
         self._penalty = 0.0
@@ -1298,8 +1288,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.is_setup = False
 
         self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.adv_diff_slcn_problem_description
-
         ### Setup the history terms ... This version should not build anything
         ### by default - it's the template / skeleton
 
@@ -1636,8 +1624,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_problem_description
-
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
         self._constitutive_model = None
 
