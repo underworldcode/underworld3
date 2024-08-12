@@ -214,7 +214,7 @@ def plot_mesh(_mesh, _title='', _clip_angle=0.0, _cpos='xy', _window_size=(750, 
         and optionally saves a screenshot.
     '''
     import sympy
-    import numpy
+    import numpy as np
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(_mesh)
