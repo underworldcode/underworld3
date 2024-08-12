@@ -1,25 +1,29 @@
+# %%
 import underworld3 as uw
-import numpy as np
 import sympy
 import math
 import pytest
 
+# %% [markdown]
 # ### Test Semi-Lagrangian method in advecting vector fields
 # ### Scalar field advection together diffusion tested in a different pytest
 
+# %%
 # ### Set up variables of the model
-# +
+
+# %%
 res = 16
-nsteps = 20
-velocity = 1 / res  # /res
+nsteps = 2
+velocity = 1
+dt = 0.1 # do large time steps
 
 # ### mesh coordinates
-xmin, xmax = 0., 1.
+xmin, xmax = 0., 0.5
 ymin, ymax = 0., 1.
 
 sdev = 0.03
-x0 = 0.5*xmax
-y0 = 0.5*ymax
+x0 = 0.5 * xmax
+y0 = 0.3 * ymax
 
 # ### Set up the mesh
 ### Quads
@@ -46,6 +50,8 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
         unstructured_simplex_box_regular,
     ],
 )
+
+# test function
 def test_SLVec_boxmesh(mesh):
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
@@ -53,18 +59,19 @@ def test_SLVec_boxmesh(mesh):
     Vdeg        = 2
     sl_order    = 2
 
-    v           = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=Vdeg)
-    vect_test   = uw.discretisation.MeshVariable("A", mesh, mesh.dim, degree=Vdeg)
+    v           = uw.discretisation.MeshVariable(r"V", mesh, mesh.dim, degree = Vdeg)
+    vec_ana     = uw.discretisation.MeshVariable(r"$V_{ana}$", mesh, mesh.dim, degree = Vdeg)
+    vec_tst     = uw.discretisation.MeshVariable(r"$V_{num}$", mesh, mesh.dim, degree = Vdeg)
 
     # #### Create the SL object
     DuDt = uw.systems.ddt.SemiLagrangian(
                                             mesh,
-                                            vect_test.sym,
+                                            vec_tst.sym,
                                             v.sym,
                                             vtype = uw.VarType.VECTOR,
                                             degree = Vdeg,
-                                            continuous = vect_test.continuous,
-                                            varsymbol = vect_test.symbol,
+                                            continuous = vec_tst.continuous,
+                                            varsymbol = vec_tst.symbol,
                                             verbose = False,
                                             bcs = None,
                                             order = sl_order,
@@ -77,65 +84,53 @@ def test_SLVec_boxmesh(mesh):
     with mesh.access(v):
         v.data[:, 1] = velocity
 
-    x,y = mesh.X
+    # distance field will travel
+    dist_travel = velocity * dt * nsteps
 
-    # vector components based on 2D Gaussian
-    with mesh.access(vect_test):
-        gauss_2D             = sympy.exp(-((x - x0)**2 + (y - y0)**2)/(2*sdev**2))
-        vect_test.data[:, 0] = 2*velocity*uw.function.evaluate(gauss_2D, vect_test.coords)
-        vect_test.data[:, 1] = 2*velocity*uw.function.evaluate(gauss_2D, vect_test.coords)
+    # use rigid body vortex with a Gaussian envelope 
+    x,y = mesh.X    
+    gauss_fn = lambda alpha, xC, yC : sympy.exp(-alpha * ((x - xC)**2 + (y - yC)**2 + 0.000001)) # Gaussian envelope
+    with mesh.access(vec_tst, vec_ana):
+        vec_tst.data[:, :] = uw.function.evaluate(sympy.Matrix([-gauss_fn(33, x0, y0) * (y - y0), 
+                                                                gauss_fn(33, x0, y0) * (x - x0)]), 
+                                                 vec_tst.coords)
+        vec_ana.data[:, :] = uw.function.evaluate(sympy.Matrix([-gauss_fn(33, x0, y0 + dist_travel) * (y - (y0 + dist_travel)), 
+                                                                gauss_fn(33, x0, y0 + dist_travel) * (x - x0)]), 
+                                                 vec_ana.coords) 
 
-    # ### Create points to sample the UW results
-    ### y coords to sample
-    sample_y = np.arange(
-        mesh.data[:, 1].min(), mesh.data[:, 1].max(), 0.1 * mesh.get_min_radius()
-    )  ### Vertical profile
-
-    ### x coords to sample
-    sample_x = 0.5*xmax*np.ones_like(sample_y)  ### middle of the box
-
-    sample_points = np.empty((sample_x.shape[0], 2))
-    sample_points[:, 0] = sample_x
-    sample_points[:, 1] = sample_y
-    # -
-
-    ### get the initial vector profile
-    vec_prof_init = uw.function.evaluate(vect_test.sym, sample_points)
-
-    model_time = 0.0
-    dt = 0.001
 
     for i in range(nsteps):
         DuDt.update_pre_solve(dt, verbose = False, evalf = False)
-        with mesh.access(vect_test): # update
-            vect_test.data[...] = DuDt.psi_star[0].data[...]
+        with mesh.access(vec_tst): # update
+            vec_tst.data[...] = DuDt.psi_star[0].data[...]
 
-        model_time += dt
+    ### compare UW3 and analytical solution
+    min_dom = 0.1 * x0 + dist_travel
+    max_dom = x0 + dist_travel + 0.9 * x0
 
-    ### compare UW and 1D numerical solution
-    vec_prof_uw = uw.function.evaluate(vect_test.sym, sample_points)
+    x,y = mesh.X
 
-    #### expected distance traveled in the vertical direction
-    travel_y    = (velocity * model_time)
-    y_ana_shift = travel_y + sample_y
-    y_peak_loc  = y0 + travel_y
+    mask_fn = sympy.Piecewise((1, (x > min_dom) &  (x < max_dom)), (0., True))
 
-    # get points around 5 standard deviations from the expected Gaussian peak location
-    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5*sdev) & (np.around(y_ana_shift, 6) <= y_peak_loc + 5*sdev)
-    anax_to_eval = vec_prof_init[cond, 0]
-    anay_to_eval = vec_prof_init[cond, 1]
+    # sympy functions corresponding to integrals
+    vec_diff        = vec_tst.sym - vec_ana.sym
+    vec_diff_mag    = vec_diff.dot(vec_diff)
 
-    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5*sdev) & (np.around(y_ana_shift, 6) <= y_peak_loc + 5*sdev)
-    vx_to_eval = vec_prof_uw[cond, 0]
-    vy_to_eval = vec_prof_uw[cond, 1]
+    vec_ana_mag     = vec_ana.sym.dot(vec_ana.sym)
 
-    ### compare - use high atol due to low resolution
-    assert np.allclose(vx_to_eval, anax_to_eval, atol=0.01)
-    assert np.allclose(vy_to_eval, anay_to_eval, atol=0.01)
-
+    vec_diff_mag_integ  = uw.maths.Integral(mesh, mask_fn * vec_diff_mag).evaluate()
+    vec_ana_mag_integ   = uw.maths.Integral(mesh, mask_fn * vec_ana_mag).evaluate()
+    vec_norm            = math.sqrt(vec_diff_mag_integ / vec_ana_mag_integ)
+ 
+    # assume second order relationship between relative norm and mesh resolution 
+    # (relative norm = K * min_radius**2)
+    assert (math.log10(vec_norm) / math.log10(mesh.get_min_radius())) <= 2 # right hand side is 2 + (log10(k)/log10(delta_x)) so it's at least 2    
+    
     del mesh
     del DuDt
 
 del meshStructuredQuadBox
 del unstructured_simplex_box_irregular
 del unstructured_simplex_box_regular
+
+
