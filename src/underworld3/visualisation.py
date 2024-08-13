@@ -50,13 +50,13 @@ def mesh_to_pv_mesh(mesh):
 
 
 def coords_to_pv_coords(coords):
-    """pyvista requires 3D coordinates / vectors - fix if they are 2D"""
+    """For a given set of coords, return a pyvista coordinate vector"""
 
-    return vector_to_pv_vector(coords)
+    return _vector_to_pv_vector(coords)
 
 
-def vector_to_pv_vector(vector):
-    """pyvista requires 3D coordinates / vectors - fix if they are 2D"""
+def _vector_to_pv_vector(vector):
+    """Convert numpy coordinate array to pyvista compatible array"""
 
     import numpy as np
 
@@ -108,6 +108,30 @@ def meshVariable_to_pv_cloud(meshVar):
 
     return point_cloud
 
+def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
+    """Convert meshvariable to delaunay triangulated pyvista mesh object.
+       This is redundant if the meshVariable degree is 1 (the original mesh exactly
+       represents the data)"""
+
+    mesh = meshVar.mesh
+    dim = mesh.dim
+
+    if alpha is None:
+        alpha = mesh.get_max_radius()
+
+    point_cloud = meshVariable_to_pv_cloud(meshVar)
+
+    if dim == 2:
+        pv_mesh = point_cloud.delaunay_2d(alpha=alpha)
+    else:
+        pv_mesh = point_cloud.delaunay_3d(alpha=alpha)
+
+
+    return pv_mesh
+
+
+
+
 
 def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     """evaluate uw scalar function at mesh/cloud points"""
@@ -149,21 +173,3 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     vector_values[:, 0:dim] = uw.function.evalf(uw_fn, coords)
 
     return vector_values
-
-
-# def vector_fn_to_pv_arrows(coords, uw_fn, dim=None):
-#     """evaluate uw vector function on point cloud"""
-
-#     import numpy as np
-
-#     dim = uw_fn.shape[1]
-#     if dim != 2 and dim != 3:
-#         print(f"UW vector function should have dimension 2 or 3")
-
-#     coords = pv_mesh.points[:, 0 : dim - 1]
-#     vector_values = np.zeros_like(coords)
-
-#     for i in range(0, dim):
-#         vector_values[:, i] = uw.function.evalf(uw_fn[i], coords)
-
-#     return vector_values

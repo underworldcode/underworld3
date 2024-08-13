@@ -18,18 +18,18 @@ cdef extern from "kdtree_interface.hpp" nogil:
 cdef class KDTree:
     """
     KD-Tree indexes are data structures and algorithms for the efficient
-    determination of nearest neighbours.  
+    determination of nearest neighbours.
 
     This class generates a kd-tree index for the provided points, and provides
     the necessary methods for finding which points are closest to a given query
-    location. 
- 
+    location.
+
     This class utilises `nanoflann` for kd-tree functionality.
 
     Parameters
     ----------
     points:
-        The points for which the kd-tree index will be build. This 
+        The points for which the kd-tree index will be build. This
         should be a 2-dimensional array of size (n_points,dim).
 
     Example
@@ -57,7 +57,7 @@ cdef class KDTree:
     cdef KDTree_Interface* index
     cdef const double[:,::1] points
 
-    def __cinit__( self, 
+    def __cinit__( self,
                    const double[:,::1] points not None:   numpy.ndarray ) :
 
         if points.shape[1] not in (2,3):
@@ -70,7 +70,7 @@ cdef class KDTree:
         del self.index
 
     @timing.routine_timer_decorator
-    def build_index(self): 
+    def build_index(self):
         """
         Build the kd-tree index.
         """
@@ -80,15 +80,15 @@ cdef class KDTree:
         """
         Returns a view of the points used to define the kd-tree
         """
-        
+
         return np.array(self.points)
 
 
     @timing.routine_timer_decorator
-    def find_closest_point(self, 
+    def find_closest_point(self,
                           const double[:,::1] coords not None:   numpy.ndarray):
         """
-        Find the points closest to the provided set of coordinates. 
+        Find the points closest to the provided set of coordinates.
 
         Parameters
         ----------
@@ -113,38 +113,38 @@ cdef class KDTree:
         """
         if coords.shape[1] != self.points.shape[1]:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
-        
+
         count = coords.shape[0]
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
         found    = np.empty(count, dtype=np.bool_,   order='C')
 
-        cdef long unsigned int[::1]  c_indices = indices 
+        cdef long unsigned int[::1]  c_indices = indices
         cdef            double[::1] c_dist_sqr = dist_sqr
         cdef              bool[::1]    c_found = found
-        self.index.find_closest_point(count, 
-                                    <    const double *> &coords[0][0], 
-                                    <long unsigned int*> &c_indices[0], 
-                                    <           double*> &c_dist_sqr[0], 
+        self.index.find_closest_point(count,
+                                    <    const double *> &coords[0][0],
+                                    <long unsigned int*> &c_indices[0],
+                                    <           double*> &c_dist_sqr[0],
                                     <             bool*> &c_found[0] )
         return indices, dist_sqr, found
 
     @timing.routine_timer_decorator
-    def find_closest_n_points(self, 
+    def find_closest_n_points(self,
                   const int nCount                    :   numpy.int64,
                   const double[: ,::1] coords not None:   numpy.ndarray):
         """
-        Find the n points closest to the provided coordinates. 
+        Find the n points closest to the provided coordinates.
 
         Parameters
         ----------
         nCount:
             The number of nearest neighbour points to find for each `coords`.
-        
+
         coords:
             Coordinates of the points for which the kd-tree index will be searched for nearest
             neighbours. This should be a 2-dimensional array of size (n_coords,dim).
- 
+
         Returns
         -------
         indices:
@@ -160,7 +160,7 @@ cdef class KDTree:
             raise RuntimeError(f"Provided coords array dimensionality ({coords.shape[1]}) is different to points dimensionality ({self.points.shape[1]}).")
         nInput = coords.shape[0]
 
-        # allocate numpy arrays - 
+        # allocate numpy arrays -
 
         n_indices  = np.empty((coords.shape[0], nCount), dtype=np.uint64,  order='C')
         n_dist_sqr = np.empty((coords.shape[0], nCount), dtype=np.float64,  order='C')
@@ -169,16 +169,16 @@ cdef class KDTree:
         dist_sqr = np.empty(nCount, dtype=np.float64, order='C')
 
         # allocate memoryviews in C contiguous layout
-        cdef long unsigned int[::1] c_indices  = indices 
+        cdef long unsigned int[::1] c_indices  = indices
         cdef            double[::1] c_dist_sqr = dist_sqr
 
         # Build the array one point at a time
 
         for p in range(coords.shape[0]):
-            self.index.knnSearch( <const double *> &coords[p][0], 
+            self.index.knnSearch( <const double *> &coords[p][0],
                                 nCount,
-                                <long unsigned int*> &c_indices[0], 
-                                <           double*> &c_dist_sqr[0]) 
+                                <long unsigned int*> &c_indices[0],
+                                <           double*> &c_dist_sqr[0])
 
             n_indices[p,:] = indices[:]
             n_dist_sqr[p,:] = dist_sqr[:]
@@ -190,7 +190,7 @@ cdef class KDTree:
 ## A general point-to-point rbf interpolator here
 ## NOTE this is not using cython optimisation for numpy
 
-    def rbf_interpolator_local(self, 
+    def rbf_interpolator_local(self,
             coords,
             data,
             nnn = 4,
@@ -224,13 +224,11 @@ cdef class KDTree:
         if verbose and uw.mpi.rank == 0:
             print("Mapping values  ... start", flush=True)
 
-        epsilon = 1.0e-24
+        epsilon = 1.0e-6
         for j in range(nnn):
             j_distance = epsilon + np.sqrt(distance_n[:, j])
             Weights[:, 0] += 1.0 / j_distance[:]
 
-
-        epsilon = 1.0e-24
         for d in range(data_size):
             for j in range(nnn):
                 j_distance = epsilon + np.sqrt(distance_n[:, j])
@@ -243,10 +241,8 @@ cdef class KDTree:
             print("Mapping values ... done", flush=True)
 
         del coords_contiguous
-        del closest_n 
+        del closest_n
         del distance_n
         del Weights
 
         return Values
-
-
