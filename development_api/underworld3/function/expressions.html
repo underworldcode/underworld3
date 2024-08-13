@@ -370,46 +370,51 @@
 </span><span id="L-224"><a href="#L-224"><span class="linenos">224</span></a>    <span class="c1">#         expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)</span>
 </span><span id="L-225"><a href="#L-225"><span class="linenos">225</span></a>    <span class="c1">#     return expr</span>
 </span><span id="L-226"><a href="#L-226"><span class="linenos">226</span></a>
-</span><span id="L-227"><a href="#L-227"><span class="linenos">227</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+</span><span id="L-227"><a href="#L-227"><span class="linenos">227</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 </span><span id="L-228"><a href="#L-228"><span class="linenos">228</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="L-229"><a href="#L-229"><span class="linenos">229</span></a>        <span class="kn">import</span> <span class="nn">sympy</span>
-</span><span id="L-230"><a href="#L-230"><span class="linenos">230</span></a>
-</span><span id="L-231"><a href="#L-231"><span class="linenos">231</span></a>        <span class="n">level</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span>
-</span><span id="L-232"><a href="#L-232"><span class="linenos">232</span></a>
-</span><span id="L-233"><a href="#L-233"><span class="linenos">233</span></a>        <span class="c1">## feedback on this instance</span>
-</span><span id="L-234"><a href="#L-234"><span class="linenos">234</span></a>        <span class="k">if</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-235"><a href="#L-235"><span class="linenos">235</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="L-236"><a href="#L-236"><span class="linenos">236</span></a>                <span class="n">Latex</span><span class="p">(</span>
-</span><span id="L-237"><a href="#L-237"><span class="linenos">237</span></a>                    <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
-</span><span id="L-238"><a href="#L-238"><span class="linenos">238</span></a>                    <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
-</span><span id="L-239"><a href="#L-239"><span class="linenos">239</span></a>                    <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
-</span><span id="L-240"><a href="#L-240"><span class="linenos">240</span></a>                    <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
-</span><span id="L-241"><a href="#L-241"><span class="linenos">241</span></a>                    <span class="o">+</span> <span class="s2">&quot;$=$&quot;</span>
-</span><span id="L-242"><a href="#L-242"><span class="linenos">242</span></a>                    <span class="o">+</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
-</span><span id="L-243"><a href="#L-243"><span class="linenos">243</span></a>                <span class="p">),</span>
-</span><span id="L-244"><a href="#L-244"><span class="linenos">244</span></a>            <span class="p">)</span>
-</span><span id="L-245"><a href="#L-245"><span class="linenos">245</span></a>            <span class="k">if</span> <span class="n">description</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
-</span><span id="L-246"><a href="#L-246"><span class="linenos">246</span></a>                <span class="n">display</span><span class="p">(</span>
-</span><span id="L-247"><a href="#L-247"><span class="linenos">247</span></a>                    <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="L-248"><a href="#L-248"><span class="linenos">248</span></a>                        <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
-</span><span id="L-249"><a href="#L-249"><span class="linenos">249</span></a>                        <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
-</span><span id="L-250"><a href="#L-250"><span class="linenos">250</span></a>                        <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
-</span><span id="L-251"><a href="#L-251"><span class="linenos">251</span></a>                        <span class="o">+</span> <span class="sa">f</span><span class="s2">&quot;**Description:**  </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">description</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="L-252"><a href="#L-252"><span class="linenos">252</span></a>                    <span class="p">),</span>
-</span><span id="L-253"><a href="#L-253"><span class="linenos">253</span></a>                <span class="p">)</span>
-</span><span id="L-254"><a href="#L-254"><span class="linenos">254</span></a>
-</span><span id="L-255"><a href="#L-255"><span class="linenos">255</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="L-256"><a href="#L-256"><span class="linenos">256</span></a>            <span class="n">atoms</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">atoms</span><span class="p">()</span>
-</span><span id="L-257"><a href="#L-257"><span class="linenos">257</span></a>            <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atoms</span><span class="p">:</span>
-</span><span id="L-258"><a href="#L-258"><span class="linenos">258</span></a>                <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">:</span>
-</span><span id="L-259"><a href="#L-259"><span class="linenos">259</span></a>                    <span class="k">try</span><span class="p">:</span>
-</span><span id="L-260"><a href="#L-260"><span class="linenos">260</span></a>                        <span class="n">atom</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">(</span><span class="n">description</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="n">level</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-</span><span id="L-261"><a href="#L-261"><span class="linenos">261</span></a>                    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
-</span><span id="L-262"><a href="#L-262"><span class="linenos">262</span></a>                        <span class="k">pass</span>
-</span><span id="L-263"><a href="#L-263"><span class="linenos">263</span></a>        <span class="k">except</span><span class="p">:</span>
-</span><span id="L-264"><a href="#L-264"><span class="linenos">264</span></a>            <span class="k">pass</span>
-</span><span id="L-265"><a href="#L-265"><span class="linenos">265</span></a>
-</span><span id="L-266"><a href="#L-266"><span class="linenos">266</span></a>        <span class="k">return</span>
+</span><span id="L-229"><a href="#L-229"><span class="linenos">229</span></a>
+</span><span id="L-230"><a href="#L-230"><span class="linenos">230</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;$&quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">symbol</span><span class="o">+</span><span class="s2">&quot;$&quot;</span><span class="p">))</span>
+</span><span id="L-231"><a href="#L-231"><span class="linenos">231</span></a>
+</span><span id="L-232"><a href="#L-232"><span class="linenos">232</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+</span><span id="L-233"><a href="#L-233"><span class="linenos">233</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="L-234"><a href="#L-234"><span class="linenos">234</span></a>        <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="L-235"><a href="#L-235"><span class="linenos">235</span></a>
+</span><span id="L-236"><a href="#L-236"><span class="linenos">236</span></a>        <span class="n">level</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span>
+</span><span id="L-237"><a href="#L-237"><span class="linenos">237</span></a>
+</span><span id="L-238"><a href="#L-238"><span class="linenos">238</span></a>        <span class="c1">## feedback on this instance</span>
+</span><span id="L-239"><a href="#L-239"><span class="linenos">239</span></a>        <span class="k">if</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-240"><a href="#L-240"><span class="linenos">240</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="L-241"><a href="#L-241"><span class="linenos">241</span></a>                <span class="n">Latex</span><span class="p">(</span>
+</span><span id="L-242"><a href="#L-242"><span class="linenos">242</span></a>                    <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
+</span><span id="L-243"><a href="#L-243"><span class="linenos">243</span></a>                    <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
+</span><span id="L-244"><a href="#L-244"><span class="linenos">244</span></a>                    <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
+</span><span id="L-245"><a href="#L-245"><span class="linenos">245</span></a>                    <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
+</span><span id="L-246"><a href="#L-246"><span class="linenos">246</span></a>                    <span class="o">+</span> <span class="s2">&quot;$=$&quot;</span>
+</span><span id="L-247"><a href="#L-247"><span class="linenos">247</span></a>                    <span class="o">+</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
+</span><span id="L-248"><a href="#L-248"><span class="linenos">248</span></a>                <span class="p">),</span>
+</span><span id="L-249"><a href="#L-249"><span class="linenos">249</span></a>            <span class="p">)</span>
+</span><span id="L-250"><a href="#L-250"><span class="linenos">250</span></a>            <span class="k">if</span> <span class="n">description</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
+</span><span id="L-251"><a href="#L-251"><span class="linenos">251</span></a>                <span class="n">display</span><span class="p">(</span>
+</span><span id="L-252"><a href="#L-252"><span class="linenos">252</span></a>                    <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="L-253"><a href="#L-253"><span class="linenos">253</span></a>                        <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
+</span><span id="L-254"><a href="#L-254"><span class="linenos">254</span></a>                        <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
+</span><span id="L-255"><a href="#L-255"><span class="linenos">255</span></a>                        <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
+</span><span id="L-256"><a href="#L-256"><span class="linenos">256</span></a>                        <span class="o">+</span> <span class="sa">f</span><span class="s2">&quot;**Description:**  </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">description</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="L-257"><a href="#L-257"><span class="linenos">257</span></a>                    <span class="p">),</span>
+</span><span id="L-258"><a href="#L-258"><span class="linenos">258</span></a>                <span class="p">)</span>
+</span><span id="L-259"><a href="#L-259"><span class="linenos">259</span></a>
+</span><span id="L-260"><a href="#L-260"><span class="linenos">260</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="L-261"><a href="#L-261"><span class="linenos">261</span></a>            <span class="n">atoms</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">atoms</span><span class="p">()</span>
+</span><span id="L-262"><a href="#L-262"><span class="linenos">262</span></a>            <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atoms</span><span class="p">:</span>
+</span><span id="L-263"><a href="#L-263"><span class="linenos">263</span></a>                <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">:</span>
+</span><span id="L-264"><a href="#L-264"><span class="linenos">264</span></a>                    <span class="k">try</span><span class="p">:</span>
+</span><span id="L-265"><a href="#L-265"><span class="linenos">265</span></a>                        <span class="n">atom</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">(</span><span class="n">description</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="n">level</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+</span><span id="L-266"><a href="#L-266"><span class="linenos">266</span></a>                    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+</span><span id="L-267"><a href="#L-267"><span class="linenos">267</span></a>                        <span class="k">pass</span>
+</span><span id="L-268"><a href="#L-268"><span class="linenos">268</span></a>        <span class="k">except</span><span class="p">:</span>
+</span><span id="L-269"><a href="#L-269"><span class="linenos">269</span></a>            <span class="k">pass</span>
+</span><span id="L-270"><a href="#L-270"><span class="linenos">270</span></a>
+</span><span id="L-271"><a href="#L-271"><span class="linenos">271</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -668,46 +673,51 @@
 </span><span id="UWexpression-225"><a href="#UWexpression-225"><span class="linenos">225</span></a>    <span class="c1">#         expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)</span>
 </span><span id="UWexpression-226"><a href="#UWexpression-226"><span class="linenos">226</span></a>    <span class="c1">#     return expr</span>
 </span><span id="UWexpression-227"><a href="#UWexpression-227"><span class="linenos">227</span></a>
-</span><span id="UWexpression-228"><a href="#UWexpression-228"><span class="linenos">228</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+</span><span id="UWexpression-228"><a href="#UWexpression-228"><span class="linenos">228</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 </span><span id="UWexpression-229"><a href="#UWexpression-229"><span class="linenos">229</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="UWexpression-230"><a href="#UWexpression-230"><span class="linenos">230</span></a>        <span class="kn">import</span> <span class="nn">sympy</span>
-</span><span id="UWexpression-231"><a href="#UWexpression-231"><span class="linenos">231</span></a>
-</span><span id="UWexpression-232"><a href="#UWexpression-232"><span class="linenos">232</span></a>        <span class="n">level</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span>
-</span><span id="UWexpression-233"><a href="#UWexpression-233"><span class="linenos">233</span></a>
-</span><span id="UWexpression-234"><a href="#UWexpression-234"><span class="linenos">234</span></a>        <span class="c1">## feedback on this instance</span>
-</span><span id="UWexpression-235"><a href="#UWexpression-235"><span class="linenos">235</span></a>        <span class="k">if</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="UWexpression-236"><a href="#UWexpression-236"><span class="linenos">236</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="UWexpression-237"><a href="#UWexpression-237"><span class="linenos">237</span></a>                <span class="n">Latex</span><span class="p">(</span>
-</span><span id="UWexpression-238"><a href="#UWexpression-238"><span class="linenos">238</span></a>                    <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
-</span><span id="UWexpression-239"><a href="#UWexpression-239"><span class="linenos">239</span></a>                    <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
-</span><span id="UWexpression-240"><a href="#UWexpression-240"><span class="linenos">240</span></a>                    <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
-</span><span id="UWexpression-241"><a href="#UWexpression-241"><span class="linenos">241</span></a>                    <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
-</span><span id="UWexpression-242"><a href="#UWexpression-242"><span class="linenos">242</span></a>                    <span class="o">+</span> <span class="s2">&quot;$=$&quot;</span>
-</span><span id="UWexpression-243"><a href="#UWexpression-243"><span class="linenos">243</span></a>                    <span class="o">+</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
-</span><span id="UWexpression-244"><a href="#UWexpression-244"><span class="linenos">244</span></a>                <span class="p">),</span>
-</span><span id="UWexpression-245"><a href="#UWexpression-245"><span class="linenos">245</span></a>            <span class="p">)</span>
-</span><span id="UWexpression-246"><a href="#UWexpression-246"><span class="linenos">246</span></a>            <span class="k">if</span> <span class="n">description</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
-</span><span id="UWexpression-247"><a href="#UWexpression-247"><span class="linenos">247</span></a>                <span class="n">display</span><span class="p">(</span>
-</span><span id="UWexpression-248"><a href="#UWexpression-248"><span class="linenos">248</span></a>                    <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="UWexpression-249"><a href="#UWexpression-249"><span class="linenos">249</span></a>                        <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
-</span><span id="UWexpression-250"><a href="#UWexpression-250"><span class="linenos">250</span></a>                        <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
-</span><span id="UWexpression-251"><a href="#UWexpression-251"><span class="linenos">251</span></a>                        <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
-</span><span id="UWexpression-252"><a href="#UWexpression-252"><span class="linenos">252</span></a>                        <span class="o">+</span> <span class="sa">f</span><span class="s2">&quot;**Description:**  </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">description</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="UWexpression-253"><a href="#UWexpression-253"><span class="linenos">253</span></a>                    <span class="p">),</span>
-</span><span id="UWexpression-254"><a href="#UWexpression-254"><span class="linenos">254</span></a>                <span class="p">)</span>
-</span><span id="UWexpression-255"><a href="#UWexpression-255"><span class="linenos">255</span></a>
-</span><span id="UWexpression-256"><a href="#UWexpression-256"><span class="linenos">256</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="UWexpression-257"><a href="#UWexpression-257"><span class="linenos">257</span></a>            <span class="n">atoms</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">atoms</span><span class="p">()</span>
-</span><span id="UWexpression-258"><a href="#UWexpression-258"><span class="linenos">258</span></a>            <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atoms</span><span class="p">:</span>
-</span><span id="UWexpression-259"><a href="#UWexpression-259"><span class="linenos">259</span></a>                <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">:</span>
-</span><span id="UWexpression-260"><a href="#UWexpression-260"><span class="linenos">260</span></a>                    <span class="k">try</span><span class="p">:</span>
-</span><span id="UWexpression-261"><a href="#UWexpression-261"><span class="linenos">261</span></a>                        <span class="n">atom</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">(</span><span class="n">description</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="n">level</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-</span><span id="UWexpression-262"><a href="#UWexpression-262"><span class="linenos">262</span></a>                    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
-</span><span id="UWexpression-263"><a href="#UWexpression-263"><span class="linenos">263</span></a>                        <span class="k">pass</span>
-</span><span id="UWexpression-264"><a href="#UWexpression-264"><span class="linenos">264</span></a>        <span class="k">except</span><span class="p">:</span>
-</span><span id="UWexpression-265"><a href="#UWexpression-265"><span class="linenos">265</span></a>            <span class="k">pass</span>
-</span><span id="UWexpression-266"><a href="#UWexpression-266"><span class="linenos">266</span></a>
-</span><span id="UWexpression-267"><a href="#UWexpression-267"><span class="linenos">267</span></a>        <span class="k">return</span>
+</span><span id="UWexpression-230"><a href="#UWexpression-230"><span class="linenos">230</span></a>
+</span><span id="UWexpression-231"><a href="#UWexpression-231"><span class="linenos">231</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;$&quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">symbol</span><span class="o">+</span><span class="s2">&quot;$&quot;</span><span class="p">))</span>
+</span><span id="UWexpression-232"><a href="#UWexpression-232"><span class="linenos">232</span></a>
+</span><span id="UWexpression-233"><a href="#UWexpression-233"><span class="linenos">233</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+</span><span id="UWexpression-234"><a href="#UWexpression-234"><span class="linenos">234</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="UWexpression-235"><a href="#UWexpression-235"><span class="linenos">235</span></a>        <span class="kn">import</span> <span class="nn">sympy</span>
+</span><span id="UWexpression-236"><a href="#UWexpression-236"><span class="linenos">236</span></a>
+</span><span id="UWexpression-237"><a href="#UWexpression-237"><span class="linenos">237</span></a>        <span class="n">level</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span>
+</span><span id="UWexpression-238"><a href="#UWexpression-238"><span class="linenos">238</span></a>
+</span><span id="UWexpression-239"><a href="#UWexpression-239"><span class="linenos">239</span></a>        <span class="c1">## feedback on this instance</span>
+</span><span id="UWexpression-240"><a href="#UWexpression-240"><span class="linenos">240</span></a>        <span class="k">if</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="UWexpression-241"><a href="#UWexpression-241"><span class="linenos">241</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="UWexpression-242"><a href="#UWexpression-242"><span class="linenos">242</span></a>                <span class="n">Latex</span><span class="p">(</span>
+</span><span id="UWexpression-243"><a href="#UWexpression-243"><span class="linenos">243</span></a>                    <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
+</span><span id="UWexpression-244"><a href="#UWexpression-244"><span class="linenos">244</span></a>                    <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
+</span><span id="UWexpression-245"><a href="#UWexpression-245"><span class="linenos">245</span></a>                    <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
+</span><span id="UWexpression-246"><a href="#UWexpression-246"><span class="linenos">246</span></a>                    <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
+</span><span id="UWexpression-247"><a href="#UWexpression-247"><span class="linenos">247</span></a>                    <span class="o">+</span> <span class="s2">&quot;$=$&quot;</span>
+</span><span id="UWexpression-248"><a href="#UWexpression-248"><span class="linenos">248</span></a>                    <span class="o">+</span> <span class="n">sympy</span><span class="o">.</span><span class="n">sympify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">)</span><span class="o">.</span><span class="n">_repr_latex_</span><span class="p">()</span>
+</span><span id="UWexpression-249"><a href="#UWexpression-249"><span class="linenos">249</span></a>                <span class="p">),</span>
+</span><span id="UWexpression-250"><a href="#UWexpression-250"><span class="linenos">250</span></a>            <span class="p">)</span>
+</span><span id="UWexpression-251"><a href="#UWexpression-251"><span class="linenos">251</span></a>            <span class="k">if</span> <span class="n">description</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
+</span><span id="UWexpression-252"><a href="#UWexpression-252"><span class="linenos">252</span></a>                <span class="n">display</span><span class="p">(</span>
+</span><span id="UWexpression-253"><a href="#UWexpression-253"><span class="linenos">253</span></a>                    <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="UWexpression-254"><a href="#UWexpression-254"><span class="linenos">254</span></a>                        <span class="sa">r</span><span class="s2">&quot;$&quot;</span>
+</span><span id="UWexpression-255"><a href="#UWexpression-255"><span class="linenos">255</span></a>                        <span class="o">+</span> <span class="sa">r</span><span class="s2">&quot;\quad&quot;</span> <span class="o">*</span> <span class="n">level</span>
+</span><span id="UWexpression-256"><a href="#UWexpression-256"><span class="linenos">256</span></a>                        <span class="o">+</span> <span class="s2">&quot;$&quot;</span>
+</span><span id="UWexpression-257"><a href="#UWexpression-257"><span class="linenos">257</span></a>                        <span class="o">+</span> <span class="sa">f</span><span class="s2">&quot;**Description:**  </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">description</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="UWexpression-258"><a href="#UWexpression-258"><span class="linenos">258</span></a>                    <span class="p">),</span>
+</span><span id="UWexpression-259"><a href="#UWexpression-259"><span class="linenos">259</span></a>                <span class="p">)</span>
+</span><span id="UWexpression-260"><a href="#UWexpression-260"><span class="linenos">260</span></a>
+</span><span id="UWexpression-261"><a href="#UWexpression-261"><span class="linenos">261</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="UWexpression-262"><a href="#UWexpression-262"><span class="linenos">262</span></a>            <span class="n">atoms</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="o">.</span><span class="n">atoms</span><span class="p">()</span>
+</span><span id="UWexpression-263"><a href="#UWexpression-263"><span class="linenos">263</span></a>            <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atoms</span><span class="p">:</span>
+</span><span id="UWexpression-264"><a href="#UWexpression-264"><span class="linenos">264</span></a>                <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">sym</span><span class="p">:</span>
+</span><span id="UWexpression-265"><a href="#UWexpression-265"><span class="linenos">265</span></a>                    <span class="k">try</span><span class="p">:</span>
+</span><span id="UWexpression-266"><a href="#UWexpression-266"><span class="linenos">266</span></a>                        <span class="n">atom</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">(</span><span class="n">description</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="n">level</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+</span><span id="UWexpression-267"><a href="#UWexpression-267"><span class="linenos">267</span></a>                    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+</span><span id="UWexpression-268"><a href="#UWexpression-268"><span class="linenos">268</span></a>                        <span class="k">pass</span>
+</span><span id="UWexpression-269"><a href="#UWexpression-269"><span class="linenos">269</span></a>        <span class="k">except</span><span class="p">:</span>
+</span><span id="UWexpression-270"><a href="#UWexpression-270"><span class="linenos">270</span></a>            <span class="k">pass</span>
+</span><span id="UWexpression-271"><a href="#UWexpression-271"><span class="linenos">271</span></a>
+</span><span id="UWexpression-272"><a href="#UWexpression-272"><span class="linenos">272</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -1129,32 +1139,32 @@
                 <dd id="UWexpression.refine" class="function">refine</dd>
                 <dd id="UWexpression.rewrite" class="function">rewrite</dd>
                 <dd id="UWexpression.is_same" class="function">is_same</dd>
-                <dd id="UWexpression.is_nonnegative" class="variable">is_nonnegative</dd>
+                <dd id="UWexpression.is_extended_positive" class="variable">is_extended_positive</dd>
+                <dd id="UWexpression.is_extended_negative" class="variable">is_extended_negative</dd>
+                <dd id="UWexpression.is_positive" class="variable">is_positive</dd>
                 <dd id="UWexpression.is_imaginary" class="variable">is_imaginary</dd>
+                <dd id="UWexpression.is_irrational" class="variable">is_irrational</dd>
+                <dd id="UWexpression.is_even" class="variable">is_even</dd>
+                <dd id="UWexpression.is_polar" class="variable">is_polar</dd>
+                <dd id="UWexpression.is_antihermitian" class="variable">is_antihermitian</dd>
+                <dd id="UWexpression.is_hermitian" class="variable">is_hermitian</dd>
+                <dd id="UWexpression.is_extended_nonnegative" class="variable">is_extended_nonnegative</dd>
+                <dd id="UWexpression.is_odd" class="variable">is_odd</dd>
+                <dd id="UWexpression.is_extended_nonpositive" class="variable">is_extended_nonpositive</dd>
+                <dd id="UWexpression.is_prime" class="variable">is_prime</dd>
+                <dd id="UWexpression.is_complex" class="variable">is_complex</dd>
                 <dd id="UWexpression.is_composite" class="variable">is_composite</dd>
+                <dd id="UWexpression.is_infinite" class="variable">is_infinite</dd>
+                <dd id="UWexpression.is_extended_nonzero" class="variable">is_extended_nonzero</dd>
+                <dd id="UWexpression.is_noninteger" class="variable">is_noninteger</dd>
+                <dd id="UWexpression.is_nonnegative" class="variable">is_nonnegative</dd>
+                <dd id="UWexpression.is_nonpositive" class="variable">is_nonpositive</dd>
+                <dd id="UWexpression.is_finite" class="variable">is_finite</dd>
+                <dd id="UWexpression.is_nonzero" class="variable">is_nonzero</dd>
                 <dd id="UWexpression.is_algebraic" class="variable">is_algebraic</dd>
                 <dd id="UWexpression.is_rational" class="variable">is_rational</dd>
-                <dd id="UWexpression.is_noninteger" class="variable">is_noninteger</dd>
-                <dd id="UWexpression.is_antihermitian" class="variable">is_antihermitian</dd>
-                <dd id="UWexpression.is_extended_positive" class="variable">is_extended_positive</dd>
-                <dd id="UWexpression.is_complex" class="variable">is_complex</dd>
-                <dd id="UWexpression.is_nonpositive" class="variable">is_nonpositive</dd>
-                <dd id="UWexpression.is_extended_nonnegative" class="variable">is_extended_nonnegative</dd>
-                <dd id="UWexpression.is_irrational" class="variable">is_irrational</dd>
-                <dd id="UWexpression.is_infinite" class="variable">is_infinite</dd>
-                <dd id="UWexpression.is_nonzero" class="variable">is_nonzero</dd>
-                <dd id="UWexpression.is_polar" class="variable">is_polar</dd>
                 <dd id="UWexpression.is_integer" class="variable">is_integer</dd>
-                <dd id="UWexpression.is_extended_nonpositive" class="variable">is_extended_nonpositive</dd>
-                <dd id="UWexpression.is_even" class="variable">is_even</dd>
-                <dd id="UWexpression.is_positive" class="variable">is_positive</dd>
-                <dd id="UWexpression.is_extended_negative" class="variable">is_extended_negative</dd>
                 <dd id="UWexpression.is_transcendental" class="variable">is_transcendental</dd>
-                <dd id="UWexpression.is_extended_nonzero" class="variable">is_extended_nonzero</dd>
-                <dd id="UWexpression.is_hermitian" class="variable">is_hermitian</dd>
-                <dd id="UWexpression.is_odd" class="variable">is_odd</dd>
-                <dd id="UWexpression.is_prime" class="variable">is_prime</dd>
-                <dd id="UWexpression.is_finite" class="variable">is_finite</dd>
 
             </div>
             <div><dt>sympy.core.evalf.EvalfMixin</dt>
