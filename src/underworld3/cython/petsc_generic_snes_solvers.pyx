@@ -482,7 +482,6 @@ class SNES_Scalar(SolverBaseClass):
         self.mesh._equation_systems_register.append(self)
 
         self.is_setup = False
-        # super().__init__()
 
     @property
     def tolerance(self):
@@ -1082,8 +1081,6 @@ class SNES_Vector(SolverBaseClass):
         # Some other setup
 
         self.mesh._equation_systems_register.append(self)
-
-        # super().__init__()
 
     @property
     def tolerance(self):
