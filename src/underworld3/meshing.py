@@ -530,17 +530,17 @@ def StructuredQuadBox(
         x11s = coords[:, 1] > maxCoords[1]
 
         if dim == 3:
-            x20s = coords[:, 1] < minCoords[2]
-            x21s = coords[:, 1] > maxCoords[2]
+            x20s = coords[:, 2] < minCoords[2]
+            x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, :] = minCoords[0]
-        coords[x01s, :] = maxCoords[0]
-        coords[x10s, :] = minCoords[1]
-        coords[x11s, :] = maxCoords[1]
+        coords[x00s, 0] = minCoords[0]
+        coords[x01s, 0] = maxCoords[0]
+        coords[x10s, 1] = minCoords[1]
+        coords[x11s, 1] = maxCoords[1]
 
         if dim == 3:
-            coords[x20s, :] = minCoords[2]
-            coords[x21s, :] = maxCoords[2]
+            coords[x20s, 2] = minCoords[2]
+            coords[x21s, 2] = maxCoords[2]
 
         return coords
 
