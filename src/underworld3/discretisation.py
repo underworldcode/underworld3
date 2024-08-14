@@ -1319,6 +1319,22 @@ class Mesh(Stateful, uw_object):
 
         return all_min_radii.min()
 
+    def get_max_radius(self) -> float:
+        """
+        This method returns the global maximum distance from any cell centroid to a face.
+        """
+
+        ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+        ## does not obtain the minimum radius for the mesh.
+
+        import numpy as np
+
+        all_max_radii = uw.utilities.gather_data(
+            np.array((self._radii.max(),)), bcast=True
+        )
+
+        return all_max_radii.max()
+
     # def get_boundary_subdm(self) -> PETSc.DM:
     #     """
     #     This method returns the boundary subdm that wraps DMPlexCreateSubmesh
@@ -2027,6 +2043,8 @@ class _MeshVariable(Stateful, uw_object):
                 mesh_variable.data[...] = Values[...]
 
             return
+
+        ## Read file information
 
         X, D = field_from_checkpoint(
             data_file,

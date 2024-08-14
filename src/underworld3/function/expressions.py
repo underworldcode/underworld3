@@ -224,6 +224,11 @@ class UWexpression(Symbol, uw_object):
     #         expr_s = cls._substitute_one_expr(expr, sub_expr, keep_constants)
     #     return expr
 
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+
+        display(Markdown("$"+self.symbol+"$"))
+
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
         import sympy
