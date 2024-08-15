@@ -458,6 +458,14 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     window_size : tuple of int, optional
         The size of the rendering window in pixels as (width, height). Default is (750, 750).
 
+    scalar : mesh variable name or sympy expression, optional
+        An optional scalar field associated with the mesh points. If provided, this scalar field
+        will be used for coloring the mesh instead of the vector magnitude. Default is `None`.
+
+    scalar_name : str, optional
+        The name of the scalar field to be used when adding it to the mesh. This name will
+        be used as the label for the scalar bar if `scalar` is provided. Default is an empty string.
+
     Returns:
     --------
     None
