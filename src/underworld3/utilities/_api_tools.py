@@ -35,24 +35,44 @@ class class_or_instance_method(object):
         return newfunc
 
 
-class counted_metaclass(type):
-    def __init__(cls, name, bases, attrs):
-        super().__init__(name, bases, attrs)
-        cls._total_instances = 0
+# class counted_metaclass(type):
+#     def __init__(cls, name, bases, attrs):
+#         super().__init__(name, bases, attrs)
+#         cls._total_instances = 0
+# 
+# 
+#class uw_object_counter(object, metaclass=counted_metaclass):
+#    def __init__(self):
+#        try:
+#            self.__class__.mro()[1]._total_instances += 1
+#        except AttributeError:
+#            pass
+#            # print(f"{self.__class__.mro()[1]} is not a uw_object")
+#
+#        super().__init__()
+#
+#        self.__class__._total_instances += 1
+#        self.instance_number = self.__class__._total_instances
 
+class uw_object_counter(object):
+    _total_instances = 0
 
-class uw_object_counter(object, metaclass=counted_metaclass):
     def __init__(self):
-        try:
-            self.__class__.mro()[1]._total_instances += 1
-        except AttributeError:
-            pass
-            # print(f"{self.__class__.mro()[1]} is not a uw_object")
-
+        self.instance_number = uw_object_counter._total_instances
+        uw_object_counter._total_instances += 1
         super().__init__()
 
-        self.__class__._total_instances += 1
-        self.instance_number = self.__class__._total_instances
+    @classmethod
+    @property
+    def total_instances(self):
+        return uw_object_counter._total_instances
+
+    def __del__(self):
+        uw_object_counter._total_instances -= 1
+
+    def __str__(self):
+        s = super().__str__()
+        return f"{self.__class__.__name__} instance {self.instance_number}, {s}"
 
 
 class uw_object(uw_object_counter):
@@ -118,9 +138,9 @@ class uw_object(uw_object_counter):
 
             self_or_cls._object_viewer()
 
-    @classmethod
-    def total_instances(cls):
-        return cls._total_instances
+    #@classmethod
+    #def total_instances(cls):
+    #    return cls._total_instances
 
     # placeholder
     def _object_viewer(self):
