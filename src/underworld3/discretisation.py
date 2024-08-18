@@ -192,21 +192,17 @@ class Mesh(Stateful, uw_object):
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
 
-        ## Calling setFromOptions here causes a seg fault in the conda-forge
-        ## installation. Very strange ... what else is in the options database at
-        ## this point ?
-
         # options.delValue("dm_plex_gmsh_mark_vertices")
         # options.delValue("dm_plex_gmsh_multiple_tags")
         # options.delValue("dm_plex_gmsh_use_regions")
-        # # self.dm.setFromOptions()
+        self.dm.setFromOptions()
 
         uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
         self.refinement_callback = refinement_callback
-        self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
         self.sf1 = None
+        self.return_coords_to_bounds = return_coords_to_bounds
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -221,7 +217,7 @@ class Mesh(Stateful, uw_object):
         if not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
-            self.dm.distribute()
+            self.dm.distribute(overlap=0)
 
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
@@ -252,8 +248,7 @@ class Mesh(Stateful, uw_object):
             self.dm = self.dm_h.clone()
 
         else:
-
-            self.dm.distribute()
+            self.dm.distribute(overlap=0)
 
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
@@ -453,6 +448,45 @@ class Mesh(Stateful, uw_object):
 
         ## Information on the mesh DM
         self.dm.view()
+
+    # This only works for local - we can't access global information'
+    # and so this is not a suitable function for use during advection
+    #
+    # def _return_coords_to_bounds(self, coords, meshVar=None):
+    #     """
+    #     Restore the provided coordinates to the interior of the domain.
+    #     The default behaviour is to find the nearest node in the kdtree to each
+    #     coordinate and use that value. If a meshVar is provided, we can use the nearest node
+    #     for that discretisation instead.
+
+    #     This can be over-ridden for specific meshes
+    #     (e.g. periodic) where a more appropriate choice is available.
+    #     """
+
+    #     import numpy as np
+
+    #     if meshVar is None:
+    #         target_coords = self.data
+    #     else:
+    #         target_coords = meshVar.coords
+
+    #     ## Find which coords are invalid
+
+    #     invalid = self.get_closest_local_cells(coords) == -1
+
+    #     if np.count_nonzero(invalid) == 0:
+    #         return coords
+
+    #     print(f"{uw.mpi.rank}: Number of invalid coords {np.count_nonzero(invalid)}")
+
+    #     kdt = uw.kdtree.KDTree(target_coords)
+    #     idx , _ , _ = kdt.find_closest_point(coords[invalid])
+
+    #     valid_coords = coords.copy()
+    #     valid_coords[invalid] = target_coords[idx]
+
+    #     return valid_coords
+
 
     def clone_dm_hierarchy(self):
         """

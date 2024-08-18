@@ -722,7 +722,7 @@ class SNES_VE_Stokes(SNES_Stokes):
                 verbose=self.verbose,
                 bcs=None,
                 order=self._order,
-                smoothing=0.0,
+                smoothing=0.0001,
             )
 
         return
@@ -1303,6 +1303,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### Setup the history terms ... This version should not build anything
         ### by default - it's the template / skeleton
 
+        ## NB - Smoothing is generally required for stability. 0.0001 is effective
+        ## at the various resolutions tested.
+
         if DuDt is None:
             self.Unknowns.DuDt = SemiLagrangian_DDt(
                 self.mesh,
@@ -1315,7 +1318,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 verbose=verbose,
                 bcs=self.essential_bcs,
                 order=order,
-                smoothing=0.0,
+                smoothing=0.0001,
             )
 
         else:
@@ -1344,7 +1347,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             verbose=verbose,
             bcs=None,
             order=order,
-            smoothing=0.0,
+            smoothing=0.0001,
         )
 
         return
@@ -1354,7 +1357,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         f0 = uw.function.expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + self.DuDt.bdf() / self.delta_t,
+            -self.f + self.DuDt.bdf(0) / self.delta_t,
             "Poisson pointwise force term: f_0(u)",
         )
 
@@ -1659,7 +1662,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 verbose=self.verbose,
                 bcs=self.essential_bcs,
                 order=self._order,
-                smoothing=0.0,
+                smoothing=0.0001,
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
@@ -1677,7 +1680,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             verbose=self.verbose,
             bcs=None,
             order=self._order,
-            smoothing=0.0,
+            smoothing=0.0001,
         )
 
         ## Add in the history terms provided ...

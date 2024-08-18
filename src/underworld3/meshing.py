@@ -1029,6 +1029,9 @@ def Annulus(
 
         return
 
+    # This needs to respect the size of the elements so it
+    # does not flag points that are actually in the mesh.
+
     def annulus_return_coords_to_bounds(coords):
         Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
 

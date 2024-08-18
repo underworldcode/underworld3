@@ -39,7 +39,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         bcs=[],
         order=1,
-        smoothing=0.0,
+        smoothing=1.0e-4,
         under_relaxation=0.0,
         bc_mask_fn=1,
     ):
@@ -235,6 +235,7 @@ class SemiLagrangian(uw_object):
 
             # Now project to the mesh using bc's to obtain u_star
 
+
             self._psi_star_projection_solver.uw_function = (
                 self._nswarm_psi.swarmVariable.sym
             )
@@ -282,10 +283,14 @@ class SemiLagrangian(uw_object):
         if order is None:
             order = self.order
         else:
-            order = max(1, min(self.order, order))
+            order = max(0, min(self.order, order))
 
         with sympy.core.evaluate(True):
-            if order == 1:
+
+            if order == 0:
+                am = self.psi_fn
+
+            elif order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
