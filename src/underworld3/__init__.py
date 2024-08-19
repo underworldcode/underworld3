@@ -75,6 +75,10 @@ from petsc4py import PETSc
 
 PETSc.Sys.popErrorHandler()
 
+try:
+    from ._version import __version__
+except ImportError:
+    __version__ = "Unknown" # check src/underworld3/_version.py
 
 def view():
     from IPython.display import Latex, Markdown, display
@@ -116,6 +120,36 @@ import underworld3.scaling
 import underworld3.visualisation
 import numpy as _np
 
+class runtime_record():
+
+    def __init__(self):
+        import sys
+        import datetime
+        import subprocess
+
+        # get the start time of this piece of code
+        start_t = datetime.datetime.now()
+
+        # get the git version
+        gv = None
+        try:
+            gv = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+        except Exception as e:
+            return f"Error: Underworld can't retrieving commit hash: {e}"
+
+        self._data = {
+            "uw_object_count": 0,
+            "python_versions": sys.version,
+            "git_version": gv,
+            "uw_version": None,
+            "petsc_version": PETSc.Sys.getVersion(),
+            "petsc_dir": None,
+            "execution_start": start_t,
+        }
+
+        def get_metadata():
+            return self._metadata
+
 # Info for JIT modules.
 # These dicts should be populated by submodules
 # which define cython/c based classes.
@@ -130,31 +164,6 @@ from collections import OrderedDict as _OD
 _libfiles = _OD()
 _libdirs = _OD()
 _incdirs = _OD({_np.get_include(): None})
-
-
-# def _is_notebook() -> bool:
-#     """
-#     Function to determine if the python environment is a Notebook or not.
-
-#     Returns 'True' if executing in a notebook, 'False' otherwise
-
-#     Script taken from https://stackoverflow.com/a/39662359/8106122
-#     """
-
-#     try:
-#         shell = get_ipython().__class__.__name__
-#         if shell == "ZMQInteractiveShell":
-#             return True  # Jupyter notebook or qtconsole
-#         elif shell == "TerminalInteractiveShell":
-#             return False  # Terminal running IPython
-#         else:
-#             return False  # Other type (?)
-#     except NameError:
-#         return False  # Probably standard Python interpreter
-
-
-# is_notebook = _is_notebook()
-
 
 ## -------------------------------------------------------------
 
@@ -175,6 +184,3 @@ __pdoc__["cython"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
-
-
-## Add an options dictionary for arbitrary underworld things
