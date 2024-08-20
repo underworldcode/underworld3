@@ -101,6 +101,7 @@ import underworld3.mpi
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
+from .utilities import uw_record # grab record class
 
 from underworld3.utilities import _api_tools
 
@@ -119,36 +120,6 @@ import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation
 import numpy as _np
-
-class runtime_record():
-
-    def __init__(self):
-        import sys
-        import datetime
-        import subprocess
-
-        # get the start time of this piece of code
-        start_t = datetime.datetime.now()
-
-        # get the git version
-        gv = None
-        try:
-            gv = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
-        except Exception as e:
-            return f"Error: Underworld can't retrieving commit hash: {e}"
-
-        self._data = {
-            "uw_object_count": 0,
-            "python_versions": sys.version,
-            "git_version": gv,
-            "uw_version": None,
-            "petsc_version": PETSc.Sys.getVersion(),
-            "petsc_dir": None,
-            "execution_start": start_t,
-        }
-
-        def get_metadata():
-            return self._metadata
 
 # Info for JIT modules.
 # These dicts should be populated by submodules
