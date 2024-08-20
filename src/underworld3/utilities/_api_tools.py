@@ -42,10 +42,13 @@ class uw_counter(object):
         uw_counter._object_count += 1
         super().__init__()
 
+    # to order of the following decorators matters python
+    # see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850
+    @classmethod
     @property
-    def uw_object_counter(self):
+    def uw_object_counter(cls):
         """ Number of uw_object instances created """
-        return uw_counter._object_count
+        return cls._object_count
 
     @property
     def instance_number(self):
