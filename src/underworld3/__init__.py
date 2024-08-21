@@ -103,8 +103,9 @@ from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
 from .utilities._utils import auditor
 
-from underworld3.utilities import _api_tools
-from .utilities import auditor
+from .utilities import _api_tools
+#from underworld3.utilities import _api_tools
+from .utilities._utils import auditor
 
 import underworld3.adaptivity
 import underworld3.coordinates
