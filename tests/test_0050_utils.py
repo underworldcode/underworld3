@@ -13,14 +13,12 @@
 #     name: python3
 # ---
 
-# %%
+## %%
+
 import underworld3 as uw
 import sympy
 
-# %%
-uw.utilities._api_tools.uw_counter._reset() # reset the counter
-
-mesh = uw.meshing.StructuredQuadBox(elementRes=(10,) * 2)
+mesh = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
 x, y = mesh.X
 
 # %%

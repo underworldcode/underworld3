@@ -45,10 +45,9 @@ class uw_counter(object):
     # to order of the following decorators matters python
     # see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850
     @classmethod
-    @property
     def uw_object_counter(cls):
         """ Number of uw_object instances created """
-        return cls._object_count
+        return uw_counter._object_count
 
     @property
     def instance_number(self):
@@ -58,6 +57,11 @@ class uw_counter(object):
     def __str__(self):
         s = super().__str__()
         return f"{self.__class__.__name__} instance {self.instance_number}, {s}"
+
+    @staticmethod
+    def _reset():
+        """ Reset the object counter """
+        uw_counter._object_count = 0
 
 
 #class uw_object(object, metaclass=uw_count_as_meta):
