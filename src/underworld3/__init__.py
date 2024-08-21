@@ -101,9 +101,10 @@ import underworld3.mpi
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
-from .utilities import uw_record # grab record class
+from .utilities._utils import auditor
 
 from underworld3.utilities import _api_tools
+from .utilities import auditor
 
 import underworld3.adaptivity
 import underworld3.coordinates
