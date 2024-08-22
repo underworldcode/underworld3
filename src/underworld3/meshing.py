@@ -738,6 +738,61 @@ def SphericalShellInternalBoundary(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    """
+    Generates a spherical shell with an internal boundary using Gmsh. The function creates a 3D mesh of a spherical shell
+    defined by outer, internal, and inner radii. Mesh size, polynomial degree, and Gmsh verbosity can be customized.
+
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the spherical shell. Default is 1.0.
+    
+    radiusInternal : float, optional
+        The radius of the internal boundary within the spherical shell. Default is 0.8.
+    
+    radiusInner : float, optional
+        The inner radius of the spherical shell. Default is 0.547.
+    
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+    
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+    
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+    
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the radii and mesh size. Default is None.
+    
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+    
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+    
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+    
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SphericalShellInternalBoundary(
+        radiusOuter=2.0,
+        radiusInternal=1.5,
+        radiusInner=1.0,
+        cellSize=0.05,
+        degree=2,
+        qdegree=3,
+        filename="custom_spherical_shell.msh",
+        gmsh_verbosity=1,
+        verbose=True
+    )
+    """
     class boundaries(Enum):
         Centre = 1
         Lower = 11
@@ -908,19 +963,67 @@ def SegmentofSphere(
     centroid: Tuple = (0.0, 0.0, 0.0),
 ):
     """
-    Generates a segment of sphere.
+    Generates a segment of a sphere using Gmsh. This function creates a 3D mesh of a spherical segment defined by outer and inner radii,
+    and the extent in longitude and latitude. The mesh can be customized in terms of size, polynomial degree, and verbosity.
 
-    Parameters
-    ----------
-    radiusOuter:
-        Float specifying radius of the outer surface.
-    radiusInner:
-        Float specifying radius of the inner surface.
-    LongitudeExtent:
-        Angle (float) specifying model extent in longitude direction.
-    LatitudeExtent:
-        Angle (float) specifying model extent in latitude direction. 
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the spherical segment. Default is 1.0.
+    
+    radiusInner : float, optional
+        The inner radius of the spherical segment. Default is 0.547.
+    
+    longitudeExtent : float, optional
+        The angular extent of the segment in the longitudinal direction (in degrees). Default is 90.0.
+    
+    latitudeExtent : float, optional
+        The angular extent of the segment in the latitudinal direction (in degrees). Default is 90.0.
+    
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+    
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+    
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+    
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
+    
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+    
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+    
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+    
+    centroid : Tuple[float, float, float], optional
+        The coordinates of the centroid (center) of the sphere segment. Default is (0.0, 0.0, 0.0).
 
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SegmentofSphere(
+        radiusOuter=2.0,
+        radiusInner=1.0,
+        longitudeExtent=120.0,
+        latitudeExtent=60.0,
+        cellSize=0.05,
+        degree=2,
+        qdegree=3,
+        filename="custom_sphere_segment.msh",
+        centroid=(0.0, 0.0, 0.0),
+        gmsh_verbosity=1,
+        verbose=True
+    )
     """
     
     class boundaries(Enum):
@@ -942,9 +1045,12 @@ def SegmentofSphere(
     else:
         uw_filename = filename
 
-    # Check if r_i is greater than 0
-    if radiusInner <= 0:
-        raise ValueError("The inner radius must be greater than 0.")
+    if radiusInner <= 0 or not (0 < longitudeExtent < 180) or not (0 < latitudeExtent < 180):
+        raise ValueError(
+            "Invalid input parameters: "
+            "radiusInner must be greater than 0, "
+            "and longitudeExtent and latitudeExtent must be within the range (0, 180)."
+        )
     
     if uw.mpi.rank == 0:
         
@@ -1477,6 +1583,66 @@ def SegmentofAnnulus(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    """
+    Generates a segment of an annulus using Gmsh. This function creates a 2D mesh of an annular segment defined by outer and inner radii,
+    and the extent of the angle. The mesh can be customized with various parameters like cell size, element degree, and verbosity.
+
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the annular segment. Default is 1.0.
+    
+    radiusInner : float, optional
+        The inner radius of the annular segment. Default is 0.547.
+    
+    angleExtent : float, optional
+        The angular extent of the segment in degrees. Default is 45.
+    
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+    
+    centre : bool, optional
+        If True, the segment will be centered at the origin. If False, the segment is positioned based on the radii. Default is False.
+    
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+    
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+    
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
+    
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+    
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+    
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+    
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SegmentofAnnulus(
+        radiusOuter=2.0,
+        radiusInner=1.0,
+        angleExtent=90.0,
+        cellSize=0.05,
+        centre=True,
+        degree=2,
+        qdegree=3,
+        filename="custom_annulus_segment.msh",
+        gmsh_verbosity=1,
+        verbose=True
+    )
+    """
+    
     class boundaries(Enum):
         Lower = 1
         Upper = 2
@@ -1495,6 +1661,14 @@ def SegmentofAnnulus(
     else:
         uw_filename = filename
 
+    # error checks
+    if radiusInner <= 0 or not (0 < angleExtent < 180):
+        raise ValueError(
+            "Invalid input parameters: "
+            "radiusInner must be greater than 0, "
+            "and angleExtent must be within the range (0, 180)."
+        )
+        
     if uw.mpi.rank == 0:
         import gmsh
 
