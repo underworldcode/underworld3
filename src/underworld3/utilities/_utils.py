@@ -114,7 +114,6 @@ class _uw_record():
             now = datetime.datetime.now().isoformat()
             self._runtime_data.update({"current_time": now})
 
-            #object_count = uw.utilities._api_tools.uw_counter.uw_object_counter
             from underworld3.utilities._api_tools import uw_object
             object_count = uw_object.uw_object_counter()
             self._runtime_data.update({"uw_object_count": object_count})

@@ -34,20 +34,27 @@ class class_or_instance_method(object):
 
         return newfunc
 
-class uw_counter(object):
-    _object_count = 0 # variable to count the number of objects
+class uw_object():
+    """
+    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects
+    such as the view methods (classmethod for generic information and instance method that can be over-ridden)
+    to provide instance-specific information
+    """
+
+    _obj_count = 0 # a class variable to count the number of objects
 
     def __init__(self):
-        self._uw_id = uw_counter._object_count
-        uw_counter._object_count += 1
-        super().__init__()
+        super().__init__
+
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
 
     # to order of the following decorators matters python
     # see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850
     @classmethod
     def uw_object_counter(cls):
         """ Number of uw_object instances created """
-        return uw_counter._object_count
+        return uw_object._obj_count
 
     @property
     def instance_number(self):
@@ -61,19 +68,7 @@ class uw_counter(object):
     @staticmethod
     def _reset():
         """ Reset the object counter """
-        uw_counter._object_count = 0
-
-
-#class uw_object(object, metaclass=uw_count_as_meta):
-class uw_object(uw_counter):
-    """
-    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects
-    such as the view methods (classmethod for generic information and instance method that can be over-ridden)
-    to provide instance-specific information
-    """
-
-    def __init__(self):
-        super().__init__()
+        uw_object._obj_count = 0
 
     @class_or_instance_method
     def _ipython_display_(self_or_cls):
