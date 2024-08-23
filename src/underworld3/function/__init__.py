@@ -3,6 +3,8 @@ from ._function import (
     UnderworldFunction,
     evaluate,
     evalf,
+    dm_swarm_get_migrate_type,
+    dm_swarm_set_migrate_type,
     # evalf_at_coords,
     # _interpolate_all_vars_on_mesh,
 )

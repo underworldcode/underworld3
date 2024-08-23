@@ -229,9 +229,27 @@ class SemiLagrangian(uw_object):
             # with self._nswarm_psi.access():
             #     print("1S:", self._nswarm_psi.swarmVariable.data, flush=True)
 
-            # restore coords (will call dm.migrate after context manager releases)
+            # additional steps for snapback routine
+            og_mig_type = uw.function.dm_swarm_get_migrate_type(self._nswarm_psi)   # get original migrate type
+            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, 0)              # set to Migrate BASIC
+
+            # change the rank in DMSwarm_rank with the rank before advection
+            nR0_field_name = self._nswarm_psi._nR0.name
+
+            orig_ranks      = self._nswarm_psi.dm.getField(nR0_field_name)
+            node_ranks      = self._nswarm_psi.dm.getField("DMSwarm_rank")
+
+            node_ranks[...] = orig_ranks[...]
+
+            self._nswarm_psi.dm.restoreField(nR0_field_name)
+            self._nswarm_psi.dm.restoreField("DMSwarm_rank")
+
+            # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
+
+            # reset to original migrate type
+            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
 
             # Now project to the mesh using bc's to obtain u_star
 
