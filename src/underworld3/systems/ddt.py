@@ -232,7 +232,6 @@ class SemiLagrangian(uw_object):
             # additional steps for snapback routine
             og_mig_type = uw.function.dm_swarm_get_migrate_type(self._nswarm_psi)   # get original migrate type
             uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, 0)              # set to Migrate BASIC
-            mig_type = uw.function.dm_swarm_get_migrate_type(self._nswarm_psi)
 
             # change the rank in DMSwarm_rank with the rank before advection
             nR0_field_name = self._nswarm_psi._nR0.name
