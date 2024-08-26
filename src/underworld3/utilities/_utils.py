@@ -7,23 +7,121 @@ import sys
 from collections import UserString
 from contextlib import redirect_stdout, redirect_stderr
 
+class _uw_record():
+    """
+    A class to record runtime information about the underworld3 execution environment.
+    """
 
-# # Capture the stdout to an object
-# class CaptureStdout(list):
-#     def __enter__(self, split=True):
-#         self._stdout = sys.stdout
-#         self.split = split
-#         sys.stdout = self._stringio = StringIO()
-#         return self
+    def __init__(self):
+        try: 
+            import mpi4py
+            comm = mpi4py.MPI.COMM_WORLD
+        except ImportError:
+            raise ImportError("Can't import mpi4py for runtime information.")
 
-#     def __exit__(self, *args):
-#         if split:
-#             self.extend(self._stringio.getvalue().splitlines())
-#         else:
-#             self.extend(self._stringio.getvalue()
-#         del self._stringio  # free up some memory
-#         sys.stdout = self._stdout
+        # rank 0 only builds the data and then broadcasts it
+        self._install_data = None
+        self._runtime_data = None
+        if comm.rank == 0:
 
+            import sys
+            import datetime
+            import subprocess
+            import warnings
+
+            # get the start time of this piece of code
+            start_t = datetime.datetime.now().isoformat()
+
+            # get the git version
+            try:
+                gv = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+            except Exception as e:
+                gv = None
+                warnings.warn( f"Warning: Underworld can't retrieving commit hash: {e}" )
+
+            # get petsc information
+            try:
+                import petsc4py as _petsc4py
+                from petsc4py import PETSc as _PETSc
+                petsc_version = _PETSc.Sys.getVersion()
+                petsc_dir = _petsc4py.get_config()['PETSC_DIR']
+            except Exception as e:
+                petsc_version = None
+                petsc_dir = None
+                warnings.warn( f"Warning: Underworld can't retrieving petsc installation details: {e}" )
+
+            # get h5py information
+            try:
+                import h5py as _h5py
+                h5py_dir = _h5py.__file__
+                h5py_version = _h5py.version.version
+                hdf5_version = _h5py.version.hdf5_version
+            except Exception as e:
+                h5py_dir = None
+                h5py_version = None
+                hdf5_version = None
+                warnings.warn( f"Warning: Underworld can't retrieving h5py installation details: {e}" )
+
+            # get mpi4py information
+            try:
+                import mpi4py as _mpi4py
+                mpi4py_version = _mpi4py.__version__
+            except Exception as e:
+                mpi4py_version = None
+                warnings.warn( f"Warning: Underworld can't retrieving mpi4py installation details: {e}" )
+
+            # get just the version
+            from underworld3 import __version__ as uw_version
+
+            self._install_data = {
+                "git_version": gv,
+                "uw_version": uw_version,
+                "python_versions": sys.version,
+                "petsc_version": petsc_version,
+                "petsc_dir": petsc_dir,
+                "hdf5_version": hdf5_version,
+                "h5py_version": h5py_version,
+                "h5py_dir": h5py_dir,
+                "mpi4py_version": mpi4py_version,
+            }
+
+            self._runtime_data = {
+                "start_time": start_t,
+                "uw_object_count": 0,
+            }
+
+        # rank 0 broadcast information to other procs
+        self._install_data = comm.bcast(self._install_data, root=0)
+
+    @property
+    def get_installation_data(self):
+        '''
+        Get the installation data for the underworld3 installation.
+        '''
+        return self._install_data
+
+    @property
+    def get_runtime_data(self):
+        '''
+        Get the runtime data for the underworld3 installation.
+        Note this requires a MPI broadcast to get the data.
+        '''
+        import datetime
+        import mpi4py
+        comm = mpi4py.MPI.COMM_WORLD
+
+        if comm.rank == 0:
+            now = datetime.datetime.now().isoformat()
+            self._runtime_data.update({"current_time": now})
+
+            from underworld3.utilities._api_tools import uw_object
+            object_count = uw_object.uw_object_counter()
+            self._runtime_data.update({"uw_object_count": object_count})
+
+        self._runtime_data = comm.bcast(self._runtime_data, root=0)
+        return self._runtime_data
+
+auditor = _uw_record()
 
 class CaptureStdout(UserString, redirect_stdout):
     """

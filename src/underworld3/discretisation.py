@@ -1650,7 +1650,7 @@ class _MeshVariable(Stateful, uw_object):
         self.symbol = symbol
 
         if mesh.instance_number > 1:
-            invisible = "\,\!" * mesh.instance_number
+            invisible = r"\,\!" * mesh.instance_number
             self.symbol = f"{{ {{ {invisible} }} {symbol} }}"
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
