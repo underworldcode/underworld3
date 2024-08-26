@@ -80,8 +80,21 @@ class SemiLagrangian(uw_object):
                 )
             )
 
+        # Working variable that has a potentially different discretisation from psi_star
+        # We project from this to psi_star
+        #
+
+        self._workVar = uw.discretisation.MeshVariable(
+            f"W_{self.instance_number}_{i}",
+            self.mesh,
+            vtype=vtype,
+            degree=2,
+            continuous=False,
+            varsymbol=rf"{{ {varsymbol}^\nabla }}",
+        )
+
         # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointSwarm(self.psi_star[0])
+        nswarm = uw.swarm.NodalPointSwarm(self._workVar)
         self._nswarm_psi = nswarm
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
@@ -94,12 +107,14 @@ class SemiLagrangian(uw_object):
         elif vtype == uw.VarType.VECTOR:
             self._psi_star_projection_solver = (
                 uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh, self.psi_star[0], verbose=False,
+                    self.mesh,
+                    self.psi_star[0],
+                    verbose=False,
                 )
             )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
-            self._WorkVar = uw.discretisation.MeshVariable(
+            self._WorkVarTP = uw.discretisation.MeshVariable(
                 f"W_star_slcn_{self.instance_number}",
                 self.mesh,
                 vtype=uw.VarType.SCALAR,
@@ -109,13 +124,18 @@ class SemiLagrangian(uw_object):
             )
             self._psi_star_projection_solver = (
                 uw.systems.solvers.SNES_Tensor_Projection(
-                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+                    self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
                 )
             )
 
-        self._psi_star_projection_solver.uw_function = self.psi_fn
+        # We should find a way to add natural bcs here
+        # (self.Unknowns.u carried as a symbol from solver to solver)
+
+        self._psi_star_projection_solver.uw_function = self._workVar.sym
         self._psi_star_projection_solver.bcs = bcs
         self._psi_star_projection_solver.smoothing = smoothing
+
+        self._smoothing = smoothing
 
         return
 
@@ -134,14 +154,6 @@ class SemiLagrangian(uw_object):
 
         super()._object_viewer()
 
-        ## feedback on this instance
-        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        # display(
-        #     Latex(
-        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
-        #         + sympy.sympify(self.dt_physical)._repr_latex_()
-        #     )
-        # )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def update(
@@ -186,9 +198,11 @@ class SemiLagrangian(uw_object):
                     + (1 - phi) * self.psi_star[i].data[...]
                 )
 
-        # 2. Compute the upstream values
+        # 2. Compute the upstream values from the psi_fn
 
         # We use the u_star variable as a working value here so we have to work backwards
+        # so we don't over-write the history terms
+
         for i in range(self.order - 1, -1, -1):
             with self._nswarm_psi.access(self._nswarm_psi._X0):
                 self._nswarm_psi._X0.data[...] = self._nswarm_psi.data[...]
@@ -200,12 +214,13 @@ class SemiLagrangian(uw_object):
                 order=2,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-                evalf=evalf,
+                evalf=True,  #!
             )
 
             if i == 0:
                 # Recalculate u_star from u_fn
                 self._psi_star_projection_solver.uw_function = self.psi_fn
+                self._psi_star_projection_solver.smoothing = 1.0e-6
                 self._psi_star_projection_solver.solve(verbose=verbose)
 
             if evalf:
@@ -217,17 +232,11 @@ class SemiLagrangian(uw_object):
             else:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
                     for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = (
-                            uw.function.evaluate(
-                                self.psi_star[i].sym[d], self._nswarm_psi.data
-                            )
+                        self._nswarm_psi.swarmVariable.data[
+                            :, d
+                        ] = uw.function.evaluate(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
                         )
-
-            # with self.mesh.access():
-            #     print("1:", self.psi_star[0].data, flush=True)
-
-            # with self._nswarm_psi.access():
-            #     print("1S:", self._nswarm_psi.swarmVariable.data, flush=True)
 
             # restore coords (will call dm.migrate after context manager releases)
             with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
@@ -235,11 +244,16 @@ class SemiLagrangian(uw_object):
 
             # Now project to the mesh using bc's to obtain u_star
 
+            # Push data from swarm back to _workVar.data
 
-            self._psi_star_projection_solver.uw_function = (
-                self._nswarm_psi.swarmVariable.sym
-            )
+            with self.mesh.access(self._workVar):
+                with self._nswarm_psi.access():
+                    self._workVar.data[...] = self._nswarm_psi.swarmVariable.data[...]
 
+            # Project from advected swarm to semi-Lagrangian variables.
+            #
+            self._psi_star_projection_solver.uw_function = self._workVar.sym
+            self._psi_star_projection_solver.smoothing = 1.0e-3
             self._psi_star_projection_solver.solve()
 
             # Copy data from the projection operator if required
