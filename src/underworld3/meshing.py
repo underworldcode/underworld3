@@ -207,6 +207,8 @@ def UnstructuredSimplexBox(
 
     def box_return_coords_to_bounds(coords):
 
+        epsilon = 1.0e-3
+
         x00s = coords[:, 0] < minCoords[0]
         x01s = coords[:, 0] > maxCoords[0]
         x10s = coords[:, 1] < minCoords[1]
@@ -216,14 +218,14 @@ def UnstructuredSimplexBox(
             x20s = coords[:, 2] < minCoords[2]
             x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, 0] = minCoords[0]
-        coords[x01s, 0] = maxCoords[0]
-        coords[x10s, 1] = minCoords[1]
-        coords[x11s, 1] = maxCoords[1]
+        coords[x00s, 0] = minCoords[0] + epsilon
+        coords[x01s, 0] = maxCoords[0] - epsilon
+        coords[x10s, 1] = minCoords[1] + epsilon
+        coords[x11s, 1] = maxCoords[1] - epsilon
 
         if dim == 3:
-            coords[x20s, 2] = minCoords[2]
-            coords[x21s, 2] = maxCoords[2]
+            coords[x20s, 2] = minCoords[2] + epsilon
+            coords[x21s, 2] = maxCoords[2] - epsilon
 
         return coords
 
@@ -369,6 +371,7 @@ def StructuredQuadBox(
             gmsh.model.set_physical_name(2, 99999, "Elements")
 
             nx, ny = elementRes
+            print("Structured box element resolution", nx, ny)
 
             gmsh.model.mesh.set_transfinite_curve(
                 tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0
