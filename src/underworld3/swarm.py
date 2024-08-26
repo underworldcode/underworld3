@@ -1934,6 +1934,11 @@ class NodalPointSwarm(Swarm):
         symbol = r"X0^{*^{{[" + ks + "]}}}"
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
 
+        # holds the processor rank of nodal swarm particles before advection
+        name = f"ns_R0_{ks}"
+        symbol = r"R0^{*^{{[" + ks + "]}}}"
+        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, _proxy=False)
+
         nswarm.dm.finalizeFieldRegister()
         nswarm.dm.addNPoints(
             trackedVariable.coords.shape[0] + 1
@@ -1970,6 +1975,8 @@ class NodalPointSwarm(Swarm):
         self._nswarm = nswarm
         self._nX0 = nX0
 
+        self._nR0 = nR0
+
         return
 
     @timing.routine_timer_decorator
@@ -1985,6 +1992,9 @@ class NodalPointSwarm(Swarm):
 
         with self.access(self._X0):
             self._X0.data[...] = self._nX0.data[...]
+
+        with self.access(self._nR0):
+            self._nR0.data[...] = uw.mpi.rank
 
         super().advection(
             V_fn,

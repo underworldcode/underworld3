@@ -18,6 +18,13 @@ cdef extern from "petsc.h" nogil:
     ctypedef struct DMInterpolationInfo:
         pass
 
+# typedef for setting/getting migrate type 
+ctypedef enum DMSwarmMigrateType:
+    DMSWARM_MIGRATE_BASIC,
+    DMSWARM_MIGRATE_DMCELLNSCATTER,
+    DMSWARM_MIGRATE_DMCELLEXACT,
+    DMSWARM_MIGRATE_USER
+
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
@@ -30,6 +37,10 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationSetUp(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool)
     PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
     MPI_Comm MPI_COMM_SELF
+
+cdef extern from "petscdmswarm.h" nogil:
+    PetscErrorCode DMSwarmSetMigrateType(PetscDM dm, DMSwarmMigrateType mtype)
+    PetscErrorCode DMSwarmGetMigrateType(PetscDM dm, DMSwarmMigrateType *mtype)
 
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """
@@ -745,4 +756,23 @@ def evalf(  expr,
 # we can pass in the `class_name` parameter.
 
 evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
+
+def dm_swarm_get_migrate_type(swarm):
+
+    cdef DM dm = swarm.dm
+    cdef PetscErrorCode ierr
+    cdef DMSwarmMigrateType mtype
+
+    ierr = DMSwarmGetMigrateType(dm.dm, &mtype); CHKERRQ(ierr)
+
+    return mtype
+
+def dm_swarm_set_migrate_type(swarm, mtype):
+    
+    cdef DM dm = swarm.dm
+    cdef PetscErrorCode ierr
+
+    ierr = DMSwarmSetMigrateType(dm.dm, mtype); CHKERRQ(ierr)
+
+    return
 

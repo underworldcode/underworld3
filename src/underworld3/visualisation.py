@@ -390,7 +390,7 @@ def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750
 
 def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='', save_png=False, 
                 dir_fname='', title='', fmt='%10.7f', clip_angle=0.0, show_arrows=False, cpos='xy', 
-                show_edges=False, window_size=(750, 750)):
+                show_edges=False, window_size=(750, 750), scalar=None, scalar_name=''):
     
     '''
     Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.
@@ -458,6 +458,14 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     window_size : tuple of int, optional
         The size of the rendering window in pixels as (width, height). Default is (750, 750).
 
+    scalar : mesh variable name or sympy expression, optional
+        An optional scalar field associated with the mesh points. If provided, this scalar field
+        will be used for coloring the mesh instead of the vector magnitude. Default is `None`.
+    
+    scalar_name : str, optional
+        The name of the scalar field to be used when adding it to the mesh. This name will
+        be used as the label for the scalar bar if `scalar` is provided. Default is an empty string.
+
     Returns:
     --------
     None
@@ -471,11 +479,15 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
 
     pvmesh = mesh_to_pv_mesh(mesh)
     pvmesh.point_data[vector_name] = vector_fn_to_pv_points(pvmesh, vector.sym)
-    vector_mag_name = vector_name + '_mag'
-    pvmesh.point_data[vector_mag_name] = scalar_fn_to_pv_points(pvmesh, 
-                                                                 sympy.sqrt(vector.sym.dot(vector.sym)))
+    if scalar is None:
+        scalar_name = vector_name + '_mag'
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, 
+                                                                sympy.sqrt(vector.sym.dot(vector.sym)))
+    else:
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, 
+                                                                sympy.sqrt(scalar.sym.dot(scalar.sym)))
     
-    print(pvmesh.point_data[vector_mag_name].min(), pvmesh.point_data[vector_mag_name].max())
+    print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
     
     velocity_points = meshVariable_to_pv_cloud(vector)
     velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
@@ -484,10 +496,10 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     if clip_angle != 0.0:
         clipped_meshes = clip_mesh(pvmesh, clip_angle)
         for clipped_mesh in clipped_meshes:
-            pl.add_mesh(clipped_mesh, cmap=cmap, edge_color="k", scalars=vector_mag_name, show_edges=show_edges, 
+            pl.add_mesh(clipped_mesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
                         use_transparency=False, show_scalar_bar=False, opacity=1.0, clim=clim)
     else:
-        pl.add_mesh(pvmesh, cmap=cmap, edge_color="k", scalars=vector_mag_name, show_edges=show_edges, 
+        pl.add_mesh(pvmesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
                     use_transparency=False, opacity=1.0, clim=clim, show_scalar_bar=False)
                
     # pl.add_scalar_bar(vector_name, vertical=False, title_font_size=25, label_font_size=20, fmt=fmt, 
