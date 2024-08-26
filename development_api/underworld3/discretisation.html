@@ -1895,7 +1895,7 @@
 </span><span id="L-1650"><a href="#L-1650"><span class="linenos">1650</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">symbol</span> <span class="o">=</span> <span class="n">symbol</span>
 </span><span id="L-1651"><a href="#L-1651"><span class="linenos">1651</span></a>
 </span><span id="L-1652"><a href="#L-1652"><span class="linenos">1652</span></a>        <span class="k">if</span> <span class="n">mesh</span><span class="o">.</span><span class="n">instance_number</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
-</span><span id="L-1653"><a href="#L-1653"><span class="linenos">1653</span></a>            <span class="n">invisible</span> <span class="o">=</span> <span class="s2">&quot;\,\!&quot;</span> <span class="o">*</span> <span class="n">mesh</span><span class="o">.</span><span class="n">instance_number</span>
+</span><span id="L-1653"><a href="#L-1653"><span class="linenos">1653</span></a>            <span class="n">invisible</span> <span class="o">=</span> <span class="sa">r</span><span class="s2">&quot;\,\!&quot;</span> <span class="o">*</span> <span class="n">mesh</span><span class="o">.</span><span class="n">instance_number</span>
 </span><span id="L-1654"><a href="#L-1654"><span class="linenos">1654</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">symbol</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="se">{{</span><span class="s2"> </span><span class="se">{{</span><span class="s2"> </span><span class="si">{</span><span class="n">invisible</span><span class="si">}</span><span class="s2"> </span><span class="se">}}</span><span class="s2"> </span><span class="si">{</span><span class="n">symbol</span><span class="si">}</span><span class="s2"> </span><span class="se">}}</span><span class="s2">&quot;</span>
 </span><span id="L-1655"><a href="#L-1655"><span class="linenos">1655</span></a>
 </span><span id="L-1656"><a href="#L-1656"><span class="linenos">1656</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">clean_name</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[^a-zA-Z0-9_]&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
@@ -6240,11 +6240,8 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p>
                                 <h5>Inherited Members</h5>
                                 <dl>
                                     <div><dt><a href="utilities/_api_tools.html#uw_object">underworld3.utilities._api_tools.uw_object</a></dt>
-                                <dd id="Mesh.total_instances" class="function"><a href="utilities/_api_tools.html#uw_object.total_instances">total_instances</a></dd>
-
-            </div>
-            <div><dt><a href="utilities/_api_tools.html#uw_object_counter">underworld3.utilities._api_tools.uw_object_counter</a></dt>
-                                <dd id="Mesh.instance_number" class="variable"><a href="utilities/_api_tools.html#uw_object_counter.instance_number">instance_number</a></dd>
+                                <dd id="Mesh.uw_object_counter" class="function"><a href="utilities/_api_tools.html#uw_object.uw_object_counter">uw_object_counter</a></dd>
+                <dd id="Mesh.instance_number" class="variable"><a href="utilities/_api_tools.html#uw_object.instance_number">instance_number</a></dd>
 
             </div>
                                 </dl>

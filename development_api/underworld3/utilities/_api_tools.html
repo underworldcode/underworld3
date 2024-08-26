@@ -88,31 +88,16 @@
 
             </li>
             <li>
-                    <a class="class" href="#counted_metaclass">counted_metaclass</a>
-                            <ul class="memberlist">
-                        <li>
-                                <a class="function" href="#counted_metaclass.__init__">counted_metaclass</a>
-                        </li>
-                </ul>
-
-            </li>
-            <li>
-                    <a class="class" href="#uw_object_counter">uw_object_counter</a>
-                            <ul class="memberlist">
-                        <li>
-                                <a class="variable" href="#uw_object_counter.instance_number">instance_number</a>
-                        </li>
-                </ul>
-
-            </li>
-            <li>
                     <a class="class" href="#uw_object">uw_object</a>
                             <ul class="memberlist">
                         <li>
-                                <a class="function" href="#uw_object.view">view</a>
+                                <a class="function" href="#uw_object.uw_object_counter">uw_object_counter</a>
                         </li>
                         <li>
-                                <a class="function" href="#uw_object.total_instances">total_instances</a>
+                                <a class="variable" href="#uw_object.instance_number">instance_number</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#uw_object.view">view</a>
                         </li>
                 </ul>
 
@@ -174,101 +159,102 @@
 </span><span id="L-34"><a href="#L-34"><span class="linenos"> 34</span></a>
 </span><span id="L-35"><a href="#L-35"><span class="linenos"> 35</span></a>        <span class="k">return</span> <span class="n">newfunc</span>
 </span><span id="L-36"><a href="#L-36"><span class="linenos"> 36</span></a>
-</span><span id="L-37"><a href="#L-37"><span class="linenos"> 37</span></a>
-</span><span id="L-38"><a href="#L-38"><span class="linenos"> 38</span></a><span class="k">class</span> <span class="nc">counted_metaclass</span><span class="p">(</span><span class="nb">type</span><span class="p">):</span>
-</span><span id="L-39"><a href="#L-39"><span class="linenos"> 39</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">):</span>
-</span><span id="L-40"><a href="#L-40"><span class="linenos"> 40</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">)</span>
-</span><span id="L-41"><a href="#L-41"><span class="linenos"> 41</span></a>        <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">=</span> <span class="mi">0</span>
-</span><span id="L-42"><a href="#L-42"><span class="linenos"> 42</span></a>
+</span><span id="L-37"><a href="#L-37"><span class="linenos"> 37</span></a><span class="k">class</span> <span class="nc">uw_object</span><span class="p">():</span>
+</span><span id="L-38"><a href="#L-38"><span class="linenos"> 38</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="L-39"><a href="#L-39"><span class="linenos"> 39</span></a><span class="sd">    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects</span>
+</span><span id="L-40"><a href="#L-40"><span class="linenos"> 40</span></a><span class="sd">    such as the view methods (classmethod for generic information and instance method that can be over-ridden)</span>
+</span><span id="L-41"><a href="#L-41"><span class="linenos"> 41</span></a><span class="sd">    to provide instance-specific information</span>
+</span><span id="L-42"><a href="#L-42"><span class="linenos"> 42</span></a><span class="sd">    &quot;&quot;&quot;</span>
 </span><span id="L-43"><a href="#L-43"><span class="linenos"> 43</span></a>
-</span><span id="L-44"><a href="#L-44"><span class="linenos"> 44</span></a><span class="k">class</span> <span class="nc">uw_object_counter</span><span class="p">(</span><span class="nb">object</span><span class="p">,</span> <span class="n">metaclass</span><span class="o">=</span><span class="n">counted_metaclass</span><span class="p">):</span>
-</span><span id="L-45"><a href="#L-45"><span class="linenos"> 45</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="L-46"><a href="#L-46"><span class="linenos"> 46</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="L-47"><a href="#L-47"><span class="linenos"> 47</span></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">mro</span><span class="p">()[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">+=</span> <span class="mi">1</span>
-</span><span id="L-48"><a href="#L-48"><span class="linenos"> 48</span></a>        <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
-</span><span id="L-49"><a href="#L-49"><span class="linenos"> 49</span></a>            <span class="k">pass</span>
-</span><span id="L-50"><a href="#L-50"><span class="linenos"> 50</span></a>            <span class="c1"># print(f&quot;{self.__class__.mro()[1]} is not a uw_object&quot;)</span>
+</span><span id="L-44"><a href="#L-44"><span class="linenos"> 44</span></a>    <span class="n">_obj_count</span> <span class="o">=</span> <span class="mi">0</span> <span class="c1"># a class variable to count the number of objects</span>
+</span><span id="L-45"><a href="#L-45"><span class="linenos"> 45</span></a>
+</span><span id="L-46"><a href="#L-46"><span class="linenos"> 46</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="L-47"><a href="#L-47"><span class="linenos"> 47</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span>
+</span><span id="L-48"><a href="#L-48"><span class="linenos"> 48</span></a>
+</span><span id="L-49"><a href="#L-49"><span class="linenos"> 49</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_uw_id</span> <span class="o">=</span> <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span>
+</span><span id="L-50"><a href="#L-50"><span class="linenos"> 50</span></a>        <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span> <span class="o">+=</span> <span class="mi">1</span>
 </span><span id="L-51"><a href="#L-51"><span class="linenos"> 51</span></a>
-</span><span id="L-52"><a href="#L-52"><span class="linenos"> 52</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
-</span><span id="L-53"><a href="#L-53"><span class="linenos"> 53</span></a>
-</span><span id="L-54"><a href="#L-54"><span class="linenos"> 54</span></a>        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">+=</span> <span class="mi">1</span>
-</span><span id="L-55"><a href="#L-55"><span class="linenos"> 55</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">instance_number</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_total_instances</span>
-</span><span id="L-56"><a href="#L-56"><span class="linenos"> 56</span></a>
-</span><span id="L-57"><a href="#L-57"><span class="linenos"> 57</span></a>
-</span><span id="L-58"><a href="#L-58"><span class="linenos"> 58</span></a><span class="k">class</span> <span class="nc">uw_object</span><span class="p">(</span><span class="n">uw_object_counter</span><span class="p">):</span>
-</span><span id="L-59"><a href="#L-59"><span class="linenos"> 59</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-</span><span id="L-60"><a href="#L-60"><span class="linenos"> 60</span></a><span class="sd">    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects</span>
-</span><span id="L-61"><a href="#L-61"><span class="linenos"> 61</span></a><span class="sd">    such as the view methods (classmethod for generic information and instance method that can be over-ridden)</span>
-</span><span id="L-62"><a href="#L-62"><span class="linenos"> 62</span></a><span class="sd">    to provide instance-specific information</span>
-</span><span id="L-63"><a href="#L-63"><span class="linenos"> 63</span></a><span class="sd">    &quot;&quot;&quot;</span>
-</span><span id="L-64"><a href="#L-64"><span class="linenos"> 64</span></a>
-</span><span id="L-65"><a href="#L-65"><span class="linenos"> 65</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="L-66"><a href="#L-66"><span class="linenos"> 66</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+</span><span id="L-52"><a href="#L-52"><span class="linenos"> 52</span></a>    <span class="c1"># to order of the following decorators matters python</span>
+</span><span id="L-53"><a href="#L-53"><span class="linenos"> 53</span></a>    <span class="c1"># see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850</span>
+</span><span id="L-54"><a href="#L-54"><span class="linenos"> 54</span></a>    <span class="nd">@classmethod</span>
+</span><span id="L-55"><a href="#L-55"><span class="linenos"> 55</span></a>    <span class="k">def</span> <span class="nf">uw_object_counter</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+</span><span id="L-56"><a href="#L-56"><span class="linenos"> 56</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Number of uw_object instances created &quot;&quot;&quot;</span>
+</span><span id="L-57"><a href="#L-57"><span class="linenos"> 57</span></a>        <span class="k">return</span> <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span>
+</span><span id="L-58"><a href="#L-58"><span class="linenos"> 58</span></a>
+</span><span id="L-59"><a href="#L-59"><span class="linenos"> 59</span></a>    <span class="nd">@property</span>
+</span><span id="L-60"><a href="#L-60"><span class="linenos"> 60</span></a>    <span class="k">def</span> <span class="nf">instance_number</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="L-61"><a href="#L-61"><span class="linenos"> 61</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Unique number of the uw_object instance &quot;&quot;&quot;</span>
+</span><span id="L-62"><a href="#L-62"><span class="linenos"> 62</span></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_uw_id</span>
+</span><span id="L-63"><a href="#L-63"><span class="linenos"> 63</span></a>
+</span><span id="L-64"><a href="#L-64"><span class="linenos"> 64</span></a>    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="L-65"><a href="#L-65"><span class="linenos"> 65</span></a>        <span class="n">s</span> <span class="o">=</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__str__</span><span class="p">()</span>
+</span><span id="L-66"><a href="#L-66"><span class="linenos"> 66</span></a>        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> instance </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">instance_number</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="si">}</span><span class="s2">&quot;</span>
 </span><span id="L-67"><a href="#L-67"><span class="linenos"> 67</span></a>
-</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a>    <span class="nd">@class_or_instance_method</span>
-</span><span id="L-69"><a href="#L-69"><span class="linenos"> 69</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="L-70"><a href="#L-70"><span class="linenos"> 70</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="L-71"><a href="#L-71"><span class="linenos"> 71</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
-</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
-</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a>
-</span><span id="L-74"><a href="#L-74"><span class="linenos"> 74</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
-</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a>
-</span><span id="L-76"><a href="#L-76"><span class="linenos"> 76</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="L-77"><a href="#L-77"><span class="linenos"> 77</span></a>
-</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
-</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
-</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
-</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a>
-</span><span id="L-82"><a href="#L-82"><span class="linenos"> 82</span></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="L-83"><a href="#L-83"><span class="linenos"> 83</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="L-84"><a href="#L-84"><span class="linenos"> 84</span></a>                <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="L-85"><a href="#L-85"><span class="linenos"> 85</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-</span><span id="L-86"><a href="#L-86"><span class="linenos"> 86</span></a>                <span class="p">)</span>
-</span><span id="L-87"><a href="#L-87"><span class="linenos"> 87</span></a>            <span class="p">)</span>
-</span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
-</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a>
-</span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a>        <span class="k">return</span>
-</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a>
-</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>    <span class="c1"># View is similar but we can give it arguments to force the</span>
-</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="c1"># class documentation for an instance.</span>
+</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a>    <span class="nd">@staticmethod</span>
+</span><span id="L-69"><a href="#L-69"><span class="linenos"> 69</span></a>    <span class="k">def</span> <span class="nf">_reset</span><span class="p">():</span>
+</span><span id="L-70"><a href="#L-70"><span class="linenos"> 70</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Reset the object counter &quot;&quot;&quot;</span>
+</span><span id="L-71"><a href="#L-71"><span class="linenos"> 71</span></a>        <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span> <span class="o">=</span> <span class="mi">0</span>
+</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a>
+</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a>    <span class="nd">@class_or_instance_method</span>
+</span><span id="L-74"><a href="#L-74"><span class="linenos"> 74</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="L-76"><a href="#L-76"><span class="linenos"> 76</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
+</span><span id="L-77"><a href="#L-77"><span class="linenos"> 77</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
+</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>
+</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
+</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a>
+</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="L-82"><a href="#L-82"><span class="linenos"> 82</span></a>
+</span><span id="L-83"><a href="#L-83"><span class="linenos"> 83</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
+</span><span id="L-84"><a href="#L-84"><span class="linenos"> 84</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
+</span><span id="L-85"><a href="#L-85"><span class="linenos"> 85</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
+</span><span id="L-86"><a href="#L-86"><span class="linenos"> 86</span></a>
+</span><span id="L-87"><a href="#L-87"><span class="linenos"> 87</span></a>        <span class="k">else</span><span class="p">:</span>
+</span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a>                <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a>                <span class="p">)</span>
+</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>            <span class="p">)</span>
+</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
 </span><span id="L-94"><a href="#L-94"><span class="linenos"> 94</span></a>
-</span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a>    <span class="nd">@class_or_instance_method</span>
-</span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a>    <span class="k">def</span> <span class="nf">view</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">,</span> <span class="n">class_documentation</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-</span><span id="L-97"><a href="#L-97"><span class="linenos"> 97</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
-</span><span id="L-99"><a href="#L-99"><span class="linenos"> 99</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
-</span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a>
-</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
-</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a>
-</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">)</span> <span class="ow">or</span> <span class="n">class_documentation</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
-</span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a>
-</span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
-</span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
-</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
-</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>
-</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>            <span class="k">if</span> <span class="n">class_documentation</span><span class="p">:</span>
-</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>                <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;---&quot;</span><span class="p">))</span>
-</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>
-</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>                <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>                <span class="p">),</span>
-</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>            <span class="p">)</span>
-</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>
-</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
-</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>
-</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>    <span class="nd">@classmethod</span>
-</span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>    <span class="k">def</span> <span class="nf">total_instances</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span>
-</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a>
-</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a>    <span class="c1"># placeholder</span>
-</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>
-</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;## Details&quot;</span><span class="p">))</span>
-</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>
-</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>        <span class="k">return</span>
+</span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a>        <span class="k">return</span>
+</span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a>
+</span><span id="L-97"><a href="#L-97"><span class="linenos"> 97</span></a>    <span class="c1"># View is similar but we can give it arguments to force the</span>
+</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a>    <span class="c1"># class documentation for an instance.</span>
+</span><span id="L-99"><a href="#L-99"><span class="linenos"> 99</span></a>
+</span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a>    <span class="nd">@class_or_instance_method</span>
+</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a>    <span class="k">def</span> <span class="nf">view</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">,</span> <span class="n">class_documentation</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
+</span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
+</span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>
+</span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
+</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>
+</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">)</span> <span class="ow">or</span> <span class="n">class_documentation</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
+</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>
+</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
+</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
+</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
+</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>
+</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>            <span class="k">if</span> <span class="n">class_documentation</span><span class="p">:</span>
+</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>                <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;---&quot;</span><span class="p">))</span>
+</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>
+</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>                <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>                <span class="p">),</span>
+</span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>            <span class="p">)</span>
+</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>
+</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
+</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a>
+</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>    <span class="c1"># placeholder</span>
+</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>
+</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;## Details&quot;</span><span class="p">))</span>
+</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>
+</span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -374,183 +360,113 @@ at the conclusion of their modifications.</p>
 
                             </div>
                 </section>
-                <section id="counted_metaclass">
-                            <input id="counted_metaclass-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
-<div class="attr class">
-            
-    <span class="def">class</span>
-    <span class="name">counted_metaclass</span><wbr>(<span class="base">builtins.type</span>):
-
-                <label class="view-source-button" for="counted_metaclass-view-source"><span>View Source</span></label>
-
-    </div>
-    <a class="headerlink" href="#counted_metaclass"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="counted_metaclass-39"><a href="#counted_metaclass-39"><span class="linenos">39</span></a><span class="k">class</span> <span class="nc">counted_metaclass</span><span class="p">(</span><span class="nb">type</span><span class="p">):</span>
-</span><span id="counted_metaclass-40"><a href="#counted_metaclass-40"><span class="linenos">40</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">):</span>
-</span><span id="counted_metaclass-41"><a href="#counted_metaclass-41"><span class="linenos">41</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">)</span>
-</span><span id="counted_metaclass-42"><a href="#counted_metaclass-42"><span class="linenos">42</span></a>        <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">=</span> <span class="mi">0</span>
-</span></pre></div>
-
-
-            <div class="docstring"><p>type(object) -> the object's type
-type(name, bases, dict, **kwds) -> a new type</p>
-</div>
-
-
-                            <div id="counted_metaclass.__init__" class="classattr">
-                                        <input id="counted_metaclass.__init__-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
-<div class="attr function">
-            
-        <span class="name">counted_metaclass</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">name</span>, </span><span class="param"><span class="n">bases</span>, </span><span class="param"><span class="n">attrs</span></span>)</span>
-
-                <label class="view-source-button" for="counted_metaclass.__init__-view-source"><span>View Source</span></label>
-
-    </div>
-    <a class="headerlink" href="#counted_metaclass.__init__"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="counted_metaclass.__init__-40"><a href="#counted_metaclass.__init__-40"><span class="linenos">40</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">):</span>
-</span><span id="counted_metaclass.__init__-41"><a href="#counted_metaclass.__init__-41"><span class="linenos">41</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">attrs</span><span class="p">)</span>
-</span><span id="counted_metaclass.__init__-42"><a href="#counted_metaclass.__init__-42"><span class="linenos">42</span></a>        <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">=</span> <span class="mi">0</span>
-</span></pre></div>
-
-
-    
-
-                            </div>
-                            <div class="inherited">
-                                <h5>Inherited Members</h5>
-                                <dl>
-                                    <div><dt>builtins.type</dt>
-                                <dd id="counted_metaclass.mro" class="function">mro</dd>
-
-            </div>
-                                </dl>
-                            </div>
-                </section>
-                <section id="uw_object_counter">
-                            <input id="uw_object_counter-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
-<div class="attr class">
-            
-    <span class="def">class</span>
-    <span class="name">uw_object_counter</span>:
-
-                <label class="view-source-button" for="uw_object_counter-view-source"><span>View Source</span></label>
-
-    </div>
-    <a class="headerlink" href="#uw_object_counter"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object_counter-45"><a href="#uw_object_counter-45"><span class="linenos">45</span></a><span class="k">class</span> <span class="nc">uw_object_counter</span><span class="p">(</span><span class="nb">object</span><span class="p">,</span> <span class="n">metaclass</span><span class="o">=</span><span class="n">counted_metaclass</span><span class="p">):</span>
-</span><span id="uw_object_counter-46"><a href="#uw_object_counter-46"><span class="linenos">46</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="uw_object_counter-47"><a href="#uw_object_counter-47"><span class="linenos">47</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="uw_object_counter-48"><a href="#uw_object_counter-48"><span class="linenos">48</span></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">mro</span><span class="p">()[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">+=</span> <span class="mi">1</span>
-</span><span id="uw_object_counter-49"><a href="#uw_object_counter-49"><span class="linenos">49</span></a>        <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
-</span><span id="uw_object_counter-50"><a href="#uw_object_counter-50"><span class="linenos">50</span></a>            <span class="k">pass</span>
-</span><span id="uw_object_counter-51"><a href="#uw_object_counter-51"><span class="linenos">51</span></a>            <span class="c1"># print(f&quot;{self.__class__.mro()[1]} is not a uw_object&quot;)</span>
-</span><span id="uw_object_counter-52"><a href="#uw_object_counter-52"><span class="linenos">52</span></a>
-</span><span id="uw_object_counter-53"><a href="#uw_object_counter-53"><span class="linenos">53</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
-</span><span id="uw_object_counter-54"><a href="#uw_object_counter-54"><span class="linenos">54</span></a>
-</span><span id="uw_object_counter-55"><a href="#uw_object_counter-55"><span class="linenos">55</span></a>        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_total_instances</span> <span class="o">+=</span> <span class="mi">1</span>
-</span><span id="uw_object_counter-56"><a href="#uw_object_counter-56"><span class="linenos">56</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">instance_number</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_total_instances</span>
-</span></pre></div>
-
-
-    
-
-                            <div id="uw_object_counter.instance_number" class="classattr">
-                                <div class="attr variable">
-            <span class="name">instance_number</span>
-
-        
-    </div>
-    <a class="headerlink" href="#uw_object_counter.instance_number"></a>
-    
-    
-
-                            </div>
-                </section>
                 <section id="uw_object">
                             <input id="uw_object-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
 <div class="attr class">
             
     <span class="def">class</span>
-    <span class="name">uw_object</span><wbr>(<span class="base"><a href="#uw_object_counter">uw_object_counter</a></span>):
+    <span class="name">uw_object</span>:
 
                 <label class="view-source-button" for="uw_object-view-source"><span>View Source</span></label>
 
     </div>
     <a class="headerlink" href="#uw_object"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object-59"><a href="#uw_object-59"><span class="linenos"> 59</span></a><span class="k">class</span> <span class="nc">uw_object</span><span class="p">(</span><span class="n">uw_object_counter</span><span class="p">):</span>
-</span><span id="uw_object-60"><a href="#uw_object-60"><span class="linenos"> 60</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-</span><span id="uw_object-61"><a href="#uw_object-61"><span class="linenos"> 61</span></a><span class="sd">    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects</span>
-</span><span id="uw_object-62"><a href="#uw_object-62"><span class="linenos"> 62</span></a><span class="sd">    such as the view methods (classmethod for generic information and instance method that can be over-ridden)</span>
-</span><span id="uw_object-63"><a href="#uw_object-63"><span class="linenos"> 63</span></a><span class="sd">    to provide instance-specific information</span>
-</span><span id="uw_object-64"><a href="#uw_object-64"><span class="linenos"> 64</span></a><span class="sd">    &quot;&quot;&quot;</span>
-</span><span id="uw_object-65"><a href="#uw_object-65"><span class="linenos"> 65</span></a>
-</span><span id="uw_object-66"><a href="#uw_object-66"><span class="linenos"> 66</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="uw_object-67"><a href="#uw_object-67"><span class="linenos"> 67</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object-38"><a href="#uw_object-38"><span class="linenos"> 38</span></a><span class="k">class</span> <span class="nc">uw_object</span><span class="p">():</span>
+</span><span id="uw_object-39"><a href="#uw_object-39"><span class="linenos"> 39</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="uw_object-40"><a href="#uw_object-40"><span class="linenos"> 40</span></a><span class="sd">    The UW (mixin) class adds common functionality that we wish to provide on all uw_objects</span>
+</span><span id="uw_object-41"><a href="#uw_object-41"><span class="linenos"> 41</span></a><span class="sd">    such as the view methods (classmethod for generic information and instance method that can be over-ridden)</span>
+</span><span id="uw_object-42"><a href="#uw_object-42"><span class="linenos"> 42</span></a><span class="sd">    to provide instance-specific information</span>
+</span><span id="uw_object-43"><a href="#uw_object-43"><span class="linenos"> 43</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="uw_object-44"><a href="#uw_object-44"><span class="linenos"> 44</span></a>
+</span><span id="uw_object-45"><a href="#uw_object-45"><span class="linenos"> 45</span></a>    <span class="n">_obj_count</span> <span class="o">=</span> <span class="mi">0</span> <span class="c1"># a class variable to count the number of objects</span>
+</span><span id="uw_object-46"><a href="#uw_object-46"><span class="linenos"> 46</span></a>
+</span><span id="uw_object-47"><a href="#uw_object-47"><span class="linenos"> 47</span></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="uw_object-48"><a href="#uw_object-48"><span class="linenos"> 48</span></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span>
+</span><span id="uw_object-49"><a href="#uw_object-49"><span class="linenos"> 49</span></a>
+</span><span id="uw_object-50"><a href="#uw_object-50"><span class="linenos"> 50</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_uw_id</span> <span class="o">=</span> <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span>
+</span><span id="uw_object-51"><a href="#uw_object-51"><span class="linenos"> 51</span></a>        <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span> <span class="o">+=</span> <span class="mi">1</span>
+</span><span id="uw_object-52"><a href="#uw_object-52"><span class="linenos"> 52</span></a>
+</span><span id="uw_object-53"><a href="#uw_object-53"><span class="linenos"> 53</span></a>    <span class="c1"># to order of the following decorators matters python</span>
+</span><span id="uw_object-54"><a href="#uw_object-54"><span class="linenos"> 54</span></a>    <span class="c1"># see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850</span>
+</span><span id="uw_object-55"><a href="#uw_object-55"><span class="linenos"> 55</span></a>    <span class="nd">@classmethod</span>
+</span><span id="uw_object-56"><a href="#uw_object-56"><span class="linenos"> 56</span></a>    <span class="k">def</span> <span class="nf">uw_object_counter</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+</span><span id="uw_object-57"><a href="#uw_object-57"><span class="linenos"> 57</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Number of uw_object instances created &quot;&quot;&quot;</span>
+</span><span id="uw_object-58"><a href="#uw_object-58"><span class="linenos"> 58</span></a>        <span class="k">return</span> <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span>
+</span><span id="uw_object-59"><a href="#uw_object-59"><span class="linenos"> 59</span></a>
+</span><span id="uw_object-60"><a href="#uw_object-60"><span class="linenos"> 60</span></a>    <span class="nd">@property</span>
+</span><span id="uw_object-61"><a href="#uw_object-61"><span class="linenos"> 61</span></a>    <span class="k">def</span> <span class="nf">instance_number</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="uw_object-62"><a href="#uw_object-62"><span class="linenos"> 62</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Unique number of the uw_object instance &quot;&quot;&quot;</span>
+</span><span id="uw_object-63"><a href="#uw_object-63"><span class="linenos"> 63</span></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_uw_id</span>
+</span><span id="uw_object-64"><a href="#uw_object-64"><span class="linenos"> 64</span></a>
+</span><span id="uw_object-65"><a href="#uw_object-65"><span class="linenos"> 65</span></a>    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="uw_object-66"><a href="#uw_object-66"><span class="linenos"> 66</span></a>        <span class="n">s</span> <span class="o">=</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__str__</span><span class="p">()</span>
+</span><span id="uw_object-67"><a href="#uw_object-67"><span class="linenos"> 67</span></a>        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> instance </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">instance_number</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="si">}</span><span class="s2">&quot;</span>
 </span><span id="uw_object-68"><a href="#uw_object-68"><span class="linenos"> 68</span></a>
-</span><span id="uw_object-69"><a href="#uw_object-69"><span class="linenos"> 69</span></a>    <span class="nd">@class_or_instance_method</span>
-</span><span id="uw_object-70"><a href="#uw_object-70"><span class="linenos"> 70</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="uw_object-71"><a href="#uw_object-71"><span class="linenos"> 71</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="uw_object-72"><a href="#uw_object-72"><span class="linenos"> 72</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
-</span><span id="uw_object-73"><a href="#uw_object-73"><span class="linenos"> 73</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
-</span><span id="uw_object-74"><a href="#uw_object-74"><span class="linenos"> 74</span></a>
-</span><span id="uw_object-75"><a href="#uw_object-75"><span class="linenos"> 75</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
-</span><span id="uw_object-76"><a href="#uw_object-76"><span class="linenos"> 76</span></a>
-</span><span id="uw_object-77"><a href="#uw_object-77"><span class="linenos"> 77</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="uw_object-78"><a href="#uw_object-78"><span class="linenos"> 78</span></a>
-</span><span id="uw_object-79"><a href="#uw_object-79"><span class="linenos"> 79</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
-</span><span id="uw_object-80"><a href="#uw_object-80"><span class="linenos"> 80</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
-</span><span id="uw_object-81"><a href="#uw_object-81"><span class="linenos"> 81</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
-</span><span id="uw_object-82"><a href="#uw_object-82"><span class="linenos"> 82</span></a>
-</span><span id="uw_object-83"><a href="#uw_object-83"><span class="linenos"> 83</span></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="uw_object-84"><a href="#uw_object-84"><span class="linenos"> 84</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="uw_object-85"><a href="#uw_object-85"><span class="linenos"> 85</span></a>                <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="uw_object-86"><a href="#uw_object-86"><span class="linenos"> 86</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-</span><span id="uw_object-87"><a href="#uw_object-87"><span class="linenos"> 87</span></a>                <span class="p">)</span>
-</span><span id="uw_object-88"><a href="#uw_object-88"><span class="linenos"> 88</span></a>            <span class="p">)</span>
-</span><span id="uw_object-89"><a href="#uw_object-89"><span class="linenos"> 89</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
-</span><span id="uw_object-90"><a href="#uw_object-90"><span class="linenos"> 90</span></a>
-</span><span id="uw_object-91"><a href="#uw_object-91"><span class="linenos"> 91</span></a>        <span class="k">return</span>
-</span><span id="uw_object-92"><a href="#uw_object-92"><span class="linenos"> 92</span></a>
-</span><span id="uw_object-93"><a href="#uw_object-93"><span class="linenos"> 93</span></a>    <span class="c1"># View is similar but we can give it arguments to force the</span>
-</span><span id="uw_object-94"><a href="#uw_object-94"><span class="linenos"> 94</span></a>    <span class="c1"># class documentation for an instance.</span>
+</span><span id="uw_object-69"><a href="#uw_object-69"><span class="linenos"> 69</span></a>    <span class="nd">@staticmethod</span>
+</span><span id="uw_object-70"><a href="#uw_object-70"><span class="linenos"> 70</span></a>    <span class="k">def</span> <span class="nf">_reset</span><span class="p">():</span>
+</span><span id="uw_object-71"><a href="#uw_object-71"><span class="linenos"> 71</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Reset the object counter &quot;&quot;&quot;</span>
+</span><span id="uw_object-72"><a href="#uw_object-72"><span class="linenos"> 72</span></a>        <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span> <span class="o">=</span> <span class="mi">0</span>
+</span><span id="uw_object-73"><a href="#uw_object-73"><span class="linenos"> 73</span></a>
+</span><span id="uw_object-74"><a href="#uw_object-74"><span class="linenos"> 74</span></a>    <span class="nd">@class_or_instance_method</span>
+</span><span id="uw_object-75"><a href="#uw_object-75"><span class="linenos"> 75</span></a>    <span class="k">def</span> <span class="nf">_ipython_display_</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="uw_object-76"><a href="#uw_object-76"><span class="linenos"> 76</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="uw_object-77"><a href="#uw_object-77"><span class="linenos"> 77</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
+</span><span id="uw_object-78"><a href="#uw_object-78"><span class="linenos"> 78</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
+</span><span id="uw_object-79"><a href="#uw_object-79"><span class="linenos"> 79</span></a>
+</span><span id="uw_object-80"><a href="#uw_object-80"><span class="linenos"> 80</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
+</span><span id="uw_object-81"><a href="#uw_object-81"><span class="linenos"> 81</span></a>
+</span><span id="uw_object-82"><a href="#uw_object-82"><span class="linenos"> 82</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="uw_object-83"><a href="#uw_object-83"><span class="linenos"> 83</span></a>
+</span><span id="uw_object-84"><a href="#uw_object-84"><span class="linenos"> 84</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
+</span><span id="uw_object-85"><a href="#uw_object-85"><span class="linenos"> 85</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
+</span><span id="uw_object-86"><a href="#uw_object-86"><span class="linenos"> 86</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
+</span><span id="uw_object-87"><a href="#uw_object-87"><span class="linenos"> 87</span></a>
+</span><span id="uw_object-88"><a href="#uw_object-88"><span class="linenos"> 88</span></a>        <span class="k">else</span><span class="p">:</span>
+</span><span id="uw_object-89"><a href="#uw_object-89"><span class="linenos"> 89</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="uw_object-90"><a href="#uw_object-90"><span class="linenos"> 90</span></a>                <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="uw_object-91"><a href="#uw_object-91"><span class="linenos"> 91</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="uw_object-92"><a href="#uw_object-92"><span class="linenos"> 92</span></a>                <span class="p">)</span>
+</span><span id="uw_object-93"><a href="#uw_object-93"><span class="linenos"> 93</span></a>            <span class="p">)</span>
+</span><span id="uw_object-94"><a href="#uw_object-94"><span class="linenos"> 94</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
 </span><span id="uw_object-95"><a href="#uw_object-95"><span class="linenos"> 95</span></a>
-</span><span id="uw_object-96"><a href="#uw_object-96"><span class="linenos"> 96</span></a>    <span class="nd">@class_or_instance_method</span>
-</span><span id="uw_object-97"><a href="#uw_object-97"><span class="linenos"> 97</span></a>    <span class="k">def</span> <span class="nf">view</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">,</span> <span class="n">class_documentation</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-</span><span id="uw_object-98"><a href="#uw_object-98"><span class="linenos"> 98</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="uw_object-99"><a href="#uw_object-99"><span class="linenos"> 99</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
-</span><span id="uw_object-100"><a href="#uw_object-100"><span class="linenos">100</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
-</span><span id="uw_object-101"><a href="#uw_object-101"><span class="linenos">101</span></a>
-</span><span id="uw_object-102"><a href="#uw_object-102"><span class="linenos">102</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
-</span><span id="uw_object-103"><a href="#uw_object-103"><span class="linenos">103</span></a>
-</span><span id="uw_object-104"><a href="#uw_object-104"><span class="linenos">104</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">)</span> <span class="ow">or</span> <span class="n">class_documentation</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
-</span><span id="uw_object-105"><a href="#uw_object-105"><span class="linenos">105</span></a>
-</span><span id="uw_object-106"><a href="#uw_object-106"><span class="linenos">106</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
-</span><span id="uw_object-107"><a href="#uw_object-107"><span class="linenos">107</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
-</span><span id="uw_object-108"><a href="#uw_object-108"><span class="linenos">108</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
-</span><span id="uw_object-109"><a href="#uw_object-109"><span class="linenos">109</span></a>
-</span><span id="uw_object-110"><a href="#uw_object-110"><span class="linenos">110</span></a>            <span class="k">if</span> <span class="n">class_documentation</span><span class="p">:</span>
-</span><span id="uw_object-111"><a href="#uw_object-111"><span class="linenos">111</span></a>                <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;---&quot;</span><span class="p">))</span>
-</span><span id="uw_object-112"><a href="#uw_object-112"><span class="linenos">112</span></a>
-</span><span id="uw_object-113"><a href="#uw_object-113"><span class="linenos">113</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
-</span><span id="uw_object-114"><a href="#uw_object-114"><span class="linenos">114</span></a>            <span class="n">display</span><span class="p">(</span>
-</span><span id="uw_object-115"><a href="#uw_object-115"><span class="linenos">115</span></a>                <span class="n">Markdown</span><span class="p">(</span>
-</span><span id="uw_object-116"><a href="#uw_object-116"><span class="linenos">116</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-</span><span id="uw_object-117"><a href="#uw_object-117"><span class="linenos">117</span></a>                <span class="p">),</span>
-</span><span id="uw_object-118"><a href="#uw_object-118"><span class="linenos">118</span></a>            <span class="p">)</span>
-</span><span id="uw_object-119"><a href="#uw_object-119"><span class="linenos">119</span></a>
-</span><span id="uw_object-120"><a href="#uw_object-120"><span class="linenos">120</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
-</span><span id="uw_object-121"><a href="#uw_object-121"><span class="linenos">121</span></a>
-</span><span id="uw_object-122"><a href="#uw_object-122"><span class="linenos">122</span></a>    <span class="nd">@classmethod</span>
-</span><span id="uw_object-123"><a href="#uw_object-123"><span class="linenos">123</span></a>    <span class="k">def</span> <span class="nf">total_instances</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-</span><span id="uw_object-124"><a href="#uw_object-124"><span class="linenos">124</span></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span>
-</span><span id="uw_object-125"><a href="#uw_object-125"><span class="linenos">125</span></a>
-</span><span id="uw_object-126"><a href="#uw_object-126"><span class="linenos">126</span></a>    <span class="c1"># placeholder</span>
-</span><span id="uw_object-127"><a href="#uw_object-127"><span class="linenos">127</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="uw_object-128"><a href="#uw_object-128"><span class="linenos">128</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
-</span><span id="uw_object-129"><a href="#uw_object-129"><span class="linenos">129</span></a>
-</span><span id="uw_object-130"><a href="#uw_object-130"><span class="linenos">130</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;## Details&quot;</span><span class="p">))</span>
-</span><span id="uw_object-131"><a href="#uw_object-131"><span class="linenos">131</span></a>
-</span><span id="uw_object-132"><a href="#uw_object-132"><span class="linenos">132</span></a>        <span class="k">return</span>
+</span><span id="uw_object-96"><a href="#uw_object-96"><span class="linenos"> 96</span></a>        <span class="k">return</span>
+</span><span id="uw_object-97"><a href="#uw_object-97"><span class="linenos"> 97</span></a>
+</span><span id="uw_object-98"><a href="#uw_object-98"><span class="linenos"> 98</span></a>    <span class="c1"># View is similar but we can give it arguments to force the</span>
+</span><span id="uw_object-99"><a href="#uw_object-99"><span class="linenos"> 99</span></a>    <span class="c1"># class documentation for an instance.</span>
+</span><span id="uw_object-100"><a href="#uw_object-100"><span class="linenos">100</span></a>
+</span><span id="uw_object-101"><a href="#uw_object-101"><span class="linenos">101</span></a>    <span class="nd">@class_or_instance_method</span>
+</span><span id="uw_object-102"><a href="#uw_object-102"><span class="linenos">102</span></a>    <span class="k">def</span> <span class="nf">view</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">,</span> <span class="n">class_documentation</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+</span><span id="uw_object-103"><a href="#uw_object-103"><span class="linenos">103</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="uw_object-104"><a href="#uw_object-104"><span class="linenos">104</span></a>        <span class="kn">from</span> <span class="nn">textwrap</span> <span class="kn">import</span> <span class="n">dedent</span>
+</span><span id="uw_object-105"><a href="#uw_object-105"><span class="linenos">105</span></a>        <span class="kn">import</span> <span class="nn">inspect</span>
+</span><span id="uw_object-106"><a href="#uw_object-106"><span class="linenos">106</span></a>
+</span><span id="uw_object-107"><a href="#uw_object-107"><span class="linenos">107</span></a>        <span class="c1">## Docstring (static / class documentation)</span>
+</span><span id="uw_object-108"><a href="#uw_object-108"><span class="linenos">108</span></a>
+</span><span id="uw_object-109"><a href="#uw_object-109"><span class="linenos">109</span></a>        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">)</span> <span class="ow">or</span> <span class="n">class_documentation</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
+</span><span id="uw_object-110"><a href="#uw_object-110"><span class="linenos">110</span></a>
+</span><span id="uw_object-111"><a href="#uw_object-111"><span class="linenos">111</span></a>            <span class="n">docstring</span> <span class="o">=</span> <span class="n">dedent</span><span class="p">(</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__doc__</span><span class="p">)</span>
+</span><span id="uw_object-112"><a href="#uw_object-112"><span class="linenos">112</span></a>            <span class="c1"># docstring = docstring.replace(&quot;$&quot;, &quot;$&quot;).replace(&quot;$&quot;, &quot;$&quot;)</span>
+</span><span id="uw_object-113"><a href="#uw_object-113"><span class="linenos">113</span></a>            <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="n">docstring</span><span class="p">))</span>
+</span><span id="uw_object-114"><a href="#uw_object-114"><span class="linenos">114</span></a>
+</span><span id="uw_object-115"><a href="#uw_object-115"><span class="linenos">115</span></a>            <span class="k">if</span> <span class="n">class_documentation</span><span class="p">:</span>
+</span><span id="uw_object-116"><a href="#uw_object-116"><span class="linenos">116</span></a>                <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;---&quot;</span><span class="p">))</span>
+</span><span id="uw_object-117"><a href="#uw_object-117"><span class="linenos">117</span></a>
+</span><span id="uw_object-118"><a href="#uw_object-118"><span class="linenos">118</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="n">self_or_cls</span><span class="p">):</span>
+</span><span id="uw_object-119"><a href="#uw_object-119"><span class="linenos">119</span></a>            <span class="n">display</span><span class="p">(</span>
+</span><span id="uw_object-120"><a href="#uw_object-120"><span class="linenos">120</span></a>                <span class="n">Markdown</span><span class="p">(</span>
+</span><span id="uw_object-121"><a href="#uw_object-121"><span class="linenos">121</span></a>                    <span class="sa">f</span><span class="s2">&quot;**Class**: </span><span class="si">{</span><span class="n">self_or_cls</span><span class="o">.</span><span class="vm">__class__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="uw_object-122"><a href="#uw_object-122"><span class="linenos">122</span></a>                <span class="p">),</span>
+</span><span id="uw_object-123"><a href="#uw_object-123"><span class="linenos">123</span></a>            <span class="p">)</span>
+</span><span id="uw_object-124"><a href="#uw_object-124"><span class="linenos">124</span></a>
+</span><span id="uw_object-125"><a href="#uw_object-125"><span class="linenos">125</span></a>            <span class="n">self_or_cls</span><span class="o">.</span><span class="n">_object_viewer</span><span class="p">()</span>
+</span><span id="uw_object-126"><a href="#uw_object-126"><span class="linenos">126</span></a>
+</span><span id="uw_object-127"><a href="#uw_object-127"><span class="linenos">127</span></a>    <span class="c1"># placeholder</span>
+</span><span id="uw_object-128"><a href="#uw_object-128"><span class="linenos">128</span></a>    <span class="k">def</span> <span class="nf">_object_viewer</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="uw_object-129"><a href="#uw_object-129"><span class="linenos">129</span></a>        <span class="kn">from</span> <span class="nn">IPython.display</span> <span class="kn">import</span> <span class="n">Latex</span><span class="p">,</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
+</span><span id="uw_object-130"><a href="#uw_object-130"><span class="linenos">130</span></a>
+</span><span id="uw_object-131"><a href="#uw_object-131"><span class="linenos">131</span></a>        <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s2">&quot;## Details&quot;</span><span class="p">))</span>
+</span><span id="uw_object-132"><a href="#uw_object-132"><span class="linenos">132</span></a>
+</span><span id="uw_object-133"><a href="#uw_object-133"><span class="linenos">133</span></a>        <span class="k">return</span>
 </span></pre></div>
 
 
@@ -560,6 +476,51 @@ to provide instance-specific information</p>
 </div>
 
 
+                            <div id="uw_object.uw_object_counter" class="classattr">
+                                        <input id="uw_object.uw_object_counter-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+                    <div class="decorator">@classmethod</div>
+
+        <span class="def">def</span>
+        <span class="name">uw_object_counter</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">cls</span></span><span class="return-annotation">):</span></span>
+
+                <label class="view-source-button" for="uw_object.uw_object_counter-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#uw_object.uw_object_counter"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object.uw_object_counter-55"><a href="#uw_object.uw_object_counter-55"><span class="linenos">55</span></a>    <span class="nd">@classmethod</span>
+</span><span id="uw_object.uw_object_counter-56"><a href="#uw_object.uw_object_counter-56"><span class="linenos">56</span></a>    <span class="k">def</span> <span class="nf">uw_object_counter</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+</span><span id="uw_object.uw_object_counter-57"><a href="#uw_object.uw_object_counter-57"><span class="linenos">57</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Number of uw_object instances created &quot;&quot;&quot;</span>
+</span><span id="uw_object.uw_object_counter-58"><a href="#uw_object.uw_object_counter-58"><span class="linenos">58</span></a>        <span class="k">return</span> <span class="n">uw_object</span><span class="o">.</span><span class="n">_obj_count</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>Number of uw_object instances created</p>
+</div>
+
+
+                            </div>
+                            <div id="uw_object.instance_number" class="classattr">
+                                        <input id="uw_object.instance_number-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr variable">
+            <span class="name">instance_number</span>
+
+                <label class="view-source-button" for="uw_object.instance_number-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#uw_object.instance_number"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object.instance_number-60"><a href="#uw_object.instance_number-60"><span class="linenos">60</span></a>    <span class="nd">@property</span>
+</span><span id="uw_object.instance_number-61"><a href="#uw_object.instance_number-61"><span class="linenos">61</span></a>    <span class="k">def</span> <span class="nf">instance_number</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="uw_object.instance_number-62"><a href="#uw_object.instance_number-62"><span class="linenos">62</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot; Unique number of the uw_object instance &quot;&quot;&quot;</span>
+</span><span id="uw_object.instance_number-63"><a href="#uw_object.instance_number-63"><span class="linenos">63</span></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_uw_id</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>Unique number of the uw_object instance</p>
+</div>
+
+
+                            </div>
                             <div id="uw_object.view" class="classattr">
                                 <div class="attr function">
             
@@ -572,36 +533,6 @@ to provide instance-specific information</p>
     
     
 
-                            </div>
-                            <div id="uw_object.total_instances" class="classattr">
-                                        <input id="uw_object.total_instances-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
-<div class="attr function">
-                    <div class="decorator">@classmethod</div>
-
-        <span class="def">def</span>
-        <span class="name">total_instances</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">cls</span></span><span class="return-annotation">):</span></span>
-
-                <label class="view-source-button" for="uw_object.total_instances-view-source"><span>View Source</span></label>
-
-    </div>
-    <a class="headerlink" href="#uw_object.total_instances"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="uw_object.total_instances-122"><a href="#uw_object.total_instances-122"><span class="linenos">122</span></a>    <span class="nd">@classmethod</span>
-</span><span id="uw_object.total_instances-123"><a href="#uw_object.total_instances-123"><span class="linenos">123</span></a>    <span class="k">def</span> <span class="nf">total_instances</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-</span><span id="uw_object.total_instances-124"><a href="#uw_object.total_instances-124"><span class="linenos">124</span></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_total_instances</span>
-</span></pre></div>
-
-
-    
-
-                            </div>
-                            <div class="inherited">
-                                <h5>Inherited Members</h5>
-                                <dl>
-                                    <div><dt><a href="#uw_object_counter">uw_object_counter</a></dt>
-                                <dd id="uw_object.instance_number" class="variable"><a href="#uw_object_counter.instance_number">instance_number</a></dd>
-
-            </div>
-                                </dl>
                             </div>
                 </section>
     </main>
