@@ -224,7 +224,7 @@ cdef class KDTree:
         if verbose and uw.mpi.rank == 0:
             print("Mapping values  ... start", flush=True)
 
-        epsilon = 1.0e-6
+        epsilon = 1.0e-9
         for j in range(nnn):
             j_distance = epsilon + np.sqrt(distance_n[:, j])
             Weights[:, 0] += 1.0 / j_distance[:]
