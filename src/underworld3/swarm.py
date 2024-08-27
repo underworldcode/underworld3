@@ -1938,12 +1938,11 @@ class NodalPointSwarm(Swarm):
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
 
         # The launch point index
-
         name = f"ns_I_{ks}"
         symbol = r"I^{*^{{[" + ks + "]}}}"
         nI0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
 
-        # holds the processor rank of nodal swarm particles before advection
+        # The launch point processor rank
         name = f"ns_R0_{ks}"
         symbol = r"R0^{*^{{[" + ks + "]}}}"
         nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)

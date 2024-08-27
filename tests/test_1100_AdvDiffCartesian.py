@@ -147,7 +147,7 @@ def test_advDiff_boxmesh(mesh):
     model_time = 0.0
 
     #### Solve
-    dtd, dta = adv_diff.estimate_dt()
+    dt_est = adv_diff.estimate_dt()
 
     # This should be stable, and soluble by the 1D FD
     dt = 0.001
