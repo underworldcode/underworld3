@@ -1313,12 +1313,14 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 self._V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
-                continuous=u_Field.continuous,
+                continuous=u_Field.continuous,  # u_Field.continuous,
+                swarm_degree=u_Field.degree,
+                swarm_continuous=True,
                 varsymbol=u_Field.symbol,
                 verbose=verbose,
                 bcs=self.essential_bcs,
                 order=order,
-                smoothing=0.0001,
+                smoothing=0.0,
             )
 
         else:
@@ -1342,12 +1344,12 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree - 1,
-            continuous=True,
+            continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
             order=order,
-            smoothing=0.0001,
+            smoothing=0.0,
         )
 
         return
@@ -1477,7 +1479,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
-        return dt_diff, dt_adv
+        return dt_estimate
 
     @timing.routine_timer_decorator
     def solve(

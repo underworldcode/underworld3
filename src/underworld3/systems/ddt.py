@@ -35,11 +35,13 @@ class SemiLagrangian(uw_object):
         vtype: uw.VarType,
         degree: int,
         continuous: bool,
+        swarm_degree: Optional[int] = None,
+        swarm_continuous: Optional[bool] = None,
         varsymbol: Optional[str] = r"u",
         verbose: Optional[bool] = False,
         bcs=[],
         order=1,
-        smoothing=1.0e-4,
+        smoothing=0.0,
         under_relaxation=0.0,
         bc_mask_fn=1,
     ):
@@ -49,6 +51,21 @@ class SemiLagrangian(uw_object):
         self.bcs = bcs
         self.verbose = verbose
         self.degree = degree
+        self.continuous = continuous
+        self._psi_fn = psi_fn
+        self.V_fn = V_fn
+        self.order = order
+        self.bc_mask_fn = bc_mask_fn
+
+        if swarm_degree is None:
+            self.swarm_degree = degree
+        else:
+            self.swarm_degree = swarm_degree
+
+        if swarm_continuous is None:
+            self.swarm_continuous = continuous
+        else:
+            self.swarm_continuous = swarm_continuous
 
         # meshVariables are required for:
         #
@@ -57,13 +74,8 @@ class SemiLagrangian(uw_object):
 
         # psi is evaluated/stored at `order` timesteps. We can't
         # be sure if psi is a meshVariable or a function to be evaluated
-        # psi_star is reaching back through each evaluation and has to be a
+        # but psi_star is reaching back through each evaluation and has to be a
         # meshVariable (storage)
-
-        self._psi_fn = psi_fn
-        self.V_fn = V_fn
-        self.order = order
-        self.bc_mask_fn = bc_mask_fn
 
         psi_star = []
         self.psi_star = psi_star
@@ -74,22 +86,22 @@ class SemiLagrangian(uw_object):
                     f"psi_star_sl_{self.instance_number}_{i}",
                     self.mesh,
                     vtype=vtype,
-                    degree=degree,
-                    continuous=continuous,
+                    degree=self.degree,
+                    continuous=self.continuous,
                     varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
                 )
             )
 
         # Working variable that has a potentially different discretisation from psi_star
-        # We project from this to psi_star
-        #
+        # We project from this to psi_star and we use this variable to define the
+        # advection sample points
 
         self._workVar = uw.discretisation.MeshVariable(
             f"W_{self.instance_number}_{i}",
             self.mesh,
             vtype=vtype,
-            degree=2,
-            continuous=False,
+            degree=self.swarm_degree,
+            continuous=self.swarm_continuous,
             varsymbol=rf"{{ {varsymbol}^\nabla }}",
         )
 
@@ -211,16 +223,19 @@ class SemiLagrangian(uw_object):
             self._nswarm_psi.advection(
                 self.V_fn,
                 -dt,
-                order=2,
+                order=1,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-                evalf=True,  #!
+                evalf=False,
+                step_limit=True,
+                #! substepping: this seems to be too diffusive if left on.
+                #! Check the code carefully !
             )
 
             if i == 0:
                 # Recalculate u_star from u_fn
                 self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.smoothing = 1.0e-6
+                self._psi_star_projection_solver.smoothing = 0.0
                 self._psi_star_projection_solver.solve(verbose=verbose)
 
             if evalf:
@@ -251,6 +266,7 @@ class SemiLagrangian(uw_object):
 
             # change the rank in DMSwarm_rank with the rank before advection
             nR0_field_name = self._nswarm_psi._nR0.name
+            nI0_field_name = self._nswarm_psi._nI0.name
 
             orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
             node_ranks = self._nswarm_psi.dm.getField("DMSwarm_rank")
@@ -268,18 +284,24 @@ class SemiLagrangian(uw_object):
             # reset to original migrate type
             uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
 
-            # Now project to the mesh using bc's to obtain u_star
+            # Push data from swarm back to _workVar.data.
+            # Note: particles are removed when sent and added to the
+            # end of the swarm when received, so we need to re-order
+            # the data when we put it back onto the nodes
 
-            # Push data from swarm back to _workVar.data
+            with self._nswarm_psi.access():
 
-            with self.mesh.access(self._workVar):
-                with self._nswarm_psi.access():
-                    self._workVar.data[...] = self._nswarm_psi.swarmVariable.data[...]
+                orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
+
+                with self.mesh.access(self._workVar):
+                    self._workVar.data[
+                        orig_index, :
+                    ] = self._nswarm_psi.swarmVariable.data[:, :]
 
             # Project from advected swarm to semi-Lagrangian variables.
-            #
+
             self._psi_star_projection_solver.uw_function = self._workVar.sym
-            self._psi_star_projection_solver.smoothing = 1.0e-3
+            self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve()
 
             # Copy data from the projection operator if required
