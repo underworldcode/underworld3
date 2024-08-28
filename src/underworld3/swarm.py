@@ -1,4 +1,3 @@
-from posixpath import pardir
 import petsc4py.PETSc as PETSc
 
 import numpy as np
