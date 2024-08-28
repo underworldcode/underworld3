@@ -18,12 +18,9 @@ cdef extern from "petsc.h" nogil:
     ctypedef struct DMInterpolationInfo:
         pass
 
-# typedef for setting/getting migrate type 
-ctypedef enum DMSwarmMigrateType:
-    DMSWARM_MIGRATE_BASIC,
-    DMSWARM_MIGRATE_DMCELLNSCATTER,
-    DMSWARM_MIGRATE_DMCELLEXACT,
-    DMSWARM_MIGRATE_USER
+cdef extern from "petsc.h" nogil:
+    ctypedef enum DMSwarmMigrateType:
+        pass
 
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
@@ -38,7 +35,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
     MPI_Comm MPI_COMM_SELF
 
-cdef extern from "petscdmswarm.h" nogil:
+cdef extern from "petsc.h" nogil:
     PetscErrorCode DMSwarmSetMigrateType(PetscDM dm, DMSwarmMigrateType mtype)
     PetscErrorCode DMSwarmGetMigrateType(PetscDM dm, DMSwarmMigrateType *mtype)
 
@@ -767,12 +764,13 @@ def dm_swarm_get_migrate_type(swarm):
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype):
+def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
     
     cdef DM dm = swarm.dm
     cdef PetscErrorCode ierr
+    cdef DMSwarmMigrateType mig = mtype
 
-    ierr = DMSwarmSetMigrateType(dm.dm, mtype); CHKERRQ(ierr)
+    ierr = DMSwarmSetMigrateType(dm.dm, mig); CHKERRQ(ierr)
 
     return
 

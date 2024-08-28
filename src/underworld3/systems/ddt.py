@@ -11,6 +11,7 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 
+from petsc4py import PETSc
 
 ## We need a pure Eulerian one of these too
 
@@ -231,7 +232,7 @@ class SemiLagrangian(uw_object):
 
             # additional steps for snapback routine
             og_mig_type = uw.function.dm_swarm_get_migrate_type(self._nswarm_psi)   # get original migrate type
-            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, 0)              # set to Migrate BASIC
+            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC)
 
             # change the rank in DMSwarm_rank with the rank before advection
             nR0_field_name = self._nswarm_psi._nR0.name
