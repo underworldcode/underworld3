@@ -106,7 +106,7 @@ class SemiLagrangian(uw_object):
         )
 
         # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointSwarm(self._workVar)
+        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
         self._nswarm_psi = nswarm
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for

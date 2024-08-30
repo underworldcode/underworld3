@@ -1879,7 +1879,7 @@ class Swarm(Stateful, uw_object):
 
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
-        min_dx = 2 * self.mesh.get_min_radius()
+        min_dx = self.mesh.get_min_radius()
 
         # The assumption should be that we cross one or two elements (2-4 radii), not more,
         # in a single step (order 2, means one element per half-step or something
