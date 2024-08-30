@@ -34,36 +34,41 @@ class class_or_instance_method(object):
 
         return newfunc
 
-
-class counted_metaclass(type):
-    def __init__(cls, name, bases, attrs):
-        super().__init__(name, bases, attrs)
-        cls._total_instances = 0
-
-
-class uw_object_counter(object, metaclass=counted_metaclass):
-    def __init__(self):
-        try:
-            self.__class__.mro()[1]._total_instances += 1
-        except AttributeError:
-            pass
-            # print(f"{self.__class__.mro()[1]} is not a uw_object")
-
-        super().__init__()
-
-        self.__class__._total_instances += 1
-        self.instance_number = self.__class__._total_instances
-
-
-class uw_object(uw_object_counter):
+class uw_object():
     """
     The UW (mixin) class adds common functionality that we wish to provide on all uw_objects
     such as the view methods (classmethod for generic information and instance method that can be over-ridden)
     to provide instance-specific information
     """
 
+    _obj_count = 0 # a class variable to count the number of objects
+
     def __init__(self):
-        super().__init__()
+        super().__init__
+
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
+
+    # to order of the following decorators matters python
+    # see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850
+    @classmethod
+    def uw_object_counter(cls):
+        """ Number of uw_object instances created """
+        return uw_object._obj_count
+
+    @property
+    def instance_number(self):
+        """ Unique number of the uw_object instance """
+        return self._uw_id
+
+    def __str__(self):
+        s = super().__str__()
+        return f"{self.__class__.__name__} instance {self.instance_number}, {s}"
+
+    @staticmethod
+    def _reset():
+        """ Reset the object counter """
+        uw_object._obj_count = 0
 
     @class_or_instance_method
     def _ipython_display_(self_or_cls):
@@ -117,10 +122,6 @@ class uw_object(uw_object_counter):
             )
 
             self_or_cls._object_viewer()
-
-    @classmethod
-    def total_instances(cls):
-        return cls._total_instances
 
     # placeholder
     def _object_viewer(self):
