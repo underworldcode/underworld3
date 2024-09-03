@@ -55,7 +55,7 @@ class SemiLagrangian(uw_object):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
-        self.bc_mask_fn = bc_mask_fn
+        self.preserve_moments = preserve_moments
 
         if swarm_degree is None:
             self.swarm_degree = degree
@@ -266,7 +266,7 @@ class SemiLagrangian(uw_object):
                             self.psi_star[i].sym[d], self._nswarm_psi.data
                         )
 
-            if self._workVar.num_components == 1:
+            if self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]
                 Imean0 = self.I.evaluate()
@@ -274,15 +274,19 @@ class SemiLagrangian(uw_object):
                 self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
                 IL20 = np.sqrt(self.I.evaluate())
 
-                if uw.mpi.rank == 0:
-                    print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
+                # if uw.mpi.rank == 0:
+                #     print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
             # restore coords (will call dm.migrate after context manager releases)
+            # We need some modifications to dm.migrate to snapback
+            # to original location without substepping
 
-            # additional steps for snapback routine
-
-            og_mig_type = uw.function.dm_swarm_get_migrate_type(self._nswarm_psi)   # get original migrate type
-            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC)
+            og_mig_type = uw.function.dm_swarm_get_migrate_type(
+                self._nswarm_psi
+            )  # get original migrate type
+            uw.function.dm_swarm_set_migrate_type(
+                self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC
+            )
 
             # change the rank in DMSwarm_rank with the rank before advection
             nR0_field_name = self._nswarm_psi._nR0.name
@@ -337,7 +341,7 @@ class SemiLagrangian(uw_object):
             # (could extend this to other field types but not
             #  sure if this is wanted / warranted at all )
 
-            if preserve_moments and self._workVar.num_components == 1:
+            if self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]
                 Imean = self.I.evaluate()
