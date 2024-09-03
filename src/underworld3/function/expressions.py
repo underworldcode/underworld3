@@ -87,7 +87,7 @@ class UWexpression(Symbol, uw_object):
     ```{python}
         alpha = UWexpression(
                         r'\\alpha',
-                        value=3.0e-5,
+                        sym=3.0e-5,
                         description="thermal expansivity"
                             )
         print(alpha.sym)
@@ -96,17 +96,22 @@ class UWexpression(Symbol, uw_object):
 
     """
 
-    def __new__(cls, name, value, description="No description provided"):
+    def __new__(cls, name, *args, **kwargs,):
 
         obj = Symbol.__new__(cls, name)
-        obj.sym = sympy.sympify(value)
-        obj.symbol = name
         return obj
 
-    def __init__(self, name, value, description="No description provided"):
+    def __init__(self, name, sym=None, description="No description provided", value=None):
+        if value is not None and sym is None:
+            import warnings;
+            warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {value}, please use 'sym' attribute")
+            sym = value
+        if value is not None and sym is not None:
+            raise ValueError("Both 'sym' and 'value' attributes are provided, please use one")
 
-        self._sym = sympy.sympify(value)
-        self._description = description
+        self.sym = sympy.sympify(sym)
+        self.symbol = name
+        self.description = description
 
         return
 
