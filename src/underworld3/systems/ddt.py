@@ -42,8 +42,7 @@ class SemiLagrangian(uw_object):
         bcs=[],
         order=1,
         smoothing=0.0,
-        under_relaxation=0.0,
-        bc_mask_fn=1,
+        preserve_moments=False,
     ):
         super().__init__()
 
@@ -149,6 +148,8 @@ class SemiLagrangian(uw_object):
 
         self._smoothing = smoothing
 
+        self.I = uw.maths.Integral(mesh, None)
+
         return
 
     @property
@@ -214,6 +215,7 @@ class SemiLagrangian(uw_object):
 
         # We use the u_star variable as a working value here so we have to work backwards
         # so we don't over-write the history terms
+        #
 
         for i in range(self.order - 1, -1, -1):
             with self._nswarm_psi.access(self._nswarm_psi._X0):
@@ -233,10 +235,20 @@ class SemiLagrangian(uw_object):
             )
 
             if i == 0:
-                # Recalculate u_star from u_fn
-                self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve(verbose=verbose)
+                # Recalculate psi_star from psi_fn. If psi_fn containts
+                # derivatives, the evaluation will fail and a projection
+                # is required instead.
+
+                try:
+                    # Note, we should honour the evalf flag here too.
+                    with self._workVar.mesh.access():
+                        self.psi_star[0].data[...] = uw.function.evaluate(
+                            self.psi_fn, self.psi_star[0].coords
+                        )
+                except:
+                    self._psi_star_projection_solver.uw_function = self.psi_fn
+                    self._psi_star_projection_solver.smoothing = 0.0
+                    self._psi_star_projection_solver.solve(verbose=verbose)
 
             if evalf:
                 with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
@@ -252,6 +264,17 @@ class SemiLagrangian(uw_object):
                         ] = uw.function.evaluate(
                             self.psi_star[i].sym[d], self._nswarm_psi.data
                         )
+
+            if self._workVar.num_components == 1:
+
+                self.I.fn = self.psi_star[i].sym[0]
+                Imean0 = self.I.evaluate()
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+                IL20 = np.sqrt(self.I.evaluate())
+
+                if uw.mpi.rank == 0:
+                    print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
             # restore coords (will call dm.migrate after context manager releases)
 
@@ -298,16 +321,55 @@ class SemiLagrangian(uw_object):
                         orig_index, :
                     ] = self._nswarm_psi.swarmVariable.data[:, :]
 
-            # Project from advected swarm to semi-Lagrangian variables.
+            # Project / Copy from advected swarm to semi-Lagrangian variables.
 
-            self._psi_star_projection_solver.uw_function = self._workVar.sym
-            self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve()
+            if self._workVar.coords.shape == self.psi_star[i].coords.shape:
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = self._workVar.data[...]
+            else:
+                self._psi_star_projection_solver.uw_function = self._workVar.sym
+                self._psi_star_projection_solver.smoothing = 0.0
+                self._psi_star_projection_solver.solve()
 
-            # Copy data from the projection operator if required
+            # Copy data from the projection operator if i!=0
             if i != 0:
                 with self.mesh.access(self.psi_star[i]):
                     self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+            # Optional: Conserve moments for scalar fields
+            # (could extend this to other field types but not
+            #  sure if this is wanted / warranted at all )
+
+            if preserve_moments and self._workVar.num_components == 1:
+
+                self.I.fn = self.psi_star[i].sym[0]
+                Imean = self.I.evaluate()
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
+                IL2 = np.sqrt(self.I.evaluate())
+
+                # if uw.mpi.rank == 0:
+                #     print(f"Pre adjustment: {Imean}, {IL2}", flush=True)
+
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] += Imean0 - Imean
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+                IL2 = np.sqrt(self.I.evaluate())
+
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = (
+                        self.psi_star[i].data[...] - Imean0
+                    ) * IL20 / IL2 + Imean0
+
+                # self.I.fn = self.psi_star[i].sym[0]
+                # Imean = self.I.evaluate()
+
+                # self.I.fn = (self.psi_star[0].sym[0] - Imean) ** 2
+                # IL2 = np.sqrt(self.I.evaluate())
+
+                # if uw.mpi.rank == 0:
+                #     print(f"Post advection: {Imean}, {IL2}", flush=True)
 
         return
 

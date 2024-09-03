@@ -1313,13 +1313,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 self._V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
-                continuous=u_Field.continuous,  # u_Field.continuous,
-                swarm_degree=u_Field.degree,
-                swarm_continuous=False,
-                # varsymbol=u_Field.symbol,
+                continuous=u_Field.continuous,
                 verbose=verbose,
                 bcs=self.essential_bcs,
-                order=order,
+                order=1,
                 smoothing=0.0,
             )
 
@@ -1343,8 +1340,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             ),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
-            degree=u_Field.degree - 1,
-            continuous=False,
+            degree=u_Field.degree,
+            continuous=True,
+            swarm_degree=u_Field.degree - 1,
+            swarm_continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
