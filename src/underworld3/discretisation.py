@@ -197,7 +197,36 @@ class Mesh(Stateful, uw_object):
         # options.delValue("dm_plex_gmsh_use_regions")
         self.dm.setFromOptions()
 
-        uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+        # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+
+        ## --- UW_Boundaries label
+
+        if self.boundaries is not None:
+
+            self.dm.removeLabel("UW_Boundaries")
+            self.dm.createLabel("UW_Boundaries")
+
+            stacked_bc_label = self.dm.getLabel("UW_Boundaries")
+
+            for b in self.boundaries:
+                bc_label_name = b.name
+                label = self.dm.getLabel(bc_label_name)
+                if not label:
+                    continue
+
+                label_is = label.getStratumIS(b.value)
+
+                # Load this up on the stacked BC label
+                if label_is:
+                    stacked_bc_label.setStratumIS(b.value, label_is)
+                else:
+                    # workaround to make each **boundary** label exist on the mesh everywhere
+                    # we add element labels which are not used in the PETSc boundary conditions
+                    elt_label = self.dm.getLabel("celltype")
+                    elt_is = elt_label.getStratumIS(elt_label.getValue(0))
+                    stacked_bc_label.setStratumIS(b.value, elt_is)
+
+        ## ---
 
         self.refinement_callback = refinement_callback
         self.name = name
@@ -422,10 +451,16 @@ class Mesh(Stateful, uw_object):
 
         if uw.mpi.rank == 0:
             if len(self.boundaries) > 0:
-                print(f"| Boundary Name            | ID    | Min Size | Max Size |")
-                print(f"| ------------------------------------------------------ |")
+                print(
+                    f"| Boundary Name            | ID    | Min Size | Max Size |",
+                    flush=True,
+                )
+                print(
+                    f"| ------------------------------------------------------ |",
+                    flush=True,
+                )
             else:
-                print(f"No boundary labels are defined on the mesh\n")
+                print(f"No boundary labels are defined on the mesh\n", flush=True)
 
         for bd in self.boundaries:
             l = self.dm.getLabel(bd.name)
@@ -439,7 +474,23 @@ class Mesh(Stateful, uw_object):
             if uw.mpi.rank == 0:
                 print(
                     f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
                 )
+
+        ## UW_Boundaries:
+        l = self.dm.getLabel("UW_Boundaries")
+        if l:
+            i = l.getStratumSize(bd.value)
+        else:
+            i = 0
+
+        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+        if uw.mpi.rank == 0:
+            print(
+                f"| {'UW_Boundaries':<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                flush=True,
+            )
 
         if uw.mpi.rank == 0:
             print(f"| ------------------------------------------------------ |")
