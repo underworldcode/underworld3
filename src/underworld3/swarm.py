@@ -447,9 +447,7 @@ class SwarmVariable(Stateful, uw_object):
             raise RuntimeError("The filename must end with .h5")
 
         if h5py.h5.get_config().mpi == True and not force_sequential:
-            with h5py.File(
-                f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm
-            ) as h5f:
+            with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 with self.swarm.access(self):
                     if compression == True:
                         h5f.create_dataset(
@@ -1140,9 +1138,7 @@ class Swarm(Stateful, uw_object):
             with self.access():
                 data_copy = self.data[:].copy()
 
-            with h5py.File(
-                f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm
-            ) as h5f:
+            with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 if compression == True:
                     h5f.create_dataset(
                         "coordinates",
@@ -1491,9 +1487,11 @@ class Swarm(Stateful, uw_object):
                 self.em_swarm = swarm
 
             def __enter__(self):
+
                 pass
 
             def __exit__(self, *args):
+
                 for var in self.em_swarm.vars.values():
                     # only de-access variables we have set access for.
                     if var not in deaccess_list:
@@ -1519,6 +1517,14 @@ class Swarm(Stateful, uw_object):
                     )
 
                     cellid[:] = self.em_swarm.mesh.get_closest_cells(coords).reshape(-1)
+
+                    # num_lost = np.where(cellid == -1)[0].shape[0]
+                    # print(
+                    #     f"{uw.mpi.rank} - EM 1: illegal_cells - {num_lost}", flush=True
+                    # )
+
+                    # if num_lost != 0:
+                    #     print("LOST: ", coords[np.where(cellid == -1)])
 
                     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
                     self.em_swarm.dm.restoreField("DMSwarm_cellid")
@@ -1617,14 +1623,18 @@ class Swarm(Stateful, uw_object):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
+        step_limit=True,
     ):
 
         dt_limit = self.estimate_dt(V_fn)
 
-        if dt_limit is not None:
-            substeps = int(max(1, abs(delta_t) // dt_limit))
+        if step_limit and dt_limit is not None:
+            substeps = int(max(1, round(abs(delta_t) / dt_limit)))
         else:
             substeps = 1
+
+        if uw.mpi.rank == 0 and self.verbose:
+            print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -1678,27 +1688,28 @@ class Swarm(Stateful, uw_object):
         for step in range(0, substeps):
 
             with self.access(X0):
-                X0.data[...] = self.data[...]
+                X0.data[...] = self.particle_coordinates.data[...]
 
             # Mid point algorithm (2nd order)
 
             if order == 2:
                 with self.access(self.particle_coordinates):
-                    v_at_Vpts = np.zeros_like(self.data)
+                    v_at_Vpts = np.zeros_like(self.particle_coordinates.data)
 
                     if evalf:
                         for d in range(self.dim):
                             v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.data
+                                V_fn_matrix[d], self.particle_coordinates.data
                             ).reshape(-1)
                     else:
                         for d in range(self.dim):
                             v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.data
+                                V_fn_matrix[d], self.particle_coordinates.data
                             ).reshape(-1)
 
                     mid_pt_coords = (
-                        self.data[...] + 0.5 * delta_t * v_at_Vpts / substeps
+                        self.particle_coordinates.data[...]
+                        + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -1706,24 +1717,23 @@ class Swarm(Stateful, uw_object):
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                    self.data[...] = mid_pt_coords[...]
+                    self.particle_coordinates.data[...] = mid_pt_coords[...]
 
                     del mid_pt_coords
 
                     ## Let the swarm be updated, and then move the rest of the way
 
-                with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
                     if evalf:
                         for d in range(self.dim):
                             v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.data
+                                V_fn_matrix[d], self.particle_coordinates.data
                             ).reshape(-1)
                     else:
                         for d in range(self.dim):
                             v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.data
+                                V_fn_matrix[d], self.particle_coordinates.data
                             ).reshape(-1)
 
                     # if (uw.mpi.rank == 0):
@@ -1735,7 +1745,7 @@ class Swarm(Stateful, uw_object):
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
-                    self.data[...] = new_coords[...]
+                    self.particle_coordinates.data[...] = new_coords[...]
 
                     del new_coords
                     del v_at_Vpts
@@ -1801,8 +1811,6 @@ class Swarm(Stateful, uw_object):
                 * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
                 * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)
             )
-
-            # print(f"{perturbation}")
 
             coords[swarm_size::] = self.mesh.particle_X_orig[:, :] + perturbation
             cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
@@ -1873,12 +1881,12 @@ class Swarm(Stateful, uw_object):
 
         min_dx = self.mesh.get_min_radius()
 
-        # The assumption should be that we cross one or two elements (4 radii), not more,
+        # The assumption should be that we cross one or two elements (2-4 radii), not more,
         # in a single step (order 2, means one element per half-step or something
         # that we can broadly interpret that way)
 
         if max_magvel_glob != 0.0:
-            return 4.0 * min_dx / max_magvel_glob
+            return min_dx / max_magvel_glob
         else:
             return None
 
@@ -1895,9 +1903,12 @@ class NodalPointSwarm(Swarm):
     def __init__(
         self,
         trackedVariable: uw.discretisation.MeshVariable,
+        verbose=False,
     ):
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
+        self.verbose = verbose
+
         mesh = trackedVariable.mesh
 
         # Set up a standard swarm
@@ -1916,19 +1927,24 @@ class NodalPointSwarm(Swarm):
             name,
             nswarm,
             vtype=trackedVariable.vtype,
-            proxy_degree=trackedVariable.degree,
-            proxy_continuous=trackedVariable.continuous,
+            _proxy=False,
             varsymbol=symbol,
         )
 
+        # The launch point location
         name = f"ns_X0_{ks}"
         symbol = r"X0^{*^{{[" + ks + "]}}}"
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
 
-        # holds the processor rank of nodal swarm particles before advection
+        # The launch point index
+        name = f"ns_I_{ks}"
+        symbol = r"I^{*^{{[" + ks + "]}}}"
+        nI0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
+
+        # The launch point processor rank
         name = f"ns_R0_{ks}"
         symbol = r"R0^{*^{{[" + ks + "]}}}"
-        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, _proxy=False)
+        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
 
         nswarm.dm.finalizeFieldRegister()
         nswarm.dm.addNPoints(
@@ -1938,23 +1954,26 @@ class NodalPointSwarm(Swarm):
         cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         coords[...] = trackedVariable.coords[...]
-        cellid[:] = self.mesh.get_closest_cells(coords)
+        cellid[:] = self.mesh.get_closest_local_cells(coords)
 
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
-        shift = 1.0e-3
-        coords[...] = (1.0 - shift) * coords[...] + shift * centroid_coords[...]
+
+        shift = 0.001
+        coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")
         nswarm.dm.restoreField("DMSwarm_cellid")
+
         nswarm.dm.migrate(remove_sent_points=True)
 
-        with nswarm.access(nX0):
-            nX0.data[...] = coords
+        with nswarm.access(nX0, nI0):
+            nX0.data[:, :] = coords
+            nI0.data[:, 0] = range(0, coords.shape[0])
 
         self._nswarm = nswarm
         self._nX0 = nX0
-
+        self._nI0 = nI0
         self._nR0 = nR0
 
         return
@@ -1968,6 +1987,7 @@ class NodalPointSwarm(Swarm):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
+        step_limit=True,
     ):
 
         with self.access(self._X0):
@@ -1983,6 +2003,7 @@ class NodalPointSwarm(Swarm):
             corrector,
             restore_points_to_domain_func,
             evalf,
+            step_limit,
         )
 
         return

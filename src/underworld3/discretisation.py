@@ -217,7 +217,7 @@ class Mesh(Stateful, uw_object):
         if not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
-            self.dm.distribute(overlap=0)
+            self.dm.distribute()
 
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
@@ -243,12 +243,11 @@ class Mesh(Stateful, uw_object):
             if callable(refinement_callback):
                 for dm in self.dm_hierarchy:
                     refinement_callback(dm)
-
             # Single level equivalent dm
             self.dm = self.dm_h.clone()
 
         else:
-            self.dm.distribute(overlap=0)
+            self.dm.distribute()
 
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
@@ -486,7 +485,6 @@ class Mesh(Stateful, uw_object):
     #     valid_coords[invalid] = target_coords[idx]
 
     #     return valid_coords
-
 
     def clone_dm_hierarchy(self):
         """
@@ -1259,7 +1257,7 @@ class Mesh(Stateful, uw_object):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 0.25 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
+            dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
@@ -1627,7 +1625,7 @@ class _MeshVariable(Stateful, uw_object):
 
         if isinstance(varname, list):
             name = varname[0] + " ... "
-            symbol = "{" + varname[0]+ R"\cdots" + "}"
+            symbol = "{" + varname[0] + R"\cdots" + "}"
         else:
             name = varname
             if varsymbol is not None:
