@@ -500,6 +500,63 @@ class Mesh(Stateful, uw_object):
         ## Information on the mesh DM
         self.dm.view()
 
+
+    def view_parallel(self):
+        '''
+        returns the break down of boundary labels from each processor
+        '''
+
+        import numpy as np
+
+        if uw.mpi.rank == 0:
+            print(f"\n")
+            print(f"Mesh # {self.instance}: {self.name}\n")
+
+            if len(self.vars) > 0:
+                print(f"| Variable Name       | component | degree |     type        |")
+                print(f"| ---------------------------------------------------------- |")
+                for vname in self.vars.keys():
+                    v = self.vars[vname]
+                    print(
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                    )
+
+                print(f"| ---------------------------------------------------------- |")
+                print("\n", flush=True)
+            else:
+                print(f"No variables are defined on the mesh\n", flush=True)
+
+        ## Boundary information on each proc
+
+        if uw.mpi.rank == 0:
+            if len(self.boundaries) > 0:
+                print(f"| Boundary Name            | ID    | Size | Proc ID      |")
+                print(f"| ------------------------------------------------------ |")
+            else:
+                print(f"No boundary labels are defined on the mesh\n")
+
+        ### goes through each processor and gets the label size
+        with uw.mpi.call_pattern(pattern="sequential"):
+            for bd in self.boundaries:
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
+                print(
+                        f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |")
+
+
+        uw.mpi.barrier()
+
+
+        if uw.mpi.rank == 0:
+            print(f"| ------------------------------------------------------ |")
+            print("\n", flush=True)
+
+        ## Information on the mesh DM
+        # self.dm.view()
+
     # This only works for local - we can't access global information'
     # and so this is not a suitable function for use during advection
     #
