@@ -223,7 +223,8 @@ class Mesh(Stateful, uw_object):
                     # workaround to make each **boundary** label exist on the mesh everywhere
                     # we add element labels which are not used in the PETSc boundary conditions
                     elt_label = self.dm.getLabel("celltype")
-                    elt_is = elt_label.getStratumIS(elt_label.getValue(0))
+                    # elt_is = elt_label.getStratumIS(elt_label.getValue(0))
+                    elt_is = elt_label.getStratumIS(0)  # All points (0) in local domain
                     stacked_bc_label.setStratumIS(b.value, elt_is)
 
         ## ---

@@ -835,8 +835,8 @@ class SNES_Projection(SNES_Scalar):
             self.name = "SProj_{}_".format(self.instance_number)
 
         self.is_setup = False
-        self._smoothing = 0.0
-        self._uw_weighting_function = 1.0
+        self._smoothing = sympy.sympify(0)
+        self._uw_weighting_function = sympy.sympify(1)
         self._constitutive_model = uw.constitutive_models.Constitutive_Model(
             self.Unknowns
         )
@@ -871,21 +871,21 @@ class SNES_Projection(SNES_Scalar):
 
         return F1_val
 
-    @timing.routine_timer_decorator
-    def projection_problem_description(self):
-        # residual terms - defines the problem:
-        # solve for a best fit to the continuous mesh
-        # variable given the values in self.function
-        # F0 is left in place for the user to inject
-        # non-linear constraints if required
+    # @timing.routine_timer_decorator
+    # def projection_problem_description(self):
+    #     # residual terms - defines the problem:
+    #     # solve for a best fit to the continuous mesh
+    #     # variable given the values in self.function
+    #     # F0 is left in place for the user to inject
+    #     # non-linear constraints if required
 
-        self._f0 = self.F0.sym
+    #     self._f0 = self.F0.sym
 
-        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+    #     # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        self._f1 = self.F1.sym
+    #     self._f1 = self.F1.sym
 
-        return
+    #     return
 
     @property
     def uw_function(self):
