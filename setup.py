@@ -20,7 +20,18 @@ if os.environ.get("CC") is None:
     import mpi4py
 
     conf = mpi4py.get_config()
-    os.environ["CC"] = conf["mpicc"]
+    
+    # Check if "mpicc" is in the mpi4py configuration
+    if "mpicc" in conf:
+        os.environ["CC"] = conf["mpicc"]
+    else:
+        # Fallback: manually set CC to the path of the mpicc compiler
+        mpicc_path = os.popen('which mpicc').read().strip()
+        if mpicc_path:
+            os.environ["CC"] = mpicc_path
+        else:
+            raise KeyError("'mpicc' not found in mpi4py configuration, and 'mpicc' not found in system path. "
+                           "Ensure MPI is installed and 'mpicc' is available.")
 
 # PETSc version check - 3.16 or higher
 from petsc4py import PETSc
