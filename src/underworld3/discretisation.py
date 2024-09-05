@@ -2,6 +2,7 @@ from typing import Optional, Tuple, Union
 import os
 import numpy
 import sympy
+from sympy.matrices.expressions.blockmatrix import bc_dist
 import sympy.vector
 from petsc4py import PETSc
 import underworld3 as uw
@@ -69,7 +70,7 @@ def _from_gmsh(
         )
 
         plex_0.setName("uw_mesh")
-        plex_0.markBoundaryFaces("All_Boundaries", 1001)
+        # plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
         viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0)
@@ -105,7 +106,7 @@ def _from_plexh5(
 
     # Do this as well
     h5plex.setName("uw_mesh")
-    h5plex.markBoundaryFaces("All_Boundaries", 1001)
+    # h5plex.markBoundaryFaces("All_Boundaries", 1001)
 
     if not return_sf:
         return h5plex
@@ -199,36 +200,42 @@ class Mesh(Stateful, uw_object):
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
+        all_edges_label_dm = self.dm.getLabel("depth")
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
+            all_edges_IS_dm.view()
+
+        self.dm.createLabel("All_Edges")
+        all_edges_label = self.dm.getLabel("All_Edges")
+        if all_edges_label and all_edges_IS_dm:
+            all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
+
         ## --- UW_Boundaries label
 
         if self.boundaries is not None:
 
+            print(f"Stacking Boundaries to UW_Boundaries")
+
             self.dm.removeLabel("UW_Boundaries")
+            uw.mpi.barrier()
             self.dm.createLabel("UW_Boundaries")
 
             stacked_bc_label = self.dm.getLabel("UW_Boundaries")
 
             for b in self.boundaries:
+                print(f"Boundary: {b.name}", flush=True)
+
                 bc_label_name = b.name
                 label = self.dm.getLabel(bc_label_name)
-                if not label:
-                    continue
 
-                label_is = label.getStratumIS(b.value)
+                if label:
+                    label_is = label.getStratumIS(b.value)
 
-                # Load this up on the stacked BC label
-                if label_is:
-                    stacked_bc_label.setStratumIS(b.value, label_is)
+                    # Load this up on the stacked BC label
+                    if label_is:
+                        stacked_bc_label.setStratumIS(b.value, label_is)
 
-                # else:
-                # workaround to make each **boundary** label exist on the mesh everywhere
-                # we add element labels which are not used in the PETSc boundary conditions
-                #
-                elt_label = self.dm.getLabel("depth")
-                # elt_is = elt_label.getStratumIS(elt_label.getValue(0))
-                elt_is = elt_label.getStratumIS(0)  # All points (0) in local domain
-                # elt_is2 = PETSc.IS().createGeneral(elt_is.getIndices()[0])
-                stacked_bc_label.setStratumIS(999999, elt_is)
+            uw.mpi.barrier()
 
         ## ---
 
@@ -2773,8 +2780,7 @@ def petsc_dm_find_labeled_points_local(
 
     label = dm.getLabel(label_name)
     if not label:
-        if uw.mpi.rank == 0:
-            print(f"Label {label_name} is not present on the dm")
+        print(f"{uw.mpi.rank} Label {label_name} is not present on the dm", flush=True)
         return np.array([0])
 
     pointIS = dm.getStratumIS("depth", 0)
