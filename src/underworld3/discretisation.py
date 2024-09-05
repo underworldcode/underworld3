@@ -219,13 +219,16 @@ class Mesh(Stateful, uw_object):
                 # Load this up on the stacked BC label
                 if label_is:
                     stacked_bc_label.setStratumIS(b.value, label_is)
-                else:
-                    # workaround to make each **boundary** label exist on the mesh everywhere
-                    # we add element labels which are not used in the PETSc boundary conditions
-                    elt_label = self.dm.getLabel("celltype")
-                    # elt_is = elt_label.getStratumIS(elt_label.getValue(0))
-                    elt_is = elt_label.getStratumIS(0)  # All points (0) in local domain
-                    stacked_bc_label.setStratumIS(b.value, elt_is)
+
+                # else:
+                # workaround to make each **boundary** label exist on the mesh everywhere
+                # we add element labels which are not used in the PETSc boundary conditions
+                #
+                elt_label = self.dm.getLabel("depth")
+                # elt_is = elt_label.getStratumIS(elt_label.getValue(0))
+                elt_is = elt_label.getStratumIS(0)  # All points (0) in local domain
+                # elt_is2 = PETSc.IS().createGeneral(elt_is.getIndices()[0])
+                stacked_bc_label.setStratumIS(999999, elt_is)
 
         ## ---
 
@@ -247,7 +250,9 @@ class Mesh(Stateful, uw_object):
         if not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
-            self.dm.distribute()
+
+            if not self.dm.isDistributed():
+                self.dm.distribute()
 
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
@@ -273,12 +278,13 @@ class Mesh(Stateful, uw_object):
             if callable(refinement_callback):
                 for dm in self.dm_hierarchy:
                     refinement_callback(dm)
-            # Single level equivalent dm
+
+            # Single level equivalent dm (needed for aux vars ?? Check this - LM)
             self.dm = self.dm_h.clone()
 
         else:
-            self.dm.distribute()
-
+            if not self.dm.isDistributed():
+                self.dm.distribute()
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
 
@@ -360,12 +366,6 @@ class Mesh(Stateful, uw_object):
         self.degree = degree
         self.qdegree = qdegree
 
-        if verbose and uw.mpi.rank == 0:
-            print(
-                f"Populating mesh coordinate data",
-                flush=True,
-            )
-
         self.nuke_coords_and_rebuild()
 
         if verbose and uw.mpi.rank == 0:
@@ -403,12 +403,6 @@ class Mesh(Stateful, uw_object):
 
         else:
             self.vector = uw.maths.vector_calculus(mesh=self)
-
-        if verbose and uw.mpi.rank == 0:
-            print(
-                f"Mesh construction complete",
-                flush=True,
-            )
 
         super().__init__()
 
@@ -500,11 +494,10 @@ class Mesh(Stateful, uw_object):
         ## Information on the mesh DM
         self.dm.view()
 
-
     def view_parallel(self):
-        '''
+        """
         returns the break down of boundary labels from each processor
-        '''
+        """
 
         import numpy as np
 
@@ -544,11 +537,10 @@ class Mesh(Stateful, uw_object):
                 else:
                     i = 0
                 print(
-                        f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |")
-
+                    f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |"
+                )
 
         uw.mpi.barrier()
-
 
         if uw.mpi.rank == 0:
             print(f"| ------------------------------------------------------ |")
@@ -1260,18 +1252,18 @@ class Mesh(Stateful, uw_object):
         tempSwarm.setDimension(self.dim)
         tempSwarm.setCellDM(self.dm)
         tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
+        tempSwarm.finalizeFieldRegister()
 
-        # 4^dim pop is used. This number may need to be considered
+        # 3^dim or 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
 
-        tempSwarm.finalizeFieldRegister()
         tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 4)
 
         # We can't use our own populate function since this needs THIS kd_tree to exist
         # We will need to use a standard layout instead
 
         ## ?? is this required given no migration ??
-        tempSwarm.migrate(remove_sent_points=True)
+        # tempSwarm.migrate(remove_sent_points=True)
 
         PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
         PIC_cellid = tempSwarm.getField("DMSwarm_cellid")

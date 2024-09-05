@@ -1501,9 +1501,10 @@ def Annulus(
                 name=boundaries.Lower.name,
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
@@ -2221,9 +2222,10 @@ def AnnulusInternalBoundary(
                 1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1,
