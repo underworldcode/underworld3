@@ -413,7 +413,7 @@ class SNES_Scalar(SolverBaseClass):
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
-                                                      varname="Us{}".format(SNES_Scalar._total_instances),
+                                                      varname="Us{}".format(SNES_Scalar._obj_count),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
 
         self.Unknowns.u = u_Field
@@ -1054,7 +1054,7 @@ class SNES_Vector(SolverBaseClass):
         ## Todo: some validity checking on the size / type of u_Field supplied
         if not u_Field:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
-                        num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._total_instances),
+                        num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._obj_count),
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
@@ -1714,7 +1714,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if velocityField == None or pressureField == None:
 
             # Note, ensure names are unique for each solver type
-            i = SNES_Stokes_SaddlePt._total_instances
+            i = SNES_Stokes_SaddlePt._obj_count
             self.Unknowns.u = uw.discretisation.MeshVariable(f"V{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
             self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
 

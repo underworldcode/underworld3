@@ -70,7 +70,7 @@ def _from_gmsh(
         )
 
         plex_0.setName("uw_mesh")
-        # plex_0.markBoundaryFaces("All_Boundaries", 1001)
+        plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
         viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0)
@@ -106,7 +106,7 @@ def _from_plexh5(
 
     # Do this as well
     h5plex.setName("uw_mesh")
-    # h5plex.markBoundaryFaces("All_Boundaries", 1001)
+    h5plex.markBoundaryFaces("All_Boundaries", 1001)
 
     if not return_sf:
         return h5plex
@@ -200,21 +200,18 @@ class Mesh(Stateful, uw_object):
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
-        all_edges_label_dm = self.dm.getLabel("depth")
-        if all_edges_label_dm:
-            all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
-            all_edges_IS_dm.view()
+        # all_edges_label_dm = self.dm.getLabel("depth")
+        # if all_edges_label_dm:
+        #     all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
+        #     # all_edges_IS_dm.view()
 
-        self.dm.createLabel("All_Edges")
-        all_edges_label = self.dm.getLabel("All_Edges")
-        if all_edges_label and all_edges_IS_dm:
-            all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
+        # self.dm.createLabel("All_Edges")
+        # all_edges_label = self.dm.getLabel("All_Edges")
+        # if all_edges_label and all_edges_IS_dm:
+        #     all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
 
         ## --- UW_Boundaries label
-
         if self.boundaries is not None:
-
-            print(f"Stacking Boundaries to UW_Boundaries")
 
             self.dm.removeLabel("UW_Boundaries")
             uw.mpi.barrier()
@@ -223,8 +220,6 @@ class Mesh(Stateful, uw_object):
             stacked_bc_label = self.dm.getLabel("UW_Boundaries")
 
             for b in self.boundaries:
-                print(f"Boundary: {b.name}", flush=True)
-
                 bc_label_name = b.name
                 label = self.dm.getLabel(bc_label_name)
 
@@ -479,10 +474,10 @@ class Mesh(Stateful, uw_object):
                     flush=True,
                 )
 
-        ## UW_Boundaries:
-        l = self.dm.getLabel("UW_Boundaries")
+        ## PETSc marked boundaries:
+        l = self.dm.getLabel("All_Boundaries")
         if l:
-            i = l.getStratumSize(bd.value)
+            i = l.getStratumSize(1001)
         else:
             i = 0
 
@@ -490,7 +485,22 @@ class Mesh(Stateful, uw_object):
 
         if uw.mpi.rank == 0:
             print(
-                f"| {'UW_Boundaries':<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
+                flush=True,
+            )
+
+        ## UW_Boundaries:
+        l = self.dm.getLabel("UW_Boundaries")
+        i = 0
+        if l:
+            for bd in self.boundaries:
+                i += l.getStratumSize(bd.value)
+
+        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+        if uw.mpi.rank == 0:
+            print(
+                f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
                 flush=True,
             )
 

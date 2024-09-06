@@ -78,7 +78,7 @@ def extract_expressions(fn):
     return subbed_expr.atoms(sympy.Symbol)
 
 
-class UWexpression(Symbol, uw_object):
+class UWexpression(uw_object, Symbol):
     """
     underworld `expressions` are sympy symbols with attached
                 numeric/expression values that are substituted into an underworld function
@@ -96,22 +96,51 @@ class UWexpression(Symbol, uw_object):
 
     """
 
-    def __new__(cls, name, *args, **kwargs,):
+    _expr_count = 0
 
-        obj = Symbol.__new__(cls, name)
+    def __new__(
+        cls,
+        name,
+        *args,
+        **kwargs,
+    ):
+
+        instance_no = UWexpression._expr_count
+
+        invisible = r"\,\!" * instance_no
+        unique_name = f"{{ {{ {invisible} }} {name} }}"
+        obj = Symbol.__new__(cls, unique_name)
+        obj._instance_no = instance_no
+
+        UWexpression._expr_count += 1
+
         return obj
 
-    def __init__(self, name, sym=None, description="No description provided", value=None):
+    def __init__(
+        self, name, sym=None, description="No description provided", value=None
+    ):
         if value is not None and sym is None:
-            import warnings;
-            warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {value}, please use 'sym' attribute")
-            sym = value
-        if value is not None and sym is not None:
-            raise ValueError("Both 'sym' and 'value' attributes are provided, please use one")
+            import warnings
 
+            warnings.warn(
+                message=f"DEPRECATION warning, don't use 'value' attribute for expression: {value}, please use 'sym' attribute"
+            )
+            sym = value
+
+        if value is not None and sym is not None:
+            raise ValueError(
+                "Both 'sym' and 'value' attributes are provided, please use one"
+            )
+
+        invisible = r"\,\!" * self._instance_no
+        self.symbol = f"{{ {{ {invisible} }} {name} }}"
         self.sym = sympy.sympify(sym)
-        self.symbol = name
         self.description = description
+
+        # this is not being honoured by sympy Symbol
+        #
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
 
         return
 
@@ -136,6 +165,11 @@ class UWexpression(Symbol, uw_object):
         return True
 
     @property
+    def expression_number(self):
+        """Unique number of the expression instance"""
+        return self._expr_count
+
+    @property
     def sym(self):
         return self._sym
 
@@ -144,18 +178,24 @@ class UWexpression(Symbol, uw_object):
         self._sym = sympy.sympify(new_value)
         return
 
-    #TODO: DEPRECATION
+    # TODO: DEPRECATION
     # The value attribute is no longer needed in the offical release of Underworld3
     @property
     def value(self):
         import warnings
-        warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute")
+
+        warnings.warn(
+            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute"
+        )
         return self._sym
 
     @value.setter
     def value(self, new_value):
         import warnings
-        warnings.warn(message=f"DEPRECATION warning, don't use 'value' attribute for expression: {new_value}, please use 'sym' attribute")
+
+        warnings.warn(
+            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {new_value}, please use 'sym' attribute"
+        )
         self._sym = sympy.sympify(new_value)
         return
 
@@ -232,7 +272,7 @@ class UWexpression(Symbol, uw_object):
     def _ipython_display_(self):
         from IPython.display import Latex, Markdown, display
 
-        display(Markdown("$"+self.symbol+"$"))
+        display(Markdown("$" + self.symbol + "$"))
 
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
