@@ -652,7 +652,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         ## be a reasonable alternative:
 
         # effective_viscosity = sympy.sympify(
-        #     1 / (1 / inner_self.bg_viscosity + 1 / viscosity_yield),
+        #     1 / (1 / inner_self.shear_viscosity_0 + 1 / viscosity_yield),
         # )
 
         effective_viscosity = sympy.Min(inner_self.shear_viscosity_0, viscosity_yield)
@@ -667,9 +667,9 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                     sympy.Max(
                         effective_viscosity,
                         inner_self.shear_viscosity_min,
-                    ),
-                    "Effective viscosity (plastic)",
+                    )
                 ),
+                "Effective viscosity (plastic)",
             )
             return effective_viscosity_ltd
 
