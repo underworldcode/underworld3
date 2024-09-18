@@ -1,1 +1,5 @@
 /.quarto/
+
+_build
+
+Notebooks/.meshes

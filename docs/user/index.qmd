@@ -1,26 +1,38 @@
 ---
-title: "Underworld 3"
+title: "Getting Started"
 subtitle: "Front page"
-authors: 
+authors:
 - name: Underworld Team
 
 exports:
-- format: pdf
-- template: arxiv_nips 
+- format: html
 ---
 
-LANDING Page
 
-Not much content in the intro at this point
+```{=html}
+<center>
+<iframe src="media/pyvista/SphereStreamLines.html" width="500" height="300"></iframe>
+</center>
+```
+---
 
-Update the `_quarto.yml` first, then fix the rest
+Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide is a brief introduction to some of the concepts in the
+`Underworld3` code and it's a good first step after you install the code to look at these notebooks. When you are happy that things are working OK, you can move along to look at the full documentation. - LINK NEEDED -
 
-<!-- 
-```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
-:width: 100%
-:align: center
+## Notebooks
 
-Caption
-``` 
--->
+Notebook 1 - [Meshes](Notebooks/1-Meshes.html): Introduces the mesh discretisation that we use in `Underworld3` and how you can build one of the pre-defined meshes. This notebook also show you how to use the `pyvista` visualisation tools for `Underworld3` objects. The mesh holds information on the mesh geometry, boundaries and coordinate systems.
 
+Notebook 2 - [Variables](Notebooks/2-Variables.html): Introduces the concept of `meshVariables` in `Underworld3`. These are both data containers and `sympy` symbolic objects. We show you how to inspect a `meshVariable`, set the data values in the `meshVariable` and visualise them.
+
+Notebook 3 - [Symbols](Notebooks/3-Symbolic_Forms.html): `meshVariables` are `sympy` objects
+that can be composed with other symbolic objects and evaluated numerically when required. They can also be differentiated. Most importantly, `sympy` can manipulate expressions, simplify them and cancel terms.
+
+Notebook 4 - [Diffusion Solver](Notebooks/4-Solvers.html): Introduces the various solver templates that are available in Underworld, starting with a steady-state diffusion problem. The template requires you to set some constitutive properties and define the unknowns. These are handled through subsitution into symbolic forms and the template equation can be inspected before you need to supply concrete expressions.
+
+Notebook 5 - [Stokes Solver](Notebooks/5-Solvers.html): Stokes equation is a more complicated system of equations to solve. This complexity is mostly hidden when you set the problem up. There are some interesting ways to constrain boundary values which are demonstrated using an annulus mesh (curved, free-slip boundaries) and a $\delta$ function buoyancy source.
+
+
+
+
+To add: something with a swarm - perhaps Navier Stokes, Poisseuille flow, non-steady input velocity (?)

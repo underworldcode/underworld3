@@ -1929,17 +1929,17 @@ class _MeshVariable(Stateful, uw_object):
         display(
             Markdown(f"**MeshVariable:**"),
             Markdown(
-                f"""
-  > symbol:  ${self.symbol}$
-  > shape:   ${self.shape}$
-  > degree:  ${self.degree}$
-  > continuous:  `{self.continuous}`
+                f"""\
+  > symbol:  ${self.symbol}$\n
+  > shape:   ${self.shape}$\n
+  > degree:  ${self.degree}$\n
+  > continuous:  `{self.continuous}`\n
   > type:    `{self.vtype.name}`"""
             ),
             Markdown(f"**FE Data:**"),
             Markdown(
                 f"""
-  > PETSc field id:  ${self.field_id}$
+  > PETSc field id:  ${self.field_id}$ \n
   > PETSc field name:   `{self.clean_name}` """
             ),
         )

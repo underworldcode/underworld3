@@ -8,40 +8,44 @@ book:
   date: "15/06/2024"
   bread-crumbs: false
   chapters:
-      - index.qmd
-      - Introduction.qmd
+    - index.qmd
+    - Notebooks/1-Meshes.ipynb
+    - Notebooks/2-Variables.ipynb
+    - Notebooks/3-Symbolic_Forms.ipynb
+    - Notebooks/4-Solvers.ipynb
+    - Notebooks/5-Solvers.ipynb
+    - NextSteps.qmd
 
   navbar:
     search: true
-    logo: media/MansoursNightmare.png
     background: "white"
-    foreground: "#C58812" # ANU honey colour
+    foreground: "#883344" # Diablo Hell Fire / Blood Red
 
   sidebar:
-    # logo: Images/COS-EarthSciences-800.jpg
-    # logo: Images/ANU-logo.jpg
+    logo: media/MansoursNightmare.png
     background: "white"
-    # foreground: "#C58812" # ANU honey colour
 
-
-bibliography: UnderworldDocumentation.bib
+# bibliography: UnderworldDocumentation.bib
 
 format:
   html:
-    theme: flatly # united / simplex
-    linkcolor: "#C58812"
+    theme: [united, "assets/theme.scss"] # united / simplex / flatly
+    mainfont: "Jost"
+    fontsize: 0.9em
+    linestretch: 1.7
+    linkcolor: "#883344"
+    number-sections: false
+    number-depth: 1
 
     code-links:
       - text: Open in Binder
         icon: rocket-takeoff
-        href: https://mybinder.org/v2/gh/underworld/underworld3/HEAD?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
+        href: https://mybinder.org/v2/gh/underworld/underworld3/development?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
+
     other-links:
       - text: Github Repository
         icon: github
         href: https://github.com/underworld/underworld3
-  
-  pdf:
-    documentclass: scrreprt
 
-
-
+  # pdf:
+  #   documentclass: scrreprt
