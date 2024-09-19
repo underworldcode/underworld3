@@ -34,9 +34,6 @@ jobs:
           quarto install tinytex
           cd docs/user
           quarto render
-          cd ..
-          cd WebSlides
-          quarto render
 
       ## Always deploy to version directory
       - name: Deploy quarto book
