@@ -256,6 +256,7 @@ class Mesh(Stateful, uw_object):
             if not self.dm.isDistributed():
                 self.dm.distribute()
 
+
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
             # This is preferable to the refineHierarchy call
@@ -287,6 +288,7 @@ class Mesh(Stateful, uw_object):
         else:
             if not self.dm.isDistributed():
                 self.dm.distribute()
+
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
 
