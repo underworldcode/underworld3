@@ -40,7 +40,7 @@ format:
     code-links:
       - text: Open in Binder
         icon: rocket-takeoff
-        href: https://mybinder.org/v2/gh/underworld/underworld3/development?labpath=WebBook/Notebooks%2FBinderLandingPage.qmd
+        href: https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks
 
     other-links:
       - text: Github Repository

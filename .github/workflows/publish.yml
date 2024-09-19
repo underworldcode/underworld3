@@ -1,0 +1,56 @@
+# publish to gh-pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main # Occurs on protected branch through PR
+      - development
+      - advection_updates
+
+name: Quarto Publish
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Add micromamba
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          micromamba-version: "1.5.6-0" # any version from https://github.com/mamba-org/micromamba-releases
+          environment-file: .github/workflows/envs/build_quickstart.yml
+          init-shell: bash
+          cache-environment: true
+          post-cleanup: "all"
+
+      - name: Render docs with quarto
+        shell: bash -l {0}
+        run: |
+          quarto install tinytex
+          cd docs/user
+          quarto render
+          cd ..
+          cd WebSlides
+          quarto render
+
+      ## Always deploy to version directory
+      - name: Deploy quarto book
+        uses: peaceiris/actions-gh-pages@v3
+
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ${{ github.ref_name }}/_quickstart
+          publish_dir: _build/book
+
+      # - name: Deploy quarto lectures
+      #   uses: peaceiris/actions-gh-pages@v3
+
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     destination_dir: lectures    # The dest dir is identified by branch
+      #     publish_dir: WebSlides/_slides
