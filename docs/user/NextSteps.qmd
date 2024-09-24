@@ -9,11 +9,28 @@ exports:
 - template: arxiv_nips
 ---
 
-+++
 
-Not much content in the intro at this point
+### Underworld Documentation and Examples
 
-Update the `_toc.yml` first, then fix the rest
+
+### Benchmarks
+
+
+### The Underworld Community
+
+Sharing codes / fixes
+
+Sharing models
+
+### Parallel Execution
+
+Advise using jupytext to render notebooks at .py files. This is helpful
+in shared environments because the files contain no output and play
+better with version control.
+
+Not such a good idea if you want to have a tutorial with outputs (like this one)
+
+
 
 <!--
 ```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html

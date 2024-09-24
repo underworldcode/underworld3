@@ -14,6 +14,8 @@ book:
     - Notebooks/3-Symbolic_Forms.ipynb
     - Notebooks/4-Solvers.ipynb
     - Notebooks/5-Solvers.ipynb
+    - Notebooks/6-Timestepping.ipynb
+    - Notebooks/7-Unsteady_Flow.ipynb
     - NextSteps.qmd
 
   navbar:
