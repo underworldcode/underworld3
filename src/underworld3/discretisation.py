@@ -256,7 +256,6 @@ class Mesh(Stateful, uw_object):
             if not self.dm.isDistributed():
                 self.dm.distribute()
 
-
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
             # This is preferable to the refineHierarchy call
@@ -673,6 +672,7 @@ class Mesh(Stateful, uw_object):
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        self._index = None
         self._build_kd_tree_index()
 
         (
@@ -1768,8 +1768,8 @@ class _MeshVariable(Stateful, uw_object):
         self.symbol = symbol
 
         if mesh.instance_number > 1:
-            invisible = r"\,\!" * mesh.instance_number
-            self.symbol = f"{{ {{ {invisible} }} {symbol} }}"
+            invisible = rf"\hspace{{ {mesh.instance_number/100}pt }}"
+            self.symbol = f"{{ {invisible} {symbol} }}"
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
