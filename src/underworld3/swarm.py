@@ -740,11 +740,12 @@ class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, mesh, recycle_rate=0):
+    def __init__(self, mesh, recycle_rate=0, verbose=False):
         Swarm.instances += 1
 
         self.celldm = mesh.dm.clone()
 
+        self.verbose = verbose
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
@@ -1027,22 +1028,29 @@ class Swarm(Stateful, uw_object):
 
         return
 
-    ## This is actually an initial population routine.
-    ## We can't use this to add particles / manage variables (LM)
     @timing.routine_timer_decorator
-    def add_particles_with_coordinates(self, coordinatesArray):
+    def add_particles_with_coordinates(self, coordinatesArray) -> int:
         """
-        This method adds particles to the swarm using particle coordinates provided
+        Add particles to the swarm using particle coordinates provided
         using a numpy array.
+
         Note that particles with coordinates NOT local to the current processor will
-        be reject/ignored. Either include an array with all coordinates to all processors
+        be rejected / ignored.
+
+        Either include an array with all coordinates to all processors
         or an array with the local coordinates.
+
         Parameters
         ----------
         coordinatesArray : numpy.ndarray
             The numpy array containing the coordinate of the new particles. Array is
             expected to take shape n*dim, where n is the number of new particles, and
             dim is the dimensionality of the swarm's supporting mesh.
+
+        Returns
+        --------
+        npoints: int
+            The number of points added to the local section of the swarm.
         """
 
         if not isinstance(coordinatesArray, np.ndarray):
@@ -1093,7 +1101,7 @@ class Swarm(Stateful, uw_object):
 
         self.dm.migrate(remove_sent_points=True)
 
-        return
+        return npoints
 
     @timing.routine_timer_decorator
     def save(
@@ -1907,12 +1915,11 @@ class NodalPointSwarm(Swarm):
     ):
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
-        self.verbose = verbose
 
         mesh = trackedVariable.mesh
 
         # Set up a standard swarm
-        super().__init__(mesh)
+        super().__init__(mesh, verbose)
 
         nswarm = self
 

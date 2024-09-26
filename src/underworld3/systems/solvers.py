@@ -1331,7 +1331,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             degree=u_Field.degree,
             continuous=True,
             # The default is now to match the above and avoid
-            # any use of projection. 
+            # any use of projection.
             # swarm_degree=u_Field.degree - 1,
             # swarm_continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
@@ -1420,8 +1420,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 self.constitutive_model.Parameters.diffusivity
             ):
                 max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.diffusivity
+                    self.constitutive_model.Parameters.diffusivity,
+                    np.zeros((1, self.mesh.dim)),
                 )
+
             else:
                 k = uw.function.evaluate(
                     sympy.sympify(self.constitutive_model.Parameters.diffusivity),
@@ -1657,19 +1659,22 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # F (at least for N-S) is a nodal point variable so there is no benefit
         # to treating it as a swarm variable. We'll define and use our own SL tracker
         # as we do in the SLCN version. We'll leave the option for an over-ride.
+        #
+        # Maybe u.degree-1. The scalar equivalent seems to show
+        # little benefit from specific choices here other than
+        # discontinuous flux variables amplifying instabilities.
 
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
             vtype=uw.VarType.SYM_TENSOR,
-            degree=1,  # self.u.degree - 1,
-            continuous=False,
+            degree=self.u.degree,
+            continuous=self.u.continuous,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=self.verbose,
             bcs=None,
             order=self._order,
-            smoothing=0.0001,
         )
 
         ## Add in the history terms provided ...
@@ -1929,7 +1934,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if isinstance(self.constitutive_model.viscosity, sympy.Expr):
             if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
                 max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.viscosity
+                    self.constitutive_model.Parameters.viscosity,
+                    np.zeros((1, self.mesh.dim)),
                 )
             else:
                 k = uw.function.evaluate(
