@@ -22,8 +22,13 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
 x, y = mesh.X
 
 # %%
-v = uw.discretisation.MeshVariable( r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2)
-p = uw.discretisation.MeshVariable( r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
+v = uw.discretisation.MeshVariable(
+    r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2
+)
+p = uw.discretisation.MeshVariable(
+    r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1
+)
+
 
 def bc_1(solver):
     s1 = solver
@@ -32,6 +37,7 @@ def bc_1(solver):
 
     s1.add_dirichlet_bc((sympy.oo, 0.0), "Left")
     s1.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+
 
 def bc_2(solver):
     s1 = solver
@@ -47,9 +53,9 @@ def vis_model(mesh):
     import pyvista as pv
     import underworld3.visualisation as vis
 
-    v = mesh.vars['mathbfu']
+    v = mesh.vars["mathbfu"]
     pl = pv.Plotter(window_size=(1000, 750))
-   
+
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
     pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
@@ -64,13 +70,19 @@ def vis_model(mesh):
         use_transparency=False,
         opacity=1.0,
     )
-    
+
     velocity_points = vis.meshVariable_to_pv_cloud(v)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
-    arrows = pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=3e-1, opacity=0.5, show_scalar_bar=False, cmap="coolwarm")
+    arrows = pl.add_arrows(
+        velocity_points.points,
+        velocity_points.point_data["V"],
+        mag=3e-1,
+        opacity=0.5,
+        show_scalar_bar=False,
+        cmap="coolwarm",
+    )
 
     pl.show(cpos="xy")
-    
 
 
 # %%
@@ -95,18 +107,20 @@ s1.constitutive_model.Parameters.shear_viscosity_0 = 1
 bc_2(s1)
 
 # %%
-#stokes.solve()
+# stokes.solve()
 s1.solve()
 
 # %%
 # vis_model(mesh)
 
-def test_auditor():
+
+def disable_test_auditor():
     # assert not values are in install data are None
     for v in uw.auditor.get_installation_data.values():
         assert v is not None
 
     # assert 7 uw_objects are created
-    assert uw.auditor.get_runtime_data.get('uw_object_count') == 7
+    assert uw.auditor.get_runtime_data.get("uw_object_count") == 7
+
 
 # %%

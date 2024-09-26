@@ -18,7 +18,7 @@ exports:
 
 Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
 
-It's a good first step after you install the code to look at the notebooks. When you are happy that things are working OK, you can move along to look at the full documentation or the benchmarking repository.
+It's a good first step after you install the code to look at these notebooks. When you are happy that things are working OK, you can move along to look at the full documentation or the benchmarking repository.
 
 ## Installation Guide
 
@@ -40,9 +40,11 @@ Notebook 5 - [Stokes Solver](Notebooks/5-Solvers.html): Stokes equation is a mor
 
 Notebook 6 - [Timestepping](Notebooks/6-Timestepping.html): *Coupled* Stokes flow plus thermal advection-diffusion gives a simple convection solver. The timestepping loop is written by hand because usually you will want to do some analysis or output some checkpoints.
 
-Notebook 7 - Unsteady flow   Using a passive swarm to track flow - Navier Stokes in a pipe with fixed side walls
+Notebook 7 - Unsteady flow   Using a passive swarm to track the pattern of flow developing in a pipe after an impulsive application of a boundary condition at the inflow. Particles need to be added to the passive swarm close to the inflow at each timestep.
 
-Notebook 8 - Swarm variables - exploring how they work
+Notebook 8 - Swarm variables - exploring how they work for specifying material properties with a swarm used to determine element viscosity. We learn how to use swarm variables in expressions generally and for boundary conditions.
+
+
 
 
 
