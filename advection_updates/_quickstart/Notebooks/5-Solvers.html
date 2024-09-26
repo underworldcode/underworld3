@@ -64,7 +64,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../site_libs/quarto-search/fuse.min.js"></script>
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
-<link href="../NextSteps.html" rel="next">
+<link href="../Notebooks/6-Timestepping.html" rel="next">
 <link href="../Notebooks/4-Solvers.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -208,6 +208,16 @@ window.Quarto = {
 </li>
         <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../NextSteps.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Next Steps</span></a>
   </div>
 </li>
@@ -250,18 +260,18 @@ window.Quarto = {
 
 
 <p>Mesh with embedded internal surface where we apply harmonic thermal forcing. This allows us to compute topography and gravity kernels. We’ll use a cylindrical annulus this timeand we’ll use free-slip boundary conditions throughout.</p>
-<div id="0678b0d7-bc26-4a29-b306-f2575c16814d" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:32.838646Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:32.838331Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:36.102265Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:36.101678Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:32.838622Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="2">
+<div id="0678b0d7-bc26-4a29-b306-f2575c16814d" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="12">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="6086e207-43c2-4c6d-ad95-717100eca4c3" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:36.103484Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:36.103171Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:36.107532Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:36.106924Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:36.103458Z&quot;}" data-execution_count="3">
+<div id="6086e207-43c2-4c6d-ad95-717100eca4c3" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>res <span class="op">=</span> <span class="fl">0.075</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>r_o <span class="op">=</span> <span class="fl">1.0</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>r_int <span class="op">=</span> <span class="fl">0.825</span></span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>r_i <span class="op">=</span> <span class="fl">0.55</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="ba20e3bb-2e8d-4e33-a79a-a2768bb2af58" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:36.108828Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:36.108634Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:36.659438Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:36.658857Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:36.108806Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="4">
+<div id="ba20e3bb-2e8d-4e33-a79a-a2768bb2af58" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>meshball <span class="op">=</span> uw.meshing.AnnulusInternalBoundary(radiusOuter<span class="op">=</span>r_o, </span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>                                              radiusInternal<span class="op">=</span>r_int, </span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>                                              radiusInner<span class="op">=</span>r_i, </span>
@@ -319,7 +329,7 @@ Labels:
 <h3 class="anchored" data-anchor-id="solver-setup">Solver setup</h3>
 <p>We can obtain unit vectors in the natural coordinate system (here <span class="math inline">\(r\)</span>, <span class="math inline">\(\theta\)</span>) as <code>mesh.CoordinateSystem.unit_e_0</code>, <code>mesh.CoordinateSystem.unit_e_1</code>. There is a null space if we apply the boundary conditions exactly, and so we define a function to represent the null space.</p>
 <p>We can set solver options via the <code>petsc_options</code> interface on the solver.</p>
-<div id="bddfc407-7622-45f0-b5b5-50d72ada879e" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:36.660402Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:36.660222Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:36.704249Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:36.703745Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:36.660381Z&quot;}" data-execution_count="5">
+<div id="bddfc407-7622-45f0-b5b5-50d72ada879e" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a density structure / buoyancy force</span></span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># gravity will vary linearly from zero at the centre</span></span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co"># of the sphere to (say) 1 at the surface</span></span>
@@ -338,7 +348,7 @@ Labels:
 <span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>)</span>
 <span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
-<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
 <span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-6</span></span>
 <span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options.setValue(<span class="st">"ksp_monitor"</span>, <span class="va">None</span>)</span>
@@ -359,7 +369,7 @@ Labels:
 <div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>                penalty <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Lower"</span></span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>                )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div id="3a01a29a-495d-42a5-be74-99316a4d6cbc" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:36.708216Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:36.707872Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:42.468994Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:42.465585Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:36.708188Z&quot;}" data-execution_count="6">
+<div id="3a01a29a-495d-42a5-be74-99316a4d6cbc" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix([<span class="dv">0</span>,<span class="dv">0</span>])</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -388,7 +398,7 @@ Labels:
 <section id="removal-of-the-null-space" class="level3">
 <h3 class="anchored" data-anchor-id="removal-of-the-null-space">Removal of the null space</h3>
 <p>We can use the <code>uw.maths.Integral</code> to compute the inner product of the null space and the velocity solution. It is not zero, so we remove it !</p>
-<div id="5be55132-2bf9-4581-a7c6-2e8be30d7109" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:42.471571Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:42.470420Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:46.408989Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:46.407675Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:42.471535Z&quot;}" data-execution_count="7">
+<div id="5be55132-2bf9-4581-a7c6-2e8be30d7109" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space evaluation</span></span>
 <span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>I0 <span class="op">=</span> uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_theta_fn_xy))</span>
@@ -410,7 +420,7 @@ Labels:
 1.9675625281382883e-19 1.4249504223200373</code></pre>
 </div>
 </div>
-<div id="d2ecdcac-a63b-4df9-838b-d0b5bacdcff2" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T07:16:46.411265Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T07:16:46.410785Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T07:16:50.701669Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T07:16:50.701077Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T07:16:46.411228Z&quot;}" data-execution_count="8">
+<div id="d2ecdcac-a63b-4df9-838b-d0b5bacdcff2" class="cell" data-execution_count="10">
 <div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
 <span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
@@ -455,13 +465,12 @@ Labels:
 <span id="cb12-42"><a href="#cb12-42" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb12-43"><a href="#cb12-43" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(pvstream, opacity<span class="op">=</span><span class="fl">0.3</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, cmap<span class="op">=</span><span class="st">"Greens"</span>, render_lines_as_tubes<span class="op">=</span><span class="va">False</span>)</span>
 <span id="cb12-44"><a href="#cb12-44" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/stokes_annulus_plot.html"</span>)</span>
-<span id="cb12-46"><a href="#cb12-46" aria-hidden="true" tabindex="-1"></a>    <span class="co"># pl.show(cpos="xy", jupyter_backend="trame")</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/stokes_annulus_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="a0a2ce11-9f40-46e4-a877-139813fa289d" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-18T09:49:47.015727Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-18T09:49:47.015315Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-18T09:49:47.023194Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-18T09:49:47.022458Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-18T09:49:47.015693Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="10">
+<div id="a0a2ce11-9f40-46e4-a877-139813fa289d" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="11">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/stokes_annulus_plot.html"</span>, width<span class="op">=</span><span class="dv">500</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="10">
+<div class="cell-output cell-output-display" data-execution_count="11">
 
         <iframe width="500" height="400" src="html5/stokes_annulus_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
@@ -900,8 +909,8 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
       </a>          
   </div>
   <div class="nav-page nav-page-next">
-      <a href="../NextSteps.html" class="pagination-link" aria-label="Next Steps">
-        <span class="nav-page-text"><span class="chapter-title">Next Steps</span></span> <i class="bi bi-arrow-right-short"></i>
+      <a href="../Notebooks/6-Timestepping.html" class="pagination-link" aria-label="Notebook 6: Time-dependence">
+        <span class="nav-page-text"><span class="chapter-title">Notebook 6: Time-dependence</span></span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

@@ -208,6 +208,16 @@ window.Quarto = {
 </li>
         <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../NextSteps.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Next Steps</span></a>
   </div>
 </li>
@@ -248,12 +258,12 @@ window.Quarto = {
 
 
 <p>We can add discrete variables (unknowns associated with the mesh points).</p>
-<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]">
+<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="51deb47c-0d19-4962-92a9-cda8ce60ee66" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-12T23:21:56.159588Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-12T23:21:56.159425Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-12T23:21:56.535530Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-12T23:21:56.535225Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-12T23:21:56.159578Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="3">
+<div id="51deb47c-0d19-4962-92a9-cda8ce60ee66" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.uw.meshing.CubedSphere(</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
@@ -269,7 +279,7 @@ window.Quarto = {
 <span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>phi_vec <span class="op">=</span>  mesh.CoordinateSystem.unit_e_2</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>This example shows how we can add a scalar field with a single value associated with each mesh node, and a vector field which has quadratic interpolation (points at the nodes plus interpolating points along mesh edges).</p>
-<div id="82e5784c-7aa9-458f-bcb7-3a28cd73383b" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-12T23:21:56.536098Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-12T23:21:56.536006Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-12T23:21:56.543687Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-12T23:21:56.542649Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-12T23:21:56.536089Z&quot;}" data-execution_count="4">
+<div id="82e5784c-7aa9-458f-bcb7-3a28cd73383b" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variable example / test</span></span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>scalar_var <span class="op">=</span> uw.discretisation.MeshVariable(</span>
@@ -289,13 +299,13 @@ window.Quarto = {
 <span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>To set values of the variable, we first have to unlock it using the <code>access</code> context manager, and then we can <code>evaluate</code> a function at the coordinates appropriate to fill up each variable:</p>
-<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-12T23:21:56.544326Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-12T23:21:56.544235Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-12T23:21:57.193871Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-12T23:21:57.193544Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-12T23:21:56.544316Z&quot;}" data-execution_count="5">
+<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(scalar_var, vector_var):</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    scalar_var.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(r, scalar_var.coords)</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    vector_var.data[:,:] <span class="op">=</span> uw.function.evaluate(r_vec, vector_var.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>Variables are like most <code>underworld</code> and <code>PETSc</code> objects - they can be examined using their <code>view()</code> method. The information that you will see is split into the underworld representation (listed under <strong>MeshVariable</strong>) and the PETSc representation (listed under <strong>FE Data</strong> which also includes the numerical values).</p>
-<div id="9e778873-9ba9-4778-a0d2-828c1647cf50" class="cell" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-12T23:21:57.195413Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-12T23:21:57.195286Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-12T23:21:57.200595Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-12T23:21:57.200315Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-12T23:21:57.195406Z&quot;}" data-execution_count="6">
+<div id="9e778873-9ba9-4778-a0d2-828c1647cf50" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>scalar_var.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>Class</strong>: &lt;class ‘underworld3.discretisation._MeshVariable’&gt;</p>
@@ -305,7 +315,7 @@ window.Quarto = {
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <blockquote class="blockquote">
-<p>symbol: <span class="math inline">\({ { \,\!\,\!\,\! } {r} }\)</span></p>
+<p>symbol: <span class="math inline">\({ \hspace{ 0.03pt } {r} }\)</span></p>
 </blockquote>
 <blockquote class="blockquote">
 <p>shape: <span class="math inline">\((1, 1)\)</span></p>
@@ -341,7 +351,7 @@ window.Quarto = {
        [0.943375]])</code></pre>
 </div>
 </div>
-<div id="1ad62dad-6247-4818-a7bd-8227fc5ace69" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-17T10:45:29.002399Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-17T10:45:29.002164Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-17T10:45:29.506830Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-17T10:45:29.506394Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-17T10:45:29.002386Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]">
+<div id="1ad62dad-6247-4818-a7bd-8227fc5ace69" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="8">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Visualise it / them</span></span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
@@ -374,12 +384,12 @@ window.Quarto = {
 <span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb7-31"><a href="#cb7-31" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/echidna_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="4754590a-23c4-42d7-ab04-97f6ea8421a9" class="cell" data-editable="true" data-execution="{&quot;iopub.execute_input&quot;:&quot;2024-09-17T10:45:29.002399Z&quot;,&quot;iopub.status.busy&quot;:&quot;2024-09-17T10:45:29.002164Z&quot;,&quot;iopub.status.idle&quot;:&quot;2024-09-17T10:45:29.506830Z&quot;,&quot;shell.execute_reply&quot;:&quot;2024-09-17T10:45:29.506394Z&quot;,&quot;shell.execute_reply.started&quot;:&quot;2024-09-17T10:45:29.002386Z&quot;}" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]">
+<div id="4754590a-23c4-42d7-ab04-97f6ea8421a9" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="9">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/echidna_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="65">
+<div class="cell-output cell-output-display" data-execution_count="9">
 
-        <iframe width="1000" height="750" src="html5//echidna_plot.html" frameborder="0" allowfullscreen=""></iframe>
+        <iframe width="600" height="400" src="html5/echidna_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
 <p>Interactive Image: Spherical shell mesh cut away to show radial arrows with length decreasing away from the centre.</p>
 </div>
