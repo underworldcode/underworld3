@@ -14,13 +14,13 @@ echo
 echo Install jupyter extensions
 echo
 
-# install required python packages
+# install required python packages for jupyter
 python3 -m pip install "jupyter-server-proxy"
-python3 -m pip install "jupyterlab-quarto>=0.3.3"
+# python3 -m pip install "jupyterlab-quarto>=0.3.3"
 python3 -m pip install "jupytext>=1.16.1"
 python3 -m pip install "trame_jupyter_extension"
 
-# We install the local code "properly" - no point in a dev build here
+# We install the local code "properly" - no point in an in-place build here
 
 echo
 echo Install local UW3
