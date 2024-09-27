@@ -1925,7 +1925,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
             - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
 
-        returns: ${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv}
+        returns: ${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$
 
 
         """
