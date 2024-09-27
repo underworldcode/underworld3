@@ -50,7 +50,6 @@ def UnstructuredSimplexBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -59,7 +58,6 @@ def UnstructuredSimplexBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -285,7 +283,6 @@ def StructuredQuadBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -294,7 +291,6 @@ def StructuredQuadBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -581,7 +577,6 @@ def SphericalShell(
         Lower = 11
         Upper = 12
         Centre = 1
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -800,7 +795,6 @@ def SphericalShellInternalBoundary(
         Lower = 11
         Internal = 12
         Upper = 13
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -1045,7 +1039,6 @@ def SegmentofSphere(
         West = 14
         South = 15
         North = 16
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -1266,7 +1259,6 @@ def QuarterAnnulus(
         Left = 3
         Right = 4
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1435,7 +1427,6 @@ def Annulus(
         Lower = 1
         Upper = 2
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1501,9 +1492,10 @@ def Annulus(
                 name=boundaries.Lower.name,
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
@@ -1556,13 +1548,14 @@ def Annulus(
     # does not flag points that are actually in the mesh.
 
     def annulus_return_coords_to_bounds(coords):
+
         Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
 
         outside = Rsq > radiusOuter**2
         inside = Rsq < radiusInner**2
 
-        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
-        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+        coords[outside, :] *= 0.99 * radiusOuter / (Rsq[outside] ** 0.5).reshape(-1, 1)
+        coords[inside, :]  *= 1.01 * radiusInner / (Rsq[inside] ** 0.5).reshape(-1, 1)
 
         return coords
 
@@ -1671,7 +1664,6 @@ def SegmentofAnnulus(
         Left = 3
         Right = 4
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1872,7 +1864,6 @@ def AnnulusWithSpokes(
         UpperPlus = 21
         Centre = 1
         Spokes = 99
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -2131,7 +2122,7 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
+        All_Edges = 1000
 
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
@@ -2221,9 +2212,10 @@ def AnnulusInternalBoundary(
                 1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1,
@@ -2344,7 +2336,6 @@ def DiscInternalBoundaries(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
 
     if cellSize_Lower is None:
         cellSize_Lower = cellSize
@@ -2554,7 +2545,6 @@ def CubedSphere(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -2775,7 +2765,6 @@ def RegionalSphericalBox(
         South = 4
         East = 5
         West = 6
-        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -3158,7 +3147,6 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments
@@ -3562,7 +3550,6 @@ def SegmentedSphericalBall(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments

@@ -45,6 +45,8 @@ with mesh1.access(s_values):
     s_values.data[:, 0] = uw.function.evaluate(s_fn, s_values.coords, coord_sys=mesh1.N)
 
 print(f"{uw.mpi.rank} - solve projection", flush=True)
+mesh1.dm.view()
+
 scalar_projection.solve()
 
 print(f"Finalised")
