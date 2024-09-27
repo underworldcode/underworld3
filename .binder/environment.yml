@@ -17,10 +17,10 @@ dependencies:
   - pytest
   - ipython
   - pyvista
-  - quarto
+  - gmsh
   - pip
   - pip:
-      - gmsh
+      # - gmsh
       - jupyterlab
       - jupytext
       - pygments
