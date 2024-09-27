@@ -1,4 +1,4 @@
-name: API docs / pdoc3
+name: API docs / pdoc
 
 # We should trigger this from an upload event. Note that pdoc requires us to import the
 # built code, so this is a building test as well as documentation deployment
@@ -8,6 +8,7 @@ on:
     branches:
       - main # Occurs on protected branch through PR
       - development
+      - Quick_Start_Docs
 
   workflow_dispatch:
 
@@ -18,7 +19,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Install Conda environment with Micromamba
-        uses: mamba-org/provision-with-micromamba@main
+        uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: ./.github/workflows/envs/build_uw_docs.yml
           cache-downloads: true
