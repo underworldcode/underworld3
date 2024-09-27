@@ -1,6 +1,5 @@
 #!/bin/bash -v
 
-
 # echo
 # echo Install uw3_env during postBuild phase
 # echo
@@ -24,7 +23,7 @@ python3 -m pip install "trame_jupyter_extension"
 # We install the local code "properly" - no point in a dev build here
 
 echo
-echo Install local UW3 
+echo Install local UW3
 echo
 
 # Note: we would be better to find a way to access this directly
