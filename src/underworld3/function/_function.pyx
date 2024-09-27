@@ -765,7 +765,7 @@ def dm_swarm_get_migrate_type(swarm):
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+def dm_swarm_set_migrate_type(swarm, mtype:PETSc.DMSwarm.MigrateType):
 
     cdef DM dm = swarm.dm
     cdef PetscErrorCode ierr

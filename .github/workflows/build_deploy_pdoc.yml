@@ -1,4 +1,4 @@
-name: API docs / pdoc
+name: API docs / pdoc3
 
 # We should trigger this from an upload event. Note that pdoc requires us to import the
 # built code, so this is a building test as well as documentation deployment

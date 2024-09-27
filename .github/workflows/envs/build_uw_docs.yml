@@ -15,4 +15,4 @@ dependencies:
   - gmsh
   - pdoc>=14
   - pip
-
+    - pdoc3
