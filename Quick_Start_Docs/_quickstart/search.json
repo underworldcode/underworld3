@@ -169,7 +169,7 @@
     "href": "index.html",
     "title": "Underworld3 Quick Start Guide",
     "section": "",
-    "text": "Installation Guide\nThe quickest option is not to install anything but click on the rocket icon (top right) to launch our notebook examples on binder.\nIf do you want to install the code on your own machine, we recommend using miniconda and mamba and to create a separate virtual environment and to install the code from source.\nMore details in the Installation Instructions",
+    "text": "Installation Guide\nThe quickest option is not to install anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org. If do you want to install the code on your own machine, we recommend using miniconda and mamba and to create a separate virtual environment and to install the code from source.\nMore details in the Installation Instructions",
     "crumbs": [
       "About UW3",
       "<span class='chapter-number'>1</span>  <span class='chapter-title'>Getting Started</span>"

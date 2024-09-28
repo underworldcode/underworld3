@@ -460,13 +460,13 @@ Labels:
 <section id="non-linear-problems-jacobian" class="level4">
 <h4 class="anchored" data-anchor-id="non-linear-problems-jacobian">Non-linear problems, Jacobian</h4>
 <p>This is a non-linear problem and has a non-zero Jacobian (<span class="math inline">\(\partial F / \partial \nabla T )\)</span>. It’s a little bit hidden, but is available if you feel like checking:</p>
-<div id="b27c04cd-7192-446b-86e5-3f5a1867045a" class="cell" data-execution_count="16">
+<div id="b27c04cd-7192-446b-86e5-3f5a1867045a" class="cell" data-execution_count="9">
 <div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>display(poisson._G3)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><span class="math inline">\(\displaystyle \left[\begin{matrix}- 3 {T}_{,0}^{ 2 }(\mathbf{x}) - {T}_{,1}^{ 2 }(\mathbf{x}) + 1 &amp; - 2 {T}_{,0}(\mathbf{x}) {T}_{,1}(\mathbf{x})\\- 2 {T}_{,0}(\mathbf{x}) {T}_{,1}(\mathbf{x}) &amp; - {T}_{,0}^{ 2 }(\mathbf{x}) - 3 {T}_{,1}^{ 2 }(\mathbf{x}) + 1\end{matrix}\right]\)</span></p>
 </div>
 </div>
-<div id="6dccf566-8505-4a6e-94a7-f2869b73e3ff" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="9">
+<div id="6dccf566-8505-4a6e-94a7-f2869b73e3ff" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="10">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mpi4py <span class="im">import</span> MPI</span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> MPI.COMM_WORLD.size <span class="op">==</span> <span class="dv">1</span>:</span>
@@ -509,10 +509,10 @@ Labels:
 <span id="cb13-40"><a href="#cb13-40" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb13-41"><a href="#cb13-41" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/temperature_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="4bf2b002-3efd-4f02-907b-c68430f282af" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="10">
+<div id="4bf2b002-3efd-4f02-907b-c68430f282af" class="cell" data-editable="true" data-slideshow="{&quot;slide_type&quot;:&quot;&quot;}" data-tags="[]" data-execution_count="11">
 <div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/temperature_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="10">
+<div class="cell-output cell-output-display" data-execution_count="11">
 
         <iframe width="600" height="300" src="html5/temperature_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
