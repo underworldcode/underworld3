@@ -27,9 +27,7 @@ Welcome to `Underworld3`, a mathematically self-describing, finite-element code 
 
 ## Installation Guide
 
-The quickest option is **not to install** anything but click on the rocket icon (top right) to launch our notebook examples on binder.
-
-If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba` and to create a separate virtual environment and to install the code from source.
+The quickest option is **not to install** anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org. If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba` and to create a separate virtual environment and to install the code from source.
 
 More details in the [Installation Instructions](Installation.qmd)
 

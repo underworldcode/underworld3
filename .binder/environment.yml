@@ -18,10 +18,10 @@ dependencies:
   - pytest
   - ipython
   - pyvista
-  - gmsh # insstall via apt.txt ?
   - pip
   - pip:
-      - gmsh-sdk
+      - gmsh
+      - gmsh-api
       - jupyterlab
       - jupytext
       - pygments
