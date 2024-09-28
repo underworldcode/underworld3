@@ -31,6 +31,7 @@ echo
 
 export CONDA_PREFIX=/srv/conda/envs/notebook/
 export PYTHONPATH=$CONDA_PREFIX/lib
+export CC=`which mpicc`
 
 # debugging if required
 # python -c "import petsc4py; print(petsc4py.get_config())"
@@ -39,7 +40,6 @@ export PYTHONPATH=$CONDA_PREFIX/lib
 # Build / install the uw3 in this repo
 
 pip install .
-
 
 echo
 echo Completed
