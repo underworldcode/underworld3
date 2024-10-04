@@ -20,6 +20,8 @@ The `underworld3` module (API) documentation can be found online:
 
  Main Branch: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/underworld3/main)
 
+Development Branch: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/underworld3/development)
+
 ## Installation Guide
 
 The quickest option is **not to install** anything but try the binder demo above !
