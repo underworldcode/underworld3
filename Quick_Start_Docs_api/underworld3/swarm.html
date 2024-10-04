@@ -290,7 +290,7 @@ def sym_1d(self):
 </dd>
 <dt id="underworld3.swarm.NodalPointSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f4ea06c2050>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7fa18ca02050>, verbose=False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Swarm with particles located at the coordinate points of a meshVariable</p>
@@ -338,6 +338,8 @@ after they have been moved.</p>
             nswarm,
             vtype=trackedVariable.vtype,
             _proxy=False,
+            # proxy_degree=trackedVariable.degree,
+            # proxy_continuous=trackedVariable.continuous,
             varsymbol=symbol,
         )
 
