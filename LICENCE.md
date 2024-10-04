@@ -1,12 +1,11 @@
 ### Summary
 
 Underworld is an open-source, parallel, particle-in-cell, finite element geodynamics code. Please refer to repository
-top level `README.md` for further information. 
+top level `README.md` for further information.
 
 ### Licensing
 
-1) All Underworld source code is released under the LGPL-3 (See LGPLv3.txt in this repository). This covers all
-files in `underworld` constituting the Underworld3 Python module (library), and any other material not explicitly identified under (2) below.
+1) All Underworld source code is released under the LGPL-3 (See the file LICENCE in his repository). This covers all files in `underworld` constituting the Underworld3 Python module (library), and any other material not explicitly identified under (2) below.
 
 2) Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License. To view a copy of this license, visit http://creativecommons.org/licenses/by/4.0/ or send a letter to Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.  We offer this licence to encourage you to modify and share the examples and use them to help you in your research. Where no individual creator is identified in these files, the appropriate attribution is "The Underworld Team". All the files covered by this license are found in the `UserGuide` directory.
 
@@ -32,7 +31,3 @@ Copyright VPAC,                           2003-2009
    1. Beucher, R., Moresi, L., Giordani, J., Mansour, J., Sandiford, D., Farrington, R., et al. (2019). UWGeodynamics: A teaching and research tool for numerical geodynamic modelling. Journal of Open Source Software. https://doi.org/10.21105/joss.01136
 
    1. Mansour, J., Giordani, J., Moresi, L., Beucher, R., Kaluza, O., Velic, M., et al. (2020). Underworld2: Python Geodynamics Modelling for Desktop, HPC and Cloud. Journal of Open Source Software, 5(47), 1797. https://doi.org/10.21105/joss.01797
-
-
-
-

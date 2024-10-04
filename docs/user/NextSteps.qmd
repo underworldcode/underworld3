@@ -12,31 +12,86 @@ exports:
 
 ### Underworld Documentation and Examples
 
+In addition to the notebooks in this brief set of examples, there are a number of sources of information on using `Underworld3` that you can access:
+
+  - [The Underworld Website / Blog](https://www.underworldcode.org)
+
+  - [The API documentation](https://underworldcode.github.io/underworld3/development_api/index.html)
+  (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text.
+
+  - The [`underworld3` GitHub repository](https://github.com/underworldcode/underworld3) is the most active development community for the code.
+
 
 ### Benchmarks
 
+The [Underworld3 Benchmarks Repository](https://github.com/underworld-community/UW3-benchmarks) is a useful place to find community benchmarks coded in `underworld3` along with accuracy and convergence analysis. This is an open repository where you can make a pull request with new benchmark submissions once you get the hang of things.
 
 ### The Underworld Community
 
-Sharing codes / fixes
-
-Sharing models
+The [Underworld Community](https://github.com/underworld-community) organisation on Github is a collection of contributed repositories from the underworld user community for all versions of the code and now includes scripts for underworld3.
 
 ### Parallel Execution
 
-Advise using jupytext to render notebooks at .py files. This is helpful
-in shared environments because the files contain no output and play
-better with version control.
+`Underworld3` is inherently parallel and designed for high performance computing. The symbolic layer is a relatively thin veneer that sits on top of the `PETSc` machinery. A script that has been developed in `jupyter` should be transferrable to an HPC environment with no changes (except that inherently serial operations such as visualisation and model reduction are best left to postprocessing / co-processing).
 
-Not such a good idea if you want to have a tutorial with outputs (like this one)
+We recommend installing `jupytext` which allows either a seamless two-way conversion (or pairing) between the `ipynb` format and an annotated python script, or the ability to work entirely with annoted python scripts and not use `ipynb` at all. The python form does not store the output of notebook cells but there are advantages to this when scripts are under version control.
 
+Almost all of our notebook examples are annotated python for this reason.An exception is the collection of notebooks in this quick-start guide because we want to show you the rendered output in the static web pages.
 
-
-<!--
-```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
-:width: 100%
-:align: center
-
-Caption
+```bash
+    mpirun -np 1024 python3 Modelling_Script.py -uw_resolution 96
 ```
--->
+
+The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the `PETSc` command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).
+
+
+### Advanced capabilities
+
+Digging a bit deeper into `underworld3`, there are many capabilities that require a clear understanding of the concepts that underlie the implementation. The following examples are not *plug-and-play*, but they do only require python coding using the `underworld3` API and no detailed knowledge of `petsc4py` or `PETSc`. [Get in touch with us](https://github.com/underworldcode/underworld3/issues) if you want to try this sort of thing but can't figure it out for yourself.
+
+#### Deforming meshes
+
+In [Example 8](Notebooks/8-Particle_Swarms.ipynb), we made small variations to the mesh to conform to basal topography. We did not remesh, so we had to be careful to apply a smooth, analytic displacement to every node. For more general free-surface models, we need to calculate a smooth function using the computed boundary motions (e.g, solving a poisson equation with known boundary displacements as boundary conditions). We need to step through time and it is common to stabilize the surface motions through a surface integral term that accounts for the interface displacement during the timestep. The example below shows an `underworld3` forward model with internal loads timestepped close to isostatic equilibrium.
+
+![*Stokes flow driven by buoyancy in an annulus defined by two embedded surfaces within an enveloping disk mesh. The surfaces deform in response to the flow. The embedding medium has a very low viscosity but still acts to damp rotational modes. The outer boundary of the disk can be set to a far-field gravitational potential for whole-Earth relaxation models*](media/RelaxingMesh.png){width=50%}
+
+In a more general case, we need to account to horizontal motions. This is more complicated because the horizontal velocities can be large even when vertical equilibrium is achieved. So we need to solve for the advected component of vertical motion in addition to the local component. Hooray for symbolic algebra !
+
+#### Weak / penalty boundary conditions
+
+[Example 8](Notebooks/8-Particle_Swarms.ipynb) introduced the idea of penalty-based boundary conditions where the constraint is weakly enforced by providing a large penalty for violation of the condition. This is very flexible as the penalizing conditions can be adjusted during the run, including changing which part of the boundary is subject to constraints based on the solution or a coupled problem. The channel flow model shown below has a boundary condition that depends on a externally sourced model for ponded material at the base that is derived from a simple topography filling algorithm.
+
+```{=html}
+<center>
+<iframe src="media/pyvista/ChannelFlow.html" width="600" height="300">
+</iframe>
+</center>
+```
+*Live Image: Stokes flow in a channel with multiple obstructions. Flow is driven from the inlet (a velocity boundary condition). The geometry was contructed with `gmsh`. This is an example for education which demonstrates the emergence of an large-scale pressure gradient as a result of the presence of the obstructions, and also the dispersion of tracers through the complicated flow geometry*
+
+The penalty approach does allow the solution to deviate from the exact value of the boundary condition, in a similar way to the iterative solvers delivering a solution to within a specified tolerance. There are some cases, for example, enforcing plate motions at the surface, where there are uncertainties in the applied boundary conditions and that these uncertainties may vary in space and time.
+
+#### Mesh Adaptation
+
+It is also possible to use the PETSc mesh adaption capabilities, to refine the resolution of a model where it is most needed and coarsen elsewhere. Dynamically-adapting meshes are possible but the interface is very low level at present, particularly in parallel.
+
+```{=html}
+<center>
+<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="300">
+</iframe>
+</center>
+```
+*Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is three plume-like upwellings and the slope of this field is shown in colour (red high, blue low). The adapted mesh is shown in green.*
+
+```python
+
+    # t is the driving "temperature". We form an isotropic refinement metric from its slope
+
+    refinement_fn = 1.0 + sympy.sqrt(
+          t.diff(x) ** 2
+        + t.diff(y) ** 2
+        + t.diff(z) ** 2
+    )
+
+    icoord, meshA = adaptivity.mesh_adapt_meshVar(mesh0, refinement_fn, Metric, redistribute=True)
+```

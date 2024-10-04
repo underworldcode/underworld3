@@ -6,4 +6,3 @@ libxinerama1
 libfltk1.3-dev
 libfreetype6-dev
 libgl1-mesa-dev
-python3-gmsh

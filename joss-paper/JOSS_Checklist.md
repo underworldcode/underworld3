@@ -4,6 +4,11 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 
 ## Repository format / content
 
+    - [ ] README.md
+      - [ ] Links to uw web page
+      - [ ] Binder launch link for Quick-start
+      - [ ] Acknowledgements
+
     - [ ] paper.md
     - [ ] paper.bib
     - [x] Install GitHub workflow
@@ -11,6 +16,14 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
     - [x] Open source licence file
     - [?] Publication branch (this is acceptable, must be kept up to date on submission).
     - [ ] Check Insights / Community Standards for GitHub repo / put into line with UW2
+    - [x] Check authors and .zenodo creators align
+
+    - [ ] Quickstart Guide for users (deployable on binder)
+      - [x] Installation details
+      - [ ] Notebook examples (ipynb)
+      - [ ] Links to API docs
+      - [ ] Links to Github
+      - [ ] Links to Underworld Community
 
 ## Clean up checklist
 
@@ -23,13 +36,11 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 ## Software checklist
 
 Can I submit ?
-
     - [x] The software must have an obvious research application.
     - [x] You must be a major contributor to the software you are submitting, and have a GitHub account to participate in the review process.
     - [x] Your paper must not focus on new research results accomplished with the software.
 
 The software associated with your submission must:
-
     - [x] Be stored in a repository that can be cloned without registration.
     - [x] Be stored in a repository that is browsable online without registration.
     - [x] Have an issue tracker that is readable without registration.

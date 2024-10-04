@@ -11,7 +11,7 @@ exports:
 
 ```{=html}
 <center>
-<iframe src="Notebooks/html5/stokes_sphere_plot.html" width="500" height="300">
+<iframe src="media/pyvista/SphereStreamlinesS.html" width="500" height="300">
 </iframe>
 </center>
 
@@ -25,36 +25,48 @@ exports:
 
 Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
 
+All `Underworld3` source code is released under the LGPL-3 open source licence. This covers all files in `underworld3` constituting the Underworld3 Python module. Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License.
+
 ## Installation Guide
 
-The quickest option is **not to install** anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org. If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba` and to create a separate virtual environment and to install the code from source.
+The quickest option is **not to install** anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org.
 
-More details in the [Installation Instructions](Installation.qmd)
+If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](Installation.qmd)
 
-## Notebooks
+## Sample Code
 
 Underworld is designed to be run in the jupyter notebook environment where you can take advantage of jupyter's rich display capabilities to explore the mathematics of your problem, visualise results and query classes or live objects.
 
 It's a good first step after you install the code to look at the [examples notebooks](Notebooks/Notebook_Index.ipynb). When you are happy that things are working OK, you can move along to look at the full documentation or the benchmarking repository.
 
-**Summary of skills that the notebooks cover**
+The notebooks introduce the concept of meshing to describe the domain and boundary conditions for a model and progress through Eulerian data containers, symbolic operators (functions, compositions, derivatives, evaluations).
+The examples move on to the template PDE solvers for scalar and vector problems (in this case the Poisson equation and the Stokes equation) and time dependent, coupled problems (a simple convection example in an annulus geometry). They cover constitutive models, boundary conditions and visualisation.
+The final examples deal with Lagrangian data containers (particle swarms), first transporting them in a velocity field, and second, accessing the symbolic forms of their data for use in underworld expressions.
+
+## Learn More
+
+`underworld3` is a research code under continual development and the examples in the notebooks provided with the code only touch upon the extent of its capabilities. Read the [Next Steps](NextSteps.qmd) page to find out how to learn more about `underworld3`, how to get in touch with the development team, and how to become part of the **underworld community**.
 
 
+## Acknowledgements
 
-## Next Steps
+The Underworld codes represent more than two decades of programming effort by many developers including a wide community of contributors from the open-source community.
 
+As a community-driven development team, we first acknowledge many contributions made through pull-requests to our repositories and direct submission of codes and examples. The underworldcode organisation on GitHub records all such contributions to the software and the underworld community on GitHub tracks the exchange of information and models.
 
+Direct funding support has been provided by:
 
-Some of the cool things about UW3 that you can do with a bit of effort (at the moment)
+ - AuScope provides direct support for the core development team behind the underworld codes and the underworld cloud suite of tools. AuScope is funded by the Australian Government through the National Collaborative Research Infrastructure Strategy, NCRIS.
 
-  - gmsh (anything - Pramoda's work)
-  - deformed meshes, interesting boundary conditions
-  - free surfaces, relaxation etc
-  -
+ - The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme.
 
-## Documentation & Cookbooks
+ - The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
 
+In-kind support has also come from the institution that host Underworld developers including: the Australian National University, Monash University, The University of Melbourne, The University of Sydney and the CSIRO.
 
+## Licensing and re-use
 
+All of our software is released under open source licence and all documentation and worked examples are released with a creative commons licence. We are passionate about having our software used and code reuse is strongly encouraged in the interest of scientific reproducibility and replicability.
+The developers are active researchers and scientists whose livelihood depends  on their creative talents and the acknowledgement of their work. Please respect the effort that goes into developing software and tutorials by citing our work and collaborating on publication with new applications of our software when you can.
 
 ## References
