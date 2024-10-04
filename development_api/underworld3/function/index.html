@@ -4,9 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
 <meta name="generator" content="pdoc3 0.11.1">
-<title>underworld3.mpi API documentation</title>
-<meta name="description" content="This module contains routines related to parallel operation via
-the Message Passing Interface (MPI) …">
+<title>underworld3.function API documentation</title>
+<meta name="description" content="">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
@@ -25,138 +24,58 @@ hljs.highlightAll();
 <main>
 <article id="content">
 <header>
-<h1 class="title">Module <code>underworld3.mpi</code></h1>
+<h1 class="title">Module <code>underworld3.function</code></h1>
 </header>
 <section id="section-intro">
-<p>This module contains routines related to parallel operation via
-the Message Passing Interface (MPI).</p>
-<h2 id="attributes">Attributes</h2>
-<p>comm :: mpi4py.MPI.Intracomm
-The MPI communicator.
-rank :: int
-The rank of the current process.
-size :: int
-The size of the pool of processes.</p>
 </section>
 <section>
+<h2 class="section-title" id="header-submodules">Sub-modules</h2>
+<dl>
+<dt><code class="name"><a title="underworld3.function.analytic" href="analytic.html">underworld3.function.analytic</a></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt><code class="name"><a title="underworld3.function.expressions" href="expressions.html">underworld3.function.expressions</a></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
 </section>
 <section>
 </section>
 <section>
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
-<dt id="underworld3.mpi.barrier"><code class="name flex">
-<span>def <span class="ident">barrier</span></span>(<span>)</span>
+<dt id="underworld3.function.derivative"><code class="name flex">
+<span>def <span class="ident">derivative</span></span>(<span>expression, *args, **kwargs)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Creates an MPI barrier. All processes wait here for others to catch up.</p></div>
+<div class="desc"><p>Obtain symbolic derivatives of any underworld function, correctly handling sub-expressions / constants</p></div>
 </dd>
 </dl>
 </section>
 <section>
-<h2 class="section-title" id="header-classes">Classes</h2>
-<dl>
-<dt id="underworld3.mpi.call_pattern"><code class="flex name class">
-<span>class <span class="ident">call_pattern</span></span>
-<span>(</span><span>pattern='collective', returnobj=None)</span>
-</code></dt>
-<dd>
-<div class="desc"><p>This context manager calls the code within its block using the
-specified calling pattern.</p>
-<h2 id="parameters">Parameters</h2>
-<dl>
-<dt><strong><code>pattern</code></strong> :&ensp;<code>str</code></dt>
-<dd>'collective', each process calls the block of code simultaneously.
-'sequential', processes call block of code in order of rank.</dd>
-</dl>
-<h2 id="example">Example</h2>
-<p>This example is redundant as it will only run with a single process.
-However, where run in parallel, you should expect the outputs to be
-ordered according to process rank. Note also that for deterministic
-printing in parallel, and you may need to run Python unbuffered
-(<code>mpirun -np 4 python -u yourscript.py</code>, for example).</p>
-<pre><code class="language-python-repl">&gt;&gt;&gt; import underworld as uw
-&gt;&gt;&gt; with uw.mpi.call_pattern(pattern=&quot;sequential&quot;):
-...     print(&quot;My rank is {}&quot;.format(uw.mpi.rank))
-My rank is 0
-</code></pre></div>
-<details class="source">
-<summary>
-<span>Expand source code</span>
-</summary>
-<pre><code class="python">class call_pattern:
-    &#34;&#34;&#34;
-    This context manager calls the code within its block using the
-    specified calling pattern.
-
-    Parameters
-    ----------
-    pattern: str
-        &#39;collective&#39;, each process calls the block of code simultaneously.
-        &#39;sequential&#39;, processes call block of code in order of rank.
-
-    Example
-    -------
-    This example is redundant as it will only run with a single process.
-    However, where run in parallel, you should expect the outputs to be
-    ordered according to process rank. Note also that for deterministic
-    printing in parallel, and you may need to run Python unbuffered
-    (`mpirun -np 4 python -u yourscript.py`, for example).
-
-    &gt;&gt;&gt; import underworld as uw
-    &gt;&gt;&gt; with uw.mpi.call_pattern(pattern=&#34;sequential&#34;):
-    ...     print(&#34;My rank is {}&#34;.format(uw.mpi.rank))
-    My rank is 0
-
-    &#34;&#34;&#34;
-
-    def __init__(self, pattern=&#34;collective&#34;, returnobj=None):
-        if not isinstance(pattern, str):
-            raise TypeError(&#34;`pattern` parameter must be of type `str`&#34;)
-        pattern = pattern.lower()
-        if pattern not in (&#34;collective&#34;, &#34;sequential&#34;):
-            raise ValueError(&#34;`pattern` must take values `collective` or `sequential`.&#34;)
-        self.pattern = pattern
-        self.returnobj = returnobj
-
-    def __enter__(self):
-        if self.pattern == &#34;sequential&#34;:
-            if rank != 0:
-                comm.recv(source=rank - 1, tag=333)
-        return self.returnobj
-
-    def __exit__(self, *args):
-        if self.pattern == &#34;sequential&#34;:
-            dest = rank + 1
-            if dest &lt; comm.size:
-                comm.send(None, dest=rank + 1, tag=333)</code></pre>
-</details>
-</dd>
-</dl>
 </section>
 </article>
 <nav id="sidebar">
 <div class="toc">
-<ul>
-<li><a href="#attributes">Attributes</a></li>
-</ul>
+<ul></ul>
 </div>
 <ul id="index">
 <li><h3>Super-module</h3>
 <ul>
-<li><code><a title="underworld3" href="index.html">underworld3</a></code></li>
+<li><code><a title="underworld3" href="../index.html">underworld3</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-submodules">Sub-modules</a></h3>
+<ul>
+<li><code><a title="underworld3.function.analytic" href="analytic.html">underworld3.function.analytic</a></code></li>
+<li><code><a title="underworld3.function.expressions" href="expressions.html">underworld3.function.expressions</a></code></li>
 </ul>
 </li>
 <li><h3><a href="#header-functions">Functions</a></h3>
 <ul class="">
-<li><code><a title="underworld3.mpi.barrier" href="#underworld3.mpi.barrier">barrier</a></code></li>
-</ul>
-</li>
-<li><h3><a href="#header-classes">Classes</a></h3>
-<ul>
-<li>
-<h4><code><a title="underworld3.mpi.call_pattern" href="#underworld3.mpi.call_pattern">call_pattern</a></code></h4>
-</li>
+<li><code><a title="underworld3.function.derivative" href="#underworld3.function.derivative">derivative</a></code></li>
 </ul>
 </li>
 </ul>
