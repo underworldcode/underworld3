@@ -32,7 +32,7 @@ ul.task-list li input[type="checkbox"] {
 <script src="site_libs/quarto-search/fuse.min.js"></script>
 <script src="site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="./">
-<link href="./Notebooks/1-Meshes.html" rel="next">
+<link href="./NextSteps.html" rel="next">
 <script src="site_libs/quarto-html/quarto.js"></script>
 <script src="site_libs/quarto-html/popper.min.js"></script>
 <script src="site_libs/quarto-html/tippy.umd.min.js"></script>
@@ -70,35 +70,6 @@ ul.task-list li input[type="checkbox"] {
   }
 }</script>
 
-  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
-
-<script type="text/javascript">
-const typesetMath = (el) => {
-  if (window.MathJax) {
-    // MathJax Typeset
-    window.MathJax.typeset([el]);
-  } else if (window.katex) {
-    // KaTeX Render
-    var mathElements = el.getElementsByClassName("math");
-    var macros = [];
-    for (var i = 0; i < mathElements.length; i++) {
-      var texText = mathElements[i].firstChild;
-      if (mathElements[i].tagName == "SPAN") {
-        window.katex.render(texText.data, mathElements[i], {
-          displayMode: mathElements[i].classList.contains('display'),
-          throwOnError: false,
-          macros: macros,
-          fleqn: false
-        });
-      }
-    }
-  }
-}
-window.Quarto = {
-  typesetMath
-};
-</script>
 
 </head>
 
@@ -140,51 +111,88 @@ window.Quarto = {
       </div>
     <div class="sidebar-menu-container"> 
     <ul class="list-unstyled mt-1">
-        <li class="sidebar-item">
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">About UW3</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="./index.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Getting Started</span></a>
   </div>
 </li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/1-Meshes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 1: Meshes</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/2-Variables.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 2: Variables</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/3-Symbolic_Forms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 3: Symbolic forms</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="./Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
+          <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="./NextSteps.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Next Steps</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Installation.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Installation Guide</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Notebooks</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/Notebook_Index.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Tutorials</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/1-Meshes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 1: Meshes</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/2-Variables.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 2: Variables</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/3-Symbolic_Forms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 3: Symbolic forms</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./Notebooks/8-Particle_Swarms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 8: Particle Swarms</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
     </ul>
     </div>
 </nav>
@@ -196,12 +204,13 @@ window.Quarto = {
    
   <ul>
   <li><a href="#installation-guide" id="toc-installation-guide" class="nav-link active" data-scroll-target="#installation-guide">Installation Guide</a></li>
-  <li><a href="#notebooks" id="toc-notebooks" class="nav-link" data-scroll-target="#notebooks">Notebooks</a></li>
-  <li><a href="#next-steps" id="toc-next-steps" class="nav-link" data-scroll-target="#next-steps">Next Steps</a></li>
-  <li><a href="#documentation" id="toc-documentation" class="nav-link" data-scroll-target="#documentation">Documentation</a></li>
+  <li><a href="#sample-code" id="toc-sample-code" class="nav-link" data-scroll-target="#sample-code">Sample Code</a></li>
+  <li><a href="#learn-more" id="toc-learn-more" class="nav-link" data-scroll-target="#learn-more">Learn More</a></li>
+  <li><a href="#acknowledgements" id="toc-acknowledgements" class="nav-link" data-scroll-target="#acknowledgements">Acknowledgements</a></li>
+  <li><a href="#licensing-and-re-use" id="toc-licensing-and-re-use" class="nav-link" data-scroll-target="#licensing-and-re-use">Licensing and re-use</a></li>
   <li><a href="#references" id="toc-references" class="nav-link" data-scroll-target="#references">References</a></li>
   </ul>
-<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworld/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
+<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -239,38 +248,48 @@ window.Quarto = {
 
 
 <center>
-<iframe src="Notebooks/html5/stokes_sphere_plot.html" width="500" height="300"></iframe>
+<iframe src="media/pyvista/SphereStreamlinesS.html" width="500" height="300">
+</iframe>
 </center>
+
+<i>
+    Live image: Flow solution in an sphere with prescribed buoyancy
+    and free slip boundaries.
+</i>
+
 <hr>
 <p>Welcome to <code>Underworld3</code>, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the <code>Underworld3</code> code.</p>
-<p>It’s a good first step after you install the code to look at these notebooks. When you are happy that things are working OK, you can move along to look at the full documentation or the benchmarking repository.</p>
+<p>All <code>Underworld3</code> source code is released under the LGPL-3 open source licence. This covers all files in <code>underworld3</code> constituting the Underworld3 Python module. Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License.</p>
 <section id="installation-guide" class="level2">
 <h2 class="anchored" data-anchor-id="installation-guide">Installation Guide</h2>
-<p>HERE</p>
+<p>The quickest option is <strong>not to install</strong> anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org.</p>
+<p>If do you want to install the code on your own machine, we recommend using <code>miniconda</code> and <code>mamba</code>. Create a separate virtual environment and install the code from source. More details on how to do that are in the <a href="./Installation.html">Installation Instructions</a></p>
 </section>
-<section id="notebooks" class="level2">
-<h2 class="anchored" data-anchor-id="notebooks">Notebooks</h2>
-<p>Notebook 1 - <a href="Notebooks/1-Meshes.html">Meshes</a>: Introduces the mesh discretisation that we use in <code>Underworld3</code> and how you can build one of the pre-defined meshes. This notebook also show you how to use the <code>pyvista</code> visualisation tools for <code>Underworld3</code> objects. The mesh holds information on the mesh geometry, boundaries and coordinate systems.</p>
-<p>Notebook 2 - <a href="Notebooks/2-Variables.html">Variables</a>: Introduces the concept of <code>meshVariables</code> in <code>Underworld3</code>. These are both data containers and <code>sympy</code> symbolic objects. We show you how to inspect a <code>meshVariable</code>, set the data values in the <code>meshVariable</code> and visualise them.</p>
-<p>Notebook 3 - <a href="Notebooks/3-Symbolic_Forms.html">Symbols</a>: <code>meshVariables</code> are <code>sympy</code> objects that can be composed with other symbolic objects and evaluated numerically when required. They can also be differentiated. Most importantly, <code>sympy</code> can manipulate expressions, simplify them and cancel terms.</p>
-<p>Notebook 4 - <a href="Notebooks/4-Solvers.html">Diffusion Solver</a>: Introduces the various solver templates that are available in Underworld, starting with a steady-state diffusion problem. The template requires you to set some constitutive properties and define the unknowns. These are handled through subsitution into symbolic forms and the template equation can be inspected before you need to supply concrete expressions.</p>
-<p>Notebook 5 - <a href="Notebooks/5-Solvers.html">Stokes Solver</a>: Stokes equation is a more complicated system of equations to solve. This complexity is mostly hidden when you set the problem up. There are some interesting ways to constrain boundary values which are demonstrated using an annulus mesh (curved, free-slip boundaries) and a <span class="math inline">\(\delta\)</span> function buoyancy source.</p>
-<p>Notebook 6 - <a href="Notebooks/6-Timestepping.html">Timestepping</a>: <em>Coupled</em> Stokes flow plus thermal advection-diffusion gives a simple convection solver. The timestepping loop is written by hand because usually you will want to do some analysis or output some checkpoints.</p>
-<p>Notebook 7 - Unsteady flow Using a passive swarm to track the pattern of flow developing in a pipe after an impulsive application of a boundary condition at the inflow. Particles need to be added to the passive swarm close to the inflow at each timestep.</p>
-<p>Notebook 8 - Swarm variables - exploring how they work for specifying material properties with a swarm used to determine element viscosity. We learn how to use swarm variables in expressions generally and for boundary conditions.</p>
+<section id="sample-code" class="level2">
+<h2 class="anchored" data-anchor-id="sample-code">Sample Code</h2>
+<p>Underworld is designed to be run in the jupyter notebook environment where you can take advantage of jupyter’s rich display capabilities to explore the mathematics of your problem, visualise results and query classes or live objects.</p>
+<p>It’s a good first step after you install the code to look at the <a href="./Notebooks/Notebook_Index.html">examples notebooks</a>. When you are happy that things are working OK, you can move along to look at the full documentation or the benchmarking repository.</p>
+<p>The notebooks introduce the concept of meshing to describe the domain and boundary conditions for a model and progress through Eulerian data containers, symbolic operators (functions, compositions, derivatives, evaluations). The examples move on to the template PDE solvers for scalar and vector problems (in this case the Poisson equation and the Stokes equation) and time dependent, coupled problems (a simple convection example in an annulus geometry). They cover constitutive models, boundary conditions and visualisation. The final examples deal with Lagrangian data containers (particle swarms), first transporting them in a velocity field, and second, accessing the symbolic forms of their data for use in underworld expressions.</p>
 </section>
-<section id="next-steps" class="level2">
-<h2 class="anchored" data-anchor-id="next-steps">Next Steps</h2>
-<p>Some of the cool things about UW3 that you can do with a bit of effort (at the moment)</p>
+<section id="learn-more" class="level2">
+<h2 class="anchored" data-anchor-id="learn-more">Learn More</h2>
+<p><code>underworld3</code> is a research code under continual development and the examples in the notebooks provided with the code only touch upon the extent of its capabilities. Read the <a href="./NextSteps.html">Next Steps</a> page to find out how to learn more about <code>underworld3</code>, how to get in touch with the development team, and how to become part of the <strong>underworld community</strong>.</p>
+</section>
+<section id="acknowledgements" class="level2">
+<h2 class="anchored" data-anchor-id="acknowledgements">Acknowledgements</h2>
+<p>The Underworld codes represent more than two decades of programming effort by many developers including a wide community of contributors from the open-source community.</p>
+<p>As a community-driven development team, we first acknowledge many contributions made through pull-requests to our repositories and direct submission of codes and examples. The underworldcode organisation on GitHub records all such contributions to the software and the underworld community on GitHub tracks the exchange of information and models.</p>
+<p>Direct funding support has been provided by:</p>
 <ul>
-<li>gmsh (anything - Pramoda’s work)</li>
-<li>deformed meshes, interesting boundary conditions</li>
-<li>free surfaces, relaxation etc</li>
-<li></li>
+<li><p>AuScope provides direct support for the core development team behind the underworld codes and the underworld cloud suite of tools. AuScope is funded by the Australian Government through the National Collaborative Research Infrastructure Strategy, NCRIS.</p></li>
+<li><p>The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme.</p></li>
+<li><p>The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)</p></li>
 </ul>
+<p>In-kind support has also come from the institution that host Underworld developers including: the Australian National University, Monash University, The University of Melbourne, The University of Sydney and the CSIRO.</p>
 </section>
-<section id="documentation" class="level2">
-<h2 class="anchored" data-anchor-id="documentation">Documentation</h2>
+<section id="licensing-and-re-use" class="level2">
+<h2 class="anchored" data-anchor-id="licensing-and-re-use">Licensing and re-use</h2>
+<p>All of our software is released under open source licence and all documentation and worked examples are released with a creative commons licence. We are passionate about having our software used and code reuse is strongly encouraged in the interest of scientific reproducibility and replicability. The developers are active researchers and scientists whose livelihood depends on their creative talents and the acknowledgement of their work. Please respect the effort that goes into developing software and tutorials by citing our work and collaborating on publication with new applications of our software when you can.</p>
 </section>
 <section id="references" class="level2">
 <h2 class="anchored" data-anchor-id="references">References</h2>
@@ -703,8 +722,8 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
   <div class="nav-page nav-page-previous">
   </div>
   <div class="nav-page nav-page-next">
-      <a href="./Notebooks/1-Meshes.html" class="pagination-link" aria-label="Notebook 1: Meshes">
-        <span class="nav-page-text"><span class="chapter-title">Notebook 1: Meshes</span></span> <i class="bi bi-arrow-right-short"></i>
+      <a href="./NextSteps.html" class="pagination-link" aria-label="Next Steps">
+        <span class="nav-page-text"><span class="chapter-title">Next Steps</span></span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

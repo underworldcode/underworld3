@@ -64,7 +64,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../site_libs/quarto-search/fuse.min.js"></script>
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
-<link href="../NextSteps.html" rel="next">
+<link href="../Notebooks/8-Particle_Swarms.html" rel="next">
 <link href="../Notebooks/6-Timestepping.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -147,51 +147,88 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       </div>
     <div class="sidebar-menu-container"> 
     <ul class="list-unstyled mt-1">
-        <li class="sidebar-item">
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">About UW3</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../index.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Getting Started</span></a>
   </div>
 </li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/1-Meshes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 1: Meshes</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/2-Variables.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 2: Variables</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/3-Symbolic_Forms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 3: Symbolic forms</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
+          <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../NextSteps.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Next Steps</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Installation.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Installation Guide</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Notebooks</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/Notebook_Index.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Tutorials</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/1-Meshes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 1: Meshes</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/2-Variables.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 2: Variables</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/3-Symbolic_Forms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 3: Symbolic forms</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/7-Unsteady_Flow.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Notebook 7: Unsteady Flow</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../Notebooks/8-Particle_Swarms.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 8: Particle Swarms</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
     </ul>
     </div>
 </nav>
@@ -204,7 +241,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <ul>
   <li><a href="#exercise---7.1" id="toc-exercise---7.1" class="nav-link active" data-scroll-target="#exercise---7.1">Exercise - 7.1</a></li>
   </ul>
-<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworld/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
+<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -932,8 +969,8 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
       </a>          
   </div>
   <div class="nav-page nav-page-next">
-      <a href="../NextSteps.html" class="pagination-link" aria-label="Next Steps">
-        <span class="nav-page-text"><span class="chapter-title">Next Steps</span></span> <i class="bi bi-arrow-right-short"></i>
+      <a href="../Notebooks/8-Particle_Swarms.html" class="pagination-link" aria-label="Notebook 8: Particle Swarms">
+        <span class="nav-page-text"><span class="chapter-title">Notebook 8: Particle Swarms</span></span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>
