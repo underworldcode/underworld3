@@ -1,1 +1,0 @@
-This folder is for PDF files that can be embedded in the book (as a presentation, for example). 

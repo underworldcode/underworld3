@@ -1,6 +1,0 @@
-# Underworld Variables
-
-## Mesh Variables
-
-
-
