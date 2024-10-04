@@ -8,15 +8,23 @@ book:
   date: "15/06/2024"
   bread-crumbs: false
   chapters:
-    - index.qmd
-    - Notebooks/1-Meshes.ipynb
-    - Notebooks/2-Variables.ipynb
-    - Notebooks/3-Symbolic_Forms.ipynb
-    - Notebooks/4-Solvers.ipynb
-    - Notebooks/5-Solvers.ipynb
-    - Notebooks/6-Timestepping.ipynb
-    - Notebooks/7-Unsteady_Flow.ipynb
-    - NextSteps.qmd
+    - part: "About UW3"
+      chapters:
+        - index.qmd
+        - NextSteps.qmd
+        - Installation.qmd
+
+    - part: "Notebooks"
+      chapters:
+        - Notebooks/Notebook_Index.ipynb
+        - Notebooks/1-Meshes.ipynb
+        - Notebooks/2-Variables.ipynb
+        - Notebooks/3-Symbolic_Forms.ipynb
+        - Notebooks/4-Solvers.ipynb
+        - Notebooks/5-Solvers.ipynb
+        - Notebooks/6-Timestepping.ipynb
+        - Notebooks/7-Unsteady_Flow.ipynb
+        - Notebooks/8-Particle_Swarms.ipynb
 
   navbar:
     search: true
@@ -47,7 +55,7 @@ format:
     other-links:
       - text: Github Repository
         icon: github
-        href: https://github.com/underworld/underworld3
+        href: https://github.com/underworldcode/underworld3
 
   # pdf:
   #   documentclass: scrreprt
