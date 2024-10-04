@@ -1,11 +1,14 @@
 ---
 title: "Getting Started"
 subtitle: "Front page"
-authors:
-- name: Underworld Team
+bibliography: "UW-Background.bib"
 
 exports:
-- format: html
+  - format: html
+
+
+nocite: |
+  @*
 ---
 
 
@@ -64,9 +67,15 @@ Direct funding support has been provided by:
 
 In-kind support has also come from the institution that host Underworld developers including: the Australian National University, Monash University, The University of Melbourne, The University of Sydney and the CSIRO.
 
+Underworld3 relies extensively upon the `PETSc`, `sympy`, `numpy` and `cython` packages and the `jupyter` notebook system.  We acknowledge the enormous development effort required to build and maintain essential community infrastructure of this calibre and we extend our thanks to include the building blocks of each of these components that are too numerous to acknowledge individually.
+
 ## Licensing and re-use
 
 All of our software is released under open source licence and all documentation and worked examples are released with a creative commons licence. We are passionate about having our software used and code reuse is strongly encouraged in the interest of scientific reproducibility and replicability.
 The developers are active researchers and scientists whose livelihood depends  on their creative talents and the acknowledgement of their work. Please respect the effort that goes into developing software and tutorials by citing our work and collaborating on publication with new applications of our software when you can.
 
-## References
+## Background
+
+
+::: {#refs}
+:::

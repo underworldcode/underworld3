@@ -4,8 +4,9 @@ project:
 
 book:
   title: "Underworld3 Quick Start Guide"
-  author: "Louis Moresi"
-  date: "15/06/2024"
+  author: "Underworld Team"
+  date: "2024/10/02"
+
   bread-crumbs: false
   chapters:
     - part: "About UW3"
@@ -34,8 +35,6 @@ book:
   sidebar:
     logo: media/MansoursNightmare.png
     background: "white"
-
-# bibliography: UnderworldDocumentation.bib
 
 format:
   html:
