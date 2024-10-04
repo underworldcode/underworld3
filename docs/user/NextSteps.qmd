@@ -1,0 +1,42 @@
+---
+title: "Next Steps"
+# keywords: []
+authors:
+- name: Underworld Team
+
+exports:
+- format: pdf
+- template: arxiv_nips
+---
+
+
+### Underworld Documentation and Examples
+
+
+### Benchmarks
+
+
+### The Underworld Community
+
+Sharing codes / fixes
+
+Sharing models
+
+### Parallel Execution
+
+Advise using jupytext to render notebooks at .py files. This is helpful
+in shared environments because the files contain no output and play
+better with version control.
+
+Not such a good idea if you want to have a tutorial with outputs (like this one)
+
+
+
+<!--
+```{iframe} https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
+:width: 100%
+:align: center
+
+Caption
+```
+-->

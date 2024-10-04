@@ -81,9 +81,6 @@ class SNES_Poisson(SNES_Scalar):
         if solver_name == "":
             solver_name = "Poisson_{}_".format(self.instance_number)
 
-        # Register the problem setup function
-        self._setup_problem_description = self.poisson_problem_description
-
         # default values for properties
         self.f = sympy.Matrix.zeros(1, 1)
 
@@ -209,9 +206,6 @@ class SNES_Darcy(SNES_Scalar):
 
         if solver_name == "":
             self.solver_name = "Darcy_{}_".format(self.instance_number)
-
-        # Register the problem setup function
-        self._setup_problem_description = self.darcy_problem_description
 
         # default values for properties
         self._f = sympy.Matrix([0])
@@ -457,8 +451,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         )  # by default, incompressibility constraint
 
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
-
-        self._setup_problem_description = self.stokes_problem_description
 
         # this attrib records if we need to setup the problem (again)
         self.is_setup = False
@@ -842,10 +834,9 @@ class SNES_Projection(SNES_Scalar):
         if solver_name == "":
             self.name = "SProj_{}_".format(self.instance_number)
 
-        self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
-        self._smoothing = 0.0
-        self._uw_weighting_function = 1.0
+        self._smoothing = sympy.sympify(0)
+        self._uw_weighting_function = sympy.sympify(1)
         self._constitutive_model = uw.constitutive_models.Constitutive_Model(
             self.Unknowns
         )
@@ -880,21 +871,21 @@ class SNES_Projection(SNES_Scalar):
 
         return F1_val
 
-    @timing.routine_timer_decorator
-    def projection_problem_description(self):
-        # residual terms - defines the problem:
-        # solve for a best fit to the continuous mesh
-        # variable given the values in self.function
-        # F0 is left in place for the user to inject
-        # non-linear constraints if required
+    # @timing.routine_timer_decorator
+    # def projection_problem_description(self):
+    #     # residual terms - defines the problem:
+    #     # solve for a best fit to the continuous mesh
+    #     # variable given the values in self.function
+    #     # F0 is left in place for the user to inject
+    #     # non-linear constraints if required
 
-        self._f0 = self.F0.sym
+    #     self._f0 = self.F0.sym
 
-        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+    #     # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
 
-        self._f1 = self.F1.sym
+    #     self._f1 = self.F1.sym
 
-        return
+    #     return
 
     @property
     def uw_function(self):
@@ -974,7 +965,6 @@ class SNES_Vector_Projection(SNES_Vector):
         if solver_name == "":
             solver_name = "VProj{}_".format(self.instance_number)
 
-        self._setup_problem_description = self.projection_problem_description
         self.is_setup = False
         self._smoothing = 0.0
         self._penalty = 0.0
@@ -1298,8 +1288,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.is_setup = False
 
         self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.adv_diff_slcn_problem_description
-
         ### Setup the history terms ... This version should not build anything
         ### by default - it's the template / skeleton
 
@@ -1314,11 +1302,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
                 continuous=u_Field.continuous,
-                varsymbol=u_Field.symbol,
                 verbose=verbose,
                 bcs=self.essential_bcs,
-                order=order,
-                smoothing=0.0001,
+                order=1,
+                smoothing=0.0,
             )
 
         else:
@@ -1341,13 +1328,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             ),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
-            degree=u_Field.degree - 1,
+            degree=u_Field.degree,
             continuous=True,
+            # The default is now to match the above and avoid
+            # any use of projection.
+            # swarm_degree=u_Field.degree - 1,
+            # swarm_continuous=False,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=verbose,
             bcs=None,
             order=order,
-            smoothing=0.0001,
+            smoothing=0.0,
         )
 
         return
@@ -1429,8 +1420,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 self.constitutive_model.Parameters.diffusivity
             ):
                 max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.diffusivity
+                    self.constitutive_model.Parameters.diffusivity,
+                    np.zeros((1, self.mesh.dim)),
                 )
+
             else:
                 k = uw.function.evaluate(
                     sympy.sympify(self.constitutive_model.Parameters.diffusivity),
@@ -1477,7 +1470,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
-        return dt_diff, dt_adv
+        return dt_estimate
 
     @timing.routine_timer_decorator
     def solve(
@@ -1636,8 +1629,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         self.restore_points_to_domain_func = restore_points_func
-        self._setup_problem_description = self.navier_stokes_problem_description
-
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
         self._constitutive_model = None
 
@@ -1668,19 +1659,22 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # F (at least for N-S) is a nodal point variable so there is no benefit
         # to treating it as a swarm variable. We'll define and use our own SL tracker
         # as we do in the SLCN version. We'll leave the option for an over-ride.
+        #
+        # Maybe u.degree-1. The scalar equivalent seems to show
+        # little benefit from specific choices here other than
+        # discontinuous flux variables amplifying instabilities.
 
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
             vtype=uw.VarType.SYM_TENSOR,
-            degree=1,  # self.u.degree - 1,
-            continuous=False,
+            degree=self.u.degree,
+            continuous=self.u.continuous,
             varsymbol=rf"{{F[ {self.u.symbol} ] }}",
             verbose=self.verbose,
             bcs=None,
             order=self._order,
-            smoothing=0.0001,
         )
 
         ## Add in the history terms provided ...
@@ -1940,7 +1934,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if isinstance(self.constitutive_model.viscosity, sympy.Expr):
             if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
                 max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.viscosity
+                    self.constitutive_model.Parameters.viscosity,
+                    np.zeros((1, self.mesh.dim)),
                 )
             else:
                 k = uw.function.evaluate(

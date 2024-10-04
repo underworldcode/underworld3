@@ -741,11 +741,12 @@ class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, mesh, recycle_rate=0):
+    def __init__(self, mesh, recycle_rate=0, verbose=False):
         Swarm.instances += 1
 
         self.celldm = mesh.dm.clone()
 
+        self.verbose = verbose
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
@@ -1028,22 +1029,29 @@ class Swarm(Stateful, uw_object):
 
         return
 
-    ## This is actually an initial population routine.
-    ## We can't use this to add particles / manage variables (LM)
     @timing.routine_timer_decorator
-    def add_particles_with_coordinates(self, coordinatesArray):
+    def add_particles_with_coordinates(self, coordinatesArray) -> int:
         """
-        This method adds particles to the swarm using particle coordinates provided
+        Add particles to the swarm using particle coordinates provided
         using a numpy array.
+
         Note that particles with coordinates NOT local to the current processor will
-        be reject/ignored. Either include an array with all coordinates to all processors
+        be rejected / ignored.
+
+        Either include an array with all coordinates to all processors
         or an array with the local coordinates.
+
         Parameters
         ----------
         coordinatesArray : numpy.ndarray
             The numpy array containing the coordinate of the new particles. Array is
             expected to take shape n*dim, where n is the number of new particles, and
             dim is the dimensionality of the swarm's supporting mesh.
+
+        Returns
+        --------
+        npoints: int
+            The number of points added to the local section of the swarm.
         """
 
         if not isinstance(coordinatesArray, np.ndarray):
@@ -1094,7 +1102,7 @@ class Swarm(Stateful, uw_object):
 
         self.dm.migrate(remove_sent_points=True)
 
-        return
+        return npoints
 
     @timing.routine_timer_decorator
     def save(
@@ -1624,14 +1632,18 @@ class Swarm(Stateful, uw_object):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
+        step_limit=True,
     ):
 
         dt_limit = self.estimate_dt(V_fn)
 
-        if dt_limit is not None:
-            substeps = int(max(1, abs(delta_t) // dt_limit))
+        if step_limit and dt_limit is not None:
+            substeps = int(max(1, round(abs(delta_t) / dt_limit)))
         else:
             substeps = 1
+
+        if uw.mpi.rank == 0 and self.verbose:
+            print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -1878,12 +1890,12 @@ class Swarm(Stateful, uw_object):
 
         min_dx = self.mesh.get_min_radius()
 
-        # The assumption should be that we cross one or two elements (4 radii), not more,
+        # The assumption should be that we cross one or two elements (2-4 radii), not more,
         # in a single step (order 2, means one element per half-step or something
         # that we can broadly interpret that way)
 
         if max_magvel_glob != 0.0:
-            return 4.0 * min_dx / max_magvel_glob
+            return min_dx / max_magvel_glob
         else:
             return None
 
@@ -1909,7 +1921,7 @@ class NodalPointSwarm(Swarm):
         mesh = trackedVariable.mesh
 
         # Set up a standard swarm
-        super().__init__(mesh)
+        super().__init__(mesh, verbose)
 
         nswarm = self
 
@@ -1930,14 +1942,20 @@ class NodalPointSwarm(Swarm):
             varsymbol=symbol,
         )
 
+        # The launch point location
         name = f"ns_X0_{ks}"
         symbol = r"X0^{*^{{[" + ks + "]}}}"
         nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
 
-        # holds the processor rank of nodal swarm particles before advection
+        # The launch point index
+        name = f"ns_I_{ks}"
+        symbol = r"I^{*^{{[" + ks + "]}}}"
+        nI0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
+
+        # The launch point processor rank
         name = f"ns_R0_{ks}"
         symbol = r"R0^{*^{{[" + ks + "]}}}"
-        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, _proxy=False)
+        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
 
         nswarm.dm.finalizeFieldRegister()
         nswarm.dm.addNPoints(
@@ -1949,32 +1967,24 @@ class NodalPointSwarm(Swarm):
         coords[...] = trackedVariable.coords[...]
         cellid[:] = self.mesh.get_closest_local_cells(coords)
 
-        # num_lost = np.where(cellid == -1)[0].shape[0]
-        # print(f"1: illegal_cells - {num_lost}", flush=True)
-
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
 
-        shift = 0.01
+        shift = 0.001
         coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
-
-        # cellid does not change if we move slightly towards the cell centroid
-        # cellid[:] = self.mesh.get_closest_local_cells(coords)
-        # num_lost = np.where(cellid == -1)[0].shape[0]
-
-        # print(f"1: illegal_cells - {num_lost}", flush=True)
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")
         nswarm.dm.restoreField("DMSwarm_cellid")
 
         nswarm.dm.migrate(remove_sent_points=True)
 
-        with nswarm.access(nX0):
-            nX0.data[...] = coords
+        with nswarm.access(nX0, nI0):
+            nX0.data[:, :] = coords
+            nI0.data[:, 0] = range(0, coords.shape[0])
 
         self._nswarm = nswarm
         self._nX0 = nX0
-
+        self._nI0 = nI0
         self._nR0 = nR0
 
         return
@@ -1988,6 +1998,7 @@ class NodalPointSwarm(Swarm):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
+        step_limit=True,
     ):
 
         with self.access(self._X0):
@@ -2003,6 +2014,7 @@ class NodalPointSwarm(Swarm):
             corrector,
             restore_points_to_domain_func,
             evalf,
+            step_limit,
         )
 
         return

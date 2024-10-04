@@ -1,7 +1,8 @@
 ## pyvista helper routines
 import os
 
-def initialise():
+
+def initialise(jupyter_backend):
 
     import pyvista as pv
 
@@ -12,24 +13,27 @@ def initialise():
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
     try:
-        if 'BINDER_LAUNCH_HOST' in os.environ or 'BINDER_REPO_URL' in os.environ:
+        if jupyter_backend is not None:
+            pv.global_theme.jupyter_backend = jupyter_backend
+        elif "BINDER_LAUNCH_HOST" in os.environ or "BINDER_REPO_URL" in os.environ:
             pv.global_theme.jupyter_backend = "client"
         else:
             pv.global_theme.jupyter_backend = "trame"
+
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
 
     return
 
 
-def mesh_to_pv_mesh(mesh):
+def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     """Initialise pyvista engine from existing mesh"""
 
     # # Required in notebooks
     # import nest_asyncio
     # nest_asyncio.apply()
 
-    initialise()
+    initialise(jupyter_backend)
 
     import os
     import shutil
@@ -108,10 +112,11 @@ def meshVariable_to_pv_cloud(meshVar):
 
     return point_cloud
 
+
 def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     """Convert meshvariable to delaunay triangulated pyvista mesh object.
-       This is redundant if the meshVariable degree is 1 (the original mesh exactly
-       represents the data)"""
+    This is redundant if the meshVariable degree is 1 (the original mesh exactly
+    represents the data)"""
 
     mesh = meshVar.mesh
     dim = mesh.dim
@@ -126,11 +131,7 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     else:
         pv_mesh = point_cloud.delaunay_3d(alpha=alpha)
 
-
     return pv_mesh
-
-
-
 
 
 def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
@@ -174,6 +175,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
     return vector_values
 
+
 # def vector_fn_to_pv_arrows(coords, uw_fn, dim=None):
 #     """evaluate uw vector function on point cloud"""
 
@@ -193,7 +195,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
 
 def clip_mesh(pvmesh, clip_angle):
-    '''
+    """
     Clip the given mesh using planes at the specified angle.
 
     Parameters:
@@ -208,24 +210,40 @@ def clip_mesh(pvmesh, clip_angle):
     --------
     list
         A list containing the two clipped mesh parts.
-    '''
+    """
     import numpy as np
 
     # Calculate normals for clipping planes
     clip1_normal = (np.cos(np.deg2rad(clip_angle)), np.cos(np.deg2rad(clip_angle)), 0.0)
-    clip2_normal = (np.cos(np.deg2rad(clip_angle)), -np.cos(np.deg2rad(clip_angle)), 0.0)
-    
+    clip2_normal = (
+        np.cos(np.deg2rad(clip_angle)),
+        -np.cos(np.deg2rad(clip_angle)),
+        0.0,
+    )
+
     # Perform clipping
-    clip1 = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=clip1_normal, invert=False, crinkle=False)
-    clip2 = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False)
-    
+    clip1 = pvmesh.clip(
+        origin=(0.0, 0.0, 0.0), normal=clip1_normal, invert=False, crinkle=False
+    )
+    clip2 = pvmesh.clip(
+        origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False
+    )
+
     return [clip1, clip2]
 
 
-def plot_mesh(mesh, title='', clip_angle=0.0, cpos='xy', window_size=(750, 750),
-              show_edges=True, save_png=False, dir_fname=''):
-    
-    '''
+def plot_mesh(
+    mesh,
+    title="",
+    clip_angle=0.0,
+    cpos="xy",
+    window_size=(750, 750),
+    show_edges=True,
+    save_png=False,
+    dir_fname="",
+):
+
+    """
     Plot a mesh with optional clipping, edge display, and saving functionality.
 
     Parameters:
@@ -238,11 +256,11 @@ def plot_mesh(mesh, title='', clip_angle=0.0, cpos='xy', window_size=(750, 750),
         The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.
 
     clip_angle : float, optional
-        The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied. 
+        The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
         Clipping is performed using planes at the specified angle. Default is 0.0.
 
     cpos : str or list, optional
-        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or 
+        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
         a list specifying the exact camera position. Default is 'xy'.
 
     window_size : tuple of int, optional
@@ -265,7 +283,7 @@ def plot_mesh(mesh, title='', clip_angle=0.0, cpos='xy', window_size=(750, 750),
     None
         This function does not return any value. It displays the mesh plot in a PyVista window
         and optionally saves a screenshot.
-    '''
+    """
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(mesh)
@@ -276,11 +294,17 @@ def plot_mesh(mesh, title='', clip_angle=0.0, cpos='xy', window_size=(750, 750),
         for clipped_mesh in clipped_meshes:
             pl.add_mesh(clipped_mesh, edge_color="k", show_edges=True, opacity=1.0)
     else:
-        pl.add_mesh(pvmesh, edge_color="k", show_edges=show_edges, use_transparency=False, opacity=1.0)
+        pl.add_mesh(
+            pvmesh,
+            edge_color="k",
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+        )
 
     if len(title) != 0:
         pl.add_text(title, font_size=18, position=(950, 2100))
-    
+
     pl.show(cpos=cpos)
 
     if save_png:
@@ -290,11 +314,23 @@ def plot_mesh(mesh, title='', clip_angle=0.0, cpos='xy', window_size=(750, 750),
     return
 
 
-def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750, 750),
-                title='', fmt='%10.7f', clip_angle=0.0, cpos='xy', show_edges=False, 
-                save_png=False, dir_fname=''):
-    
-    '''
+def plot_scalar(
+    mesh,
+    scalar,
+    scalar_name="",
+    cmap="",
+    clim="",
+    window_size=(750, 750),
+    title="",
+    fmt="%10.7f",
+    clip_angle=0.0,
+    cpos="xy",
+    show_edges=False,
+    save_png=False,
+    dir_fname="",
+):
+
+    """
     Plot a scalar quantity from a mesh with options for clipping, colormap, and saving.
 
     Parameters:
@@ -335,7 +371,7 @@ def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750
         Clipping is performed using planes at the specified angle. Default is 0.0.
 
     cpos : str or list, optional
-        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or 
+        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
         a list specifying the exact camera position. Default is 'xy'.
 
     show_edges : bool, optional
@@ -355,8 +391,8 @@ def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750
     None
         This function does not return any value. It displays the scalar field on the mesh in a PyVista
         window and optionally saves a screenshot.
-    '''
-    
+    """
+
     import sympy
     import numpy as np
     import pyvista as pv
@@ -365,17 +401,35 @@ def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750
     pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
 
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
-    
+
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
         clipped_meshes = clip_mesh(pvmesh, clip_angle)
         for clipped_mesh in clipped_meshes:
-            pl.add_mesh(clipped_mesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
-                        use_transparency=False, show_scalar_bar=False, opacity=1.0, clim=clim)
+            pl.add_mesh(
+                clipped_mesh,
+                cmap=cmap,
+                edge_color="k",
+                scalars=scalar_name,
+                show_edges=show_edges,
+                use_transparency=False,
+                show_scalar_bar=False,
+                opacity=1.0,
+                clim=clim,
+            )
     else:
-        pl.add_mesh(pvmesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
-                    use_transparency=False, opacity=1.0, clim=clim, show_scalar_bar=False)
-    
+        pl.add_mesh(
+            pvmesh,
+            cmap=cmap,
+            edge_color="k",
+            scalars=scalar_name,
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+            clim=clim,
+            show_scalar_bar=False,
+        )
+
     pl.show(cpos=cpos)
 
     if len(title) != 0:
@@ -388,11 +442,28 @@ def plot_scalar(mesh, scalar, scalar_name='', cmap='', clim='', window_size=(750
     return
 
 
-def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='', save_png=False, 
-                dir_fname='', title='', fmt='%10.7f', clip_angle=0.0, show_arrows=False, cpos='xy', 
-                show_edges=False, window_size=(750, 750), scalar=None, scalar_name=''):
-    
-    '''
+def plot_vector(
+    mesh,
+    vector,
+    vector_name="",
+    cmap="",
+    clim="",
+    vmag="",
+    vfreq="",
+    save_png=False,
+    dir_fname="",
+    title="",
+    fmt="%10.7f",
+    clip_angle=0.0,
+    show_arrows=False,
+    cpos="xy",
+    show_edges=False,
+    window_size=(750, 750),
+    scalar=None,
+    scalar_name="",
+):
+
+    """
     Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.
 
     Parameters:
@@ -401,7 +472,7 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
         The mesh object to be plotted. This should be in a format that can be converted
         into a PyVista mesh using `vis.mesh_to_pv_mesh()`.
 
-    vector : mesh variable name or sympy expression 
+    vector : mesh variable name or sympy expression
         The symbolic representation of the vector field associated with the mesh points.
         This vector field will be visualized on the mesh.
 
@@ -418,7 +489,7 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
         If not provided, the range of the vector magnitudes is used. Default is an empty string.
 
     vmag : float or str, optional
-        The scaling factor for the arrow magnitudes when plotting vectors as arrows. 
+        The scaling factor for the arrow magnitudes when plotting vectors as arrows.
         Default is an empty string, which uses the default scaling.
 
     vfreq : int, optional
@@ -448,7 +519,7 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
         Default is `False`.
 
     cpos : str or list, optional
-        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or 
+        The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
         a list specifying the exact camera position. Default is 'xy'.
 
     show_edges : bool, optional
@@ -461,7 +532,7 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     scalar : mesh variable name or sympy expression, optional
         An optional scalar field associated with the mesh points. If provided, this scalar field
         will be used for coloring the mesh instead of the vector magnitude. Default is `None`.
-    
+
     scalar_name : str, optional
         The name of the scalar field to be used when adding it to the mesh. This name will
         be used as the label for the scalar bar if `scalar` is provided. Default is an empty string.
@@ -471,8 +542,8 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     None
         This function does not return any value. It displays the vector field on the mesh in a PyVista
         window and optionally saves a screenshot.
-    '''
-    
+    """
+
     import sympy
     import numpy as np
     import pyvista as pv
@@ -480,34 +551,60 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     pvmesh = mesh_to_pv_mesh(mesh)
     pvmesh.point_data[vector_name] = vector_fn_to_pv_points(pvmesh, vector.sym)
     if scalar is None:
-        scalar_name = vector_name + '_mag'
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, 
-                                                                sympy.sqrt(vector.sym.dot(vector.sym)))
+        scalar_name = vector_name + "_mag"
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
+            pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
+        )
     else:
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, 
-                                                                sympy.sqrt(scalar.sym.dot(scalar.sym)))
-    
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
+            pvmesh, sympy.sqrt(scalar.sym.dot(scalar.sym))
+        )
+
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
-    
+
     velocity_points = meshVariable_to_pv_cloud(vector)
-    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
-    
+    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(
+        velocity_points, vector.sym
+    )
+
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
         clipped_meshes = clip_mesh(pvmesh, clip_angle)
         for clipped_mesh in clipped_meshes:
-            pl.add_mesh(clipped_mesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
-                        use_transparency=False, show_scalar_bar=False, opacity=1.0, clim=clim)
+            pl.add_mesh(
+                clipped_mesh,
+                cmap=cmap,
+                edge_color="k",
+                scalars=scalar_name,
+                show_edges=show_edges,
+                use_transparency=False,
+                show_scalar_bar=False,
+                opacity=1.0,
+                clim=clim,
+            )
     else:
-        pl.add_mesh(pvmesh, cmap=cmap, edge_color="k", scalars=scalar_name, show_edges=show_edges, 
-                    use_transparency=False, opacity=1.0, clim=clim, show_scalar_bar=False)
-               
-    # pl.add_scalar_bar(vector_name, vertical=False, title_font_size=25, label_font_size=20, fmt=fmt, 
+        pl.add_mesh(
+            pvmesh,
+            cmap=cmap,
+            edge_color="k",
+            scalars=scalar_name,
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+            clim=clim,
+            show_scalar_bar=False,
+        )
+
+    # pl.add_scalar_bar(vector_name, vertical=False, title_font_size=25, label_font_size=20, fmt=fmt,
     #                   position_x=0.225, position_y=0.01,)
-    
+
     if show_arrows:
-        pl.add_arrows(velocity_points.points[::vfreq], velocity_points.point_data[vector_name][::vfreq], 
-                      mag=vmag, color='k')
+        pl.add_arrows(
+            velocity_points.points[::vfreq],
+            velocity_points.point_data[vector_name][::vfreq],
+            mag=vmag,
+            color="k",
+        )
 
     pl.show(cpos=cpos)
 
@@ -521,11 +618,23 @@ def plot_vector(mesh, vector, vector_name='', cmap='', clim='', vmag='', vfreq='
     return
 
 
-def save_colorbar(colormap='', cb_bounds=None, vmin=None, vmax=None, figsize_cb=(6, 1), primary_fs=18, 
-                  cb_orient='vertical', cb_axis_label='', cb_label_xpos=0.5, cb_label_ypos=0.5, fformat='png', 
-                  output_path='', fname=''):
-    
-    '''
+def save_colorbar(
+    colormap="",
+    cb_bounds=None,
+    vmin=None,
+    vmax=None,
+    figsize_cb=(6, 1),
+    primary_fs=18,
+    cb_orient="vertical",
+    cb_axis_label="",
+    cb_label_xpos=0.5,
+    cb_label_ypos=0.5,
+    fformat="png",
+    output_path="",
+    fname="",
+):
+
+    """
     Save a colorbar separately from a plot with customizable appearance and format.
 
     Parameters:
@@ -568,7 +677,7 @@ def save_colorbar(colormap='', cb_bounds=None, vmin=None, vmax=None, figsize_cb=
         Default is 0.5.
 
     fformat : str, optional
-        The format for saving the colorbar image. Supported formats are 'png' and 'pdf'. 
+        The format for saving the colorbar image. Supported formats are 'png' and 'pdf'.
         Default is 'png'.
 
     output_path : str, optional
@@ -582,32 +691,44 @@ def save_colorbar(colormap='', cb_bounds=None, vmin=None, vmax=None, figsize_cb=
     --------
     None
         This function does not return any value. It saves the colorbar as a separate image file in the specified format.
-    '''
-    
+    """
+
     import numpy as np
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=figsize_cb)
-    plt.rc('font', size=primary_fs)  # Set font size
+    plt.rc("font", size=primary_fs)  # Set font size
     if cb_bounds is not None:
         bounds_np = np.array([cb_bounds])
         img = plt.imshow(bounds_np, cmap=colormap)
     else:
         v_min_max_np = np.array([[vmin, vmax]])
         img = plt.imshow(v_min_max_np, cmap=colormap)
-        
+
     plt.gca().set_visible(False)
 
-    if cb_orient == 'vertical':
+    if cb_orient == "vertical":
         cax = plt.axes([0.1, 0.2, 0.06, 1.15])
-        cb = plt.colorbar(orientation='vertical', cax=cax)
-        cb.ax.set_title(cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos, rotation=90)
-        plt.savefig(f"{output_path}{fname}_cbvert.{fformat}", dpi=150, bbox_inches='tight')
-        
-    elif cb_orient == 'horizontal':
+        cb = plt.colorbar(orientation="vertical", cax=cax)
+        cb.ax.set_title(
+            cb_axis_label,
+            fontsize=primary_fs,
+            x=cb_label_xpos,
+            y=cb_label_ypos,
+            rotation=90,
+        )
+        plt.savefig(
+            f"{output_path}{fname}_cbvert.{fformat}", dpi=150, bbox_inches="tight"
+        )
+
+    elif cb_orient == "horizontal":
         cax = plt.axes([0.1, 0.2, 1.15, 0.06])
-        cb = plt.colorbar(orientation='horizontal', cax=cax)
-        cb.ax.set_title(cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos)
-        plt.savefig(f"{output_path}{fname}_cbhorz.{fformat}", dpi=150, bbox_inches='tight')
+        cb = plt.colorbar(orientation="horizontal", cax=cax)
+        cb.ax.set_title(
+            cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos
+        )
+        plt.savefig(
+            f"{output_path}{fname}_cbhorz.{fformat}", dpi=150, bbox_inches="tight"
+        )
 
     return

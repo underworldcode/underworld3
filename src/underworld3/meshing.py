@@ -50,7 +50,6 @@ def UnstructuredSimplexBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -59,7 +58,6 @@ def UnstructuredSimplexBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -287,7 +285,6 @@ def StructuredQuadBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -296,7 +293,6 @@ def StructuredQuadBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -583,7 +579,6 @@ def SphericalShell(
         Lower = 11
         Upper = 12
         Centre = 1
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -749,34 +744,34 @@ def SphericalShellInternalBoundary(
     -----------
     radiusOuter : float, optional
         The outer radius of the spherical shell. Default is 1.0.
-    
+
     radiusInternal : float, optional
         The radius of the internal boundary within the spherical shell. Default is 0.8.
-    
+
     radiusInner : float, optional
         The inner radius of the spherical shell. Default is 0.547.
-    
+
     cellSize : float, optional
         The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-    
+
     degree : int, optional
         The polynomial degree of the finite elements used in the mesh. Default is 1.
-    
+
     qdegree : int, optional
         The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-    
+
     filename : str, optional
         The name of the file where the mesh will be saved. If None, a default name is generated based on the radii and mesh size. Default is None.
-    
+
     refinement : optional
         Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-    
+
     gmsh_verbosity : int, optional
         Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-    
+
     verbose : bool, optional
         If True, the function prints additional information during execution. Default is False.
-    
+
     Returns:
     --------
     None
@@ -796,12 +791,12 @@ def SphericalShellInternalBoundary(
         verbose=True
     )
     """
+
     class boundaries(Enum):
         Centre = 1
         Lower = 11
         Internal = 12
         Upper = 13
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -816,7 +811,7 @@ def SphericalShellInternalBoundary(
     # Check if r_i is greater than 0
     if radiusInner <= 0:
         raise ValueError("The inner radius must be greater than 0.")
-    
+
     if uw.mpi.rank == 0:
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
@@ -827,13 +822,17 @@ def SphericalShellInternalBoundary(
         ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
         ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Cut the inner sphere from the outer sphere to create a shell
-        gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
-        
-        ball3_tag = gmsh.model.occ.addSphere(0., 0., 0., radiusInternal)
+        gmsh.model.occ.cut(
+            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
+        )
+
+        ball3_tag = gmsh.model.occ.addSphere(0.0, 0.0, 0.0, radiusInternal)
         ball4_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Create another inner sphere with radius r_i (for the internal sphere)
-        gmsh.model.occ.cut([(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True)
-        
+        gmsh.model.occ.cut(
+            [(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True
+        )
+
         # Set the maximum characteristic length (mesh size) for the mesh elements
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
         gmsh.model.occ.synchronize()
@@ -842,8 +841,8 @@ def SphericalShellInternalBoundary(
         # Here, 2D entities with tag 6 are embedded into a 3D entity with tag 1
         gmsh.model.mesh.embed(2, [6], 3, 1)
         # Remove specific entities from the model (these repetitions)
-        gmsh.model.remove_entities([(3, 2)], [(2,5)])
-        gmsh.model.occ.remove([(3, 2)], [(2,5)])
+        gmsh.model.remove_entities([(3, 2)], [(2, 5)])
+        gmsh.model.occ.remove([(3, 2)], [(2, 5)])
 
         # Get all surface entities (2D) and the first volume entity (3D)
         surfaces = gmsh.model.getEntities(2)
@@ -854,28 +853,34 @@ def SphericalShellInternalBoundary(
             if np.isclose(
                 gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
             ):
-                gmsh.model.addPhysicalGroup(surface[0], 
-                                            [surface[1]], 
-                                            boundaries.Lower.value, 
-                                            name=boundaries.Lower.name,)
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Lower.value,
+                    name=boundaries.Lower.name,
+                )
                 print("Created inner boundary surface")
             elif np.isclose(
                 gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
             ):
-                gmsh.model.addPhysicalGroup(surface[0],
-                                            [surface[1]], 
-                                            boundaries.Upper.value, 
-                                            name=boundaries.Upper.name,)
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Upper.value,
+                    name=boundaries.Upper.name,
+                )
                 print("Created outer boundary surface")
             elif np.isclose(
                 gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInternal
             ):
-                gmsh.model.addPhysicalGroup(surface[0],
-                                            [surface[1]], 
-                                            boundaries.Internal.value, 
-                                            name=boundaries.Internal.name,)
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Internal.value,
+                    name=boundaries.Internal.name,
+                )
                 print("Created internal boundary surface")
-        
+
         # Add the volume entity to a physical group with a high tag number (99999) and name it "Elements"
         gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
         gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
@@ -973,37 +978,37 @@ def SegmentofSphere(
     -----------
     radiusOuter : float, optional
         The outer radius of the spherical segment. Default is 1.0.
-    
+
     radiusInner : float, optional
         The inner radius of the spherical segment. Default is 0.547.
-    
+
     longitudeExtent : float, optional
         The angular extent of the segment in the longitudinal direction (in degrees). Default is 90.0.
-    
+
     latitudeExtent : float, optional
         The angular extent of the segment in the latitudinal direction (in degrees). Default is 90.0.
-    
+
     cellSize : float, optional
         The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-    
+
     degree : int, optional
         The polynomial degree of the finite elements used in the mesh. Default is 1.
-    
+
     qdegree : int, optional
         The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-    
+
     filename : str, optional
         The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
-    
+
     refinement : optional
         Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-    
+
     gmsh_verbosity : int, optional
         Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-    
+
     verbose : bool, optional
         If True, the function prints additional information during execution. Default is False.
-    
+
     centroid : Tuple[float, float, float], optional
         The coordinates of the centroid (center) of the sphere segment. Default is (0.0, 0.0, 0.0).
 
@@ -1028,7 +1033,7 @@ def SegmentofSphere(
         verbose=True
     )
     """
-    
+
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -1036,7 +1041,6 @@ def SegmentofSphere(
         West = 14
         South = 15
         North = 16
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -1048,15 +1052,19 @@ def SegmentofSphere(
     else:
         uw_filename = filename
 
-    if radiusInner <= 0 or not (0 < longitudeExtent < 180) or not (0 < latitudeExtent < 180):
+    if (
+        radiusInner <= 0
+        or not (0 < longitudeExtent < 180)
+        or not (0 < latitudeExtent < 180)
+    ):
         raise ValueError(
             "Invalid input parameters: "
             "radiusInner must be greater than 0, "
             "and longitudeExtent and latitudeExtent must be within the range (0, 180)."
         )
-    
+
     if uw.mpi.rank == 0:
-        
+
         def getSphericalXYZ(point):
             """
             Perform Cubed-sphere projection on coordinates.
@@ -1064,29 +1072,38 @@ def SegmentofSphere(
 
             Parameters
             ----------
-            Input: 
-                Coordinates in rthetaphi format (radius, lon, lat) 
+            Input:
+                Coordinates in rthetaphi format (radius, lon, lat)
             Output
                 Coordinates in XYZ format (x, y, z)
             """
-            
-            (x,y) = (math.tan(point[1]*math.pi/180.0), math.tan(point[2]*math.pi/180.0))
-            d = point[0] / math.sqrt( x**2 + y**2 + 1)
-            coordX, coordY, coordZ = centroid[0] + d*x, centroid[1] + d*y, centroid[2] + d
-            
+
+            (x, y) = (
+                math.tan(point[1] * math.pi / 180.0),
+                math.tan(point[2] * math.pi / 180.0),
+            )
+            d = point[0] / math.sqrt(x**2 + y**2 + 1)
+            coordX, coordY, coordZ = (
+                centroid[0] + d * x,
+                centroid[1] + d * y,
+                centroid[2] + d,
+            )
+
             return (coordX, coordY, coordZ)
-            
+
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("SegmentOfSphere")
 
-        p0 = gmsh.model.geo.addPoint(centroid[0], centroid[1], centroid[2], meshSize=cellSize)
-        
+        p0 = gmsh.model.geo.addPoint(
+            centroid[0], centroid[1], centroid[2], meshSize=cellSize
+        )
+
         # Create segment of sphere
         dim = 3
 
-        long_half = longitudeExtent/2
-        lat_half = latitudeExtent/2
+        long_half = longitudeExtent / 2
+        lat_half = latitudeExtent / 2
 
         pt1 = getSphericalXYZ((radiusInner, -long_half, -lat_half))
         pt2 = getSphericalXYZ((radiusInner, long_half, -lat_half))
@@ -1096,7 +1113,6 @@ def SegmentofSphere(
         pt6 = getSphericalXYZ((radiusOuter, long_half, -lat_half))
         pt7 = getSphericalXYZ((radiusOuter, long_half, lat_half))
         pt8 = getSphericalXYZ((radiusOuter, -long_half, lat_half))
-        
 
         p1 = gmsh.model.geo.addPoint(pt1[0], pt1[1], pt1[2], meshSize=cellSize)
         p2 = gmsh.model.geo.addPoint(pt2[0], pt2[1], pt2[2], meshSize=cellSize)
@@ -1126,7 +1142,7 @@ def SegmentofSphere(
         cl = gmsh.model.geo.addCurveLoop((l5, l6, l7, l8))
         upper = gmsh.model.geo.addSurfaceFilling([cl], tag=boundaries.Upper.value)
 
-        cl = gmsh.model.geo.addCurveLoop((l10, l6, l11, -l2)) 
+        cl = gmsh.model.geo.addCurveLoop((l10, l6, l11, -l2))
         east = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.East.value)
 
         cl = gmsh.model.geo.addCurveLoop((l9, -l4, l12, l8))
@@ -1138,9 +1154,7 @@ def SegmentofSphere(
         cl = gmsh.model.geo.addCurveLoop((-l3, -l11, l7, -l12))
         north = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.North.value)
 
-        sloop = gmsh.model.geo.addSurfaceLoop(
-            [south, east, north, upper, west, lower]
-        )
+        sloop = gmsh.model.geo.addSurfaceLoop([south, east, north, upper, west, lower])
         volume = gmsh.model.geo.addVolume([sloop])
 
         gmsh.model.geo.synchronize()
@@ -1151,7 +1165,7 @@ def SegmentofSphere(
             name = b.name
             gmsh.model.addPhysicalGroup(2, [tag], tag)
             gmsh.model.setPhysicalName(2, tag, name)
-        
+
         # Add the volume entity to a physical group with a high tag number (99999) and name it "Elements"
         gmsh.model.addPhysicalGroup(3, [volume], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
@@ -1247,7 +1261,6 @@ def QuarterAnnulus(
         Left = 3
         Right = 4
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1416,7 +1429,6 @@ def Annulus(
         Lower = 1
         Upper = 2
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1482,9 +1494,10 @@ def Annulus(
                 name=boundaries.Lower.name,
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
@@ -1537,13 +1550,14 @@ def Annulus(
     # does not flag points that are actually in the mesh.
 
     def annulus_return_coords_to_bounds(coords):
+
         Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
 
         outside = Rsq > radiusOuter**2
         inside = Rsq < radiusInner**2
 
-        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
-        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+        coords[outside, :] *= 0.99 * radiusOuter / (Rsq[outside] ** 0.5).reshape(-1, 1)
+        coords[inside, :]  *= 1.01 * radiusInner / (Rsq[inside] ** 0.5).reshape(-1, 1)
 
         return coords
 
@@ -1594,37 +1608,37 @@ def SegmentofAnnulus(
     -----------
     radiusOuter : float, optional
         The outer radius of the annular segment. Default is 1.0.
-    
+
     radiusInner : float, optional
         The inner radius of the annular segment. Default is 0.547.
-    
+
     angleExtent : float, optional
         The angular extent of the segment in degrees. Default is 45.
-    
+
     cellSize : float, optional
         The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-    
+
     centre : bool, optional
         If True, the segment will be centered at the origin. If False, the segment is positioned based on the radii. Default is False.
-    
+
     degree : int, optional
         The polynomial degree of the finite elements used in the mesh. Default is 1.
-    
+
     qdegree : int, optional
         The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-    
+
     filename : str, optional
         The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
-    
+
     refinement : optional
         Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-    
+
     gmsh_verbosity : int, optional
         Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-    
+
     verbose : bool, optional
         If True, the function prints additional information during execution. Default is False.
-    
+
     Returns:
     --------
     None
@@ -1645,22 +1659,19 @@ def SegmentofAnnulus(
         verbose=True
     )
     """
-    
+
     class boundaries(Enum):
         Lower = 1
         Upper = 2
         Left = 3
         Right = 4
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f"uw_SegmentOfAnnulus_ro{radiusOuter}_ri{radiusInner}_extent{angleExtent}_csize{cellSize}.msh"
-        )
+        uw_filename = f"uw_SegmentOfAnnulus_ro{radiusOuter}_ri{radiusInner}_extent{angleExtent}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -1671,7 +1682,7 @@ def SegmentofAnnulus(
             "radiusInner must be greater than 0, "
             "and angleExtent must be within the range (0, 180)."
         )
-        
+
     if uw.mpi.rank == 0:
         import gmsh
 
@@ -1689,12 +1700,31 @@ def SegmentofAnnulus(
         loops = []
 
         if radiusInner > 0.0:
-            p1 = gmsh.model.geo.addPoint(radiusInner * np.cos(theta1), radiusInner * np.sin(theta1), 0.0, meshSize=cellSize)
-            p4 = gmsh.model.geo.addPoint(radiusInner * np.cos(theta2), radiusInner * np.sin(theta2), 0.0, meshSize=cellSize)
+            p1 = gmsh.model.geo.addPoint(
+                radiusInner * np.cos(theta1),
+                radiusInner * np.sin(theta1),
+                0.0,
+                meshSize=cellSize,
+            )
+            p4 = gmsh.model.geo.addPoint(
+                radiusInner * np.cos(theta2),
+                radiusInner * np.sin(theta2),
+                0.0,
+                meshSize=cellSize,
+            )
 
-        p2 = gmsh.model.geo.addPoint(radiusOuter * np.cos(theta1), radiusOuter * np.sin(theta1), 0.0, meshSize=cellSize)
-        p3 = gmsh.model.geo.addPoint(radiusOuter * np.cos(theta2), radiusOuter * np.sin(theta2), 0.0, meshSize=cellSize)
-
+        p2 = gmsh.model.geo.addPoint(
+            radiusOuter * np.cos(theta1),
+            radiusOuter * np.sin(theta1),
+            0.0,
+            meshSize=cellSize,
+        )
+        p3 = gmsh.model.geo.addPoint(
+            radiusOuter * np.cos(theta2),
+            radiusOuter * np.sin(theta2),
+            0.0,
+            meshSize=cellSize,
+        )
 
         if radiusInner > 0.0:
             l_right = gmsh.model.geo.addLine(p1, p2)
@@ -1714,13 +1744,23 @@ def SegmentofAnnulus(
         # gmsh.model.mesh.embed(0, [p0], 2, s) # not sure use of this line
 
         if radiusInner > 0.0:
-            gmsh.model.addPhysicalGroup(1, [c_lower], boundaries.Lower.value, name=boundaries.Lower.name)
+            gmsh.model.addPhysicalGroup(
+                1, [c_lower], boundaries.Lower.value, name=boundaries.Lower.name
+            )
         else:
-            gmsh.model.addPhysicalGroup(0, [p0], tag=boundaries.Centre.value, name=boundaries.Centre.name)
+            gmsh.model.addPhysicalGroup(
+                0, [p0], tag=boundaries.Centre.value, name=boundaries.Centre.name
+            )
 
-        gmsh.model.addPhysicalGroup(1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name)
-        gmsh.model.addPhysicalGroup(1, [l_left], boundaries.Left.value, name=boundaries.Left.name)
-        gmsh.model.addPhysicalGroup(1, [l_right], boundaries.Right.value, name=boundaries.Right.name)
+        gmsh.model.addPhysicalGroup(
+            1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
+        )
+        gmsh.model.addPhysicalGroup(
+            1, [l_left], boundaries.Left.value, name=boundaries.Left.name
+        )
+        gmsh.model.addPhysicalGroup(
+            1, [l_right], boundaries.Right.value, name=boundaries.Right.name
+        )
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
 
         gmsh.model.geo.synchronize()
@@ -1826,7 +1866,6 @@ def AnnulusWithSpokes(
         UpperPlus = 21
         Centre = 1
         Spokes = 99
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -2085,7 +2124,7 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
+        All_Edges = 1000
 
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
@@ -2175,9 +2214,10 @@ def AnnulusInternalBoundary(
                 1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1,
@@ -2298,7 +2338,6 @@ def DiscInternalBoundaries(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
 
     if cellSize_Lower is None:
         cellSize_Lower = cellSize
@@ -2508,7 +2547,6 @@ def CubedSphere(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -2729,7 +2767,6 @@ def RegionalSphericalBox(
         South = 4
         East = 5
         West = 6
-        All_Boundaries = 1001
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -3112,7 +3149,6 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments
@@ -3516,7 +3552,6 @@ def SegmentedSphericalBall(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
 
     meshRes = cellSize
     num_segments = numSegments

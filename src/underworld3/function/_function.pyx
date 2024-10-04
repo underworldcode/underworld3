@@ -18,12 +18,9 @@ cdef extern from "petsc.h" nogil:
     ctypedef struct DMInterpolationInfo:
         pass
 
-# typedef for setting/getting migrate type 
-ctypedef enum DMSwarmMigrateType:
-    DMSWARM_MIGRATE_BASIC,
-    DMSWARM_MIGRATE_DMCELLNSCATTER,
-    DMSWARM_MIGRATE_DMCELLEXACT,
-    DMSWARM_MIGRATE_USER
+cdef extern from "petsc.h" nogil:
+    ctypedef enum DMSwarmMigrateType:
+        pass
 
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
@@ -38,7 +35,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMInterpolationDestroy(DMInterpolationInfo *ipInfo)
     MPI_Comm MPI_COMM_SELF
 
-cdef extern from "petscdmswarm.h" nogil:
+cdef extern from "petsc.h" nogil:
     PetscErrorCode DMSwarmSetMigrateType(PetscDM dm, DMSwarmMigrateType mtype)
     PetscErrorCode DMSwarmGetMigrateType(PetscDM dm, DMSwarmMigrateType *mtype)
 
@@ -163,11 +160,11 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def evaluate(   expr, 
-                np.ndarray coords=None, 
-                coord_sys=None, 
-                other_arguments=None, 
-                simplify=True, 
+def evaluate(   expr,
+                np.ndarray coords=None,
+                coord_sys=None,
+                other_arguments=None,
+                simplify=True,
                 verbose=False, ):
     """
     Evaluate a given expression at a list of coordinates.
@@ -221,8 +218,9 @@ def evaluate(   expr,
 
     ## special case
 
-    if uw.function.fn_is_constant_expr(expr):
-        return uw.function.fn_substitute_expressions(expr, keep_constants=False)
+    ## fix to provide the correct shape
+    # if uw.function.fn_is_constant_expr(expr):
+    #     return uw.function.fn_substitute_expressions(expr, keep_constants=False)
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -361,7 +359,7 @@ def evaluate(   expr,
 
             # Note: special case: re-evaluating at the same points
             # after updating mesh variables. This is not captured
-            # by a simple coordinate hash. We kill this in the 
+            # by a simple coordinate hash. We kill this in the
             # .access for mesh variables but this is prone to mistakes
 
             if coord_hash == mesh._evaluation_hash:
@@ -419,7 +417,7 @@ def evaluate(   expr,
         cdef np.ndarray cells = mesh.get_closest_cells(coords)
         cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
         ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
-        
+
         if ierr != 0:
             raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
                                "Interpolation location is possibly outside the domain.")
@@ -494,7 +492,7 @@ def evaluate(   expr,
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
 
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )  
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
     # Leave out modules. This is equivalent to SYMPY_DECIDE and can then include scipy if available
 
     # 5. Eval generated lambda expression
@@ -502,7 +500,7 @@ def evaluate(   expr,
     results = lambfn( coords_list, interpolated_results.values() )
 
 
-    # Check shape of original expression 
+    # Check shape of original expression
 
     try:
         shape = expr.shape
@@ -514,7 +512,7 @@ def evaluate(   expr,
     except AttributeError:
         results_shape = (1,)
 
-    # If passed a constant / constant matrix, then the result will not span the coordinates 
+    # If passed a constant / constant matrix, then the result will not span the coordinates
     # and we'll need to address that explicitly
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
@@ -543,11 +541,11 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 ### ------------------------------
 
-def evalf(  expr, 
-            coords=None, 
-            coord_sys=None,  
-            other_arguments=None, 
-            verbose=False, 
+def evalf(  expr,
+            coords=None,
+            coord_sys=None,
+            other_arguments=None,
+            verbose=False,
             simplify=True,):
     """
     Evaluate a given expression at a list of coordinates.
@@ -668,7 +666,7 @@ def evalf(  expr,
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
-    # Get map of all variable functions (no cache) 
+    # Get map of all variable functions (no cache)
     interpolated_results = {}
 
     for varfn in varfns:
@@ -721,7 +719,7 @@ def evalf(  expr,
     results = lambfn( coords_list, interpolated_results.values() )
 
 
-    # Check shape of original expression 
+    # Check shape of original expression
 
     try:
         shape = expr.shape
@@ -733,7 +731,7 @@ def evalf(  expr,
     except AttributeError:
         results_shape = (1,)
 
-    # If passed a constant / constant matrix, then the result will not span the coordinates 
+    # If passed a constant / constant matrix, then the result will not span the coordinates
     # and we'll need to address that explicitly
 
     if shape == results_shape:
@@ -767,12 +765,12 @@ def dm_swarm_get_migrate_type(swarm):
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype):
-    
+def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+
     cdef DM dm = swarm.dm
     cdef PetscErrorCode ierr
+    cdef DMSwarmMigrateType mig = mtype
 
-    ierr = DMSwarmSetMigrateType(dm.dm, mtype); CHKERRQ(ierr)
+    ierr = DMSwarmSetMigrateType(dm.dm, mig); CHKERRQ(ierr)
 
     return
-
