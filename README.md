@@ -1,16 +1,10 @@
 # underworld3
 
-Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
-
 <center>
-<iframe src="docs/user/media/pyvista/SphereStreamLinesS.html" width="500" height="300">
-</iframe>
+<img src="docs/user/media/SocialShareS.png", width=80%>
 </center>
 
-<i>
-    Live image: Flow solution in an sphere with prescribed buoyancy
-    and free slip boundaries.
-</i>
+Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
 
 All `Underworld3` source code is released under the LGPL-3 open source licence. This covers all files in `underworld3` constituting the Underworld3 Python module. Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License.
 
