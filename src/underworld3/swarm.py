@@ -1,3 +1,4 @@
+from posixpath import pardir
 import petsc4py.PETSc as PETSc
 
 import numpy as np
@@ -1915,6 +1916,7 @@ class NodalPointSwarm(Swarm):
     ):
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
+        self.verbose = verbose
 
         mesh = trackedVariable.mesh
 
@@ -1935,6 +1937,8 @@ class NodalPointSwarm(Swarm):
             nswarm,
             vtype=trackedVariable.vtype,
             _proxy=False,
+            # proxy_degree=trackedVariable.degree,
+            # proxy_continuous=trackedVariable.continuous,
             varsymbol=symbol,
         )
 

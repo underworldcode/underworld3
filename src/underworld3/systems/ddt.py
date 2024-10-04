@@ -216,7 +216,6 @@ class SemiLagrangian(uw_object):
 
         # We use the u_star variable as a working value here so we have to work backwards
         # so we don't over-write the history terms
-        #
 
         for i in range(self.order - 1, -1, -1):
             with self._nswarm_psi.access(self._nswarm_psi._X0):
@@ -314,7 +313,6 @@ class SemiLagrangian(uw_object):
             # the data when we put it back onto the nodes
 
             with self._nswarm_psi.access():
-
                 orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
 
                 with self.mesh.access(self._workVar):
