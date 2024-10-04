@@ -627,7 +627,7 @@ True: index into the local coordinate array</p>
 
         options = PETSc.Options()
         options.setValue(
-            &#34;meshproj_{}_petscspace_degree&#34;.format(self.mesh_instances), self.degree
+            f&#34;meshproj_{self.mesh_instances}_petscspace_degree&#34;, self.degree
         )
 
         self.petsc_fe = PETSc.FE().createDefault(
@@ -635,7 +635,7 @@ True: index into the local coordinate array</p>
             self.cdim,
             self.isSimplex,
             self.qdegree,
-            &#34;meshproj_{}_&#34;.format(self.mesh_instances),
+            f&#34;meshproj_{self.mesh_instances}_&#34;,
         )
 
         if (
@@ -701,6 +701,12 @@ True: index into the local coordinate array</p>
                     subvec = a_global.getSubVector(subiset)
                     subdm.localToGlobal(lvec, subvec, addv=False)
                     a_global.restoreSubVector(subiset, subvec)
+
+
+            for iset in isets:
+                iset.destroy()
+            for dm in dms:
+                dm.destroy()
 
             self.dm.globalToLocal(a_global, self._lvec)
             self.dm.restoreGlobalVec(a_global)
@@ -836,7 +842,8 @@ True: index into the local coordinate array</p>
                         subdm.localToGlobal(var.vec, var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec, var.vec, addv=False)
 
-                        # subdm.destroy()
+                        indexset.destroy()
+                        subdm.destroy()
                         self.mesh._stale_lvec = True
 
                     var._data = None
