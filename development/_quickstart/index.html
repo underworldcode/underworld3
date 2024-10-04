@@ -6,8 +6,8 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="author" content="Louis Moresi">
-<meta name="dcterms.date" content="2025-03-06">
+<meta name="author" content="Underworld Team">
+<meta name="dcterms.date" content="2024-10-02">
 
 <title>Underworld3 Quick Start Guide</title>
 <style>
@@ -22,7 +22,27 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
-</style>
+/* CSS for citations */
+div.csl-bib-body { }
+div.csl-entry {
+  clear: both;
+  margin-bottom: 0em;
+}
+.hanging-indent div.csl-entry {
+  margin-left:2em;
+  text-indent:-2em;
+}
+div.csl-left-margin {
+  min-width:2em;
+  float:left;
+}
+div.csl-right-inline {
+  margin-left:2em;
+  padding-left:1em;
+}
+div.csl-indent {
+  margin-left: 2em;
+}</style>
 
 
 <script src="site_libs/quarto-nav/quarto-nav.js"></script>
@@ -208,7 +228,7 @@ ul.task-list li input[type="checkbox"] {
   <li><a href="#learn-more" id="toc-learn-more" class="nav-link" data-scroll-target="#learn-more">Learn More</a></li>
   <li><a href="#acknowledgements" id="toc-acknowledgements" class="nav-link" data-scroll-target="#acknowledgements">Acknowledgements</a></li>
   <li><a href="#licensing-and-re-use" id="toc-licensing-and-re-use" class="nav-link" data-scroll-target="#licensing-and-re-use">Licensing and re-use</a></li>
-  <li><a href="#references" id="toc-references" class="nav-link" data-scroll-target="#references">References</a></li>
+  <li><a href="#background" id="toc-background" class="nav-link" data-scroll-target="#background">Background</a></li>
   </ul>
 <div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
@@ -235,7 +255,7 @@ ul.task-list li input[type="checkbox"] {
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">March 6, 2025</p>
+      <p class="date">October 2, 2024</p>
     </div>
   </div>
   
@@ -286,13 +306,52 @@ ul.task-list li input[type="checkbox"] {
 <li><p>The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)</p></li>
 </ul>
 <p>In-kind support has also come from the institution that host Underworld developers including: the Australian National University, Monash University, The University of Melbourne, The University of Sydney and the CSIRO.</p>
+<p>Underworld3 relies extensively upon the <code>PETSc</code>, <code>sympy</code>, <code>numpy</code> and <code>cython</code> packages and the <code>jupyter</code> notebook system. We acknowledge the enormous development effort required to build and maintain essential community infrastructure of this calibre and we extend our thanks to include the building blocks of each of these components that are too numerous to acknowledge individually.</p>
 </section>
 <section id="licensing-and-re-use" class="level2">
 <h2 class="anchored" data-anchor-id="licensing-and-re-use">Licensing and re-use</h2>
 <p>All of our software is released under open source licence and all documentation and worked examples are released with a creative commons licence. We are passionate about having our software used and code reuse is strongly encouraged in the interest of scientific reproducibility and replicability. The developers are active researchers and scientists whose livelihood depends on their creative talents and the acknowledgement of their work. Please respect the effort that goes into developing software and tutorials by citing our work and collaborating on publication with new applications of our software when you can.</p>
 </section>
-<section id="references" class="level2">
-<h2 class="anchored" data-anchor-id="references">References</h2>
+<section id="background" class="level2">
+<h2 class="anchored" data-anchor-id="background">Background</h2>
+<div id="refs" class="references csl-bib-body hanging-indent" data-entry-spacing="0" role="list" style="display: none">
+<div id="ref-balay.etal.PETSc.2024" class="csl-entry" role="listitem">
+Balay, S., S. Abhyankar, M. Adams, S. Benson, J. Brown, P. Brune, K. Buschelman, et al. 2024. <span>“<span>PETSc</span>/<span>TAO Users Manual V</span>.3.21.”</span> ANL–21/39-Rev-3.21, 2337606, 188499. <a href="https://doi.org/10.2172/2337606">https://doi.org/10.2172/2337606</a>.
+</div>
+<div id="ref-behnel2011cython" class="csl-entry" role="listitem">
+Behnel, Stefan, Robert Bradshaw, Craig Citro, Lisandro Dalcin, Dag Sverre Seljebotn, and Kurt Smith. 2011. <span>“Cython: <span>The</span> Best of Both Worlds.”</span> <em>Computing in Science &amp; Engineering</em> 13 (2): 31–39.
+</div>
+<div id="ref-beucher.etal.UWGeodynamics.2019" class="csl-entry" role="listitem">
+Beucher, Romain, Louis Moresi, Julian Giordani, John Mansour, Dan Sandiford, Rebecca Farrington, Luke Mondy, et al. 2019. <span>“<span>UWGeodynamics</span>: <span>A</span> Teaching and Research Tool for Numerical Geodynamic Modelling.”</span> <em>Journal of Open Source Software</em>, April. <a href="https://doi.org/10.21105/joss.01136">https://doi.org/10.21105/joss.01136</a>.
+</div>
+<div id="ref-dalcinpazklercosimo2011" class="csl-entry" role="listitem">
+Dalcin, Lisandro D., Rodrigo R. Paz, Pablo A. Kler, and Alejandro Cosimo. 2011. <span>“Parallel Distributed Computing Using <span>Python</span>.”</span> <em>Advances in Water Resources</em> 34 (9): 1124–39. <a href="https://doi.org/10.1016/j.advwatres.2011.04.013">https://doi.org/10.1016/j.advwatres.2011.04.013</a>.
+</div>
+<div id="ref-granger.perez.Jupyter.2021" class="csl-entry" role="listitem">
+Granger, Brian E., and Fernando Perez. 2021. <span>“Jupyter: <span>Thinking</span> and <span>Storytelling With Code</span> and <span>Data</span>.”</span> <em>Computing in Science &amp; Engineering</em> 23 (2): 7–14. <a href="https://doi.org/10.1109/MCSE.2021.3059263">https://doi.org/10.1109/MCSE.2021.3059263</a>.
+</div>
+<div id="ref-knepley.etal.Achieving.2013" class="csl-entry" role="listitem">
+Knepley, Matthew G., Jed Brown, Karl Rupp, and Barry F. Smith. 2013. <span>“Achieving <span>High Performance</span> with <span>Unified Residual Evaluation</span>.”</span> <em>arXiv:1309.1204 [Cs]</em>, September. <a href="https://arxiv.org/abs/1309.1204">https://arxiv.org/abs/1309.1204</a>.
+</div>
+<div id="ref-mansour.etal.Underworld2.2020" class="csl-entry" role="listitem">
+Mansour, John, Julian Giordani, Louis Moresi, Romain Beucher, Owen Kaluza, Mirko Velic, Rebecca Farrington, Steve Quenette, and Adam Beall. 2020. <span>“Underworld2: <span>Python Geodynamics Modelling</span> for <span>Desktop</span>, <span>HPC</span> and <span>Cloud</span>.”</span> <em>Journal of Open Source Software</em> 5 (47): 1797. <a href="https://doi.org/10.21105/joss.01797">https://doi.org/10.21105/joss.01797</a>.
+</div>
+<div id="ref-meurer.etal.SymPy.2017" class="csl-entry" role="listitem">
+Meurer, Aaron, Christopher P. Smith, Mateusz Paprocki, Ondřej Čertík, Sergey B. Kirpichev, Matthew Rocklin, AmiT Kumar, et al. 2017. <span>“<span>SymPy</span>: Symbolic Computing in <span>Python</span>.”</span> <em>PeerJ Computer Science</em> 3 (January): e103. <a href="https://doi.org/10.7717/peerj-cs.103">https://doi.org/10.7717/peerj-cs.103</a>.
+</div>
+<div id="ref-moresi.etal.Lagrangian.2003" class="csl-entry" role="listitem">
+Moresi, L., F. Dufour, and H.-B. Mühlhaus. 2003. <span>“A <span>Lagrangian</span> Integration Point Finite Element Method for Large Deformation Modeling of Viscoelastic Geomaterials.”</span> <em>Journal of Computational Physics</em> 184 (2): 476–97. <a href="https://doi.org/10.1016/S0021-9991(02)00031-1">https://doi.org/10.1016/S0021-9991(02)00031-1</a>.
+</div>
+<div id="ref-moresi.Chapter.2023" class="csl-entry" role="listitem">
+Moresi, Louis. 2023. <span>“Chapter 23 - <span>Literate</span>, <span>Reusable</span>, <span>Geodynamic Modeling</span>.”</span> In <em>Dynamics of <span>Plate Tectonics</span> and <span>Mantle Convection</span></em>, edited by João C. Duarte, 573–82. Elsevier. <a href="https://doi.org/10.1016/B978-0-323-85733-8.00010-X">https://doi.org/10.1016/B978-0-323-85733-8.00010-X</a>.
+</div>
+<div id="ref-moresi.etal.Computational.2007" class="csl-entry" role="listitem">
+Moresi, L., S. Quenette, V. Lemiale, C. Mériaux, B. Appelbe, and H. -B. Mühlhaus. 2007. <span>“Computational Approaches to Studying Non-Linear Dynamics of the Crust and Mantle.”</span> <em>Physics of the Earth and Planetary Interiors</em>, Computational <span>Challenges</span> in the <span>Earth Sciences</span>, 163 (1): 69–82. <a href="https://doi.org/10.1016/j.pepi.2007.06.009">https://doi.org/10.1016/j.pepi.2007.06.009</a>.
+</div>
+<div id="ref-zhong.etal.705.2015" class="csl-entry" role="listitem">
+Zhong, S. J., D. A. Yuen, L. N. Moresi, and M. G. Knepley. 2015. <span>“7.05 - <span>Numerical Methods</span> for <span>Mantle Convection</span>.”</span> In <em>Treatise on <span>Geophysics</span> (<span>Second Edition</span>)</em>, edited by Gerald Schubert, 197–222. Oxford: Elsevier. <a href="https://doi.org/10.1016/B978-0-444-53802-4.00130-5">https://doi.org/10.1016/B978-0-444-53802-4.00130-5</a>.
+</div>
+</div>
 
 
 </section>
