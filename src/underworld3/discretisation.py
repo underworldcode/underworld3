@@ -640,7 +640,7 @@ class Mesh(Stateful, uw_object):
 
         options = PETSc.Options()
         options.setValue(
-            "meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree
+            f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree
         )
 
         self.petsc_fe = PETSc.FE().createDefault(
@@ -648,7 +648,7 @@ class Mesh(Stateful, uw_object):
             self.cdim,
             self.isSimplex,
             self.qdegree,
-            "meshproj_{}_".format(self.mesh_instances),
+            f"meshproj_{self.mesh_instances}_",
         )
 
         if (
@@ -714,6 +714,12 @@ class Mesh(Stateful, uw_object):
                     subvec = a_global.getSubVector(subiset)
                     subdm.localToGlobal(lvec, subvec, addv=False)
                     a_global.restoreSubVector(subiset, subvec)
+
+
+            for iset in isets:
+                iset.destroy()
+            for dm in dms:
+                dm.destroy()
 
             self.dm.globalToLocal(a_global, self._lvec)
             self.dm.restoreGlobalVec(a_global)
@@ -849,7 +855,8 @@ class Mesh(Stateful, uw_object):
                         subdm.localToGlobal(var.vec, var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec, var.vec, addv=False)
 
-                        # subdm.destroy()
+                        indexset.destroy()
+                        subdm.destroy()
                         self.mesh._stale_lvec = True
 
                     var._data = None

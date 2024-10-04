@@ -213,7 +213,6 @@ def evaluate(   expr,
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
 
-
     sympy.core.cache.clear_cache()
 
     ## special case
@@ -596,9 +595,8 @@ def evalf(  expr,
 
     sympy.core.cache.clear_cache()
 
-
     if uw.function.fn_is_constant_expr(expr):
-        return expr.sub_all(keep_constants=False)
+        return uw.function.expressions.unwrap(expr, keep_constants=False)
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")

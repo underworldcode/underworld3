@@ -40,14 +40,20 @@ def configure():
     print(f"PETSC_ARCH: {PETSC_ARCH}")
 
     # It is preferable to use the petsc4py paths to the
-    # petsc libraries for consistency
+    # petsc libraries for consistency but the pip installation
+    # of PETSc sometimes points to the temporary setup up path
 
-    # if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-    #     PETSC_DIR = os.environ["CONDA_PREFIX"]
-    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
-    # else:
-    #     PETSC_DIR = os.environ["PETSC_DIR"]
-    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    if not os.path.exists(PETSC_DIR):
+        if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
+            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python3.1", "site-packages", "petsc") # symlink to latest python
+            PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+        else:
+            PETSC_DIR = os.environ["PETSC_DIR"]
+            PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+
+    print(f"PETSC_DIR: {PETSC_DIR}")
+    print(f"PETSC_ARCH: {PETSC_ARCH}")
+
 
     from os.path import join, isdir
 

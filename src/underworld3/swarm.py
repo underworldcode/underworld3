@@ -1916,7 +1916,6 @@ class NodalPointSwarm(Swarm):
     ):
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
-        self.verbose = verbose
 
         mesh = trackedVariable.mesh
 

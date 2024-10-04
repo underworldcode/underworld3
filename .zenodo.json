@@ -21,8 +21,13 @@
             "affiliation": "Research School of Earth Sciences, The Australian National University",
         },
         {
+            "name": "Matt Knepley",
+            "orcid": "0000-0002-2292-0735"
+            "affiliation": "Computer Science and Engineering, University at Buffalo",
+        },
+        {
             "name": "Ben Knight",
-            "affiliation": "Monash University",
+            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
             "orcid": "0000-0001-7919-2575"
         },
         {
@@ -32,7 +37,7 @@
         },
         {
             "name": "John Mansour",
-            "affiliation": "TBD",
+            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
             "orcid": "0000-0001-5865-1664"
         },
         {

@@ -14,11 +14,9 @@ authors:
     corresponding: true # (This is how to denote the corresponding author)
     affiliation: "1" # (Multiple affiliations must be quoted)
   - name: John Mansour
-    equal-contrib: true
     orcid: 0000-0001-5865-1664
     affiliation: "2"
   - name: Julian Giordani
-    equal-contrib: true
     orcid: 0000-0003-4515-9296
     affiliation: "3"
   - name: Matt Knepley
@@ -119,6 +117,12 @@ This symbolic form (\ref{eq:sympy-strong-form})
 contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $f$). In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
 
 # Discussion
+
+Aim to provide strong support to users to develop sophisticated mathematical models and to be able to interrogate those models during development and at run-time.
+
+Seemless parallelism
+
+Resuable documentation that is accessible in rich-text format in jupyter notebooks for model development and analysis but is also incorporated into the API documentation in the same rich format.
 
 <!-- Figures can be included like this:
 ![Caption for example figure.\label{fig:example}](figure.png)

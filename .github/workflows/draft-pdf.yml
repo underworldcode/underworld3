@@ -1,12 +1,12 @@
-name: Draft PDF
-on: 
-    push:
-        paths:
-            - joss-paper/paper.md
-            - joss-paper/paper.bib
-            # - assets/img1.png
-            # - assets/img2.png
-            - .github/workflows/draft-pdf.yml
+name: Draft PDF (JOSS)
+on:
+  push:
+    paths:
+      - joss-paper/paper.md
+      - joss-paper/paper.bib
+      # - assets/img1.png
+      # - assets/img2.png
+      - .github/workflows/draft-pdf.yml
 
 jobs:
   paper:

@@ -1,13 +1,14 @@
 name: Build and test UW3
 
-# We should trigger this from an upload event. Note that pdoc requires us to import the 
+# We should trigger this from an upload event. Note that pdoc requires us to import the
 # built code, so this is a building test as well as documentation deployment
 
 on:
-  push:      
+  push:
     branches:
-      - main 
+      - main
       - development
+      - Quick_Start_Docs
 
   pull_request:
 
@@ -39,7 +40,7 @@ jobs:
         run: |
           pip install gmsh
 
-      - name: Build UW3 
+      - name: Build UW3
         shell: bash -l {0}
         run: |
           export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
