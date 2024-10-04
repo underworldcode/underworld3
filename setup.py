@@ -10,19 +10,7 @@ import os
 import numpy
 import petsc4py
 
-if os.environ.get("CC") is None:
-    import warnings
-
-    warnings.warn(
-        "CC environment variable not set. Using mpi4py's compiler configuration"
-    )
-    # Get CC from mpi4py
-    import mpi4py
-
-    conf = mpi4py.get_config()
-    os.environ["CC"] = conf["mpicc"]
-
-# PETSc version check - 3.16 or higher
+# PETSc version check - 3.18 or higher
 from petsc4py import PETSc
 
 petscVer = PETSc.Sys().getVersion()
@@ -34,7 +22,6 @@ if petscVer[0] != 3 or petscVer[1] < 18:
         f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
     )
     raise RuntimeError(msg)
-
 
 def configure():
 

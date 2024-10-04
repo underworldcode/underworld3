@@ -6,7 +6,6 @@ on:
     branches:
       - main # Occurs on protected branch through PR
       - development
-      - Quick_Start_Docs # Testing branch (delete later)
 
 name: Quarto Publish
 

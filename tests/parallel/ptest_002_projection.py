@@ -45,6 +45,8 @@ with mesh1.access(s_values):
     print(s_values.data[0:10,0])
     s_values.data[:, 0] = 1.0 # uw.function.evalf(sympy.sympify(1), s_values.coords)
 
+print(f"{uw.mpi.rank} - solve projection", flush=True)
+mesh1.dm.view()
 
 scalar_projection.solve()
 
