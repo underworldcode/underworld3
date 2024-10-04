@@ -306,7 +306,7 @@ window.Quarto = {
 </div>
 <p>We’ll look at a convection problem which couples Stokes Flow with time-dependent advection/diffusion.</p>
 <p>The starting point is our previous notebook where we solved for Stokes flow in a cylindrical annulus geometry. We then add an advection-diffusion solver to evolve temperature. The Stokes buoyancy force is proportional to the temperature anomaly, and the velocity solution is fed back into the temperature advection term.</p>
-<div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-jupyter="{&quot;outputs_hidden&quot;:true}" data-execution_count="2">
+<div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-execution_count="15">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -373,7 +373,7 @@ window.Quarto = {
 <span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    u_Field<span class="op">=</span>t_soln,</span>
 <span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    V_fn<span class="op">=</span>v_soln,</span>
 <span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    solver_name<span class="op">=</span><span class="st">"adv_diff"</span>,</span>
-<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    order<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    order<span class="op">=</span><span class="dv">2</span>,</span>
 <span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
 <span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>)</span>
 <span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a></span>
@@ -453,15 +453,15 @@ window.Quarto = {
 <span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span>(<span class="ss">f"Timestep: </span><span class="sc">{</span>timestep<span class="sc">}</span><span class="ss">, time </span><span class="sc">{</span>elapsed_time<span class="sc">}</span><span class="ss">"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>Timestep: 5, time 0.007655378472205266
-Timestep: 10, time 0.014726579977176624
-Timestep: 15, time 0.018483060525797824
-Timestep: 20, time 0.0212112311837343
-Timestep: 25, time 0.023815491249944375
-Timestep: 30, time 0.026692184130742397
-Timestep: 35, time 0.02990403867073574
-Timestep: 40, time 0.033304683894118385
-Timestep: 45, time 0.03672433425335901
-Timestep: 50, time 0.040108712649056966</code></pre>
+Timestep: 10, time 0.01387213547299994
+Timestep: 15, time 0.017197945909787137
+Timestep: 20, time 0.019855789890665786
+Timestep: 25, time 0.02250450167934171
+Timestep: 30, time 0.02546333347384266
+Timestep: 35, time 0.028720014807997008
+Timestep: 40, time 0.032113891988035236
+Timestep: 45, time 0.035501720967277196
+Timestep: 50, time 0.038852418750145654</code></pre>
 </div>
 </div>
 <div id="09e26f46-452e-49ec-8180-103163cc4fc2" class="cell" data-execution_count="13">

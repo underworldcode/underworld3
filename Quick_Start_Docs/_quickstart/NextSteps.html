@@ -20,6 +20,40 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
 </style>
 
 
@@ -206,6 +240,7 @@ ul.task-list li input[type="checkbox"] {
   <li><a href="#benchmarks" id="toc-benchmarks" class="nav-link" data-scroll-target="#benchmarks">Benchmarks</a></li>
   <li><a href="#the-underworld-community" id="toc-the-underworld-community" class="nav-link" data-scroll-target="#the-underworld-community">The Underworld Community</a></li>
   <li><a href="#parallel-execution" id="toc-parallel-execution" class="nav-link" data-scroll-target="#parallel-execution">Parallel Execution</a></li>
+  <li><a href="#advanced-capabilities" id="toc-advanced-capabilities" class="nav-link" data-scroll-target="#advanced-capabilities">Advanced capabilities</a></li>
   </ul>
 <div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
@@ -239,29 +274,74 @@ ul.task-list li input[type="checkbox"] {
 
 <section id="underworld-documentation-and-examples" class="level3">
 <h3 class="anchored" data-anchor-id="underworld-documentation-and-examples">Underworld Documentation and Examples</h3>
+<p>In addition to the notebooks in this brief set of examples, there are a number of sources of information on using <code>Underworld3</code> that you can access:</p>
+<ul>
+<li><p><a href="https://www.underworldcode.org">The Underworld Website / Blog</a></p></li>
+<li><p><a href="https://underworldcode.github.io/underworld3/development_api/index.html">The API documentation</a> (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text.</p></li>
+<li><p>The <a href="https://github.com/underworldcode/underworld3"><code>underworld3</code> GitHub repository</a> is the most active development community for the code.</p></li>
+</ul>
 </section>
 <section id="benchmarks" class="level3">
 <h3 class="anchored" data-anchor-id="benchmarks">Benchmarks</h3>
+<p>The <a href="https://github.com/underworld-community/UW3-benchmarks">Underworld3 Benchmarks Repository</a> is a useful place to find community benchmarks coded in <code>underworld3</code> along with accuracy and convergence analysis. This is an open repository where you can make a pull request with new benchmark submissions once you get the hang of things.</p>
 </section>
 <section id="the-underworld-community" class="level3">
 <h3 class="anchored" data-anchor-id="the-underworld-community">The Underworld Community</h3>
-<p>Sharing codes / fixes</p>
-<p>Sharing models</p>
+<p>The <a href="https://github.com/underworld-community">Underworld Community</a> organisation on Github is a collection of contributed repositories from the underworld user community for all versions of the code and now includes scripts for underworld3.</p>
 </section>
 <section id="parallel-execution" class="level3">
 <h3 class="anchored" data-anchor-id="parallel-execution">Parallel Execution</h3>
-<p>Advise using jupytext to render notebooks at .py files. This is helpful in shared environments because the files contain no output and play better with version control.</p>
-<p>Not such a good idea if you want to have a tutorial with outputs (like this one)</p>
-<!--
-```fhnkfvgr https://github.com/underworldcode/underworld3/raw/VEP-preliminary-implementation/Documentation/media/Sinker.html
-:width: 100%
-:align: center
+<p><code>Underworld3</code> is inherently parallel and designed for high performance computing. The symbolic layer is a relatively thin veneer that sits on top of the <code>PETSc</code> machinery. A script that has been developed in <code>jupyter</code> should be transferrable to an HPC environment with no changes (except that inherently serial operations such as visualisation and model reduction are best left to postprocessing / co-processing).</p>
+<p>We recommend installing <code>jupytext</code> which allows either a seamless two-way conversion (or pairing) between the <code>ipynb</code> format and an annotated python script, or the ability to work entirely with annoted python scripts and not use <code>ipynb</code> at all. The python form does not store the output of notebook cells but there are advantages to this when scripts are under version control.</p>
+<p>Almost all of our notebook examples are annotated python for this reason.An exception is the collection of notebooks in this quick-start guide because we want to show you the rendered output in the static web pages.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="ex">mpirun</span> <span class="at">-np</span> 1024 python3 Modelling_Script.py <span class="at">-uw_resolution</span> 96</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the <code>PETSc</code> command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).</p>
+</section>
+<section id="advanced-capabilities" class="level3">
+<h3 class="anchored" data-anchor-id="advanced-capabilities">Advanced capabilities</h3>
+<p>Digging a bit deeper into <code>underworld3</code>, there are many capabilities that require a clear understanding of the concepts that underlie the implementation. The following examples are not <em>plug-and-play</em>, but they do only require python coding using the <code>underworld3</code> API and no detailed knowledge of <code>petsc4py</code> or <code>PETSc</code>. <a href="https://github.com/underworldcode/underworld3/issues">Get in touch with us</a> if you want to try this sort of thing but can’t figure it out for yourself.</p>
+<section id="deforming-meshes" class="level4">
+<h4 class="anchored" data-anchor-id="deforming-meshes">Deforming meshes</h4>
+<p>In <a href="./Notebooks/8-Particle_Swarms.html">Example 8</a>, we made small variations to the mesh to conform to basal topography. We did not remesh, so we had to be careful to apply a smooth, analytic displacement to every node. For more general free-surface models, we need to calculate a smooth function using the computed boundary motions (e.g, solving a poisson equation with known boundary displacements as boundary conditions). We need to step through time and it is common to stabilize the surface motions through a surface integral term that accounts for the interface displacement during the timestep. The example below shows an <code>underworld3</code> forward model with internal loads timestepped close to isostatic equilibrium.</p>
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="media/RelaxingMesh.png" class="img-fluid figure-img" style="width:50.0%"></p>
+<figcaption><em>Stokes flow driven by buoyancy in an annulus defined by two embedded surfaces within an enveloping disk mesh. The surfaces deform in response to the flow. The embedding medium has a very low viscosity but still acts to damp rotational modes. The outer boundary of the disk can be set to a far-field gravitational potential for whole-Earth relaxation models</em></figcaption>
+</figure>
+</div>
+<p>In a more general case, we need to account to horizontal motions. This is more complicated because the horizontal velocities can be large even when vertical equilibrium is achieved. So we need to solve for the advected component of vertical motion in addition to the local component. Hooray for symbolic algebra !</p>
+</section>
+<section id="weak-penalty-boundary-conditions" class="level4">
+<h4 class="anchored" data-anchor-id="weak-penalty-boundary-conditions">Weak / penalty boundary conditions</h4>
+<p><a href="./Notebooks/8-Particle_Swarms.html">Example 8</a> introduced the idea of penalty-based boundary conditions where the constraint is weakly enforced by providing a large penalty for violation of the condition. This is very flexible as the penalizing conditions can be adjusted during the run, including changing which part of the boundary is subject to constraints based on the solution or a coupled problem. The channel flow model shown below has a boundary condition that depends on a externally sourced model for ponded material at the base that is derived from a simple topography filling algorithm.</p>
+<center>
+<iframe src="media/pyvista/ChannelFlow.html" width="600" height="300">
+</iframe>
+</center>
+<p><em>Live Image: Stokes flow in a channel with multiple obstructions. Flow is driven from the inlet (a velocity boundary condition). The geometry was contructed with <code>gmsh</code>. This is an example for education which demonstrates the emergence of an large-scale pressure gradient as a result of the presence of the obstructions, and also the dispersion of tracers through the complicated flow geometry</em></p>
+<p>The penalty approach does allow the solution to deviate from the exact value of the boundary condition, in a similar way to the iterative solvers delivering a solution to within a specified tolerance. There are some cases, for example, enforcing plate motions at the surface, where there are uncertainties in the applied boundary conditions and that these uncertainties may vary in space and time.</p>
+</section>
+<section id="mesh-adaptation" class="level4">
+<h4 class="anchored" data-anchor-id="mesh-adaptation">Mesh Adaptation</h4>
+<p>It is also possible to use the PETSc mesh adaption capabilities, to refine the resolution of a model where it is most needed and coarsen elsewhere. Dynamically-adapting meshes are possible but the interface is very low level at present, particularly in parallel.</p>
+<center>
+<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="300">
+</iframe>
+</center>
+<p><em>Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is three plume-like upwellings and the slope of this field is shown in colour (red high, blue low). The adapted mesh is shown in green.</em></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># t is the driving "temperature". We form an isotropic refinement metric from its slope</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    refinement_fn <span class="op">=</span> <span class="fl">1.0</span> <span class="op">+</span> sympy.sqrt(</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>          t.diff(x) <span class="op">**</span> <span class="dv">2</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> t.diff(y) <span class="op">**</span> <span class="dv">2</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> t.diff(z) <span class="op">**</span> <span class="dv">2</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    icoord, meshA <span class="op">=</span> adaptivity.mesh_adapt_meshVar(mesh0, refinement_fn, Metric, redistribute<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 
-Caption
-```
--->
 
-
+</section>
 </section>
 
 </main> <!-- /main -->

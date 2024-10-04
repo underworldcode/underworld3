@@ -311,7 +311,7 @@ window.Quarto = {
 <p>We used a particle swarm to track the flow in Example 7. We called this a “passive” swarm because the points did not influence the flow in any way but was simply carried along.</p>
 <p>Particle swarms are unstructured data objects that live within the computational domain. Their points can be moved arbitrarily through the domain and points may migrate from one process to another when the coordinates are changed. By default they carry only the particle location, but we can add scalar, vector and tensor variables to the swarm and they will be transported with the particles.</p>
 <p>Particle transport is usually through a velocity or displacement field that incrementally changes the locations. This is a common use, but particles can be used to represent any unstructured field. For example, during mesh adaptation, the nodal points from the previous mesh are equivalent to a disconnected swarm from the point of view of the new mesh. The same is true when reading data save from one mesh to the <code>MeshVariables</code> on another.</p>
-<div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-execution_count="18">
+<div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -405,7 +405,7 @@ window.Quarto = {
 <span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a>    pl.show(jupyter_backend<span class="op">=</span><span class="st">"html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display">
 <script type="application/vnd.jupyter.widget-view+json">
-{"model_id":"b567c06831304b4885384029857f9bf3","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
+{"model_id":"16110a6f07c942d28b40970a014d0ba4","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
 </script>
 </div>
 </div>
@@ -486,7 +486,7 @@ window.Quarto = {
 <span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a>    </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display">
 <script type="application/vnd.jupyter.widget-view+json">
-{"model_id":"1b5528ee08b945f295f147b2d5f2df21","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
+{"model_id":"ddb5d9712b3c4e82b6e2cd5af8d2aaea","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
 </script>
 </div>
 </div>
@@ -588,12 +588,12 @@ window.Quarto = {
 <span id="cb15-43"><a href="#cb15-43" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="ss">f"html5/terrain_flow_plot.html"</span>)</span>
 <span id="cb15-44"><a href="#cb15-44" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="4948cff8-89da-4822-aee7-f2207aa513b0" class="cell" data-execution_count="17">
+<div id="4948cff8-89da-4822-aee7-f2207aa513b0" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_plot.html"</span>, width<span class="op">=</span><span class="dv">1000</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="17">
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_plot.html"</span>, width<span class="op">=</span><span class="dv">750</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="1">
 
-        <iframe width="1000" height="400" src="html5/terrain_flow_plot.html" frameborder="0" allowfullscreen=""></iframe>
+        <iframe width="750" height="300" src="html5/terrain_flow_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
 <p>Interactive Image: Convection model output</p>
 </div>

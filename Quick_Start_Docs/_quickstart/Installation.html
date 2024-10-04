@@ -20,6 +20,40 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
 </style>
 
 
@@ -198,8 +232,17 @@ ul.task-list li input[type="checkbox"] {
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
     <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
-        
-    <div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></div>
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#source-code-build-using-mamba" id="toc-source-code-build-using-mamba" class="nav-link active" data-scroll-target="#source-code-build-using-mamba">Source code build using mamba</a></li>
+  <li><a href="#source-code-build-using-mamba-and-existing-petsc" id="toc-source-code-build-using-mamba-and-existing-petsc" class="nav-link" data-scroll-target="#source-code-build-using-mamba-and-existing-petsc">Source code build using mamba and existing PETSc</a></li>
+  <li><a href="#docker-container" id="toc-docker-container" class="nav-link" data-scroll-target="#docker-container">Docker container</a></li>
+  <li><a href="#hpc-builds" id="toc-hpc-builds" class="nav-link" data-scroll-target="#hpc-builds">HPC builds</a></li>
+  </ul>
+<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
+    </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
@@ -229,9 +272,60 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
-<p>Windows users, if you don’t want to create a linux partition, you can use our containers.</p>
+<section id="source-code-build-using-mamba" class="level2">
+<h2 class="anchored" data-anchor-id="source-code-build-using-mamba">Source code build using mamba</h2>
+<p>We recommend that you use a <code>conda</code> / <code>mamba</code> virtual environment to build <code>underworld3</code> whenever you want to install on a personal workstation or laptop (linux or macOS).The <a href="https://mamba.readthedocs.io/en/latest/index.html"><code>mamba</code> documentation</a> will help you get started if you are not familiar with the philososphy and practice of this package management system.</p>
+<p>The <code>underworld3</code> build / run-time dependencies can be installed using</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> git clone <span class="at">-b</span> development <span class="at">--single-branch</span> https://github.com/underworldcode/underworld3 /path/to/underworld3</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba env create <span class="at">-n</span> uw3 <span class="at">-f</span> environment.yml</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba activate uw3</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</section>
+<section id="source-code-build-using-mamba-and-existing-petsc" class="level2">
+<h2 class="anchored" data-anchor-id="source-code-build-using-mamba-and-existing-petsc">Source code build using mamba and existing PETSc</h2>
+<p>If you have an exisiting build of <code>PETSc</code> that you need to use, the following instructions work well. We create the environment as before but remove the pre- installed <code>PETSc</code> and <code>petsc4py</code>.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> git clone <span class="at">-b</span> development <span class="at">--single-branch</span> https://github.com/underworldcode/underworld3 /path/to/underworld3</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba env create <span class="at">-n</span> uw3p <span class="at">-f</span> environment.yml</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba activate uw3p</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> mamba remove petsc4py</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> mamba remove petsc</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Next set up PETSc as you like it and build it using the tools within the current mamba virtual environment. Set the <code>PETSC_ARCH</code> environment variable to the name of this virtual environment to keep things from becoming muddled. See <a href="">PETSc Installation</a> for details on how to configure and build what you need.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> export PETSC_DIR=/path/to/petsc</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> export PETSC_ARCH=<span class="st">"uw3p"</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> git clone <span class="at">-b</span> release https://gitlab.com/petsc/petsc.git <span class="va">$PETSC_DIR</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd <span class="va">$PETSC_DIR</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> <span class="co"># Configure &amp; Build step</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Next we <code>pip install</code> the petsc4py that we just built into the mamba virtual environment. This ensures that <code>petsc4py</code> is available and also that its internal configuration points to the <code>PETSc</code> installation we just created. This way we don’t need to manage environment variables to point to the build that corresponds to a given virtual environment.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> mamba install cmake</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd <span class="va">$PETSC_DIR</span>/src/binding/petsc4py</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Building <code>underworld3</code> against this version of <code>PETSc</code> should be identical to the mamba version.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<section id="did-it-work" class="level4">
+<h4 class="anchored" data-anchor-id="did-it-work">Did it work ?</h4>
+<p>First run the tests:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> source test.sh</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>If you have problems, contact us via the <code>underworl3</code> <a href="https://github.com/underworldcode/underworld3/issues">GitHub issue tracker</a></p>
+</section>
+</section>
+<section id="docker-container" class="level2">
+<h2 class="anchored" data-anchor-id="docker-container">Docker container</h2>
+<p>Windows users, if you don’t want to create a linux partition, you can use our containers with <code>docker</code> or <code>podman</code>. As the code is still in active development, we are not always able to provide containers for each change to the development branch. We ask that you reach out to us on our <a href="https://github.com/underworldcode/underworld3/issues">GitHub issue tracker</a> to ask for information (use the “question” label).</p>
+</section>
+<section id="hpc-builds" class="level2">
+<h2 class="anchored" data-anchor-id="hpc-builds">HPC builds</h2>
+<p><code>Underworld3</code> is inherently parallel and designed for use in high performance computing environments. The symbolic layer is relatively lightweight and should not adversely affect launch time (drawing down libraries from disk) or execution time (very few calculations are done in python itself).</p>
+<p>In the HPC environment you may find it difficult to control the software stack. You will need to ensure that you can build against PETSc 3.21 or higher, since important functionality that we need is only available from that release onwards. We are happy to provide assistance with builds on specific machines and ask that you contact us through the <a href="https://github.com/underworldcode/underworld3/issues">GitHub issue tracker</a> so that other people are able to browse the issues and their fixes.</p>
 
 
+</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
