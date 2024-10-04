@@ -118,21 +118,18 @@ contains material / time derivatives of the unknowns which are not present in th
 
 # Discussion
 
-Aim to provide strong support to users to develop sophisticated mathematical models and to be able to interrogate those models during development and at run-time.
+The aim of `underworld3` is to provide strong support to users in developing sophisticated mathematical models, and provide the ability to interrogate those models during development and at run-time. `Underworld3` encodes the mathematical structure of the equations it solves and will display, in a publishable mathematical form, the derivations and simplifications that it makes as it sets up the numerical solution.
 
-Seemless parallelism
+Despite this symbolic, interactive layer, `underworld3` python scripts are inherently-parallel codes that seamlessly deploy as scripts in a high-performance computing parallel environment with very little performance overhead.
 
-Resuable documentation that is accessible in rich-text format in jupyter notebooks for model development and analysis but is also incorporated into the API documentation in the same rich format.
-
-<!-- Figures can be included like this:
-![Caption for example figure.\label{fig:example}](figure.png)
-and referenced from text using \autoref{fig:example}.
-
-Figure sizes can be customized by adding an optional second parameter:
-![Caption for example figure.](figure.png){ width=20% } -->
+`Underworld3` documentation is accessible in a rich, mathematical format within jupyter notebooks for model development and analysis but is also incorporated into the API documentation in the same format.
 
 # Acknowledgements
 
-We acknowledge contributions from AuScope, mainly. Anyone else ?
+AuScope provides direct support for the core development team behind the underworld codes and the underworld cloud suite of tools. AuScope is funded by the Australian Government through the National Collaborative Research Infrastructure Strategy, NCRIS.
+
+The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme.
+
+The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
 
 # References

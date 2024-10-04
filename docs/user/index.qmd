@@ -14,7 +14,7 @@ nocite: |
 
 ```{=html}
 <center>
-<iframe src="media/pyvista/SphereStreamlinesS.html" width="500" height="300">
+<iframe src="media/pyvista/SphereStreamLinesS.html" width="500" height="300">
 </iframe>
 </center>
 
@@ -32,7 +32,7 @@ All `Underworld3` source code is released under the LGPL-3 open source licence. 
 
 ## Installation Guide
 
-The quickest option is **not to install** anything but click on the rocket icon (top right) to launch our notebook examples on mybinder.org.
+The quickest option is **not to install** anything but click on the rocket icon (top right) to [launch our notebook examples](https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks) on mybinder.org.
 
 If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](Installation.qmd)
 
