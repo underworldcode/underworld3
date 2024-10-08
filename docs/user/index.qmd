@@ -1,14 +1,23 @@
 ---
 title: "Getting Started"
 subtitle: "Front page"
-bibliography: "UW-Background.bib"
-
 exports:
   - format: html
 
-
+bibliography: "UW-Background.bib"
 nocite: |
-  @*
+  @balay.etal.PETSc.2024,
+  @behnel2011cython,
+  @beucher.etal.UWGeodynamics.2019,
+  @dalcinpazklercosimo2011,
+  @granger.perez.Jupyter.2021,
+  @knepley.etal.Achieving.2013,
+  @mansour.etal.Underworld2.2020,
+  @meurer.etal.SymPy.2017,
+  @tion{moresi.Chapter.2023,
+  @moresi.etal.Computational.2007,
+  @moresi.etal.Lagrangian.2003,
+  @zhong.etal.705.2015,
 ---
 
 
@@ -74,8 +83,23 @@ Underworld3 relies extensively upon the `PETSc`, `sympy`, `numpy` and `cython` p
 All of our software is released under open source licence and all documentation and worked examples are released with a creative commons licence. We are passionate about having our software used and code reuse is strongly encouraged in the interest of scientific reproducibility and replicability.
 The developers are active researchers and scientists whose livelihood depends  on their creative talents and the acknowledgement of their work. Please respect the effort that goes into developing software and tutorials by citing our work and collaborating on publication with new applications of our software when you can.
 
+<!--
+@balay.etal.PETSc.2024,
+@behnel2011cython,
+@beucher.etal.UWGeodynamics.2019,
+@dalcinpazklercosimo2011,
+@granger.perez.Jupyter.2021,
+@knepley.etal.Achieving.2013,
+@mansour.etal.Underworld2.2020,
+@meurer.etal.SymPy.2017,
+@moresi.Chapter.2023,
+@moresi.etal.Computational.2007,
+@moresi.etal.Lagrangian.2003,
+@zhong.etal.705.2015,
+-->
+
 ## Background
 
 
-::: {#refs}
+:::{#refs}
 :::

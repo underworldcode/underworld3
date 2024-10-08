@@ -10,7 +10,6 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 
-
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 

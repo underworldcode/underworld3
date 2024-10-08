@@ -32,7 +32,7 @@ jobs:
         run: |
           quarto install tinytex
           cd docs/user
-          quarto render
+          quarto render --cache-refresh --log-level info
 
       ## Always deploy to version directory
       - name: Deploy quarto book
