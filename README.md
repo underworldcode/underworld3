@@ -13,8 +13,8 @@ All `Underworld3` source code is released under the LGPL-3 open source licence. 
 Start with the online [Quick Start Guide](https://underworldcode.github.io/underworld3/development/_quickstart/index.html) for a brief overview of the code.
 
 The `underworld3` module (API) documentation can be found online:
-  - [stable version](https://underworldcode.github.io/underworld3/main_api/index.html)
-  - [development version](https://underworldcode.github.io/underworld3/development_api/index.html)
+  - [stable version](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
+  - [development version](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html)
 
 ## Binder demonstration version
 
