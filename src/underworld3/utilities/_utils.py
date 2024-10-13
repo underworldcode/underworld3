@@ -188,12 +188,14 @@ def mem_footprint():
     return python_process.memory_info().rss // 1000000
 
 
-def gather_data(val, bcast=False, dtype="float64"):
+def gather_data(val, masked_value=-999999, bcast=False):
 
     """
     gather values on root (bcast=False) or all (bcast = True) processors
     Parameters:
         vals : Values to combine into a single array on the root or all processors
+        masked_value : value to use as mask value
+        bcast : broadcast array/value to all processors
 
     returns:
         val_global : combination of values form all processors
@@ -204,12 +206,15 @@ def gather_data(val, bcast=False, dtype="float64"):
     rank = uw.mpi.rank
     size = uw.mpi.size
 
+    dtype = val.dtype
+
+
     ### make sure all data comes in the same order
-    with uw.mpi.call_pattern(pattern="sequential"):
-        if len(val > 0):
-            val_local = np.ascontiguousarray(val.copy())
-        else:
-            val_local = np.array([np.nan], dtype=dtype)
+    # with uw.mpi.call_pattern(pattern="sequential"):
+    if len(val > 0):
+        val_local = np.ascontiguousarray(val.copy(), dtype=dtype)
+    else:
+        val_local = np.ascontiguousarray([masked_value], dtype=dtype)
 
 
     comm.barrier()
@@ -225,14 +230,14 @@ def gather_data(val, bcast=False, dtype="float64"):
 
     comm.barrier()
 
-    ## gather x values, can't do them together
+    ## gather the data on the root proc
     comm.Gatherv(sendbuf=val_local, recvbuf=(val_global, sendcounts), root=0)
 
     comm.barrier()
 
     if uw.mpi.rank == 0:
-        ### remove rows with NaN
-        val_global = val_global[~np.isnan(val_global)]
+        ### remove rows with mask value
+        val_global = val_global[val_global != masked_value]  
 
     comm.barrier()
 
