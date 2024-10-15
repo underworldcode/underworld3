@@ -6,7 +6,7 @@
 #  PETSc objects which we cannot always guarantee that PETSc / petsc4py will free
 #  This makes it possible for individual tests to interact with each other.
 
-PYTEST="pytest --config-file='tests/pytest.ini' "
+PYTEST="pytest --config-file=tests/pytest.ini"
 
 # Run simple tests
 $PYTEST tests/test_00[0-4]*py
