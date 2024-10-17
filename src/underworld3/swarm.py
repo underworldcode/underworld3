@@ -631,7 +631,7 @@ class IndexSwarmVariable(SwarmVariable):
     def sym_1d(self):
         return self._MaskArray
 
-    # We could also add a __getitem__ call to access each mask
+    # We can  also add a __getitem__ call to access each mask
 
     def __getitem__(self, index):
         return self.sym[index]
