@@ -1,3 +1,9 @@
+# This is not a great test. The initial condition is not really representable in the mesh
+# so it would fail to match the numerical solution if we did not run the problem at all.
+
+# A better test would be the one that is in the examples - make the steps into error function
+# analytic solutions, starting at t>0, and transporting over a meaningful distance.
+
 import underworld3 as uw
 import numpy as np
 import math
@@ -64,7 +70,6 @@ def test_advDiff_boxmesh(mesh):
         mesh,
         u_Field=T,
         V_fn=v,
-        solver_name="adv_diff",
     )
 
     # ### Set up properties of the adv_diff solver
@@ -147,7 +152,7 @@ def test_advDiff_boxmesh(mesh):
     model_time = 0.0
 
     #### Solve
-    dtd, dta = adv_diff.estimate_dt()
+    dt_est = adv_diff.estimate_dt()
 
     # This should be stable, and soluble by the 1D FD
     dt = 0.001

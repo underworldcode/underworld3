@@ -10,19 +10,7 @@ import os
 import numpy
 import petsc4py
 
-if os.environ.get("CC") is None:
-    import warnings
-
-    warnings.warn(
-        "CC environment variable not set. Using mpi4py's compiler configuration"
-    )
-    # Get CC from mpi4py
-    import mpi4py
-
-    conf = mpi4py.get_config()
-    os.environ["CC"] = conf["mpicc"]
-
-# PETSc version check - 3.16 or higher
+# PETSc version check - 3.18 or higher
 from petsc4py import PETSc
 
 petscVer = PETSc.Sys().getVersion()
@@ -34,7 +22,6 @@ if petscVer[0] != 3 or petscVer[1] < 18:
         f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
     )
     raise RuntimeError(msg)
-
 
 def configure():
 
@@ -53,14 +40,20 @@ def configure():
     print(f"PETSC_ARCH: {PETSC_ARCH}")
 
     # It is preferable to use the petsc4py paths to the
-    # petsc libraries for consistency
+    # petsc libraries for consistency but the pip installation
+    # of PETSc sometimes points to the temporary setup up path
 
-    # if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-    #     PETSC_DIR = os.environ["CONDA_PREFIX"]
-    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
-    # else:
-    #     PETSC_DIR = os.environ["PETSC_DIR"]
-    #     PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+    if not os.path.exists(PETSC_DIR):
+        if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
+            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python3.1", "site-packages", "petsc") # symlink to latest python
+            PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+        else:
+            PETSC_DIR = os.environ["PETSC_DIR"]
+            PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
+
+    print(f"PETSC_DIR: {PETSC_DIR}")
+    print(f"PETSC_ARCH: {PETSC_ARCH}")
+
 
     from os.path import join, isdir
 

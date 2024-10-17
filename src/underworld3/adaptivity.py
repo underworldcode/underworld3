@@ -82,7 +82,6 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
 
 # dmAdaptLabel - but first you need to call dmplex set default distribute False
 
-
 def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
     # Create / use a field on the old mesh to hold the metric
     # Perhaps that should be a user-definition
@@ -207,13 +206,14 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     #     if swarm0.vars["DMSwarm_Xorig"] not in swarmVarList:
     #         swarmVarList.append(swarm0.vars["DMSwarm_Xorig"])
 
-    swarm1 = uw.swarm.Swarm(mesh=mesh1, cycle_rate=swarm0.recycle_rate)
+    swarm1 = uw.swarm.Swarm(mesh=mesh1, recycle_rate=swarm0.recycle_rate)
 
     for swarmVar in swarmVarList:
         uw.swarm.SwarmVariable(
             swarmVar.name,
             swarm1,
-            num_components=swarmVar.num_components,
+            size=swarmVar.shape,
+            vtype=swarmVar.vtype,
             dtype=swarmVar.dtype,
             proxy_degree=swarmVar._proxy_degree,
             proxy_continuous=swarmVar._proxy_continuous,
@@ -362,6 +362,10 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
 
 ## ToDo: this should take a list of vars so that the swarm migration is only done once
 
+## ToDo: this could also be more like the SL advection: launch points from the
+## new mesh, use a swarm to find values, snap back when done.
+## Could also navigate there by letting the particles walk through the mesh towards
+## their goal (if particle-restore works with funny mesh-holes)
 
 def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
     """Map a meshVar on mesh0 to a meshVar on mesh1 using
@@ -377,11 +381,12 @@ def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
     var_cpts = meshVar0.num_components
 
     tmp_varS = uw.swarm.SwarmVariable(
-        var_name, tmp_swarm, num_components=var_cpts, _proxy=False
+        var_name, tmp_swarm, size = (1,var_cpts), vtype=uw.VarType.MATRIX, _proxy=False
     )
 
     # Maybe 3+ if var is higher order ??
     tmp_swarm.populate(fill_param=3)
+
 
     # Set data on the swarmVar
 

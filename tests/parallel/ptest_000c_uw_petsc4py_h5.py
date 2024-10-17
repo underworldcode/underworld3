@@ -1,5 +1,3 @@
-import petsc4py
-from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
 import sympy
@@ -9,7 +7,10 @@ from mpi4py import MPI
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
-h5plex = PETSc.DMPlex().createFromFile("uw_annulus_test_mesh.h5")
+import petsc4py
+from petsc4py import PETSc
+
+h5plex = PETSc.DMPlex().createFromFile(".meshes/uw_annulus_ro1.0_ri0.5_csize0.1.msh.h5")
 
 print(f"{rank} - DM created from file - v1", flush=True)
 
@@ -21,9 +22,11 @@ print(f"{rank} - DM distribution complete - v1", flush=True)
 h5plex.destroy()
 
 
-## v2 - this is what we do in uw3
+## v2 - this is what we might also do in uw3
 
-viewer = PETSc.ViewerHDF5().create("uw_annulus_test_mesh.h5", "r")
+viewer = PETSc.ViewerHDF5().create(
+    ".meshes/uw_annulus_ro1.0_ri0.5_csize0.1.msh.h5", "r"
+)
 h5plex = PETSc.DMPlex().create()
 sf0 = h5plex.topologyLoad(viewer)
 h5plex.coordinatesLoad(viewer, sf0)

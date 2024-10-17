@@ -1,6 +1,5 @@
 #!/bin/bash -v
 
-
 # echo
 # echo Install uw3_env during postBuild phase
 # echo
@@ -15,16 +14,16 @@ echo
 echo Install jupyter extensions
 echo
 
-# install required python packages
+# install required python packages for jupyter
 python3 -m pip install "jupyter-server-proxy"
-python3 -m pip install "jupyterlab-quarto>=0.3.3"
+# python3 -m pip install "jupyterlab-quarto>=0.3.3"
 python3 -m pip install "jupytext>=1.16.1"
 python3 -m pip install "trame_jupyter_extension"
 
-# We install the local code "properly" - no point in a dev build here
+# We install the local code "properly" - no point in an in-place build here
 
 echo
-echo Install local UW3 
+echo Install local UW3
 echo
 
 # Note: we would be better to find a way to access this directly
@@ -32,6 +31,7 @@ echo
 
 export CONDA_PREFIX=/srv/conda/envs/notebook/
 export PYTHONPATH=$CONDA_PREFIX/lib
+export CC=`which mpicc`
 
 # debugging if required
 # python -c "import petsc4py; print(petsc4py.get_config())"
@@ -40,7 +40,6 @@ export PYTHONPATH=$CONDA_PREFIX/lib
 # Build / install the uw3 in this repo
 
 pip install .
-
 
 echo
 echo Completed
