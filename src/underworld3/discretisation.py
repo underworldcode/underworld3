@@ -14,13 +14,25 @@ from underworld3.utilities._api_tools import uw_object
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
-
-
 import underworld3.timing as timing
 
 ## Introduce these two specific types of coordinate tracking vector objects
 
 from sympy.vector import CoordSys3D
+
+## Add the ability to inherit an Enum, so we can add standard boundary
+## types to ones that are supplied by the users / the meshing module
+## https://stackoverflow.com/questions/46073413/python-enum-combination
+
+def extend_enum(inherited):
+   def wrapper(final):
+     joined = {}
+     inherited.append(final)
+     for i in inherited:
+        for j in i:
+           joined[j.name] = j.value
+     return Enum(final.__name__, joined)
+   return wrapper
 
 
 @timing.routine_timer_decorator
@@ -191,12 +203,23 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        ## Patch up the boundaries to include the additional
+        ## definitions that we do / might need. Note: the
+        ## extend_enum decorator will replace existing members with
+        ## the new ones.
+
         if boundaries is None:
             class replacement_boundaries(Enum):
                 Null_Boundary = 666
                 All_Boundaries = 1001
-
             boundaries = replacement_boundaries
+        else:
+            @extend_enum([boundaries])
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+            boundaries = replacement_boundaries
+
 
         self.filename = filename
         self.boundaries = boundaries
@@ -488,12 +511,12 @@ class Mesh(Stateful, uw_object):
                     flush=True,
                 )
 
-        ## PETSc marked boundaries:
-        l = self.dm.getLabel("All_Boundaries")
-        if l:
-            i = l.getStratumSize(1001)
-        else:
-            i = 0
+        # ## PETSc marked boundaries:
+        # l = self.dm.getLabel("All_Boundaries")
+        # if l:
+        #     i = l.getStratumSize(1001)
+        # else:
+        #     i = 0
 
         ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 

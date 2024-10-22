@@ -46,14 +46,12 @@ def UnstructuredSimplexBox(
     """
 
     class boundaries_2D(Enum):
-        Null_Boundary = 666
         Bottom = 11
         Top = 12
         Right = 13
         Left = 14
 
     class boundaries_3D(Enum):
-        Null_Boundary = 666
         Bottom = 11
         Top = 12
         Right = 13
@@ -283,14 +281,12 @@ def StructuredQuadBox(
     # boundaries = {"Bottom": 1, "Top": 2, "Right": 3, "Left": 4, "Front": 5, "Back": 6}
 
     class boundaries_2D(Enum):
-        Null_Boundary = 666
         Bottom = 11
         Top = 12
         Right = 13
         Left = 14
 
     class boundaries_3D(Enum):
-        Null_Boundary = 666
         Bottom = 11
         Top = 12
         Right = 13
@@ -580,7 +576,6 @@ def SphericalShell(
     verbose=False,
 ):
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 11
         Upper = 12
         Centre = 1
@@ -798,7 +793,6 @@ def SphericalShellInternalBoundary(
     """
 
     class boundaries(Enum):
-        Null_Boundary = 666
         Centre = 1
         Lower = 11
         Internal = 12
@@ -1041,7 +1035,6 @@ def SegmentofSphere(
     """
 
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 11
         Upper = 12
         East = 13
@@ -1263,7 +1256,6 @@ def QuarterAnnulus(
     verbose=False,
 ):
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 1
         Upper = 2
         Left = 3
@@ -1434,7 +1426,6 @@ def Annulus(
     verbose=False,
 ):
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 1
         Upper = 2
         Centre = 10
@@ -1670,7 +1661,6 @@ def SegmentofAnnulus(
     """
 
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 1
         Upper = 2
         Left = 3
@@ -1870,7 +1860,6 @@ def AnnulusWithSpokes(
     verbose=False,
 ):
     class boundaries(Enum):
-        Null_Boundary = 666
         Lower = 10
         LowerPlus = 11
         Upper = 20
@@ -2135,7 +2124,6 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
-        Null_Boundary = 666
 
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
@@ -2349,7 +2337,6 @@ def DiscInternalBoundaries(
         Internal = 2
         Upper = 3
         Centre = 10
-        Null_Boundary = 666
 
 
     if cellSize_Lower is None:
@@ -2560,7 +2547,6 @@ def CubedSphere(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        Null_Boundary = 666
 
 
     r1 = radiusInner / np.sqrt(3)
@@ -2782,7 +2768,6 @@ def RegionalSphericalBox(
         South = 4
         East = 5
         West = 6
-        Null_Boundary = 666
 
 
     r1 = radiusInner / np.sqrt(3)
@@ -3166,7 +3151,6 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        Null_Boundary = 666
 
 
     meshRes = cellSize

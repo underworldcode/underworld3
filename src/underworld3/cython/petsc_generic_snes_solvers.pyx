@@ -175,13 +175,16 @@ class SolverBaseClass(uw_object):
                             # can insert new functions in template (surface integrals problematic in
                             # the current implementation )
 
+        # This is a workaround for some problem in the PETSc machinery
+        # where we need a surface integral term somewhere on every process
+        # if we have a contribution from anywhere. We add a fake one here
+        # which just integrates nothing over a bunch of points. It's enough
+        # to let the rest of the machinery work.
+
         if len(self.natural_bcs) > 0:
             if not "Null_Boundary" in self.natural_bcs:
                 bc = (0,)*self.Unknowns.u.shape[1]
-                print(f"Adding Natural BC {bc }- {self.Unknowns.u.shape[1] }", flush=True)
                 self.add_natural_bc(bc, "Null_Boundary")
-
-
 
         self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
         self._setup_discretisation(verbose)
