@@ -467,7 +467,7 @@ class Mesh(Stateful, uw_object):
             else:
                 i = 0
 
-            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+            ii = uw.utilities.gather_data(np.array([i]))
 
             if uw.mpi.rank == 0:
                 print(
