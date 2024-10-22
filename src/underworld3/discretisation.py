@@ -1,4 +1,6 @@
 from typing import Optional, Tuple, Union
+from enum import Enum
+
 import os
 import numpy
 import sympy
@@ -189,9 +191,18 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        if boundaries is None:
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+
+            boundaries = replacement_boundaries
+
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
+
+
 
         # options.delValue("dm_plex_gmsh_mark_vertices")
         # options.delValue("dm_plex_gmsh_multiple_tags")
@@ -200,15 +211,15 @@ class Mesh(Stateful, uw_object):
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
-        # all_edges_label_dm = self.dm.getLabel("depth")
-        # if all_edges_label_dm:
-        #     all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
-        #     # all_edges_IS_dm.view()
+        all_edges_label_dm = self.dm.getLabel("depth")
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
+            # all_edges_IS_dm.view()
 
-        # self.dm.createLabel("All_Edges")
-        # all_edges_label = self.dm.getLabel("All_Edges")
-        # if all_edges_label and all_edges_IS_dm:
-        #     all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
+        self.dm.createLabel("Null_Boundary")
+        all_edges_label = self.dm.getLabel("Null_Boundary")
+        if all_edges_label and all_edges_IS_dm:
+           all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:
@@ -229,6 +240,8 @@ class Mesh(Stateful, uw_object):
                     # Load this up on the stacked BC label
                     if label_is:
                         stacked_bc_label.setStratumIS(b.value, label_is)
+
+
 
             uw.mpi.barrier()
 

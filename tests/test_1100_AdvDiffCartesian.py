@@ -70,7 +70,6 @@ def test_advDiff_boxmesh(mesh):
         mesh,
         u_Field=T,
         V_fn=v,
-        solver_name="adv_diff",
     )
 
     # ### Set up properties of the adv_diff solver

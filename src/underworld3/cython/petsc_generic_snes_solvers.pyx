@@ -28,8 +28,8 @@ class SolverBaseClass(uw_object):
 
     def __init__(self, mesh):
 
-        super().__init__()
 
+        super().__init__()
 
         self.mesh = mesh
         self.mesh_dm_coordinate_hash = None
@@ -39,8 +39,12 @@ class SolverBaseClass(uw_object):
 
         self._order = 0
         self._constitutive_model = None
-
         self._rebuild_after_mesh_update = self._build
+
+        self.name = "Solver_{}_".format(self.instance_number)
+        self.petsc_options_prefix = self.name
+        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+
 
         return
 
@@ -132,7 +136,6 @@ class SolverBaseClass(uw_object):
 
         display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
 
-
         return
 
     def _reset(self):
@@ -171,6 +174,13 @@ class SolverBaseClass(uw_object):
                 self.dm = None  # Should be able to avoid nuking this if we
                             # can insert new functions in template (surface integrals problematic in
                             # the current implementation )
+
+        if len(self.natural_bcs) > 0:
+            if not "Null_Boundary" in self.natural_bcs:
+                bc = (0,)*self.Unknowns.u.shape[1]
+                print(f"Adding Natural BC {bc }- {self.Unknowns.u.shape[1] }", flush=True)
+                self.add_natural_bc(bc, "Null_Boundary")
+
 
 
         self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
@@ -400,7 +410,6 @@ class SNES_Scalar(SolverBaseClass):
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
                  degree: int = 2,
-                 solver_name: str = "",
                  verbose    = False,
                  DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
@@ -420,19 +429,8 @@ class SNES_Scalar(SolverBaseClass):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
-        self.name = solver_name
         self.verbose = verbose
         self._tolerance = 1.0e-4
-
-        ## Todo: this is obviously not particularly robust
-        if solver_name != "" and not solver_name.endswith("_"):
-            self.petsc_options_prefix = solver_name+"_"
-        else:
-            self.petsc_options_prefix = solver_name
-
-        options = PETSc.Options()
-        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
-
 
         # Here we can set some defaults for this set of KSP / SNES solvers
 
@@ -542,6 +540,9 @@ class SNES_Scalar(SolverBaseClass):
         options.setValue("private_{}_petscspace_degree".format(self.petsc_options_prefix), degree) # for private variables
         options.setValue("private_{}_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
         options.setValue("private_{}_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
+
+        # Should del these when finished
+
 
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "private_{}_".format(self.petsc_options_prefix), PETSc.COMM_SELF,)
         self.petsc_fe_u_id = self.dm.getNumFields()
@@ -857,21 +858,6 @@ class SNES_Scalar(SolverBaseClass):
 
         self._build(verbose, debug, debug_name)
 
-        # if (not self.is_setup):
-        #     if self.dm is not None:
-        #         self.dm.destroy()
-        #         self.dm = None  # Should be able to avoid nuking this if we
-        #                     # can insert new functions in template (surface integrals problematic in
-        #                     # the current implementation )
-
-        #     self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-        #     self._setup_discretisation(verbose)
-        #     self._setup_solver(verbose)
-        # else:
-        #     # If the mesh has changed, this will rebuild (and do nothing if unchanged)
-        #     self._setup_discretisation(verbose)
-
-
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
@@ -991,12 +977,10 @@ class SNES_Vector(SolverBaseClass):
                  mesh     : uw.discretisation.Mesh,
                  u_Field  : uw.discretisation.MeshVariable = None,
                  degree     = 2,
-                 solver_name: str = "",
                  verbose    = False,
                  DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
-
 
 
         super().__init__(mesh)
@@ -1011,21 +995,13 @@ class SNES_Vector(SolverBaseClass):
 
         ## Keep track
 
-        self.name = solver_name
         self.verbose = verbose
         self._tolerance = 1.0e-4
 
         ## Todo: this is obviously not particularly robust
 
-        if solver_name != "" and not solver_name.endswith("_"):
-            self.petsc_options_prefix = solver_name+"_"
-        else:
-            self.petsc_options_prefix = solver_name
-
-        options = PETSc.Options()
+        # options = PETSc.Options()
         # options["dm_adaptor"]= "pragmatic"
-
-        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
@@ -1690,7 +1666,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                  pressureField : Optional[underworld3.discretisation.MeshVariable] = None,
                  degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
-                 solver_name   : Optional[str]                           ="stokes_pt_",
                  verbose       : Optional[bool]                           =False,
                  DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
@@ -1699,7 +1674,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         super().__init__(mesh)
 
-        self.name = solver_name
         self.verbose = verbose
         self.dm = None
 
@@ -1723,16 +1697,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # I expect the following to break for anyone who wants to name their solver _stokes__ etc etc (LM)
 
-        if solver_name != "" and not solver_name.endswith("_"):
-            self.petsc_options_prefix = solver_name+"_"
-        else:
-            self.petsc_options_prefix = solver_name
-
         # options = PETSc.Options()
         # options["dm_adaptor"]= "pragmatic"
-
-        self.petsc_options = PETSc.Options(self.petsc_options_prefix)
-
         # Here we can set some defaults for this set of KSP / SNES solvers
 
         if self.verbose == True:
