@@ -67,6 +67,12 @@ Over-ride the varname with a symbolic form for printing etc (latex). Should be a
 <dd>
 <div class="desc"></div>
 </dd>
+<dt id="underworld3.discretisation.extend_enum"><code class="name flex">
+<span>def <span class="ident">extend_enum</span></span>(<span>inherited)</span>
+</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
 <dt id="underworld3.discretisation.meshVariable_lookup_by_symbol"><code class="name flex">
 <span>def <span class="ident">meshVariable_lookup_by_symbol</span></span>(<span>mesh, sympy_object)</span>
 </code></dt>
@@ -176,12 +182,23 @@ True: index into the local coordinate array</p>
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        ## Patch up the boundaries to include the additional
+        ## definitions that we do / might need. Note: the
+        ## extend_enum decorator will replace existing members with
+        ## the new ones.
+
         if boundaries is None:
             class replacement_boundaries(Enum):
                 Null_Boundary = 666
                 All_Boundaries = 1001
-
             boundaries = replacement_boundaries
+        else:
+            @extend_enum([boundaries])
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+            boundaries = replacement_boundaries
+
 
         self.filename = filename
         self.boundaries = boundaries
@@ -473,12 +490,12 @@ True: index into the local coordinate array</p>
                     flush=True,
                 )
 
-        ## PETSc marked boundaries:
-        l = self.dm.getLabel(&#34;All_Boundaries&#34;)
-        if l:
-            i = l.getStratumSize(1001)
-        else:
-            i = 0
+        # ## PETSc marked boundaries:
+        # l = self.dm.getLabel(&#34;All_Boundaries&#34;)
+        # if l:
+        #     i = l.getStratumSize(1001)
+        # else:
+        #     i = 0
 
         ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
 
@@ -2016,6 +2033,7 @@ Vertex values (on the mesh points) are stored for all variables regardless of th
 <ul class="">
 <li><code><a title="underworld3.discretisation.MeshVariable" href="#underworld3.discretisation.MeshVariable">MeshVariable</a></code></li>
 <li><code><a title="underworld3.discretisation.checkpoint_xdmf" href="#underworld3.discretisation.checkpoint_xdmf">checkpoint_xdmf</a></code></li>
+<li><code><a title="underworld3.discretisation.extend_enum" href="#underworld3.discretisation.extend_enum">extend_enum</a></code></li>
 <li><code><a title="underworld3.discretisation.meshVariable_lookup_by_symbol" href="#underworld3.discretisation.meshVariable_lookup_by_symbol">meshVariable_lookup_by_symbol</a></code></li>
 <li><code><a title="underworld3.discretisation.petsc_dm_find_labeled_points_local" href="#underworld3.discretisation.petsc_dm_find_labeled_points_local">petsc_dm_find_labeled_points_local</a></code></li>
 </ul>
