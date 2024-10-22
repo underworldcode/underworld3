@@ -2660,24 +2660,32 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         pressure_field_num = 1
 
         # Function to get index set for a field
-        def get_local_field_is(section, field):
+        def get_local_field_is(section, field, unconstrained=False):
+            """
+            This function returns the index set of unconstrained points if True, or all points if False.
+            """
             pStart, pEnd = section.getChart()
             indices = []
             for p in range(pStart, pEnd):
                 dof = section.getFieldDof(p, field)
                 if dof > 0:
                     offset = section.getFieldOffset(p, field)
-                    cind = section.getFieldConstraintIndices(p, field)
-                    constrained = set(cind) if cind is not None else set()
-                    for i in range(dof):
-                        if i not in constrained:
-                            index = offset + i
-                            indices.append(index)
+                    if not unconstrained:
+                        indices.append(offset)
+                    else:
+                        cind = section.getFieldConstraintIndices(p, field)
+                        constrained = set(cind) if cind is not None else set()
+                        for i in range(dof):
+                            if i not in constrained:
+                                index = offset + i
+                                indices.append(index)
             is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
             return is_field
 
-        # Get index sets for pressure
-        pressure_is = get_local_field_is(local_section, pressure_field_num)
+        # Get index sets for pressure (both constrained and unconstrained points)
+        # we need indexset of pressure field to separate the solution from localvec. 
+        # so we don't care whether a point is constrained by bc or not
+        pressure_is = get_local_field_is(local_section, pressure_field_num) 
 
         # Get the total number of entries in the local vector
         size = self.dm.getLocalVec().getLocalSize()
