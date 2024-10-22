@@ -187,15 +187,15 @@ True: index into the local coordinate array</p>
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, &#34;UW_Boundaries&#34;)
 
-        # all_edges_label_dm = self.dm.getLabel(&#34;depth&#34;)
-        # if all_edges_label_dm:
-        #     all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
-        #     # all_edges_IS_dm.view()
+        all_edges_label_dm = self.dm.getLabel(&#34;depth&#34;)
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
+            # all_edges_IS_dm.view()
 
-        # self.dm.createLabel(&#34;All_Edges&#34;)
-        # all_edges_label = self.dm.getLabel(&#34;All_Edges&#34;)
-        # if all_edges_label and all_edges_IS_dm:
-        #     all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
+        self.dm.createLabel(&#34;Null_Boundary&#34;)
+        all_edges_label = self.dm.getLabel(&#34;Null_Boundary&#34;)
+        if all_edges_label and all_edges_IS_dm:
+           all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:
@@ -216,6 +216,8 @@ True: index into the local coordinate array</p>
                     # Load this up on the stacked BC label
                     if label_is:
                         stacked_bc_label.setStratumIS(b.value, label_is)
+                        
+            
 
             uw.mpi.barrier()
 
