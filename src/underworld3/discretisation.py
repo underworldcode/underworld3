@@ -200,15 +200,15 @@ class Mesh(Stateful, uw_object):
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
 
-        # all_edges_label_dm = self.dm.getLabel("depth")
-        # if all_edges_label_dm:
-        #     all_edges_IS_dm = all_edges_label_dm.getStratumIS(1)
-        #     # all_edges_IS_dm.view()
+        all_edges_label_dm = self.dm.getLabel("depth")
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
+            # all_edges_IS_dm.view()
 
-        # self.dm.createLabel("All_Edges")
-        # all_edges_label = self.dm.getLabel("All_Edges")
-        # if all_edges_label and all_edges_IS_dm:
-        #     all_edges_label.setStratumIS(boundaries.All_Edges.value, all_edges_IS_dm)
+        self.dm.createLabel("Null_Boundary")
+        all_edges_label = self.dm.getLabel("Null_Boundary")
+        if all_edges_label and all_edges_IS_dm:
+           all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:
@@ -229,6 +229,8 @@ class Mesh(Stateful, uw_object):
                     # Load this up on the stacked BC label
                     if label_is:
                         stacked_bc_label.setStratumIS(b.value, label_is)
+                        
+            
 
             uw.mpi.barrier()
 
