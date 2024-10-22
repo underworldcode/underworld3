@@ -1,4 +1,6 @@
 from typing import Optional, Tuple, Union
+from enum import Enum
+
 import os
 import numpy
 import sympy
@@ -189,9 +191,18 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        if boundaries is None:
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+
+            boundaries = replacement_boundaries
+
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
+
+
 
         # options.delValue("dm_plex_gmsh_mark_vertices")
         # options.delValue("dm_plex_gmsh_multiple_tags")
@@ -229,8 +240,8 @@ class Mesh(Stateful, uw_object):
                     # Load this up on the stacked BC label
                     if label_is:
                         stacked_bc_label.setStratumIS(b.value, label_is)
-                        
-            
+
+
 
             uw.mpi.barrier()
 

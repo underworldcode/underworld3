@@ -213,8 +213,8 @@ class SNES_Darcy(SNES_Scalar):
 
         self._v = self._v_projector.Unknowns.u
 
-        # If we add smoothing, it should be small relative to actual diffusion (self.viscosity)
-        self._v_projector.smoothing = 0
+        # If we add smoothing, it should be small
+        self._v_projector.smoothing = 1.0e-6
 
     ## This function is the one we will typically over-ride to build specific solvers.
     ## This example is a poisson-like problem with isotropic coefficients
