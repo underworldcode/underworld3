@@ -37,7 +37,7 @@ class _uw_record():
                 gv = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
             except Exception as e:
                 gv = None
-                warnings.warn( f"Warning: Underworld can't retrieving commit hash: {e}" )
+                #warnings.warn( f"Warning: Underworld can't retrieving commit hash: {e}" )
 
             # get petsc information
             try:
