@@ -1,0 +1,14 @@
+# Conda Environment for python packages running under BINDER
+name: emsc_basics
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - quarto
+  - pip
+  - pip:  
+    - jupyterlab>=4.1
+    - jupytext>=1.16.1
+    - pygments>=2.17.0
+
+  

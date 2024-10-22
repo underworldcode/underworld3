@@ -70,7 +70,7 @@ def test_vector_projection():
     vector_projection.smoothing = 1.0e-3
 
     vector_projection.add_dirichlet_bc((0.0,None), "Right")
-    vector_projection.add_dirichlet_bc(0.0, "Top", components=[1]) # old style with components
+    vector_projection.add_dirichlet_bc((None,0.0), "Top")
     vector_projection.add_dirichlet_bc((None,0.0), "Bottom")
 
     vector_projection.solve()

@@ -115,12 +115,17 @@ def getext(
 
     for fn in raw_fns:
         expanded_fns.append(
-            underworld3.function.expressions.substitute(
+            underworld3.function.expressions.unwrap(
                 fn, keep_constants=False, return_self=False
             )
         )
 
     fns = tuple(expanded_fns)
+
+    if debug and underworld3.mpi.rank==0:
+        print(f"Expanded functions for compilation:")
+        for i,fn in enumerate(fns):
+            print(f"{i}: {fn}")
 
     import os
 
@@ -407,14 +412,18 @@ def _createext(
 
     eqns = []
     for index, fn in enumerate(fns):
+
+        fn = underworld3.function.expressions.unwrap(
+            fn, keep_constants=False, return_self=False
+        )
+
+
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0 : mesh.dim]
         else:
             fn = sympy.Matrix([fn])
-
-        fn = underworld3.function.fn_substitute_expressions(fn, keep_constants=False)
 
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))
@@ -477,9 +486,9 @@ typedef int PetscInt;
 typedef double PetscReal;
 typedef double PetscScalar;
 typedef int PetscBool;
-#include <math.h> 
+#include <math.h>
 
-// Adding missing function implementation 
+// Adding missing function implementation
 static inline double Heaviside_1 (double x)                 { return x < 0 ? 0 : x > 0 ? 1 : 0.5;     };
 static inline double Heaviside_2 (double x, double mid_val) { return x < 0 ? 0 : x > 0 ? 1 : mid_val; };
 
@@ -586,10 +595,10 @@ cdef extern from "cy_ext.h" nogil:
     pyx_str += """
 cpdef PtrContainer getptrobj():
     clsguy = PtrContainer()
-    clsguy.fns_residual = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
-    clsguy.fns_bcs      = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))  
+    clsguy.fns_residual = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))
+    clsguy.fns_bcs      = <PetscDSResidualFn*> malloc({}*sizeof(PetscDSResidualFn))
     clsguy.fns_jacobian = <PetscDSJacobianFn*> malloc({}*sizeof(PetscDSJacobianFn))
-    clsguy.fns_bd_residual = <PetscDSBdResidualFn*> malloc({}*sizeof(PetscDSBdResidualFn))  
+    clsguy.fns_bd_residual = <PetscDSBdResidualFn*> malloc({}*sizeof(PetscDSBdResidualFn))
     clsguy.fns_bd_jacobian = <PetscDSBdJacobianFn*> malloc({}*sizeof(PetscDSBdJacobianFn))
 """.format(
         len(fns_residual),

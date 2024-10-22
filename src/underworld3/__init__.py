@@ -75,6 +75,10 @@ from petsc4py import PETSc
 
 PETSc.Sys.popErrorHandler()
 
+try:
+    from ._version import __version__
+except ImportError:
+    __version__ = "Unknown" # check src/underworld3/_version.py
 
 def view():
     from IPython.display import Latex, Markdown, display
@@ -92,13 +96,16 @@ def view():
 # PETSc.Log().begin()
 
 # Bundle these utils
+# Needed everywhere
+import underworld3.mpi
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
+from .utilities._utils import auditor
 
-# Needed everywhere
-import underworld3.mpi
-from underworld3.utilities import _api_tools
+from .utilities import _api_tools
+#from underworld3.utilities import _api_tools
+from .utilities._utils import auditor
 
 import underworld3.adaptivity
 import underworld3.coordinates
@@ -131,31 +138,6 @@ _libfiles = _OD()
 _libdirs = _OD()
 _incdirs = _OD({_np.get_include(): None})
 
-
-# def _is_notebook() -> bool:
-#     """
-#     Function to determine if the python environment is a Notebook or not.
-
-#     Returns 'True' if executing in a notebook, 'False' otherwise
-
-#     Script taken from https://stackoverflow.com/a/39662359/8106122
-#     """
-
-#     try:
-#         shell = get_ipython().__class__.__name__
-#         if shell == "ZMQInteractiveShell":
-#             return True  # Jupyter notebook or qtconsole
-#         elif shell == "TerminalInteractiveShell":
-#             return False  # Terminal running IPython
-#         else:
-#             return False  # Other type (?)
-#     except NameError:
-#         return False  # Probably standard Python interpreter
-
-
-# is_notebook = _is_notebook()
-
-
 ## -------------------------------------------------------------
 
 # pdoc3 over-rides. pdoc3 has a strange path-traversal algorithm
@@ -175,6 +157,3 @@ __pdoc__["cython"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
-
-
-## Add an options dictionary for arbitrary underworld things

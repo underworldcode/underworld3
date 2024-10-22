@@ -1,0 +1,60 @@
+project:
+  type: book
+  output-dir: _build/book
+
+book:
+  title: "Underworld3 Quick Start Guide"
+  author: "Underworld Team"
+  date: "2024/10/02"
+
+  bread-crumbs: false
+  chapters:
+    - part: "About UW3"
+      chapters:
+        - index.qmd
+        - NextSteps.qmd
+        - Installation.qmd
+
+    - part: "Notebooks"
+      chapters:
+        - Notebooks/Notebook_Index.ipynb
+        - Notebooks/1-Meshes.ipynb
+        - Notebooks/2-Variables.ipynb
+        - Notebooks/3-Symbolic_Forms.ipynb
+        - Notebooks/4-Solvers.ipynb
+        - Notebooks/5-Solvers.ipynb
+        - Notebooks/6-Timestepping.ipynb
+        - Notebooks/7-Unsteady_Flow.ipynb
+        - Notebooks/8-Particle_Swarms.ipynb
+
+  navbar:
+    search: true
+    background: "white"
+    foreground: "#883344" # Diablo Hell Fire / Blood Red
+
+  sidebar:
+    logo: media/MansoursNightmare.png
+    background: "white"
+
+format:
+  html:
+    theme: [united, "assets/theme.scss"] # united / simplex / flatly
+    mainfont: "Jost"
+    fontsize: 0.9em
+    linestretch: 1.7
+    linkcolor: "#883344"
+    number-sections: false
+    number-depth: 1
+
+    code-links:
+      - text: Open in Binder
+        icon: rocket-takeoff
+        href: https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks
+
+    other-links:
+      - text: Github Repository
+        icon: github
+        href: https://github.com/underworldcode/underworld3
+
+  # pdf:
+  #   documentclass: scrreprt
