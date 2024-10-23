@@ -557,7 +557,7 @@ def plot_vector(
         )
     else:
         pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, scalar.sym)
+            pvmesh, scalar.sym
         )
 
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
