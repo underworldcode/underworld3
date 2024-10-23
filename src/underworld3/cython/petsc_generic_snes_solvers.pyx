@@ -2647,46 +2647,81 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-        cdef Vec clvec
-        cdef DM csdm
-
         if verbose and uw.mpi.rank == 0:
                 print(f"SNES post-solve - bcs", flush=True)
 
         # Copy solution back into user facing variables
 
+        cdef DM dm = self.dm
+        cdef Vec clvec = self.dm.getLocalVec()
+        self.dm.globalToLocal(gvec, clvec)
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+
+        if verbose and uw.mpi.rank == 0:
+                print(f"SNES Compute Boundary FEM Successfull", flush=True)
+
+        # get index set of pressure and velocity to separate solution from localvec        
+        # get local section
+        local_section = self.dm.getLocalSection()
+
+        # Get the index sets for velocity and pressure fields
+        # Field numbers (adjust based on your setup)
+        velocity_field_num = 0
+        pressure_field_num = 1
+
+        # Function to get index set for a field
+        def get_local_field_is(section, field, unconstrained=False):
+            """
+            This function returns the index set of unconstrained points if True, or all points if False.
+            """
+            pStart, pEnd = section.getChart()
+            indices = []
+            for p in range(pStart, pEnd):
+                dof = section.getFieldDof(p, field)
+                if dof > 0:
+                    offset = section.getFieldOffset(p, field)
+                    if not unconstrained:
+                        indices.append(offset)
+                    else:
+                        cind = section.getFieldConstraintIndices(p, field)
+                        constrained = set(cind) if cind is not None else set()
+                        for i in range(dof):
+                            if i not in constrained:
+                                index = offset + i
+                                indices.append(index)
+            is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            return is_field
+
+        # Get index sets for pressure (both constrained and unconstrained points)
+        # we need indexset of pressure field to separate the solution from localvec. 
+        # so we don't care whether a point is constrained by bc or not
+        pressure_is = get_local_field_is(local_section, pressure_field_num) 
+
+        # Get the total number of entries in the local vector
+        size = self.dm.getLocalVec().getLocalSize()
+
+        # Create a list of all indices
+        all_indices = set(range(size))
+
+        # Get indices of the pressure field
+        pressure_indices = set(pressure_is.getIndices())
+
+        # Compute the complement for the velocity field
+        velocity_indices = sorted(list(all_indices - pressure_indices))
+
+        # Create the index set for velocity
+        velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+
+        # Copy solution back into pressure and velocity variables
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-            # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
-
-            for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
-
-                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-
-                sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
-                lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
-                sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
-                sdm.localToGlobal(lvec, sgvec)
-                gvec.restoreSubVector(self._subdict[name][0], sgvec)
-
-                # Put in boundaries values.
-                # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-                # derived from the sub-dm (as opposed to the var.vec local vector), else
-                # failures can occur.
-
-                clvec = lvec
-                csdm = sdm
-
-                # print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
-                ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-
-                # Now copy into the user vec.
-                var.vec.array[:] = lvec.array[:]
-
-                sdm.restoreLocalVec(lvec)
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
+            for name, var in self.fields.items():
+                if name=='velocity':
+                    var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+                elif name=='pressure':
+                    var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
 
 
+        self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
 
         converged = self.snes.getConvergedReason()
