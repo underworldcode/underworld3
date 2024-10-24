@@ -98,3 +98,18 @@ def test_create_solid_ann_us_mesh():
     mesh = Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1, degree=1, qdegree=2)
 
     return
+    
+def test_create_solid_sqdIB_2d_mesh():
+    from underworld3.meshing import StructuredQuadBoxInternalBoundary2D
+
+    mesh = StructuredQuadBoxInternalBoundary2D(elementRes=(8,8),yelementRes=(4,4),minCoords=(0.0,0.0),maxCoords=(1.0, 1.0),yintCoord=0.5,degree=1,qdegree=2)
+
+
+    return
+    
+def test_create_solid_sqdIB_3d_mesh():
+    from underworld3.meshing import StructuredQuadBoxInternalBoundary3D
+
+    mesh = StructuredQuadBoxInternalBoundary3D(elementRes=(4,4,4),zelementRes=(2,2),minCoords=(0.0,0.0,0.0),maxCoords=(1.0, 1.0, 1.0),zintCoord=0.5,degree=1,qdegree=2)
+
+    return
