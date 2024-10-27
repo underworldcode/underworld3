@@ -564,7 +564,7 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 </dd>
 <dt id="underworld3.systems.ddt.SemiLagrangian"><code class="flex name class">
 <span>class <span class="ident">SemiLagrangian</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>, psi_fn: sympy.core.function.Function, V_fn: sympy.core.function.Function, vtype: underworld3._var_types.VarType, degree: int, continuous: bool, swarm_degree: Optional[int] = None, swarm_continuous: Optional[bool] = None, varsymbol: Optional[str] = 'u', verbose: Optional[bool] = False, bcs=[], order=1, smoothing=0.0, preserve_moments=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>, psi_fn: sympy.core.function.Function, V_fn: sympy.core.function.Function, vtype: underworld3._var_types.VarType, degree: int, continuous: bool, swarm_degree: Optional[int] = None, swarm_continuous: Optional[bool] = None, varsymbol: Optional[str] = None, verbose: Optional[bool] = False, bcs=[], order=1, smoothing=0.0, preserve_moments=False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Nodal-Swarm
@@ -596,7 +596,7 @@ This manages the update of a Lagrangian variable, $\psi$ on the swarm across tim
         continuous: bool,
         swarm_degree: Optional[int] = None,
         swarm_continuous: Optional[bool] = None,
-        varsymbol: Optional[str] = r&#34;u&#34;,
+        varsymbol: Optional[str] = None,
         verbose: Optional[bool] = False,
         bcs=[],
         order=1,
@@ -624,6 +624,9 @@ This manages the update of a Lagrangian variable, $\psi$ on the swarm across tim
             self.swarm_continuous = continuous
         else:
             self.swarm_continuous = swarm_continuous
+
+        if varsymbol is None:
+            varsymbol = rf&#34;u_{{ [{self.instance_number}] }}&#34;
 
         # meshVariables are required for:
         #
