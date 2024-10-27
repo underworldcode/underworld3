@@ -72,20 +72,20 @@ The problems in global planetary dynamics and tectonics that `underworld3` is de
 
 ## Mathematical Framework
 
-`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. The strong-form of the problem is defined through the functional $\cal{F}$ that expresses the balance between fluxes and unknowns:
+`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. The strong-form of the problem is defined through the functional $\mathcal{F}$ that expresses the balance between fluxes, forces, and unknowns:
 
 \begin{equation}\label{eq:petsc-strong-form}
-\mathbf{F}(u) \sim \nabla \cdot F(u, \nabla u) - f(u, \nabla u) = 0
+\mathcal{F}(u) \sim \nabla \cdot F(u, \nabla u) - f(u, \nabla u) = 0
 \end{equation}
 
 The discrete weak form and its Jacobian derivative can be expressed as follows
 
 \begin{equation}\label{eq:petsc-weak-form}
- \mathbf{F}(u) \sim \sum_e \epsilon_e^T \left[ B^T W f(u^q, \nabla u^q) + \sum_k D_k^T W F^k (u^q, \nabla u^q) \right] = 0
+ \mathcal{F}(u) \sim \sum_e \epsilon_e^T \left[ B^T W f(u^q, \nabla u^q) + \sum_k D_k^T W F^k (u^q, \nabla u^q) \right] = 0
 \end{equation}
 
 \begin{equation}\label{eq:petsc-jacobian}
- \mathbf{F}'(u) \sim \sum _e \epsilon _{e^T}
+ \mathcal{F}'(u) \sim \sum _e \epsilon _{e^T}
                 \left[ \begin{array}{cc}
                     B^T  & D^T \\
                 \end{array} \right]
@@ -107,14 +107,14 @@ The discrete weak form and its Jacobian derivative can be expressed as follows
 The symbolic representation of the strong-form that is encoded in `underworld3` is:
 
 \begin{equation}\label{eq:sympy-strong-form}
-\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{f} }
+\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{u} }
 -\nabla \cdot \underbrace{\Bigl[ \mathrm{F}(u, \nabla u) \Bigr]}_{\mathbf{F}}
--\underbrace{\Bigl[ \mathrm{H}(\mathbf{x},t) \Bigr]}_{f}
+-\underbrace{\Bigl[ \mathrm{H}(\mathbf{x},t) \Bigr]}_{\mathbf{h}}
 = 0
 \end{equation}
 
 This symbolic form (\ref{eq:sympy-strong-form})
-contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $f$). In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
+contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $h$). In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
 
 # Discussion
 

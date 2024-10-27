@@ -38,7 +38,7 @@ class SemiLagrangian(uw_object):
         continuous: bool,
         swarm_degree: Optional[int] = None,
         swarm_continuous: Optional[bool] = None,
-        varsymbol: Optional[str] = r"u",
+        varsymbol: Optional[str] = None,
         verbose: Optional[bool] = False,
         bcs=[],
         order=1,
@@ -66,6 +66,9 @@ class SemiLagrangian(uw_object):
             self.swarm_continuous = continuous
         else:
             self.swarm_continuous = swarm_continuous
+
+        if varsymbol is None:
+            varsymbol = rf"u_{{ [{self.instance_number}] }}"
 
         # meshVariables are required for:
         #

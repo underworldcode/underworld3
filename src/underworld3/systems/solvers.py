@@ -1245,6 +1245,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
                 continuous=u_Field.continuous,
+                varsymbol=u_Field.symbol,
                 verbose=verbose,
                 bcs=self.essential_bcs,
                 order=1,

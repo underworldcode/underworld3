@@ -25,9 +25,7 @@ class SolverBaseClass(uw_object):
     This class is not intended to be used directly
     """
 
-
     def __init__(self, mesh):
-
 
         super().__init__()
 
@@ -669,8 +667,11 @@ class SNES_Scalar(SolverBaseClass):
         # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
+        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
+        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
+
+        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -1251,8 +1252,12 @@ class SNES_Vector(SolverBaseClass):
         # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
         # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
+        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
+        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
+
+        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
+
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -2060,10 +2065,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
-
-        F0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym))
-        F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym))
-        PF0 = sympy.Array(uw.function.fn_substitute_expressions(self.PF0.sym))
+        F0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False))
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False))
+        PF0  = sympy.Array(uw.function.expressions.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)
