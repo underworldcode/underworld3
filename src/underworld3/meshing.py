@@ -3972,12 +3972,6 @@ def BoxInternalBoundary(
         Internal = sympy.Matrix([0, 0, 1])
     
     dim = len(minCoords)
-    if dim == 2:
-        boundaries = boundaries_2D
-        boundary_normals = boundary_normals_2D
-    else:
-        boundaries = boundaries_3D
-        boundary_normals = boundary_normals_3D
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -3991,254 +3985,254 @@ def BoxInternalBoundary(
         uw_filename = filename
          
         
-    if uw.mpi.rank == 0 and dim ==2:
+    if uw.mpi.rank == 0:
         import gmsh
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
-        gmsh.model.add("Box")
-
-        xmin, ymin = minCoords
-        xmax, ymax = maxCoords
-        yint = zintCoord
-
-        if not simplex:
-            cellSize = 0.0       
-            nx,ny = elementRes
-            ny_a,ny_b = zelementRes
-
-        p1 = gmsh.model.geo.add_point(xmin, ymin, cellSize)
-        p2 = gmsh.model.geo.add_point(xmax, ymin, cellSize)
-        p3 = gmsh.model.geo.add_point(xmin, ymax, cellSize)
-        p4 = gmsh.model.geo.add_point(xmax, ymax, cellSize)
-        p5 = gmsh.model.geo.add_point(xmin, yint, cellSize)
-        p6 = gmsh.model.geo.add_point(xmax, yint, cellSize)
-    
-        l1 = gmsh.model.geo.add_line(p1, p2)
-        l2 = gmsh.model.geo.add_line(p3, p4) 
-        l3 = gmsh.model.geo.add_line(p1, p5)
-        l4 = gmsh.model.geo.add_line(p5, p3)
-        l5 = gmsh.model.geo.add_line(p2, p6)
-        l6 = gmsh.model.geo.add_line(p6, p4) 
-        l7 = gmsh.model.geo.add_line(p5, p6)
-        l34 = gmsh.model.geo.add_line(p1, p3)
-        l56 = gmsh.model.geo.add_line(p2, p4)
-    
-        cl1 = gmsh.model.geo.add_curve_loop((l1, l5, -l7, -l3))
-        cl2 = gmsh.model.geo.add_curve_loop((-l2, -l4, l7, l6))
-        surface1 = gmsh.model.geo.add_plane_surface([cl1])
-        surface2 = gmsh.model.geo.add_plane_surface([cl2])
-    
-        gmsh.model.geo.synchronize()
-    
-        # Add Physical groups for boundaries
-        gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
-        gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
-        gmsh.model.add_physical_group(1, [l2], boundaries.Top.value)
-        gmsh.model.set_physical_name(1, l2, boundaries.Top.name)
-        gmsh.model.add_physical_group(1, [l3, l4], boundaries.Left.value)
-        gmsh.model.set_physical_name(1, l34, boundaries.Left.name)
-        gmsh.model.add_physical_group(1, [l5,l6], boundaries.Right.value)
-        gmsh.model.set_physical_name(1, l56, boundaries.Right.name)            
-        gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
-        gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
-        gmsh.model.addPhysicalGroup(2, [surface1,surface2], 99999)
-        gmsh.model.setPhysicalName(2, 99999, "Elements")
-
-        if not simplex:
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l2, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l3, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l4, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l5, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(
-            tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            
-            gmsh.model.mesh.set_transfinite_surface(
-            tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6])
-            gmsh.model.mesh.set_recombine(2, surface1)
-            gmsh.model.mesh.set_transfinite_surface(
-            tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4])
-            gmsh.model.mesh.set_recombine(2, surface2)
-    
-        gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
-        gmsh.finalize()
+        gmsh.model.add("Box")     
         
-    if uw.mpi.rank == 0 and dim ==3:
-        import gmsh
-        gmsh.initialize()
-        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
-        gmsh.model.add("Box")
-
-        xmin, ymin, zmin = minCoords
-        xmax, ymax, zmax = maxCoords
-        zint = zintCoord
-
-        if not simplex:
-            cellSize = 0.0   
-            nx, ny, nz = elementRes
-            nzt,nzb = zelementRes
+        if dim == 2:
+            xmin, ymin = minCoords
+            xmax, ymax = maxCoords
+            yint = zintCoord
+            boundaries = boundaries_2D
+            boundary_normals = boundary_normals_2D
     
-        p1t = gmsh.model.geo.add_point(xmin, ymin, zmax, cellSize)
-        p2t = gmsh.model.geo.add_point(xmax, ymin, zmax, cellSize)
-        p3t = gmsh.model.geo.add_point(xmin, ymax, zmax, cellSize)
-        p4t = gmsh.model.geo.add_point(xmax, ymax, zmax, cellSize)
-        p1b = gmsh.model.geo.add_point(xmin, ymin, zmin, cellSize)
-        p2b = gmsh.model.geo.add_point(xmax, ymin, zmin, cellSize)
-        p3b = gmsh.model.geo.add_point(xmin, ymax, zmin, cellSize)
-        p4b = gmsh.model.geo.add_point(xmax, ymax, zmin, cellSize)
-        p1i = gmsh.model.geo.add_point(xmin, ymin, zint, cellSize)
-        p2i = gmsh.model.geo.add_point(xmax, ymin, zint, cellSize)
-        p3i = gmsh.model.geo.add_point(xmin, ymax, zint, cellSize)
-        p4i = gmsh.model.geo.add_point(xmax, ymax, zint, cellSize)
+            if not simplex:
+                cellSize = 0.0       
+                nx,ny = elementRes
+                ny_a,ny_b = zelementRes
     
-        l1t = gmsh.model.geo.add_line(p1t, p2t)
-        l2t = gmsh.model.geo.add_line(p2t, p4t)
-        l3t = gmsh.model.geo.add_line(p4t, p3t)
-        l4t = gmsh.model.geo.add_line(p3t, p1t)
-        l1b = gmsh.model.geo.add_line(p1b, p2b)
-        l2b = gmsh.model.geo.add_line(p2b, p4b)
-        l3b = gmsh.model.geo.add_line(p4b, p3b)
-        l4b = gmsh.model.geo.add_line(p3b, p1b)
-        l1i = gmsh.model.geo.add_line(p1i, p2i)
-        l2i = gmsh.model.geo.add_line(p2i, p4i)
-        l3i = gmsh.model.geo.add_line(p4i, p3i)
-        l4i = gmsh.model.geo.add_line(p3i, p1i)
+            p1 = gmsh.model.geo.add_point(xmin, ymin, cellSize)
+            p2 = gmsh.model.geo.add_point(xmax, ymin, cellSize)
+            p3 = gmsh.model.geo.add_point(xmin, ymax, cellSize)
+            p4 = gmsh.model.geo.add_point(xmax, ymax, cellSize)
+            p5 = gmsh.model.geo.add_point(xmin, yint, cellSize)
+            p6 = gmsh.model.geo.add_point(xmax, yint, cellSize)
+        
+            l1 = gmsh.model.geo.add_line(p1, p2)
+            l2 = gmsh.model.geo.add_line(p3, p4) 
+            l3 = gmsh.model.geo.add_line(p1, p5)
+            l4 = gmsh.model.geo.add_line(p5, p3)
+            l5 = gmsh.model.geo.add_line(p2, p6)
+            l6 = gmsh.model.geo.add_line(p6, p4) 
+            l7 = gmsh.model.geo.add_line(p5, p6)
+            l34 = gmsh.model.geo.add_line(p1, p3)
+            l56 = gmsh.model.geo.add_line(p2, p4)
+        
+            cl1 = gmsh.model.geo.add_curve_loop((l1, l5, -l7, -l3))
+            cl2 = gmsh.model.geo.add_curve_loop((-l2, -l4, l7, l6))
+            surface1 = gmsh.model.geo.add_plane_surface([cl1])
+            surface2 = gmsh.model.geo.add_plane_surface([cl2])
+        
+            gmsh.model.geo.synchronize()
+        
+            # Add Physical groups for boundaries
+            gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
+            gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
+            gmsh.model.add_physical_group(1, [l2], boundaries.Top.value)
+            gmsh.model.set_physical_name(1, l2, boundaries.Top.name)
+            gmsh.model.add_physical_group(1, [l3, l4], boundaries.Left.value)
+            gmsh.model.set_physical_name(1, l34, boundaries.Left.name)
+            gmsh.model.add_physical_group(1, [l5,l6], boundaries.Right.value)
+            gmsh.model.set_physical_name(1, l56, boundaries.Right.name)            
+            gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
+            gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
+            gmsh.model.addPhysicalGroup(2, [surface1,surface2], 99999)
+            gmsh.model.setPhysicalName(2, 99999, "Elements")
     
-        l5 = gmsh.model.geo.add_line(p1b, p1t)
-        l6 = gmsh.model.geo.add_line(p2b, p2t)
-        l7 = gmsh.model.geo.add_line(p3b, p3t)
-        l8 = gmsh.model.geo.add_line(p4b, p4t)
-        l5t = gmsh.model.geo.add_line(p1i, p1t)
-        l6t = gmsh.model.geo.add_line(p2i, p2t)
-        l7t = gmsh.model.geo.add_line(p3i, p3t)
-        l8t = gmsh.model.geo.add_line(p4i, p4t)
-        l5b = gmsh.model.geo.add_line(p1b, p1i)
-        l6b = gmsh.model.geo.add_line(p2b, p2i)
-        l7b = gmsh.model.geo.add_line(p3b, p3i)
-        l8b = gmsh.model.geo.add_line(p4b, p4i)
-    
-        cl = gmsh.model.geo.add_curve_loop((l1b, l2b, l3b, l4b))
-        bottom = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l1t, l2t, l3t, l4t))
-        top = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l1i, l2i, l3i, l4i))
-        internal = gmsh.model.geo.add_plane_surface([cl])
-    
-        cl = gmsh.model.geo.add_curve_loop((l6, l2t, -l8, -l2b))
-        right = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l6t, l2t, -l8t, -l2i))
-        right_t = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l6b, l2i, -l8b, -l2b))
-        right_b = gmsh.model.geo.add_plane_surface([cl])
-        
-        cl = gmsh.model.geo.add_curve_loop((l5, -l4t, -l7, l4b))
-        left = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l5t, -l4t, -l7t, l4i))
-        left_t = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l5b, -l4i, -l7b, l4b))
-        left_b = gmsh.model.geo.add_plane_surface([cl])
-        
-        cl = gmsh.model.geo.add_curve_loop((l5, l1t, -l6, -l1b))
-        front = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l5t, l1t, -l6t, -l1i))
-        front_t = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l5b, l1i, -l6b, -l1b))
-        front_b = gmsh.model.geo.add_plane_surface([cl])
-        
-        cl = gmsh.model.geo.add_curve_loop((l8, l3t, -l7, -l3b))
-        back = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l8t, l3t, -l7t, -l3i))
-        back_t = gmsh.model.geo.add_plane_surface([cl])
-        cl = gmsh.model.geo.add_curve_loop((l8b, l3i, -l7b, -l3b))
-        back_b = gmsh.model.geo.add_plane_surface([cl])
-        
-        sloop1 = gmsh.model.geo.add_surface_loop([front_t, right_t, back_t, top, left_t, internal])
-        volume_t = gmsh.model.geo.add_volume([sloop1])
-        sloop2 = gmsh.model.geo.add_surface_loop([front_b, right_b, back_b, internal, left_b, bottom])
-        volume_b = gmsh.model.geo.add_volume([sloop2])
-    
-        gmsh.model.geo.synchronize()
-    
-        gmsh.model.add_physical_group(2, [bottom], boundaries.Bottom.value)
-        gmsh.model.set_physical_name(2, bottom, boundaries.Bottom.name)
-        gmsh.model.add_physical_group(2, [top], boundaries.Top.value)
-        gmsh.model.set_physical_name(2, top, boundaries.Top.name)
-        gmsh.model.add_physical_group(2, [internal], boundaries.Internal.value)
-        gmsh.model.set_physical_name(2, internal, boundaries.Internal.name)
-        gmsh.model.add_physical_group(2, [left_t, left_b], boundaries.Left.value)
-        gmsh.model.set_physical_name(2, left, boundaries.Left.name)
-        gmsh.model.add_physical_group(2, [right_t,right_b], boundaries.Right.value)
-        gmsh.model.set_physical_name(2, right, boundaries.Right.name)            
-        gmsh.model.add_physical_group(2, [front_t, front_b], boundaries.Front.value)
-        gmsh.model.set_physical_name(2, front, boundaries.Front.name)
-        gmsh.model.add_physical_group(2, [back_t,back_b], boundaries.Back.value)
-        gmsh.model.set_physical_name(2, back, boundaries.Back.name)   
-            
-        gmsh.model.addPhysicalGroup(3, [volume_t,volume_b], 99999)
-        gmsh.model.setPhysicalName(3, 99999, "Elements")
-
-        if not simplex:
-            gmsh.model.mesh.set_transfinite_curve(l1t, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l2t, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l3t, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l4t, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l1i, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l2i, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l3i, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l4i, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l1b, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l2b, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l3b, numNodes=nx + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l4b, numNodes=ny + 1, meshType="Progression", coef=1.0)
-        
-            gmsh.model.mesh.set_transfinite_curve(l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l8t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l5b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-            gmsh.model.mesh.set_transfinite_curve(l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-        
-            gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b])
-            gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t])
-            gmsh.model.mesh.set_transfinite_surface(tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i])
-            gmsh.model.mesh.set_transfinite_surface(tag=front_t, arrangement="Left", cornerTags=[p1i, p2i, p2t, p1t])
-            gmsh.model.mesh.set_transfinite_surface(tag=back_t, arrangement="Left", cornerTags=[p3i, p4i, p4t, p3t])
-            gmsh.model.mesh.set_transfinite_surface(tag=right_t, arrangement="Left", cornerTags=[p2i, p4i, p4t, p2t])
-            gmsh.model.mesh.set_transfinite_surface(tag=left_t, arrangement="Left", cornerTags=[p1i, p3i, p3t, p1t])
-            gmsh.model.mesh.set_transfinite_surface(tag=front_b, arrangement="Left", cornerTags=[p1b, p2b, p2i, p1i])
-            gmsh.model.mesh.set_transfinite_surface(tag=back_b, arrangement="Left", cornerTags=[p3b, p4b, p4i, p3i])
-            gmsh.model.mesh.set_transfinite_surface(tag=right_b, arrangement="Left", cornerTags=[p2b, p4b, p4i, p2i])
-            gmsh.model.mesh.set_transfinite_surface(tag=left_b, arrangement="Left", cornerTags=[p1b, p3b, p3i, p1i])
-            gmsh.model.mesh.set_recombine(2, bottom)
-            gmsh.model.mesh.set_recombine(2, top)
-            gmsh.model.mesh.set_recombine(2, internal)
-            gmsh.model.mesh.set_recombine(2, front_t)
-            gmsh.model.mesh.set_recombine(2, back_t)
-            gmsh.model.mesh.set_recombine(2, right_t)
-            gmsh.model.mesh.set_recombine(2, left_t)
-            gmsh.model.mesh.set_recombine(2, front_b)
-            gmsh.model.mesh.set_recombine(2, back_b)
-            gmsh.model.mesh.set_recombine(2, right_b)
-            gmsh.model.mesh.set_recombine(2, left_b)
-        
-            gmsh.model.mesh.set_transfinite_volume(volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t])
-            gmsh.model.mesh.set_transfinite_volume(volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i])
-            gmsh.model.mesh.set_recombine(3, volume_t)
-            gmsh.model.mesh.set_recombine(3, volume_b)
+            if not simplex:
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l2, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l3, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l4, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l5, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
                 
-        gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
-        gmsh.finalize()
+                gmsh.model.mesh.set_transfinite_surface(
+                tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6])
+                gmsh.model.mesh.set_recombine(2, surface1)
+                gmsh.model.mesh.set_transfinite_surface(
+                tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4])
+                gmsh.model.mesh.set_recombine(2, surface2)
+        
+            gmsh.model.mesh.generate(dim)
+            gmsh.write(uw_filename)
+            gmsh.finalize()
+        
+        if dim == 3:
+            xmin, ymin, zmin = minCoords
+            xmax, ymax, zmax = maxCoords
+            zint = zintCoord
+            boundaries = boundaries_3D
+            boundary_normals = boundary_normals_3D
+            
+            if not simplex:
+                cellSize = 0.0   
+                nx, ny, nz = elementRes
+                nzt,nzb = zelementRes
+        
+            p1t = gmsh.model.geo.add_point(xmin, ymin, zmax, cellSize)
+            p2t = gmsh.model.geo.add_point(xmax, ymin, zmax, cellSize)
+            p3t = gmsh.model.geo.add_point(xmin, ymax, zmax, cellSize)
+            p4t = gmsh.model.geo.add_point(xmax, ymax, zmax, cellSize)
+            p1b = gmsh.model.geo.add_point(xmin, ymin, zmin, cellSize)
+            p2b = gmsh.model.geo.add_point(xmax, ymin, zmin, cellSize)
+            p3b = gmsh.model.geo.add_point(xmin, ymax, zmin, cellSize)
+            p4b = gmsh.model.geo.add_point(xmax, ymax, zmin, cellSize)
+            p1i = gmsh.model.geo.add_point(xmin, ymin, zint, cellSize)
+            p2i = gmsh.model.geo.add_point(xmax, ymin, zint, cellSize)
+            p3i = gmsh.model.geo.add_point(xmin, ymax, zint, cellSize)
+            p4i = gmsh.model.geo.add_point(xmax, ymax, zint, cellSize)
+        
+            l1t = gmsh.model.geo.add_line(p1t, p2t)
+            l2t = gmsh.model.geo.add_line(p2t, p4t)
+            l3t = gmsh.model.geo.add_line(p4t, p3t)
+            l4t = gmsh.model.geo.add_line(p3t, p1t)
+            l1b = gmsh.model.geo.add_line(p1b, p2b)
+            l2b = gmsh.model.geo.add_line(p2b, p4b)
+            l3b = gmsh.model.geo.add_line(p4b, p3b)
+            l4b = gmsh.model.geo.add_line(p3b, p1b)
+            l1i = gmsh.model.geo.add_line(p1i, p2i)
+            l2i = gmsh.model.geo.add_line(p2i, p4i)
+            l3i = gmsh.model.geo.add_line(p4i, p3i)
+            l4i = gmsh.model.geo.add_line(p3i, p1i)
+        
+            l5 = gmsh.model.geo.add_line(p1b, p1t)
+            l6 = gmsh.model.geo.add_line(p2b, p2t)
+            l7 = gmsh.model.geo.add_line(p3b, p3t)
+            l8 = gmsh.model.geo.add_line(p4b, p4t)
+            l5t = gmsh.model.geo.add_line(p1i, p1t)
+            l6t = gmsh.model.geo.add_line(p2i, p2t)
+            l7t = gmsh.model.geo.add_line(p3i, p3t)
+            l8t = gmsh.model.geo.add_line(p4i, p4t)
+            l5b = gmsh.model.geo.add_line(p1b, p1i)
+            l6b = gmsh.model.geo.add_line(p2b, p2i)
+            l7b = gmsh.model.geo.add_line(p3b, p3i)
+            l8b = gmsh.model.geo.add_line(p4b, p4i)
+        
+            cl = gmsh.model.geo.add_curve_loop((l1b, l2b, l3b, l4b))
+            bottom = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l1t, l2t, l3t, l4t))
+            top = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l1i, l2i, l3i, l4i))
+            internal = gmsh.model.geo.add_plane_surface([cl])
+        
+            cl = gmsh.model.geo.add_curve_loop((l6, l2t, -l8, -l2b))
+            right = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l6t, l2t, -l8t, -l2i))
+            right_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l6b, l2i, -l8b, -l2b))
+            right_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l5, -l4t, -l7, l4b))
+            left = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5t, -l4t, -l7t, l4i))
+            left_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5b, -l4i, -l7b, l4b))
+            left_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l5, l1t, -l6, -l1b))
+            front = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5t, l1t, -l6t, -l1i))
+            front_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5b, l1i, -l6b, -l1b))
+            front_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l8, l3t, -l7, -l3b))
+            back = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l8t, l3t, -l7t, -l3i))
+            back_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l8b, l3i, -l7b, -l3b))
+            back_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            sloop1 = gmsh.model.geo.add_surface_loop([front_t, right_t, back_t, top, left_t, internal])
+            volume_t = gmsh.model.geo.add_volume([sloop1])
+            sloop2 = gmsh.model.geo.add_surface_loop([front_b, right_b, back_b, internal, left_b, bottom])
+            volume_b = gmsh.model.geo.add_volume([sloop2])
+        
+            gmsh.model.geo.synchronize()
+        
+            gmsh.model.add_physical_group(2, [bottom], boundaries.Bottom.value)
+            gmsh.model.set_physical_name(2, bottom, boundaries.Bottom.name)
+            gmsh.model.add_physical_group(2, [top], boundaries.Top.value)
+            gmsh.model.set_physical_name(2, top, boundaries.Top.name)
+            gmsh.model.add_physical_group(2, [internal], boundaries.Internal.value)
+            gmsh.model.set_physical_name(2, internal, boundaries.Internal.name)
+            gmsh.model.add_physical_group(2, [left_t, left_b], boundaries.Left.value)
+            gmsh.model.set_physical_name(2, left, boundaries.Left.name)
+            gmsh.model.add_physical_group(2, [right_t,right_b], boundaries.Right.value)
+            gmsh.model.set_physical_name(2, right, boundaries.Right.name)            
+            gmsh.model.add_physical_group(2, [front_t, front_b], boundaries.Front.value)
+            gmsh.model.set_physical_name(2, front, boundaries.Front.name)
+            gmsh.model.add_physical_group(2, [back_t,back_b], boundaries.Back.value)
+            gmsh.model.set_physical_name(2, back, boundaries.Back.name)   
+                
+            gmsh.model.addPhysicalGroup(3, [volume_t,volume_b], 99999)
+            gmsh.model.setPhysicalName(3, 99999, "Elements")
+    
+            if not simplex:
+                gmsh.model.mesh.set_transfinite_curve(l1t, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2t, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3t, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4t, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l1i, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2i, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3i, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4i, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l1b, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2b, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3b, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4b, numNodes=ny + 1, meshType="Progression", coef=1.0)
+            
+                gmsh.model.mesh.set_transfinite_curve(l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l8t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l5b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+            
+                gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b])
+                gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_surface(tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i])
+                gmsh.model.mesh.set_transfinite_surface(tag=front_t, arrangement="Left", cornerTags=[p1i, p2i, p2t, p1t])
+                gmsh.model.mesh.set_transfinite_surface(tag=back_t, arrangement="Left", cornerTags=[p3i, p4i, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_surface(tag=right_t, arrangement="Left", cornerTags=[p2i, p4i, p4t, p2t])
+                gmsh.model.mesh.set_transfinite_surface(tag=left_t, arrangement="Left", cornerTags=[p1i, p3i, p3t, p1t])
+                gmsh.model.mesh.set_transfinite_surface(tag=front_b, arrangement="Left", cornerTags=[p1b, p2b, p2i, p1i])
+                gmsh.model.mesh.set_transfinite_surface(tag=back_b, arrangement="Left", cornerTags=[p3b, p4b, p4i, p3i])
+                gmsh.model.mesh.set_transfinite_surface(tag=right_b, arrangement="Left", cornerTags=[p2b, p4b, p4i, p2i])
+                gmsh.model.mesh.set_transfinite_surface(tag=left_b, arrangement="Left", cornerTags=[p1b, p3b, p3i, p1i])
+                gmsh.model.mesh.set_recombine(2, bottom)
+                gmsh.model.mesh.set_recombine(2, top)
+                gmsh.model.mesh.set_recombine(2, internal)
+                gmsh.model.mesh.set_recombine(2, front_t)
+                gmsh.model.mesh.set_recombine(2, back_t)
+                gmsh.model.mesh.set_recombine(2, right_t)
+                gmsh.model.mesh.set_recombine(2, left_t)
+                gmsh.model.mesh.set_recombine(2, front_b)
+                gmsh.model.mesh.set_recombine(2, back_b)
+                gmsh.model.mesh.set_recombine(2, right_b)
+                gmsh.model.mesh.set_recombine(2, left_b)
+            
+                gmsh.model.mesh.set_transfinite_volume(volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_volume(volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i])
+                gmsh.model.mesh.set_recombine(3, volume_t)
+                gmsh.model.mesh.set_recombine(3, volume_b)
+                    
+            gmsh.model.mesh.generate(dim)
+            gmsh.write(uw_filename)
+            gmsh.finalize()
     
     def box_return_coords_to_bounds(coords):
         x00s = coords[:, 0] < minCoords[0]
