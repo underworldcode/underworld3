@@ -53,6 +53,29 @@ hljs.highlightAll();
 <dd>
 <div class="desc"></div>
 </dd>
+<dt id="underworld3.meshing.BoxInternalBoundary"><code class="name flex">
+<span>def <span class="ident">BoxInternalBoundary</span></span>(<span>elementRes: Optional[Tuple[int, int, int]] = (8, 8, 8), zelementRes: Optional[Tuple[int, int]] = (4, 4), cellSize: float = 0.1, minCoords: Optional[Tuple[float, float, float]] = (0, 0, 0), maxCoords: Optional[Tuple[float, float, float]] = (1, 1, 1), zintCoord: float = 0.5, simplex: bool = False, degree: int = 1, qdegree: int = 2, filename=None, refinement=None, gmsh_verbosity=0, verbose=False)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Generates a 2 or 3-dimensional box mesh with internal boundary.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt>elementRes:</dt>
+<dt>Tuple specifying number of elements in each axis direction.</dt>
+<dt>zelementRes:</dt>
+<dt>Tuple specifying number of elements in the vertical axis direction (half top part and bottom part).</dt>
+<dt><strong><code>cellSize</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>The target size for the mesh elements. This controls the density of the unstructuredSimplexBox mesh.</dd>
+<dt>minCoord:</dt>
+<dt>Optional. Tuple specifying minimum mesh location.</dt>
+<dt>maxCoord:</dt>
+<dt>Optional. Tuple specifying maximum mesh location.</dt>
+<dt>zintCoord:</dt>
+<dt>float specifying internal boundary location.</dt>
+<dt><strong><code>simplex</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>If True, build structuredQuadBox; if not, build unstructuredSimplexBox. Default is False.</dd>
+</dl></div>
+</dd>
 <dt id="underworld3.meshing.CubedSphere"><code class="name flex">
 <span>def <span class="ident">CubedSphere</span></span>(<span>radiusOuter: float = 1.0, radiusInner: float = 0.547, numElements: int = 5, degree: int = 1, qdegree: int = 2, simplex: bool = False, filename=None, refinement=None, gmsh_verbosity=0, verbose=False)</span>
 </code></dt>
@@ -285,6 +308,7 @@ Tuple specifying maximum mesh location.</p>
 <li><code><a title="underworld3.meshing.Annulus" href="#underworld3.meshing.Annulus">Annulus</a></code></li>
 <li><code><a title="underworld3.meshing.AnnulusInternalBoundary" href="#underworld3.meshing.AnnulusInternalBoundary">AnnulusInternalBoundary</a></code></li>
 <li><code><a title="underworld3.meshing.AnnulusWithSpokes" href="#underworld3.meshing.AnnulusWithSpokes">AnnulusWithSpokes</a></code></li>
+<li><code><a title="underworld3.meshing.BoxInternalBoundary" href="#underworld3.meshing.BoxInternalBoundary">BoxInternalBoundary</a></code></li>
 <li><code><a title="underworld3.meshing.CubedSphere" href="#underworld3.meshing.CubedSphere">CubedSphere</a></code></li>
 <li><code><a title="underworld3.meshing.DiscInternalBoundaries" href="#underworld3.meshing.DiscInternalBoundaries">DiscInternalBoundaries</a></code></li>
 <li><code><a title="underworld3.meshing.QuarterAnnulus" href="#underworld3.meshing.QuarterAnnulus">QuarterAnnulus</a></code></li>
