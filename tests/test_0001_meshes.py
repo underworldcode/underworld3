@@ -98,3 +98,32 @@ def test_create_solid_ann_us_mesh():
     mesh = Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1, degree=1, qdegree=2)
 
     return
+    
+def test_create_solid_sqdIB_2d_mesh():
+    from underworld3.meshing import BoxInternalBoundary
+
+    mesh = BoxInternalBoundary(elementRes=(8,8),zelementRes=(4,4),minCoords=(0.0,0.0),maxCoords=(1.0, 1.0),zintCoord=0.5,degree=1,qdegree=2)
+
+    return
+    
+def test_create_solid_sqdIB_3d_mesh():
+    from underworld3.meshing import BoxInternalBoundary
+
+    mesh = BoxInternalBoundary(elementRes=(4,4,4),zelementRes=(2,2),minCoords=(0.0,0.0,0.0),maxCoords=(1.0, 1.0, 1.0),zintCoord=0.5,degree=1,qdegree=2)
+
+    return
+    
+def test_create_solid_usbIB_2d_mesh():
+    from underworld3.meshing import BoxInternalBoundary
+
+    mesh = BoxInternalBoundary(cellSize=1/4,minCoords=(0.0,0.0),maxCoords=(1.0, 1.0),zintCoord=0.5,degree=1,qdegree=2,simplex=True)
+
+    return
+    
+def test_create_solid_usbIB_3d_mesh():
+    from underworld3.meshing import BoxInternalBoundary
+
+    mesh = BoxInternalBoundary(cellSize=1/4,minCoords=(0.0,0.0,0.0),maxCoords=(1.0, 1.0, 1.0),zintCoord=0.5,degree=1,qdegree=2,simplex=True)
+
+    return    
+    
