@@ -3943,7 +3943,6 @@ def BoxInternalBoundary(
         Right = 13
         Left = 14
         Internal = 15
-        All_Boundaries = 1001
     
     class boundary_normals_2D(Enum):
         Bottom = sympy.Matrix([0, 1])
@@ -3960,7 +3959,6 @@ def BoxInternalBoundary(
         Front = 15
         Back = 16
         Internal = 17
-        All_Boundaries = 1001
 
     class boundary_normals_3D(Enum):
         Bottom = sympy.Matrix([0, 0, 1])
