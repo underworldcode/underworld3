@@ -504,34 +504,33 @@ window.Quarto = {
 <span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    mesh, </span>
 <span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln, </span>
 <span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln, </span>
-<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    solver_name<span class="op">=</span><span class="st">"Stokes"</span>,</span>
-<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">0</span>))</span>
-<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
-<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.Piecewise(</span>
-<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>                                (sympy.sympify(<span class="dv">1</span>)<span class="op">/</span><span class="dv">100</span>, s.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="fl">0.05</span>), </span>
-<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>                                (<span class="dv">1</span>, <span class="va">True</span>, )    </span>
-<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>                            )</span>
-<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>stokes.add_essential_bc((<span class="dv">1</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span>
-<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> fixed_base <span class="op">==</span> <span class="va">True</span>:</span>
-<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>    stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
-<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
-<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Free slip on the (deformed) base below a certain Level:</span></span>
-<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 1) Penalise normal velocity below</span></span>
-<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 2) Penalise the entire velocity vector above</span></span>
-<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
-<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(<span class="vs">r"|\Gamma|"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span>)</span>
-<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
-<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> v_soln.sym.dot(GammaN) <span class="op">*</span> GammaN, <span class="st">"Bottom"</span>)</span>
-<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-4</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">0</span>))</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.Piecewise(</span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>                                (sympy.sympify(<span class="dv">1</span>)<span class="op">/</span><span class="dv">100</span>, s.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="fl">0.05</span>), </span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>                                (<span class="dv">1</span>, <span class="va">True</span>, )    </span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>                            )</span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>stokes.add_essential_bc((<span class="dv">1</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> fixed_base <span class="op">==</span> <span class="va">True</span>:</span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>    stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Free slip on the (deformed) base below a certain Level:</span></span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 1) Penalise normal velocity below</span></span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 2) Penalise the entire velocity vector above</span></span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(<span class="vs">r"|\Gamma|"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span>)</span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> v_soln.sym.dot(GammaN) <span class="op">*</span> GammaN, <span class="st">"Bottom"</span>)</span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-4</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div id="85122b6c-a44d-4253-9eae-c182f1402df2" class="cell" data-execution_count="14">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
