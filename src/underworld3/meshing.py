@@ -6,6 +6,7 @@ import numpy as np
 import petsc4py
 from petsc4py import PETSc
 import os
+import math
 
 import underworld3 as uw
 from underworld3.discretisation import Mesh
@@ -49,7 +50,6 @@ def UnstructuredSimplexBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -58,7 +58,6 @@ def UnstructuredSimplexBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -207,23 +206,25 @@ def UnstructuredSimplexBox(
 
     def box_return_coords_to_bounds(coords):
 
+        epsilon = 1.0e-3
+
         x00s = coords[:, 0] < minCoords[0]
         x01s = coords[:, 0] > maxCoords[0]
         x10s = coords[:, 1] < minCoords[1]
         x11s = coords[:, 1] > maxCoords[1]
 
         if dim == 3:
-            x20s = coords[:, 1] < minCoords[2]
-            x21s = coords[:, 1] > maxCoords[2]
+            x20s = coords[:, 2] < minCoords[2]
+            x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, :] = minCoords[0]
-        coords[x01s, :] = maxCoords[0]
-        coords[x10s, :] = minCoords[1]
-        coords[x11s, :] = maxCoords[1]
+        coords[x00s, 0] = minCoords[0] + epsilon
+        coords[x01s, 0] = maxCoords[0] - epsilon
+        coords[x10s, 1] = minCoords[1] + epsilon
+        coords[x11s, 1] = maxCoords[1] - epsilon
 
         if dim == 3:
-            coords[x20s, :] = minCoords[2]
-            coords[x21s, :] = maxCoords[2]
+            coords[x20s, 2] = minCoords[2] + epsilon
+            coords[x21s, 2] = maxCoords[2] - epsilon
 
         return coords
 
@@ -284,7 +285,6 @@ def StructuredQuadBox(
         Top = 12
         Right = 13
         Left = 14
-        All_Boundaries = 1001
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -293,7 +293,6 @@ def StructuredQuadBox(
         Left = 14
         Front = 15
         Back = 16
-        All_Boundaries = 1001
 
     # Enum is not quite natural but matches the above
 
@@ -369,6 +368,7 @@ def StructuredQuadBox(
             gmsh.model.set_physical_name(2, 99999, "Elements")
 
             nx, ny = elementRes
+            print("Structured box element resolution", nx, ny)
 
             gmsh.model.mesh.set_transfinite_curve(
                 tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0
@@ -530,17 +530,17 @@ def StructuredQuadBox(
         x11s = coords[:, 1] > maxCoords[1]
 
         if dim == 3:
-            x20s = coords[:, 1] < minCoords[2]
-            x21s = coords[:, 1] > maxCoords[2]
+            x20s = coords[:, 2] < minCoords[2]
+            x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, :] = minCoords[0]
-        coords[x01s, :] = maxCoords[0]
-        coords[x10s, :] = minCoords[1]
-        coords[x11s, :] = maxCoords[1]
+        coords[x00s, 0] = minCoords[0]
+        coords[x01s, 0] = maxCoords[0]
+        coords[x10s, 1] = minCoords[1]
+        coords[x11s, 1] = maxCoords[1]
 
         if dim == 3:
-            coords[x20s, :] = minCoords[2]
-            coords[x21s, :] = maxCoords[2]
+            coords[x20s, 2] = minCoords[2]
+            coords[x21s, 2] = maxCoords[2]
 
         return coords
 
@@ -579,7 +579,6 @@ def SphericalShell(
         Lower = 11
         Upper = 12
         Centre = 1
-        All_Boundaries = 1001
 
     import gmsh
 
@@ -725,6 +724,525 @@ def SphericalShell(
 
 
 @timing.routine_timer_decorator
+def SphericalShellInternalBoundary(
+    radiusOuter: float = 1.0,
+    radiusInternal: float = 0.8,
+    radiusInner: float = 0.547,
+    cellSize: float = 0.1,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    verbose=False,
+):
+    """
+    Generates a spherical shell with an internal boundary using Gmsh. The function creates a 3D mesh of a spherical shell
+    defined by outer, internal, and inner radii. Mesh size, polynomial degree, and Gmsh verbosity can be customized.
+
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the spherical shell. Default is 1.0.
+
+    radiusInternal : float, optional
+        The radius of the internal boundary within the spherical shell. Default is 0.8.
+
+    radiusInner : float, optional
+        The inner radius of the spherical shell. Default is 0.547.
+
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the radii and mesh size. Default is None.
+
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SphericalShellInternalBoundary(
+        radiusOuter=2.0,
+        radiusInternal=1.5,
+        radiusInner=1.0,
+        cellSize=0.05,
+        degree=2,
+        qdegree=3,
+        filename="custom_spherical_shell.msh",
+        gmsh_verbosity=1,
+        verbose=True
+    )
+    """
+
+    class boundaries(Enum):
+        Centre = 1
+        Lower = 11
+        Internal = 12
+        Upper = 13
+
+    import gmsh
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = f".meshes/uw_spherical_shell_ro{radiusOuter}_rint{radiusInternal}_ri{radiusInner}_csize{cellSize}.msh"
+    else:
+        uw_filename = filename
+
+    # Check if r_i is greater than 0
+    if radiusInner <= 0:
+        raise ValueError("The inner radius must be greater than 0.")
+
+    if uw.mpi.rank == 0:
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("SphereShell_with_Internal_Surface")
+
+        p1 = gmsh.model.geo.add_point(0.0, 0.0, 0.0, meshSize=cellSize)
+
+        ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
+        ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
+        # Cut the inner sphere from the outer sphere to create a shell
+        gmsh.model.occ.cut(
+            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
+        )
+
+        ball3_tag = gmsh.model.occ.addSphere(0.0, 0.0, 0.0, radiusInternal)
+        ball4_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
+        # Create another inner sphere with radius r_i (for the internal sphere)
+        gmsh.model.occ.cut(
+            [(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True
+        )
+
+        # Set the maximum characteristic length (mesh size) for the mesh elements
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
+        gmsh.model.occ.synchronize()
+
+        # Embed a 2D surface into a 3D volume
+        # Here, 2D entities with tag 6 are embedded into a 3D entity with tag 1
+        gmsh.model.mesh.embed(2, [6], 3, 1)
+        # Remove specific entities from the model (these repetitions)
+        gmsh.model.remove_entities([(3, 2)], [(2, 5)])
+        gmsh.model.occ.remove([(3, 2)], [(2, 5)])
+
+        # Get all surface entities (2D) and the first volume entity (3D)
+        surfaces = gmsh.model.getEntities(2)
+        volume = gmsh.model.getEntities(3)[0]
+
+        # Loop through all surface entities to categorize them based on their bounding box
+        for surface in surfaces:
+            if np.isclose(
+                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
+            ):
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Lower.value,
+                    name=boundaries.Lower.name,
+                )
+                print("Created inner boundary surface")
+            elif np.isclose(
+                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
+            ):
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Upper.value,
+                    name=boundaries.Upper.name,
+                )
+                print("Created outer boundary surface")
+            elif np.isclose(
+                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInternal
+            ):
+                gmsh.model.addPhysicalGroup(
+                    surface[0],
+                    [surface[1]],
+                    boundaries.Internal.value,
+                    name=boundaries.Internal.name,
+                )
+                print("Created internal boundary surface")
+
+        # Add the volume entity to a physical group with a high tag number (99999) and name it "Elements"
+        gmsh.model.addPhysicalGroup(volume[0], [volume[1]], 99999)
+        gmsh.model.setPhysicalName(volume[1], 99999, "Elements")
+
+        gmsh.model.occ.synchronize()
+
+        gmsh.model.mesh.generate(3)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
+
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
+        verbose=verbose,
+    )
+
+    class boundary_normals(Enum):
+        Lower = 11
+        Internal = 12
+        Upper = 13
+        Centre = 1
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
+def SegmentofSphere(
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.547,
+    longitudeExtent: float = 90.0,
+    latitudeExtent: float = 90.0,
+    cellSize: float = 0.1,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    verbose=False,
+    centroid: Tuple = (0.0, 0.0, 0.0),
+):
+    """
+    Generates a segment of a sphere using Gmsh. This function creates a 3D mesh of a spherical segment defined by outer and inner radii,
+    and the extent in longitude and latitude. The mesh can be customized in terms of size, polynomial degree, and verbosity.
+
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the spherical segment. Default is 1.0.
+
+    radiusInner : float, optional
+        The inner radius of the spherical segment. Default is 0.547.
+
+    longitudeExtent : float, optional
+        The angular extent of the segment in the longitudinal direction (in degrees). Default is 90.0.
+
+    latitudeExtent : float, optional
+        The angular extent of the segment in the latitudinal direction (in degrees). Default is 90.0.
+
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
+
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+
+    centroid : Tuple[float, float, float], optional
+        The coordinates of the centroid (center) of the sphere segment. Default is (0.0, 0.0, 0.0).
+
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SegmentofSphere(
+        radiusOuter=2.0,
+        radiusInner=1.0,
+        longitudeExtent=120.0,
+        latitudeExtent=60.0,
+        cellSize=0.05,
+        degree=2,
+        qdegree=3,
+        filename="custom_sphere_segment.msh",
+        centroid=(0.0, 0.0, 0.0),
+        gmsh_verbosity=1,
+        verbose=True
+    )
+    """
+
+    class boundaries(Enum):
+        Lower = 11
+        Upper = 12
+        East = 13
+        West = 14
+        South = 15
+        North = 16
+
+    import gmsh
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = f".meshes/uw_segmentofsphere_ro{radiusOuter}_ri{radiusInner}_longext{longitudeExtent}_latext{latitudeExtent}_csize{cellSize}.msh"
+    else:
+        uw_filename = filename
+
+    if (
+        radiusInner <= 0
+        or not (0 < longitudeExtent < 180)
+        or not (0 < latitudeExtent < 180)
+    ):
+        raise ValueError(
+            "Invalid input parameters: "
+            "radiusInner must be greater than 0, "
+            "and longitudeExtent and latitudeExtent must be within the range (0, 180)."
+        )
+
+    if uw.mpi.rank == 0:
+
+        def getSphericalXYZ(point):
+            """
+            Perform Cubed-sphere projection on coordinates.
+            Converts (radius, lon, lat) in spherical region to (x, y, z) in spherical region.
+
+            Parameters
+            ----------
+            Input:
+                Coordinates in rthetaphi format (radius, lon, lat)
+            Output
+                Coordinates in XYZ format (x, y, z)
+            """
+
+            (x, y) = (
+                math.tan(point[1] * math.pi / 180.0),
+                math.tan(point[2] * math.pi / 180.0),
+            )
+            d = point[0] / math.sqrt(x**2 + y**2 + 1)
+            coordX, coordY, coordZ = (
+                centroid[0] + d * x,
+                centroid[1] + d * y,
+                centroid[2] + d,
+            )
+
+            return (coordX, coordY, coordZ)
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("SegmentOfSphere")
+
+        p0 = gmsh.model.geo.addPoint(
+            centroid[0], centroid[1], centroid[2], meshSize=cellSize
+        )
+
+        # Create segment of sphere
+        dim = 3
+
+        long_half = longitudeExtent / 2
+        lat_half = latitudeExtent / 2
+
+        pt1 = getSphericalXYZ((radiusInner, -long_half, -lat_half))
+        pt2 = getSphericalXYZ((radiusInner, long_half, -lat_half))
+        pt3 = getSphericalXYZ((radiusInner, long_half, lat_half))
+        pt4 = getSphericalXYZ((radiusInner, -long_half, lat_half))
+        pt5 = getSphericalXYZ((radiusOuter, -long_half, -lat_half))
+        pt6 = getSphericalXYZ((radiusOuter, long_half, -lat_half))
+        pt7 = getSphericalXYZ((radiusOuter, long_half, lat_half))
+        pt8 = getSphericalXYZ((radiusOuter, -long_half, lat_half))
+
+        p1 = gmsh.model.geo.addPoint(pt1[0], pt1[1], pt1[2], meshSize=cellSize)
+        p2 = gmsh.model.geo.addPoint(pt2[0], pt2[1], pt2[2], meshSize=cellSize)
+        p3 = gmsh.model.geo.addPoint(pt3[0], pt3[1], pt3[2], meshSize=cellSize)
+        p4 = gmsh.model.geo.addPoint(pt4[0], pt4[1], pt4[2], meshSize=cellSize)
+        p5 = gmsh.model.geo.addPoint(pt5[0], pt5[1], pt5[2], meshSize=cellSize)
+        p6 = gmsh.model.geo.addPoint(pt6[0], pt6[1], pt6[2], meshSize=cellSize)
+        p7 = gmsh.model.geo.addPoint(pt7[0], pt7[1], pt7[2], meshSize=cellSize)
+        p8 = gmsh.model.geo.addPoint(pt8[0], pt8[1], pt8[2], meshSize=cellSize)
+
+        l1 = gmsh.model.geo.addCircleArc(p1, p0, p2)
+        l2 = gmsh.model.geo.addCircleArc(p2, p0, p3)
+        l3 = gmsh.model.geo.addCircleArc(p3, p0, p4)
+        l4 = gmsh.model.geo.addCircleArc(p4, p0, p1)
+        l5 = gmsh.model.geo.addCircleArc(p5, p0, p6)
+        l6 = gmsh.model.geo.addCircleArc(p6, p0, p7)
+        l7 = gmsh.model.geo.addCircleArc(p7, p0, p8)
+        l8 = gmsh.model.geo.addCircleArc(p8, p0, p5)
+        l9 = gmsh.model.geo.addLine(p5, p1)
+        l10 = gmsh.model.geo.addLine(p2, p6)
+        l11 = gmsh.model.geo.addLine(p7, p3)
+        l12 = gmsh.model.geo.addLine(p4, p8)
+
+        cl = gmsh.model.geo.addCurveLoop((l1, l2, l3, l4))
+        lower = gmsh.model.geo.addSurfaceFilling([cl], tag=boundaries.Lower.value)
+
+        cl = gmsh.model.geo.addCurveLoop((l5, l6, l7, l8))
+        upper = gmsh.model.geo.addSurfaceFilling([cl], tag=boundaries.Upper.value)
+
+        cl = gmsh.model.geo.addCurveLoop((l10, l6, l11, -l2))
+        east = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.East.value)
+
+        cl = gmsh.model.geo.addCurveLoop((l9, -l4, l12, l8))
+        west = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.West.value)
+
+        cl = gmsh.model.geo.addCurveLoop((l1, l10, -l5, l9))
+        south = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.South.value)
+
+        cl = gmsh.model.geo.addCurveLoop((-l3, -l11, l7, -l12))
+        north = gmsh.model.geo.addPlaneSurface([cl], tag=boundaries.North.value)
+
+        sloop = gmsh.model.geo.addSurfaceLoop([south, east, north, upper, west, lower])
+        volume = gmsh.model.geo.addVolume([sloop])
+
+        gmsh.model.geo.synchronize()
+
+        # Add Physical groups
+        for b in boundaries:
+            tag = b.value
+            name = b.name
+            gmsh.model.addPhysicalGroup(2, [tag], tag)
+            gmsh.model.setPhysicalName(2, tag, name)
+
+        # Add the volume entity to a physical group with a high tag number (99999) and name it "Elements"
+        gmsh.model.addPhysicalGroup(3, [volume], 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        gmsh.model.occ.synchronize()
+
+        gmsh.model.mesh.generate(3)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
+
+    def spherical_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        # print(f"Refinement callback - spherical", flush=True)
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 3)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        refinement_callback=spherical_mesh_refinement_callback,
+        verbose=verbose,
+    )
+
+    class boundary_normals(Enum):
+        Lower = 11
+        Upper = 12
+        East = 13
+        West = 14
+        South = 15
+        North = 16
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
 def QuarterAnnulus(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.547,
@@ -743,7 +1261,6 @@ def QuarterAnnulus(
         Left = 3
         Right = 4
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -912,7 +1429,6 @@ def Annulus(
         Lower = 1
         Upper = 2
         Centre = 10
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -978,9 +1494,10 @@ def Annulus(
                 name=boundaries.Lower.name,
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
@@ -1028,6 +1545,268 @@ def Annulus(
         dm.setCoordinatesLocal(c2)
 
         return
+
+    # This needs to respect the size of the elements so it
+    # does not flag points that are actually in the mesh.
+
+    def annulus_return_coords_to_bounds(coords):
+
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= 0.99 * radiusOuter / (Rsq[outside] ** 0.5).reshape(-1, 1)
+        coords[inside, :]  *= 1.01 * radiusInner / (Rsq[inside] ** 0.5).reshape(-1, 1)
+
+        return coords
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        coordinate_system_type=CoordinateSystemType.CYLINDRICAL2D,
+        refinement=refinement,
+        refinement_callback=annulus_mesh_refinement_callback,
+        return_coords_to_bounds=annulus_return_coords_to_bounds,
+        verbose=verbose,
+    )
+
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+        Centre = None
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
+def SegmentofAnnulus(
+    radiusOuter: float = 1.0,
+    radiusInner: float = 0.547,
+    angleExtent: float = 45,
+    cellSize: float = 0.1,
+    centre: bool = False,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    verbose=False,
+):
+    """
+    Generates a segment of an annulus using Gmsh. This function creates a 2D mesh of an annular segment defined by outer and inner radii,
+    and the extent of the angle. The mesh can be customized with various parameters like cell size, element degree, and verbosity.
+
+    Parameters:
+    -----------
+    radiusOuter : float, optional
+        The outer radius of the annular segment. Default is 1.0.
+
+    radiusInner : float, optional
+        The inner radius of the annular segment. Default is 0.547.
+
+    angleExtent : float, optional
+        The angular extent of the segment in degrees. Default is 45.
+
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
+
+    centre : bool, optional
+        If True, the segment will be centered at the origin. If False, the segment is positioned based on the radii. Default is False.
+
+    degree : int, optional
+        The polynomial degree of the finite elements used in the mesh. Default is 1.
+
+    qdegree : int, optional
+        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
+
+    filename : str, optional
+        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
+
+    refinement : optional
+        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
+
+    gmsh_verbosity : int, optional
+        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
+
+    verbose : bool, optional
+        If True, the function prints additional information during execution. Default is False.
+
+    Returns:
+    --------
+    None
+        The function generates and saves a mesh file according to the specified parameters.
+
+    Example:
+    --------
+    mesh = uw.meshing.SegmentofAnnulus(
+        radiusOuter=2.0,
+        radiusInner=1.0,
+        angleExtent=90.0,
+        cellSize=0.05,
+        centre=True,
+        degree=2,
+        qdegree=3,
+        filename="custom_annulus_segment.msh",
+        gmsh_verbosity=1,
+        verbose=True
+    )
+    """
+
+    class boundaries(Enum):
+        Lower = 1
+        Upper = 2
+        Left = 3
+        Right = 4
+        Centre = 10
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+
+        uw_filename = f"uw_SegmentOfAnnulus_ro{radiusOuter}_ri{radiusInner}_extent{angleExtent}_csize{cellSize}.msh"
+    else:
+        uw_filename = filename
+
+    # error checks
+    if radiusInner <= 0 or not (0 < angleExtent < 180):
+        raise ValueError(
+            "Invalid input parameters: "
+            "radiusInner must be greater than 0, "
+            "and angleExtent must be within the range (0, 180)."
+        )
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("SegmentofAnnulus")
+
+        p0 = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, meshSize=cellSize)
+
+        # angle Extent in radian
+        angleExtentRadian = np.deg2rad(angleExtent)
+        theta1 = (np.pi - angleExtentRadian) / 2
+        theta2 = theta1 + angleExtentRadian
+
+        loops = []
+
+        if radiusInner > 0.0:
+            p1 = gmsh.model.geo.addPoint(
+                radiusInner * np.cos(theta1),
+                radiusInner * np.sin(theta1),
+                0.0,
+                meshSize=cellSize,
+            )
+            p4 = gmsh.model.geo.addPoint(
+                radiusInner * np.cos(theta2),
+                radiusInner * np.sin(theta2),
+                0.0,
+                meshSize=cellSize,
+            )
+
+        p2 = gmsh.model.geo.addPoint(
+            radiusOuter * np.cos(theta1),
+            radiusOuter * np.sin(theta1),
+            0.0,
+            meshSize=cellSize,
+        )
+        p3 = gmsh.model.geo.addPoint(
+            radiusOuter * np.cos(theta2),
+            radiusOuter * np.sin(theta2),
+            0.0,
+            meshSize=cellSize,
+        )
+
+        if radiusInner > 0.0:
+            l_right = gmsh.model.geo.addLine(p1, p2)
+            l_left = gmsh.model.geo.addLine(p3, p4)
+            c_upper = gmsh.model.geo.addCircleArc(p2, p0, p3)
+            c_lower = gmsh.model.geo.addCircleArc(p4, p0, p1)
+            loops = [c_lower, l_right, c_upper, l_left]
+        else:
+            l_right = gmsh.model.geo.addLine(p0, p2)
+            l_left = gmsh.model.geo.addLine(p3, p0)
+            c_upper = gmsh.model.geo.addCircleArc(p2, p0, p3)
+            loops = [l_right, c_upper, l_left]
+
+        loop = gmsh.model.geo.addCurveLoop(loops)
+        s = gmsh.model.geo.addPlaneSurface([loop])
+
+        # gmsh.model.mesh.embed(0, [p0], 2, s) # not sure use of this line
+
+        if radiusInner > 0.0:
+            gmsh.model.addPhysicalGroup(
+                1, [c_lower], boundaries.Lower.value, name=boundaries.Lower.name
+            )
+        else:
+            gmsh.model.addPhysicalGroup(
+                0, [p0], tag=boundaries.Centre.value, name=boundaries.Centre.name
+            )
+
+        gmsh.model.addPhysicalGroup(
+            1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
+        )
+        gmsh.model.addPhysicalGroup(
+            1, [l_left], boundaries.Left.value, name=boundaries.Left.name
+        )
+        gmsh.model.addPhysicalGroup(
+            1, [l_right], boundaries.Right.value, name=boundaries.Right.name
+        )
+        gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
+
+        gmsh.model.geo.synchronize()
+
+        gmsh.model.mesh.generate(2)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    # Ensure boundaries conform (if refined)
+    # This is equivalent to a partial function because it already
+    # knows the configuration of THIS spherical mesh and
+    # is called if the general mesh routine does some refinement
+    # and the new dm object needs some tweeks
+
+    def annulus_mesh_refinement_callback(dm):
+        r_o = radiusOuter
+        r_i = radiusInner
+
+        import underworld3 as uw
+
+        c2 = dm.getCoordinatesLocal()
+        coords = c2.array.reshape(-1, 2)
+        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
+
+        upperIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Upper"
+            )
+        )
+        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
+
+        lowerIndices = (
+            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, "Lower"
+            )
+        )
+
+        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
+
+        c2.array[...] = coords.reshape(-1)
+        dm.setCoordinatesLocal(c2)
+
+        return
+
+    # This needs to respect the size of the elements so it
+    # does not flag points that are actually in the mesh.
 
     def annulus_return_coords_to_bounds(coords):
         Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2
@@ -1087,7 +1866,6 @@ def AnnulusWithSpokes(
         UpperPlus = 21
         Centre = 1
         Spokes = 99
-        All_Boundaries = 1001
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1346,7 +2124,6 @@ def AnnulusInternalBoundary(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
 
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
@@ -1436,9 +2213,10 @@ def AnnulusInternalBoundary(
                 1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
             )
         else:
-            gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
-            )
+            if centre is True:
+                gmsh.model.addPhysicalGroup(
+                    0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                )
 
         gmsh.model.addPhysicalGroup(
             1,
@@ -1559,7 +2337,7 @@ def DiscInternalBoundaries(
         Internal = 2
         Upper = 3
         Centre = 10
-        All_Boundaries = 1001
+
 
     if cellSize_Lower is None:
         cellSize_Lower = cellSize
@@ -1747,7 +2525,7 @@ def DiscInternalBoundaries(
     return new_mesh
 
 
-## ToDo: Not sure if this works really ...
+# # ToDo: Not sure if this works really ...
 
 
 @timing.routine_timer_decorator
@@ -1769,7 +2547,7 @@ def CubedSphere(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        All_Boundaries = 1001
+
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -1990,7 +2768,7 @@ def RegionalSphericalBox(
         South = 4
         East = 5
         West = 6
-        All_Boundaries = 1001
+
 
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
@@ -2373,7 +3151,7 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
+
 
     meshRes = cellSize
     num_segments = numSegments
@@ -2777,7 +3555,8 @@ def SegmentedSphericalBall(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        All_Boundaries = 1001
+        Null_Boundary = 666
+
 
     meshRes = cellSize
     num_segments = numSegments
@@ -3118,4 +3897,373 @@ def SegmentedSphericalBall(
 
     new_mesh.boundary_normals = boundary_normals
 
+    return new_mesh
+    
+
+@timing.routine_timer_decorator
+def BoxInternalBoundary(
+    elementRes: Optional[Tuple[int, int, int]] = (8, 8, 8),
+    zelementRes: Optional[Tuple[int, int]] = (4, 4),
+    cellSize: float = 0.1,
+    minCoords: Optional[Tuple[float, float, float]] = (0, 0, 0),
+    maxCoords: Optional[Tuple[float, float, float]] = (1, 1, 1),
+    zintCoord: float = 0.5,
+    simplex: bool = False,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    verbose=False,
+):
+    """
+    Generates a 2 or 3-dimensional box mesh with internal boundary.
+
+    Parameters
+    ----------
+    elementRes:
+        Tuple specifying number of elements in each axis direction.
+    zelementRes:
+        Tuple specifying number of elements in the vertical axis direction (half top part and bottom part).
+    cellSize : float, optional
+        The target size for the mesh elements. This controls the density of the unstructuredSimplexBox mesh.
+    minCoord:
+        Optional. Tuple specifying minimum mesh location.
+    maxCoord:
+        Optional. Tuple specifying maximum mesh location.
+    zintCoord:
+        float specifying internal boundary location.
+    simplex: bool, optional
+        If True, build structuredQuadBox; if not, build unstructuredSimplexBox. Default is False.
+    """
+
+    class boundaries_2D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+        Internal = 15
+    
+    class boundary_normals_2D(Enum):
+        Bottom = sympy.Matrix([0, 1])
+        Top = sympy.Matrix([0, -1])
+        Right = sympy.Matrix([-1, 0])
+        Left = sympy.Matrix([1, 0])
+        Internal = sympy.Matrix([0, -1])
+        
+    class boundaries_3D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+        Front = 15
+        Back = 16
+        Internal = 17
+
+    class boundary_normals_3D(Enum):
+        Bottom = sympy.Matrix([0, 0, 1])
+        Top = sympy.Matrix([0, 0, -1])
+        Right = sympy.Matrix([-1, 0, 0])
+        Left = sympy.Matrix([1, 0, 0])
+        Front = sympy.Matrix([0, -1, 0])
+        Back = sympy.Matrix([0, 1, 0])
+        Internal = sympy.Matrix([0, 0, 1])
+    
+    dim = len(minCoords)
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+        if not simplex:
+            # structuredQuadBoxIB
+            uw_filename = (f".meshes/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh")
+        else:
+            uw_filename = (f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh")
+    else:
+        uw_filename = filename
+         
+        
+    if uw.mpi.rank == 0:
+        import gmsh
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("Box")     
+        
+        if dim == 2:
+            xmin, ymin = minCoords
+            xmax, ymax = maxCoords
+            yint = zintCoord
+            boundaries = boundaries_2D
+            boundary_normals = boundary_normals_2D
+    
+            if not simplex:
+                cellSize = 0.0       
+                nx,ny = elementRes
+                ny_a,ny_b = zelementRes
+    
+            p1 = gmsh.model.geo.add_point(xmin, ymin, cellSize)
+            p2 = gmsh.model.geo.add_point(xmax, ymin, cellSize)
+            p3 = gmsh.model.geo.add_point(xmin, ymax, cellSize)
+            p4 = gmsh.model.geo.add_point(xmax, ymax, cellSize)
+            p5 = gmsh.model.geo.add_point(xmin, yint, cellSize)
+            p6 = gmsh.model.geo.add_point(xmax, yint, cellSize)
+        
+            l1 = gmsh.model.geo.add_line(p1, p2)
+            l2 = gmsh.model.geo.add_line(p3, p4) 
+            l3 = gmsh.model.geo.add_line(p1, p5)
+            l4 = gmsh.model.geo.add_line(p5, p3)
+            l5 = gmsh.model.geo.add_line(p2, p6)
+            l6 = gmsh.model.geo.add_line(p6, p4) 
+            l7 = gmsh.model.geo.add_line(p5, p6)
+            l34 = gmsh.model.geo.add_line(p1, p3)
+            l56 = gmsh.model.geo.add_line(p2, p4)
+        
+            cl1 = gmsh.model.geo.add_curve_loop((l1, l5, -l7, -l3))
+            cl2 = gmsh.model.geo.add_curve_loop((-l2, -l4, l7, l6))
+            surface1 = gmsh.model.geo.add_plane_surface([cl1])
+            surface2 = gmsh.model.geo.add_plane_surface([cl2])
+        
+            gmsh.model.geo.synchronize()
+        
+            # Add Physical groups for boundaries
+            gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
+            gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
+            gmsh.model.add_physical_group(1, [l2], boundaries.Top.value)
+            gmsh.model.set_physical_name(1, l2, boundaries.Top.name)
+            gmsh.model.add_physical_group(1, [l3, l4], boundaries.Left.value)
+            gmsh.model.set_physical_name(1, l34, boundaries.Left.name)
+            gmsh.model.add_physical_group(1, [l5,l6], boundaries.Right.value)
+            gmsh.model.set_physical_name(1, l56, boundaries.Right.name)            
+            gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
+            gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
+            gmsh.model.addPhysicalGroup(2, [surface1,surface2], 99999)
+            gmsh.model.setPhysicalName(2, 99999, "Elements")
+    
+            if not simplex:
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l2, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l3, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l4, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l5, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                
+                gmsh.model.mesh.set_transfinite_surface(
+                tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6])
+                gmsh.model.mesh.set_recombine(2, surface1)
+                gmsh.model.mesh.set_transfinite_surface(
+                tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4])
+                gmsh.model.mesh.set_recombine(2, surface2)
+        
+            gmsh.model.mesh.generate(dim)
+            gmsh.write(uw_filename)
+            gmsh.finalize()
+        
+        if dim == 3:
+            xmin, ymin, zmin = minCoords
+            xmax, ymax, zmax = maxCoords
+            zint = zintCoord
+            boundaries = boundaries_3D
+            boundary_normals = boundary_normals_3D
+            
+            if not simplex:
+                cellSize = 0.0   
+                nx, ny, nz = elementRes
+                nzt,nzb = zelementRes
+        
+            p1t = gmsh.model.geo.add_point(xmin, ymin, zmax, cellSize)
+            p2t = gmsh.model.geo.add_point(xmax, ymin, zmax, cellSize)
+            p3t = gmsh.model.geo.add_point(xmin, ymax, zmax, cellSize)
+            p4t = gmsh.model.geo.add_point(xmax, ymax, zmax, cellSize)
+            p1b = gmsh.model.geo.add_point(xmin, ymin, zmin, cellSize)
+            p2b = gmsh.model.geo.add_point(xmax, ymin, zmin, cellSize)
+            p3b = gmsh.model.geo.add_point(xmin, ymax, zmin, cellSize)
+            p4b = gmsh.model.geo.add_point(xmax, ymax, zmin, cellSize)
+            p1i = gmsh.model.geo.add_point(xmin, ymin, zint, cellSize)
+            p2i = gmsh.model.geo.add_point(xmax, ymin, zint, cellSize)
+            p3i = gmsh.model.geo.add_point(xmin, ymax, zint, cellSize)
+            p4i = gmsh.model.geo.add_point(xmax, ymax, zint, cellSize)
+        
+            l1t = gmsh.model.geo.add_line(p1t, p2t)
+            l2t = gmsh.model.geo.add_line(p2t, p4t)
+            l3t = gmsh.model.geo.add_line(p4t, p3t)
+            l4t = gmsh.model.geo.add_line(p3t, p1t)
+            l1b = gmsh.model.geo.add_line(p1b, p2b)
+            l2b = gmsh.model.geo.add_line(p2b, p4b)
+            l3b = gmsh.model.geo.add_line(p4b, p3b)
+            l4b = gmsh.model.geo.add_line(p3b, p1b)
+            l1i = gmsh.model.geo.add_line(p1i, p2i)
+            l2i = gmsh.model.geo.add_line(p2i, p4i)
+            l3i = gmsh.model.geo.add_line(p4i, p3i)
+            l4i = gmsh.model.geo.add_line(p3i, p1i)
+        
+            l5 = gmsh.model.geo.add_line(p1b, p1t)
+            l6 = gmsh.model.geo.add_line(p2b, p2t)
+            l7 = gmsh.model.geo.add_line(p3b, p3t)
+            l8 = gmsh.model.geo.add_line(p4b, p4t)
+            l5t = gmsh.model.geo.add_line(p1i, p1t)
+            l6t = gmsh.model.geo.add_line(p2i, p2t)
+            l7t = gmsh.model.geo.add_line(p3i, p3t)
+            l8t = gmsh.model.geo.add_line(p4i, p4t)
+            l5b = gmsh.model.geo.add_line(p1b, p1i)
+            l6b = gmsh.model.geo.add_line(p2b, p2i)
+            l7b = gmsh.model.geo.add_line(p3b, p3i)
+            l8b = gmsh.model.geo.add_line(p4b, p4i)
+        
+            cl = gmsh.model.geo.add_curve_loop((l1b, l2b, l3b, l4b))
+            bottom = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l1t, l2t, l3t, l4t))
+            top = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l1i, l2i, l3i, l4i))
+            internal = gmsh.model.geo.add_plane_surface([cl])
+        
+            cl = gmsh.model.geo.add_curve_loop((l6, l2t, -l8, -l2b))
+            right = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l6t, l2t, -l8t, -l2i))
+            right_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l6b, l2i, -l8b, -l2b))
+            right_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l5, -l4t, -l7, l4b))
+            left = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5t, -l4t, -l7t, l4i))
+            left_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5b, -l4i, -l7b, l4b))
+            left_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l5, l1t, -l6, -l1b))
+            front = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5t, l1t, -l6t, -l1i))
+            front_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l5b, l1i, -l6b, -l1b))
+            front_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            cl = gmsh.model.geo.add_curve_loop((l8, l3t, -l7, -l3b))
+            back = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l8t, l3t, -l7t, -l3i))
+            back_t = gmsh.model.geo.add_plane_surface([cl])
+            cl = gmsh.model.geo.add_curve_loop((l8b, l3i, -l7b, -l3b))
+            back_b = gmsh.model.geo.add_plane_surface([cl])
+            
+            sloop1 = gmsh.model.geo.add_surface_loop([front_t, right_t, back_t, top, left_t, internal])
+            volume_t = gmsh.model.geo.add_volume([sloop1])
+            sloop2 = gmsh.model.geo.add_surface_loop([front_b, right_b, back_b, internal, left_b, bottom])
+            volume_b = gmsh.model.geo.add_volume([sloop2])
+        
+            gmsh.model.geo.synchronize()
+        
+            gmsh.model.add_physical_group(2, [bottom], boundaries.Bottom.value)
+            gmsh.model.set_physical_name(2, bottom, boundaries.Bottom.name)
+            gmsh.model.add_physical_group(2, [top], boundaries.Top.value)
+            gmsh.model.set_physical_name(2, top, boundaries.Top.name)
+            gmsh.model.add_physical_group(2, [internal], boundaries.Internal.value)
+            gmsh.model.set_physical_name(2, internal, boundaries.Internal.name)
+            gmsh.model.add_physical_group(2, [left_t, left_b], boundaries.Left.value)
+            gmsh.model.set_physical_name(2, left, boundaries.Left.name)
+            gmsh.model.add_physical_group(2, [right_t,right_b], boundaries.Right.value)
+            gmsh.model.set_physical_name(2, right, boundaries.Right.name)            
+            gmsh.model.add_physical_group(2, [front_t, front_b], boundaries.Front.value)
+            gmsh.model.set_physical_name(2, front, boundaries.Front.name)
+            gmsh.model.add_physical_group(2, [back_t,back_b], boundaries.Back.value)
+            gmsh.model.set_physical_name(2, back, boundaries.Back.name)   
+                
+            gmsh.model.addPhysicalGroup(3, [volume_t,volume_b], 99999)
+            gmsh.model.setPhysicalName(3, 99999, "Elements")
+    
+            if not simplex:
+                gmsh.model.mesh.set_transfinite_curve(l1t, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2t, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3t, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4t, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l1i, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2i, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3i, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4i, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l1b, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l2b, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l3b, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l4b, numNodes=ny + 1, meshType="Progression", coef=1.0)
+            
+                gmsh.model.mesh.set_transfinite_curve(l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l8t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l5b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+            
+                gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b])
+                gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_surface(tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i])
+                gmsh.model.mesh.set_transfinite_surface(tag=front_t, arrangement="Left", cornerTags=[p1i, p2i, p2t, p1t])
+                gmsh.model.mesh.set_transfinite_surface(tag=back_t, arrangement="Left", cornerTags=[p3i, p4i, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_surface(tag=right_t, arrangement="Left", cornerTags=[p2i, p4i, p4t, p2t])
+                gmsh.model.mesh.set_transfinite_surface(tag=left_t, arrangement="Left", cornerTags=[p1i, p3i, p3t, p1t])
+                gmsh.model.mesh.set_transfinite_surface(tag=front_b, arrangement="Left", cornerTags=[p1b, p2b, p2i, p1i])
+                gmsh.model.mesh.set_transfinite_surface(tag=back_b, arrangement="Left", cornerTags=[p3b, p4b, p4i, p3i])
+                gmsh.model.mesh.set_transfinite_surface(tag=right_b, arrangement="Left", cornerTags=[p2b, p4b, p4i, p2i])
+                gmsh.model.mesh.set_transfinite_surface(tag=left_b, arrangement="Left", cornerTags=[p1b, p3b, p3i, p1i])
+                gmsh.model.mesh.set_recombine(2, bottom)
+                gmsh.model.mesh.set_recombine(2, top)
+                gmsh.model.mesh.set_recombine(2, internal)
+                gmsh.model.mesh.set_recombine(2, front_t)
+                gmsh.model.mesh.set_recombine(2, back_t)
+                gmsh.model.mesh.set_recombine(2, right_t)
+                gmsh.model.mesh.set_recombine(2, left_t)
+                gmsh.model.mesh.set_recombine(2, front_b)
+                gmsh.model.mesh.set_recombine(2, back_b)
+                gmsh.model.mesh.set_recombine(2, right_b)
+                gmsh.model.mesh.set_recombine(2, left_b)
+            
+                gmsh.model.mesh.set_transfinite_volume(volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t])
+                gmsh.model.mesh.set_transfinite_volume(volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i])
+                gmsh.model.mesh.set_recombine(3, volume_t)
+                gmsh.model.mesh.set_recombine(3, volume_b)
+                    
+            gmsh.model.mesh.generate(dim)
+            gmsh.write(uw_filename)
+            gmsh.finalize()
+    
+    def box_return_coords_to_bounds(coords):
+        x00s = coords[:, 0] < minCoords[0]
+        x01s = coords[:, 0] > maxCoords[0]
+        x10s = coords[:, 1] < minCoords[1]
+        x11s = coords[:, 1] > maxCoords[1]
+        
+        coords[x00s, :] = minCoords[0]
+        coords[x01s, :] = maxCoords[0]
+        coords[x10s, :] = minCoords[1]
+        coords[x11s, :] = maxCoords[1]
+
+        if dim ==3:
+            x20s = coords[:, 1] < minCoords[2]
+            x21s = coords[:, 1] > maxCoords[2]
+            coords[x20s, :] = minCoords[2]
+            coords[x21s, :] = maxCoords[2]
+    
+        return coords
+    
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        boundaries=boundaries,
+        boundary_normals=boundary_normals,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        useMultipleTags=True,
+        useRegions=False,
+        markVertices=True,
+        refinement=0.,
+        refinement_callback=None,
+        return_coords_to_bounds=box_return_coords_to_bounds,
+        verbose=verbose,)
+    uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets") 
     return new_mesh

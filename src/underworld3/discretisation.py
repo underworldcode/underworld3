@@ -1,7 +1,10 @@
 from typing import Optional, Tuple, Union
+from enum import Enum
+
 import os
 import numpy
 import sympy
+from sympy.matrices.expressions.blockmatrix import bc_dist
 import sympy.vector
 from petsc4py import PETSc
 import underworld3 as uw
@@ -11,13 +14,25 @@ from underworld3.utilities._api_tools import uw_object
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 from underworld3.cython import petsc_discretisation
-
-
 import underworld3.timing as timing
 
 ## Introduce these two specific types of coordinate tracking vector objects
 
 from sympy.vector import CoordSys3D
+
+## Add the ability to inherit an Enum, so we can add standard boundary
+## types to ones that are supplied by the users / the meshing module
+## https://stackoverflow.com/questions/46073413/python-enum-combination
+
+def extend_enum(inherited):
+   def wrapper(final):
+     joined = {}
+     inherited.append(final)
+     for i in inherited:
+        for j in i:
+           joined[j.name] = j.value
+     return Enum(final.__name__, joined)
+   return wrapper
 
 
 @timing.routine_timer_decorator
@@ -188,25 +203,77 @@ class Mesh(Stateful, uw_object):
                     % (plex_or_meshfile, ext[1:])
                 )
 
+        ## Patch up the boundaries to include the additional
+        ## definitions that we do / might need. Note: the
+        ## extend_enum decorator will replace existing members with
+        ## the new ones.
+
+        if boundaries is None:
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+            boundaries = replacement_boundaries
+        else:
+            @extend_enum([boundaries])
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+            boundaries = replacement_boundaries
+
+
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
 
-        ## Calling setFromOptions here causes a seg fault in the conda-forge
-        ## installation. Very strange ... what else is in the options database at
-        ## this point ?
+
 
         # options.delValue("dm_plex_gmsh_mark_vertices")
         # options.delValue("dm_plex_gmsh_multiple_tags")
         # options.delValue("dm_plex_gmsh_use_regions")
-        # # self.dm.setFromOptions()
+        self.dm.setFromOptions()
 
-        uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+        # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
+
+        all_edges_label_dm = self.dm.getLabel("depth")
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
+            # all_edges_IS_dm.view()
+
+        self.dm.createLabel("Null_Boundary")
+        all_edges_label = self.dm.getLabel("Null_Boundary")
+        if all_edges_label and all_edges_IS_dm:
+           all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
+
+        ## --- UW_Boundaries label
+        if self.boundaries is not None:
+
+            self.dm.removeLabel("UW_Boundaries")
+            uw.mpi.barrier()
+            self.dm.createLabel("UW_Boundaries")
+
+            stacked_bc_label = self.dm.getLabel("UW_Boundaries")
+
+            for b in self.boundaries:
+                bc_label_name = b.name
+                label = self.dm.getLabel(bc_label_name)
+
+                if label:
+                    label_is = label.getStratumIS(b.value)
+
+                    # Load this up on the stacked BC label
+                    if label_is:
+                        stacked_bc_label.setStratumIS(b.value, label_is)
+
+
+
+            uw.mpi.barrier()
+
+        ## ---
 
         self.refinement_callback = refinement_callback
-        self.return_coords_to_bounds = return_coords_to_bounds
         self.name = name
         self.sf1 = None
+        self.return_coords_to_bounds = return_coords_to_bounds
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -221,7 +288,9 @@ class Mesh(Stateful, uw_object):
         if not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
-            self.dm.distribute()
+
+            if not self.dm.isDistributed():
+                self.dm.distribute()
 
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
@@ -248,12 +317,12 @@ class Mesh(Stateful, uw_object):
                 for dm in self.dm_hierarchy:
                     refinement_callback(dm)
 
-            # Single level equivalent dm
+            # Single level equivalent dm (needed for aux vars ?? Check this - LM)
             self.dm = self.dm_h.clone()
 
         else:
-
-            self.dm.distribute()
+            if not self.dm.isDistributed():
+                self.dm.distribute()
 
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
@@ -336,12 +405,6 @@ class Mesh(Stateful, uw_object):
         self.degree = degree
         self.qdegree = qdegree
 
-        if verbose and uw.mpi.rank == 0:
-            print(
-                f"Populating mesh coordinate data",
-                flush=True,
-            )
-
         self.nuke_coords_and_rebuild()
 
         if verbose and uw.mpi.rank == 0:
@@ -379,12 +442,6 @@ class Mesh(Stateful, uw_object):
 
         else:
             self.vector = uw.maths.vector_calculus(mesh=self)
-
-        if verbose and uw.mpi.rank == 0:
-            print(
-                f"Mesh construction complete",
-                flush=True,
-            )
 
         super().__init__()
 
@@ -428,10 +485,16 @@ class Mesh(Stateful, uw_object):
 
         if uw.mpi.rank == 0:
             if len(self.boundaries) > 0:
-                print(f"| Boundary Name            | ID    | Min Size | Max Size |")
-                print(f"| ------------------------------------------------------ |")
+                print(
+                    f"| Boundary Name            | ID    | Min Size | Max Size |",
+                    flush=True,
+                )
+                print(
+                    f"| ------------------------------------------------------ |",
+                    flush=True,
+                )
             else:
-                print(f"No boundary labels are defined on the mesh\n")
+                print(f"No boundary labels are defined on the mesh\n", flush=True)
 
         for bd in self.boundaries:
             l = self.dm.getLabel(bd.name)
@@ -445,7 +508,38 @@ class Mesh(Stateful, uw_object):
             if uw.mpi.rank == 0:
                 print(
                     f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
                 )
+
+        # ## PETSc marked boundaries:
+        # l = self.dm.getLabel("All_Boundaries")
+        # if l:
+        #     i = l.getStratumSize(1001)
+        # else:
+        #     i = 0
+
+        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+        if uw.mpi.rank == 0:
+            print(
+                f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
+                flush=True,
+            )
+
+        ## UW_Boundaries:
+        l = self.dm.getLabel("UW_Boundaries")
+        i = 0
+        if l:
+            for bd in self.boundaries:
+                i += l.getStratumSize(bd.value)
+
+        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+        if uw.mpi.rank == 0:
+            print(
+                f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
+                flush=True,
+            )
 
         if uw.mpi.rank == 0:
             print(f"| ------------------------------------------------------ |")
@@ -453,6 +547,99 @@ class Mesh(Stateful, uw_object):
 
         ## Information on the mesh DM
         self.dm.view()
+
+    def view_parallel(self):
+        """
+        returns the break down of boundary labels from each processor
+        """
+
+        import numpy as np
+
+        if uw.mpi.rank == 0:
+            print(f"\n")
+            print(f"Mesh # {self.instance}: {self.name}\n")
+
+            if len(self.vars) > 0:
+                print(f"| Variable Name       | component | degree |     type        |")
+                print(f"| ---------------------------------------------------------- |")
+                for vname in self.vars.keys():
+                    v = self.vars[vname]
+                    print(
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                    )
+
+                print(f"| ---------------------------------------------------------- |")
+                print("\n", flush=True)
+            else:
+                print(f"No variables are defined on the mesh\n", flush=True)
+
+        ## Boundary information on each proc
+
+        if uw.mpi.rank == 0:
+            if len(self.boundaries) > 0:
+                print(f"| Boundary Name            | ID    | Size | Proc ID      |")
+                print(f"| ------------------------------------------------------ |")
+            else:
+                print(f"No boundary labels are defined on the mesh\n")
+
+        ### goes through each processor and gets the label size
+        with uw.mpi.call_pattern(pattern="sequential"):
+            for bd in self.boundaries:
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
+                print(
+                    f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |"
+                )
+
+        uw.mpi.barrier()
+
+        if uw.mpi.rank == 0:
+            print(f"| ------------------------------------------------------ |")
+            print("\n", flush=True)
+
+        ## Information on the mesh DM
+        # self.dm.view()
+
+    # This only works for local - we can't access global information'
+    # and so this is not a suitable function for use during advection
+    #
+    # def _return_coords_to_bounds(self, coords, meshVar=None):
+    #     """
+    #     Restore the provided coordinates to the interior of the domain.
+    #     The default behaviour is to find the nearest node in the kdtree to each
+    #     coordinate and use that value. If a meshVar is provided, we can use the nearest node
+    #     for that discretisation instead.
+
+    #     This can be over-ridden for specific meshes
+    #     (e.g. periodic) where a more appropriate choice is available.
+    #     """
+
+    #     import numpy as np
+
+    #     if meshVar is None:
+    #         target_coords = self.data
+    #     else:
+    #         target_coords = meshVar.coords
+
+    #     ## Find which coords are invalid
+
+    #     invalid = self.get_closest_local_cells(coords) == -1
+
+    #     if np.count_nonzero(invalid) == 0:
+    #         return coords
+
+    #     print(f"{uw.mpi.rank}: Number of invalid coords {np.count_nonzero(invalid)}")
+
+    #     kdt = uw.kdtree.KDTree(target_coords)
+    #     idx , _ , _ = kdt.find_closest_point(coords[invalid])
+
+    #     valid_coords = coords.copy()
+    #     valid_coords[invalid] = target_coords[idx]
+
+    #     return valid_coords
 
     def clone_dm_hierarchy(self):
         """
@@ -472,6 +659,11 @@ class Mesh(Stateful, uw_object):
 
     def nuke_coords_and_rebuild(self):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
+        #
+        #
+
+        self.dm.clearDS()
+        self.dm.createDS()
 
         self._coord_array = {}
 
@@ -484,7 +676,7 @@ class Mesh(Stateful, uw_object):
 
         options = PETSc.Options()
         options.setValue(
-            "meshproj_{}_petscspace_degree".format(self.mesh_instances), self.degree
+            f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree
         )
 
         self.petsc_fe = PETSc.FE().createDefault(
@@ -492,7 +684,7 @@ class Mesh(Stateful, uw_object):
             self.cdim,
             self.isSimplex,
             self.qdegree,
-            "meshproj_{}_".format(self.mesh_instances),
+            f"meshproj_{self.mesh_instances}_",
         )
 
         if (
@@ -516,6 +708,7 @@ class Mesh(Stateful, uw_object):
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        self._index = None
         self._build_kd_tree_index()
 
         (
@@ -524,6 +717,8 @@ class Mesh(Stateful, uw_object):
             self._centroids,
             self._search_lengths,
         ) = self._get_mesh_sizes()
+
+        self.dm.copyDS(self.dm_hierarchy[-1])
 
         return
 
@@ -556,6 +751,12 @@ class Mesh(Stateful, uw_object):
                     subdm.localToGlobal(lvec, subvec, addv=False)
                     a_global.restoreSubVector(subiset, subvec)
 
+
+            for iset in isets:
+                iset.destroy()
+            for dm in dms:
+                dm.destroy()
+
             self.dm.globalToLocal(a_global, self._lvec)
             self.dm.restoreGlobalVec(a_global)
             self._stale_lvec = False
@@ -576,7 +777,7 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
-    def deform_mesh(self, new_coords: numpy.ndarray):
+    def deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
         """
         This method will update the mesh coordinates and reset any cached coordinates in
         the mesh and in equation systems that are registered on the mesh.
@@ -591,8 +792,12 @@ class Mesh(Stateful, uw_object):
         self.dm.setCoordinatesLocal(coord_vec)
         self.nuke_coords_and_rebuild()
 
-        for eq_system in self._equation_systems_register:
-            eq_system._rebuild_after_mesh_update()
+        # This should not be necessary any more as we now check the
+        # coordinates on the DM to see if they have changed (and we rebuild the
+        # discretisation as needed)
+        #
+        # for eq_system in self._equation_systems_register:
+        #     eq_system._rebuild_after_mesh_update(verbose)
 
         return
 
@@ -686,7 +891,8 @@ class Mesh(Stateful, uw_object):
                         subdm.localToGlobal(var.vec, var._gvec, addv=False)
                         subdm.globalToLocal(var._gvec, var.vec, addv=False)
 
-                        # subdm.destroy()
+                        indexset.destroy()
+                        subdm.destroy()
                         self.mesh._stale_lvec = True
 
                     var._data = None
@@ -1108,18 +1314,18 @@ class Mesh(Stateful, uw_object):
         tempSwarm.setDimension(self.dim)
         tempSwarm.setCellDM(self.dm)
         tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
+        tempSwarm.finalizeFieldRegister()
 
-        # 4^dim pop is used. This number may need to be considered
+        # 3^dim or 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
 
-        tempSwarm.finalizeFieldRegister()
         tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 4)
 
         # We can't use our own populate function since this needs THIS kd_tree to exist
         # We will need to use a standard layout instead
 
         ## ?? is this required given no migration ??
-        tempSwarm.migrate(remove_sent_points=True)
+        # tempSwarm.migrate(remove_sent_points=True)
 
         PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
         PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
@@ -1214,7 +1420,7 @@ class Mesh(Stateful, uw_object):
 
         cells = self._indexMap[closest_points]
         invalid = (
-            dist > 0.25 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
+            dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
         )  # 0.25 * self._radii[cells] ** 2
         cells[invalid] = -1
 
@@ -1307,6 +1513,22 @@ class Mesh(Stateful, uw_object):
         )
 
         return all_min_radii.min()
+
+    def get_max_radius(self) -> float:
+        """
+        This method returns the global maximum distance from any cell centroid to a face.
+        """
+
+        ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+        ## does not obtain the minimum radius for the mesh.
+
+        import numpy as np
+
+        all_max_radii = uw.utilities.gather_data(
+            np.array((self._radii.max(),)), bcast=True
+        )
+
+        return all_max_radii.max()
 
     # def get_boundary_subdm(self) -> PETSc.DM:
     #     """
@@ -1483,6 +1705,7 @@ def MeshVariable(
 
         # Set new dm on mesh
         mesh.dm = dm1
+        mesh.dm_hierarchy[-1] = dm1
 
     return new_meshVariable
 
@@ -1565,7 +1788,7 @@ class _MeshVariable(Stateful, uw_object):
 
         if isinstance(varname, list):
             name = varname[0] + " ... "
-            symbol = "{" + varname[0]+ R"\cdots" + "}"
+            symbol = "{" + varname[0] + R"\cdots" + "}"
         else:
             name = varname
             if varsymbol is not None:
@@ -1588,8 +1811,8 @@ class _MeshVariable(Stateful, uw_object):
         self.symbol = symbol
 
         if mesh.instance_number > 1:
-            invisible = "\,\!" * mesh.instance_number
-            self.symbol = f"{{ {{ {invisible} }} {symbol} }}"
+            invisible = rf"\hspace{{ {mesh.instance_number/100}pt }}"
+            self.symbol = f"{{ {invisible} {symbol} }}"
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
@@ -1751,17 +1974,17 @@ class _MeshVariable(Stateful, uw_object):
         display(
             Markdown(f"**MeshVariable:**"),
             Markdown(
-                f"""
-  > symbol:  ${self.symbol}$  
-  > shape:   ${self.shape}$  
-  > degree:  ${self.degree}$  
-  > continuous:  `{self.continuous}`  
+                f"""\
+  > symbol:  ${self.symbol}$\n
+  > shape:   ${self.shape}$\n
+  > degree:  ${self.degree}$\n
+  > continuous:  `{self.continuous}`\n
   > type:    `{self.vtype.name}`"""
             ),
             Markdown(f"**FE Data:**"),
             Markdown(
                 f"""
-  > PETSc field id:  ${self.field_id}$  
+  > PETSc field id:  ${self.field_id}$ \n
   > PETSc field name:   `{self.clean_name}` """
             ),
         )
@@ -2015,6 +2238,8 @@ class _MeshVariable(Stateful, uw_object):
                 mesh_variable.data[...] = Values[...]
 
             return
+
+        ## Read file information
 
         X, D = field_from_checkpoint(
             data_file,
@@ -2610,8 +2835,7 @@ def petsc_dm_find_labeled_points_local(
 
     label = dm.getLabel(label_name)
     if not label:
-        if uw.mpi.rank == 0:
-            print(f"Label {label_name} is not present on the dm")
+        print(f"{uw.mpi.rank} Label {label_name} is not present on the dm", flush=True)
         return np.array([0])
 
     pointIS = dm.getStratumIS("depth", 0)

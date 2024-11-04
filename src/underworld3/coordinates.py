@@ -21,8 +21,6 @@ class CoordinateSystemType(Enum):
     POLAR = 10  #
     CYLINDRICAL2D_NATIVE = 11  # Cyl2D and Polar are equivalent here
     POLAR_NATIVE = 11  #
-    ROTOR2D = 20
-    ROTOR2D_NATIVE = 21
 
     CYLINDRICAL3D = 100  # (Not really used for anything)
     CYLINDRICAL3D_NATIVE = 101  # (Not really used for anything)
@@ -32,8 +30,6 @@ class CoordinateSystemType(Enum):
     # SPHERICAL_NATIVE_RLONLAT = 7
     SPHERE_SURFACE_NATIVE = 301  # theta / phi only R = 1 ...
     # SPHERE_SURFACE_NATIVE_RLONLAT = 302  # theta / phi only R = 1 ...
-    ROTOR3D = 400
-    ROTOR3D_NATIVE = 401
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,
@@ -86,6 +82,8 @@ class CoordinateSystem:
         self._N[1]._latex_form = r"\mathrm{y}"
         if self.mesh.cdim == 3:
             self._N[2]._latex_form = r"\mathrm{z}"
+
+        self._R = self._N.copy()
 
         ## Change specific coordinates systems as required
 
@@ -217,9 +215,24 @@ class CoordinateSystem:
 
             x, y, z = self.X
 
-            r = sympy.sqrt(x**2 + y**2 + z**2)
-            th = sympy.acos(z / r)
-            ph = sympy.atan2(y, x)
+            r = underworld3.function.expression(
+                R"r",
+                sympy.sqrt(x**2 + y**2 + z**2),
+                "Radial coordinate",
+            )
+
+            th = underworld3.function.expression(
+                R"\theta",
+                sympy.acos(z / r),
+                "co-latitude",
+            )
+
+            ph = underworld3.function.expression(
+                R"\phi",
+                sympy.atan2(y, x),
+                "longitude",
+            )
+
             self._R = sympy.Matrix([[r, th, ph]])
 
             r1 = self._r[1]

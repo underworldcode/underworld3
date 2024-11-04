@@ -2,29 +2,30 @@ name: uw3
 channels:
   - conda-forge
 dependencies:
-  # - python=3.11
-  - petsc=3.21.0
-  - petsc4py=3.21.0
+  - python=3.11
+  - compilers
+  - openmpi
+  - openmpi-mpicc
+  - openmpi-mpicxx
+  - petsc=3.21.5 # Fix for now (errors with hdf5 / uw3)
+  - petsc4py=3.21.5
   - cython=3.*
   - mpmath<=1.3
   - mesalib
   - numpy
   - scipy
-  - mpich-mpicc
-  - mpich-mpicxx
   - mpi4py
   - h5py
   - sympy
   - pytest
-  - ipython 
+  - ipython
   - pyvista
-  - quarto
   - pip
-  - pip:  
-    - gmsh
-    - jupyterlab>=4.1
-    - jupytext>=1.16.1
-    - pygments>=2.17.0
-    - trame-vtk
-    - trame-vuetify
-  
+  - pip:
+      - gmsh
+      - gmsh-api
+      - jupyterlab
+      - jupytext
+      - pygments
+      - trame-vtk
+      - trame-vuetify

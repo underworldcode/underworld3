@@ -1,24 +1,41 @@
-CHANGES: Underworld3
-====================
+# CHANGES: Underworld3
+
+## 2024-09-01
+
+  - Add Notebooks for the quickstart guide (quarto backend for rendering)
+  - html5 embedded renders for 3D examples (low res, can be checked in)
+  - Update the version numbering to match 3.x.x (consistent with UW1 and UW2)
+  - uw expressions - updated interface
+  - many bug fixes including advection-diffusion (fixed severe error in parallel implementation)
+
+## 2024-06-15
+
+  - Add JOSS submission information
+  - Add licence file (licensing code and documentation in line with UW1 and UW2)
+  - Add quickstart guide (and test on binder)
+  - Clean up repository files
+
+## 2024-04-30
+
+  - uw expressions (sympy symbols that contain other expressions / functions)
+  - use uw expressions for viscoplastic / viscoelastic constitutive models.
+
+## 2024-01-31
+
+ - Introduce particle sub-steps along path to improve accuracy in advection schemes
+ - Bug fixes associated with benchmarking
+ - Finalise the ability to create Meshvariables / Swarmvariables (with proxies) on the fly
 
 
-```{note}
-Test
-```
+## 2023-12-12
 
+  - Surface integrals implementation in weak form (integrated into boundary conditions)
+  - DDt interface (Semi-Lagrangian, Lagrangian)
+  - Solver base class, add an Unknowns class to manage generic form of unknowns
 
-```python
-
-```
-
-```python
-
-```
-
-# 2023-08-27
+## 2023-08-27
 
   - Geometrical multigrid (necessary changes to DM setup)
-
 
 ## 2023-05-20
 
@@ -27,9 +44,8 @@ Test
 
 ## 2023-03-29
 
-
   - Swarm reading using kd-tree to speed up locations
-  - Swarm cycling now reverts to positions defined on the mesh and uses randomness to avoid 
+  - Swarm cycling now reverts to positions defined on the mesh and uses randomness to avoid
       unexpected jamming of particles in stagnant regions
   - viscoplasticity seems to be doing the right thing
 
@@ -45,22 +61,16 @@ Test
 
 ## 2023-01-15
 
-
  - >10000 core runs / timings
  - swarm checkpointing
  - mesh checkpointing
  - read back from mesh using kd-tree in order to provide flexible reading across different decompositions / mesh resolutions
 
 
-2022-09-01
-----------
+## 2022-09-01
 
-## Release 0.3.0 
-
-
- * Um
-
-
+ - Release 0.3.0
+ - Quarterly tidy up
 
 ## 2021-08-12
 
@@ -72,49 +82,48 @@ Test
 * Added a mesh-variable proxy for swarm variables.
   This variable is automatically kept in sync with
   the swarm variable. Currently we use the SciPy
-  kdtree methods to map from swarm variables to 
-  mesh variable nodes. 
-* Added the `Stateful` mixin which helps to keep 
-  track of the state of objects. 
+  kdtree methods to map from swarm variables to
+  mesh variable nodes.
+
+* Added the `Stateful` mixin which helps to keep
+  track of the state of objects.
 
 
 ## 2021-03-11
 
 * Added `MeshVariable.coord` attribute. Mesh variables
-  now record their vertex coordinates array directly. 
-* Added `parse_cmd_line_options()` routine which 
+  now record their vertex coordinates array directly.
+* Added `parse_cmd_line_options()` routine which
   ingests PETSc command line options.
 
 ## Release 0.0.2 []
 
-
-* Addition of `underworld3.maths.Integral` class for calculating
-  integrals via PETSc & UW3 JIT method. 
+* Addition of `underworld3.maths.Integral` class for calculating integrals via PETSc & UW3 JIT method.
 * Rearrangement of UW3 classes to closer align with UW2.
 * Addition of Rayleigh-Taylor model.
 
 
 ## Release 0.0.1 []
 
-* Big rework of PETSc API usage. Now all 
+* Big rework of PETSc API usage. Now all
   systems create their own private solve
   PETSc variables, and all user facing variables
   (as encapsulated by the MeshVariable class)
-  are effectively Aux variables. 
+  are effectively Aux variables.
 * Systems retain public versions of their solution
- variables (stokes.u, stokes.p, poisson.u). These 
+ variables (stokes.u, stokes.p, poisson.u). These
   are copies of the actual solution variables
-  (which are private). 
+  (which are private).
 * All variable read access must be done within
- the `mesh.access()` context manager. Write 
- access is achieved by supplying a list of 
-  writeable variables (`mesh.access(stokes.u)`). 
-  Let's have a play with this and see if it feels 
+ the `mesh.access()` context manager. Write
+ access is achieved by supplying a list of
+  writeable variables (`mesh.access(stokes.u)`).
+  Let's have a play with this and see if it feels
   like the way forward. It is a bit cumbersome
-  for read access. 
+  for read access.
 * Stokes velocity variable is now a vector instead
   of being a flat array.
-* Swarm variable `project_from()` function. Not 
+* Swarm variable `project_from()` function. Not
   sure if we'll retain this one, but it's there for
   now. It uses a least squares approach.
 * Documention updates.
@@ -122,9 +131,9 @@ Test
   for testing.
 * Model updates for interface changes.
 * Update lavavu/plot prototype for swarm.
-* Init commit of RT example. WIP. Need to fix 
+* Init commit of RT example. WIP. Need to fix
   fix interpolation routines which currently take
-  20x the solve time. 
+  20x the solve time.
 * Updates for dockerfile and setup.py.
 * Added `CHANGES.md`
 
@@ -144,16 +153,16 @@ Reproduce the existing UW2 examples and extend to spherical / cylindrical
 - [x] Advection/diffusion (swarm)
 - [x] Constant viscosity convection
 - [x] Convection, strongly temp-dep viscosity (stagnant lid)
-- [x] Non-linear viscosity convection 
+- [x] Non-linear viscosity convection
 - [ ] Quantitative Convection benchmarks (various geometries)
-- [ ] Viscoelasticity (linear) benchmarks 
+- [ ] Viscoelasticity (linear) benchmarks
 - [x] Inertial terms (Navier-Stokes benchmarks)
 - [x] Anisotropic viscosity
 
 ## Repository milestones
 
- - [x] pip install 
- - [ ] conda install 
+ - [x] pip install
+ - [ ] conda install
  - [x] auto-formatting (e.g. black)
  - [x] pytest setup
  - [ ] pytest full-coverage
@@ -182,17 +191,17 @@ Outcomes of Dec 22 Canberra Catch up
 
 [[T](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L174)] Topology & Meshing
 
-- [x] spherical, annulus 
+- [x] spherical, annulus
 - [x] Cartesian
 - [x] Different element types (at least Linear / Quadratic & Hex, Tet)
 - [ ] Sandbox-style deforming mesh
-  - [ ] Sandbox-style deforming mesh *with particles* 
+  - [ ] Sandbox-style deforming mesh *with particles*
 - [ ] Remeshing examples / adaptivity
 - [ ] Earth topography / plate boundary adapted mesh
 
-[[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc 
+[[D](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L268)] Disc
 
-- [x] Cont Galerkin 
+- [x] Cont Galerkin
 - [ ] ~Disc Galerkin~
 - [x] Semi-lagrangian
 - [x] Free-slip BC on surface
@@ -222,7 +231,7 @@ Outcomes of Dec 22 Canberra Catch up
 
 PIC for composition
 
-- [x] Viscosity, buoyancy, ... 
+- [x] Viscosity, buoyancy, ...
 - [x] Nearest neighbour (k-d tree ? 🌳 )
 - [ ] ~2D - L2 projection into FEM space (Petsc shall provide)~
 - [ ] ~3D - L2 projection into FEM space (Petsc shall provide but not in 3D)~
@@ -237,7 +246,7 @@ PIC for composition
 
 [[V](https://github.com/underworldcode/underworld3/blob/master/src/ex1.c#L35)] Exact solutions
 - [ ] MMS
-- [ ] Analytical 
+- [ ] Analytical
   - https://www.solid-earth-discuss.net/se-2017-71/se-2017-71.pdf
   -https://www.researchgate.net/publication/304784132_Benchmark_solutions_for_Stokes_flows_in_cylindrical_and_spherical_geometry
 
