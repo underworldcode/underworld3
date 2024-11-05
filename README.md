@@ -19,7 +19,6 @@ The `underworld3` module (API) documentation can be found online:
 ## Binder demonstration version
 
  - [Main Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
-
  - [Development Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher-dev/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
 
 
