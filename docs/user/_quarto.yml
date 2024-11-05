@@ -49,12 +49,15 @@ format:
     code-links:
       - text: Open in Binder
         icon: rocket-takeoff
-        href: https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks
+        href: https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb
 
     other-links:
       - text: Github Repository
         icon: github
         href: https://github.com/underworldcode/underworld3
+      - text: Underworld3 Blog
+        icon: newspaper
+        href: https://www.underworlcode.org
 
   # pdf:
   #   documentclass: scrreprt
