@@ -27,8 +27,17 @@ swarmdm.finalizeFieldRegister()
 swarmdm.insertPointUsingCellDM(petsc4py.PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 3)
 swarmdm.migrate(remove_sent_points=True)
 
-PIC_coords = swarmdm.getField("DMSwarmPIC_coor").reshape(-1, 2)
-PIC_cellid = swarmdm.getField("DMSwarm_cellid")
+temp_coords = swarmdm.getField("DMSwarmPIC_coor")
+if isinstance(temp_coords, tuple):
+    PIC_coords = temp_coords[0].reshape(-1, 2)
+else:
+    PIC_coords = temp_coords.reshape(-1, 2)
+
+temp_cellid = swarmdm.getField("DMSwarm_cellid")
+if isinstance(temp_cellid, tuple):
+    PIC_cellid = temp_cellid[0]
+else:
+    PIC_cellid = temp_cellid
 
 print(f"{uw.mpi.rank} - {PIC_coords.shape}", flush=True)
 print(f"{uw.mpi.rank} - {PIC_coords}", flush=True)

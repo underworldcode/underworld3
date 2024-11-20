@@ -960,14 +960,14 @@ class Swarm(Stateful, uw_object):
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(newp_coords.shape[0] + 1)
 
-        cellid = self.dm.getField("DMSwarm_cellid")
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        cellid = self._dm_get_field("DMSwarm_cellid")
+        coords = self._dm_get_field("DMSwarmPIC_coor").reshape((-1, self.dim))
 
         coords[...] = newp_coords[...]
         cellid[:] = newp_cells[:]
 
-        self.dm.restoreField("DMSwarmPIC_coor")
-        self.dm.restoreField("DMSwarm_cellid")
+        self._dm_restore_field("DMSwarmPIC_coor")
+        self._dm_restore_field("DMSwarm_cellid")
 
         ## Now make a series of copies to allow the swarm cycling to
         ## work correctly (if required)
@@ -998,8 +998,8 @@ class Swarm(Stateful, uw_object):
 
             self.dm.addNPoints(swarm_new_size - swarm_orig_size)
 
-            cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            cellid = self._dm_get_field("DMSwarm_cellid")
+            coords = self._dm_get_field("DMSwarmPIC_coor").reshape((-1, self.dim))
 
             coords[...] = (
                 all_local_coords[...]
@@ -1010,8 +1010,8 @@ class Swarm(Stateful, uw_object):
             )
             cellid[:] = all_local_cells[:, 0]
 
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_cellid")
+            self._dm_restore_field("DMSwarmPIC_coor")
+            self._dm_restore_field("DMSwarm_cellid")
 
             ## Now set the cycle values
 
@@ -1084,14 +1084,14 @@ class Swarm(Stateful, uw_object):
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
 
-        cellid = self.dm.getField("DMSwarm_cellid")
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        cellid = self._dm_get_field("DMSwarm_cellid")
+        coords = self._dm_get_field("DMSwarmPIC_coor").reshape((-1, self.dim))
 
         coords[swarm_size::, :] = valid_coordinates[:, :]
         cellid[swarm_size::] = valid_cells[:]
 
-        self.dm.restoreField("DMSwarmPIC_coor")
-        self.dm.restoreField("DMSwarm_cellid")
+        self._dm_restore_field("DMSwarmPIC_coor")
+        self._dm_restore_field("DMSwarm_cellid")
 
         # Here we update the swarm cycle values as required
 
@@ -1466,7 +1466,7 @@ class Swarm(Stateful, uw_object):
             # add to de-access list to rewind this later
             deaccess_list.append(var)
             # grab numpy object, setting read only if necessary
-            var._data = self.dm.getField(var.clean_name).reshape(
+            var._data = self._dm_get_field(var.clean_name).reshape(
                 (-1, var.num_components)
             )
             assert var._data is not None
@@ -1509,7 +1509,7 @@ class Swarm(Stateful, uw_object):
                     if var not in writeable_vars:
                         var._data.flags.writeable = var._old_data_flag
                     var._data = None
-                    self.em_swarm.dm.restoreField(var.clean_name)
+                    self.em_swarm._dm_restore_field(var.clean_name)
                     var._is_accessed = False
                 # do particle migration if coords changes
 
@@ -1520,8 +1520,8 @@ class Swarm(Stateful, uw_object):
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
 
-                    cellid = self.em_swarm.dm.getField("DMSwarm_cellid")
-                    coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
+                    cellid = self.em_swarm._dm_get_field("DMSwarm_cellid")
+                    coords = self.em_swarm._dm_get_field("DMSwarmPIC_coor").reshape(
                         (-1, self.em_swarm.dim)
                     )
 
@@ -1535,8 +1535,8 @@ class Swarm(Stateful, uw_object):
                     # if num_lost != 0:
                     #     print("LOST: ", coords[np.where(cellid == -1)])
 
-                    self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
-                    self.em_swarm.dm.restoreField("DMSwarm_cellid")
+                    self.em_swarm._dm_restore_field("DMSwarmPIC_coor")
+                    self.em_swarm._dm_restore_field("DMSwarm_cellid")
                     # now migrate.
 
                     self.em_swarm.dm.migrate(remove_sent_points=True)
@@ -1568,6 +1568,26 @@ class Swarm(Stateful, uw_object):
                 uw.timing.log_result(time.time() - stime, "Swarm.access", 1)
 
         return exit_manager(self)
+    
+    def _dm_get_field(self, field_name):
+        # wrapper of the petsc4py DM getField function made to handle 
+        # changes in the return type in PETSc 3.22 onwards 
+        # named _dm_get_field() to avoid confusion with dm.getField 
+        
+        field = self.dm.getField(field_name)
+        if isinstance(field, tuple):
+            return field[0]
+        else:
+            return field
+        
+    def _dm_restore_field(self, field_name):
+        # wrapper of the petsc4py DM restoreField function
+        # made for symmetry 
+
+        self.dm.restoreField(field_name)
+
+        return
+
 
     ## Better to have one master copy - this one is cut'n'pasted from
     ## the MeshVariable class
@@ -1807,9 +1827,9 @@ class Swarm(Stateful, uw_object):
 
             self.dm.addNPoints(num_remeshed_points)
 
-            cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
-            rmsh = self.dm.getField("DMSwarm_remeshed")
+            cellid  = self._dm_get_field("DMSwarm_cellid")
+            coords  = self._dm_get_field("DMSwarmPIC_coor").reshape((-1, self.dim))
+            rmsh    = self._dm_get_field("DMSwarm_remeshed")
 
             # print(f"cellid -> {cellid.shape}")
             # print(f"particle coords -> {coords.shape}")
@@ -1825,9 +1845,9 @@ class Swarm(Stateful, uw_object):
             cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
             rmsh[swarm_size::] = 0
 
-            self.dm.restoreField("DMSwarm_cellid")
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_remeshed")
+            self._dm_restore_field("DMSwarm_cellid")
+            self._dm_restore_field("DMSwarmPIC_coor")
+            self._dm_restore_field("DMSwarm_remeshed")
 
             # when we let this go, the particles may be re-distributed to
             # other processors, and we will need to rebuild the remeshed
@@ -1961,8 +1981,8 @@ class NodalPointSwarm(Swarm):
             trackedVariable.coords.shape[0] + 1
         )  # why + 1 ? That's the number of spots actually allocated
 
-        cellid = nswarm.dm.getField("DMSwarm_cellid")
-        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
+        cellid = nswarm._dm_get_field("DMSwarm_cellid")
+        coords = nswarm._dm_get_field("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         coords[...] = trackedVariable.coords[...]
         cellid[:] = self.mesh.get_closest_local_cells(coords)
 
@@ -1972,8 +1992,8 @@ class NodalPointSwarm(Swarm):
         shift = 0.001
         coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
 
-        nswarm.dm.restoreField("DMSwarmPIC_coor")
-        nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm._dm_restore_field("DMSwarmPIC_coor")
+        nswarm._dm_restore_field("DMSwarm_cellid")
 
         nswarm.dm.migrate(remove_sent_points=True)
 
