@@ -51,7 +51,6 @@ def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
 def substitute(fn, keep_constants=True, return_self=True):
     return unwrap(fn, keep_constants, return_self)
 
-
 def _unwrap_expressions(fn, keep_constants=True, return_self=True):
     expr = fn
     expr_s = _substitute_all_once(expr, keep_constants, return_self)
@@ -268,8 +267,21 @@ class UWexpression(uw_object, Symbol):
         self._description = new_description
         return
 
-    def unwrap(self, keep_constants=True):
-        return substitute(self, keep_constants=keep_constants)
+    def unwrap(self, keep_constants=True, return_self=True):
+        return unwrap(self, keep_constants=keep_constants)
+
+    # # This should be the thing that gets called by sympy when we ask for self.diff()
+    # def fdiff(self, variable, evaluate=True):
+    #     if evaluate:
+    #         return sympy.diff(self.unwrap(keep_constants=False, return_self=False), variable, evaluate=True)
+    #     else:
+    #         if isinstance(self, (sympy.Matrix, sympy.ImmutableMatrix)):
+    #             f = lambda x: sympy.diff(
+    #                     x, variable, evaluate=False
+    #                 )
+    #             return self.applyfunc(f)
+    #         else:
+    #             return sympy.diff(self, variable, evaluate=False)
 
     def sub_all(self, keep_constants=True):
         return substitute(self, keep_constants=keep_constants)

@@ -132,7 +132,9 @@ class SolverBaseClass(uw_object):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(Markdown(fr"### Boundary Conditions"))
+
+        display(Markdown(fr"This solver is formulated as {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
         return
 
@@ -544,10 +546,11 @@ class SNES_Scalar(SolverBaseClass):
 
         # Should del these when finished
 
-
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "private_{}_".format(self.petsc_options_prefix), PETSc.COMM_SELF,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+        self.petsc_fe_u.setName("_scalar_unknown_")
+
         self.is_setup = False
 
         if self.verbose:
@@ -655,6 +658,7 @@ class SNES_Scalar(SolverBaseClass):
         else:
             if verbose and uw.mpi.rank == 0:
                 print(f"SNES_Scalar ({self.name}): Pointwise functions need to be built", flush=True)
+
 
 
         mesh = self.mesh
@@ -928,7 +932,7 @@ class SNES_Scalar(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Poisson system solver**"),
+            Markdown(f"### Poisson system solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -944,7 +948,20 @@ class SNES_Scalar(SolverBaseClass):
                 expr._object_viewer(description=False)
 
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
+
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 
 
@@ -1121,6 +1138,7 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+        self.petsc_fe_u.setName("_vector_unknown_")
 
         self.dm.createDS()
 
@@ -1598,7 +1616,7 @@ class SNES_Vector(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Vector poisson solver**"),
+            Markdown(f"### Vector poisson solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -1612,7 +1630,20 @@ class SNES_Vector(SolverBaseClass):
             for expr in exprs:
                 expr._object_viewer(description=False)
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
+
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+             bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                 bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 ### =================================
 
@@ -1907,8 +1938,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             pass
 
-
-
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
 
@@ -1988,7 +2017,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Saddle point system solver**"),
+            Markdown(f"### Saddle point system solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
             Markdown(f"Constraint: "),
@@ -2005,8 +2034,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             for expr in exprs:
                 expr._object_viewer(description=False)
 
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
         return
 
@@ -2237,7 +2278,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                        primary_field_list=prim_field_list,
                                        verbose=verbose,
                                        debug=debug,
-                                       debug_name=debug_name)
+                                       debug_name=debug_name,
+                                       cache=False)
 
 
         self.is_setup = False
@@ -2651,46 +2693,76 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-        cdef Vec clvec
-        cdef DM csdm
+        cdef DM dm = self.dm
+        cdef Vec clvec = self.dm.getLocalVec()
+        self.dm.globalToLocal(gvec, clvec)
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
 
         if verbose and uw.mpi.rank == 0:
-                print(f"SNES post-solve - bcs", flush=True)
+                 print(f"SNES Compute Boundary FEM Successfull", flush=True)
 
-        # Copy solution back into user facing variables
+        # get index set of pressure and velocity to separate solution from localvec
+        # get local section
+        local_section = self.dm.getLocalSection()
 
+        # Get the index sets for velocity and pressure fields
+        # Field numbers (adjust based on your setup)
+        velocity_field_num = 0
+        pressure_field_num = 1
+
+        # Function to get index set for a field
+        def get_local_field_is(section, field, unconstrained=False):
+            """
+            This function returns the index set of unconstrained points if True, or all points if False.
+            """
+            pStart, pEnd = section.getChart()
+            indices = []
+            for p in range(pStart, pEnd):
+                dof = section.getFieldDof(p, field)
+                if dof > 0:
+                    offset = section.getFieldOffset(p, field)
+                    if not unconstrained:
+                        indices.append(offset)
+                    else:
+                        cind = section.getFieldConstraintIndices(p, field)
+                        constrained = set(cind) if cind is not None else set()
+                        for i in range(dof):
+                            if i not in constrained:
+                                index = offset + i
+                                indices.append(index)
+            is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            return is_field
+
+        # Get index sets for pressure (both constrained and unconstrained points)
+        # we need indexset of pressure field to separate the solution from localvec.
+        # so we don't care whether a point is constrained by bc or not
+        pressure_is = get_local_field_is(local_section, pressure_field_num)
+
+        # Get the total number of entries in the local vector
+        size = self.dm.getLocalVec().getLocalSize()
+
+        # Create a list of all indices
+        all_indices = set(range(size))
+
+        # Get indices of the pressure field
+        pressure_indices = set(pressure_is.getIndices())
+
+        # Compute the complement for the velocity field
+        velocity_indices = sorted(list(all_indices - pressure_indices))
+
+        # Create the index set for velocity
+        velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+
+        # Copy solution back into pressure and velocity variables
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-            # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
-
-            for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
-
-                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-
-                sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
-                lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
-                sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
-                sdm.localToGlobal(lvec, sgvec)
-                gvec.restoreSubVector(self._subdict[name][0], sgvec)
-
-                # Put in boundaries values.
-                # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-                # derived from the sub-dm (as opposed to the var.vec local vector), else
-                # failures can occur.
-
-                clvec = lvec
-                csdm = sdm
-
-                # print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
-                ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-
-                # Now copy into the user vec.
-                var.vec.array[:] = lvec.array[:]
-
-                sdm.restoreLocalVec(lvec)
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
+             for name, var in self.fields.items():
+                 if name=='velocity':
+                     var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+                 elif name=='pressure':
+                     var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
 
 
+        self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
 
         converged = self.snes.getConvergedReason()
