@@ -23,6 +23,9 @@ if petscVer[0] != 3 or petscVer[1] < 18:
     )
     raise RuntimeError(msg)
 
+### set CC env variable
+os.environ["CC"] = os.popen('which mpicc').read().strip()
+
 def configure():
 
     INCLUDE_DIRS = []
