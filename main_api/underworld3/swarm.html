@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
-<meta name="generator" content="pdoc3 0.11.1">
+<meta name="generator" content="pdoc3 0.11.3">
 <title>underworld3.swarm API documentation</title>
 <meta name="description" content="">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
-<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin-bottom:1em}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
 <style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
 <style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
 <script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
@@ -290,7 +290,7 @@ def sym_1d(self):
 </dd>
 <dt id="underworld3.swarm.NodalPointSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f363b7be5f0>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f5c0013e4d0>, verbose=False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Swarm with particles located at the coordinate points of a meshVariable</p>
@@ -429,7 +429,7 @@ after they have been moved.</p>
 <h3>Methods</h3>
 <dl>
 <dt id="underworld3.swarm.NodalPointSwarm.advection"><code class="name flex">
-<span>def <span class="ident">advection</span></span>(<span>self, V_fn, delta_t, order=2, corrector=False, restore_points_to_domain_func=None, evalf=False, step_limit=True)</span>
+<span>def <span class="ident">advection</span></span>(<span>self,<br>V_fn,<br>delta_t,<br>order=2,<br>corrector=False,<br>restore_points_to_domain_func=None,<br>evalf=False,<br>step_limit=True)</span>
 </code></dt>
 <dd>
 <div class="desc"></div>
@@ -1709,7 +1709,7 @@ def vars(self):
 <h3>Methods</h3>
 <dl>
 <dt id="underworld3.swarm.Swarm.access"><code class="name flex">
-<span>def <span class="ident">access</span></span>(<span>self, *writeable_vars: <a title="underworld3.swarm.SwarmVariable" href="#underworld3.swarm.SwarmVariable">SwarmVariable</a>)</span>
+<span>def <span class="ident">access</span></span>(<span>self,<br>*writeable_vars: <a title="underworld3.swarm.SwarmVariable" href="#underworld3.swarm.SwarmVariable">SwarmVariable</a>)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>This context manager makes the underlying swarm variables data available to
@@ -1764,7 +1764,7 @@ dim is the dimensionality of the swarm's supporting mesh.</dd>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.advection"><code class="name flex">
-<span>def <span class="ident">advection</span></span>(<span>self, V_fn, delta_t, order=2, corrector=False, restore_points_to_domain_func=None, evalf=False, step_limit=True)</span>
+<span>def <span class="ident">advection</span></span>(<span>self,<br>V_fn,<br>delta_t,<br>order=2,<br>corrector=False,<br>restore_points_to_domain_func=None,<br>evalf=False,<br>step_limit=True)</span>
 </code></dt>
 <dd>
 <div class="desc"></div>
@@ -1777,7 +1777,7 @@ dim is the dimensionality of the swarm's supporting mesh.</dd>
 mesh and velocity configuration.</p></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.petsc_save_checkpoint"><code class="name flex">
-<span>def <span class="ident">petsc_save_checkpoint</span></span>(<span>self, swarmName: str, index: int, outputPath: Optional[str] = '')</span>
+<span>def <span class="ident">petsc_save_checkpoint</span></span>(<span>self, swarmName: str, index: int, outputPath: str | None = '')</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Use PETSc to save the swarm and attached data to a .pbin and xdmf file.</p>
@@ -1790,7 +1790,7 @@ outputPath :
 Path to save the data. If left empty it will save the data in the current working directory.</p></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.populate"><code class="name flex">
-<span>def <span class="ident">populate</span></span>(<span>self, fill_param: Optional[int] = 1)</span>
+<span>def <span class="ident">populate</span></span>(<span>self, fill_param: int | None = 1)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Populate the swarm with particles throughout the domain.</p>
@@ -1802,7 +1802,7 @@ for the given layout, using the mesh degree.</p>
 Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)</p></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.populate_petsc"><code class="name flex">
-<span>def <span class="ident">populate_petsc</span></span>(<span>self, fill_param: Optional[int] = 3, layout: Optional[<a title="underworld3.swarm.SwarmPICLayout" href="#underworld3.swarm.SwarmPICLayout">SwarmPICLayout</a>] = None)</span>
+<span>def <span class="ident">populate_petsc</span></span>(<span>self,<br>fill_param: int | None = 3,<br>layout: <a title="underworld3.swarm.SwarmPICLayout" href="#underworld3.swarm.SwarmPICLayout">SwarmPICLayout</a> | None = None)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Populate the swarm with particles throughout the domain.</p>
@@ -1819,13 +1819,13 @@ Type of layout to use. Defaults to <code><a title="underworld3.swarm.SwarmPICLay
 type cells, and <code><a title="underworld3.swarm.SwarmPICLayout.GAUSS" href="#underworld3.swarm.SwarmPICLayout.GAUSS">SwarmPICLayout.GAUSS</a></code> otherwise.</p></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.read_timestep"><code class="name flex">
-<span>def <span class="ident">read_timestep</span></span>(<span>self, base_filename: str, swarm_id: str, index: int, outputPath: Optional[str] = '')</span>
+<span>def <span class="ident">read_timestep</span></span>(<span>self, base_filename: str, swarm_id: str, index: int, outputPath: str | None = '')</span>
 </code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.save"><code class="name flex">
-<span>def <span class="ident">save</span></span>(<span>self, filename: int, compression: Optional[bool] = False, compressionType: Optional[str] = 'gzip', force_sequential=False)</span>
+<span>def <span class="ident">save</span></span>(<span>self,<br>filename: int,<br>compression: bool | None = False,<br>compressionType: str | None = 'gzip',<br>force_sequential=False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Save the swarm coordinates to a h5 file.</p>
@@ -1838,7 +1838,7 @@ compressionType :
 Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compression also needs to be set to 'True'.</p></div>
 </dd>
 <dt id="underworld3.swarm.Swarm.write_timestep"><code class="name flex">
-<span>def <span class="ident">write_timestep</span></span>(<span>self, filename: str, swarmname: str, index: int, swarmVars: Optional[list] = None, outputPath: Optional[str] = '', time: Optional[int] = None, compression: Optional[bool] = False, compressionType: Optional[str] = 'gzip', force_sequential: Optional[bool] = False)</span>
+<span>def <span class="ident">write_timestep</span></span>(<span>self,<br>filename: str,<br>swarmname: str,<br>index: int,<br>swarmVars: list | None = None,<br>outputPath: str | None = '',<br>time: int | None = None,<br>compression: bool | None = False,<br>compressionType: str | None = 'gzip',<br>force_sequential: bool | None = False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Save data to h5 and a corresponding xdmf for visualisation using h5py.</p>
@@ -1935,7 +1935,7 @@ SwarmPICLayout.SUBDIVISION defines points on the centroid of a sub-divided refer
 </dd>
 <dt id="underworld3.swarm.SwarmVariable"><code class="flex name class">
 <span>class <span class="ident">SwarmVariable</span></span>
-<span>(</span><span>name, swarm, size=None, vtype=None, dtype=builtins.float, proxy_degree=1, proxy_continuous=True, varsymbol=None, rebuild_on_cycle=True)</span>
+<span>(</span><span>name,<br>swarm,<br>size=None,<br>vtype=None,<br>dtype=builtins.float,<br>proxy_degree=1,<br>proxy_continuous=True,<br>varsymbol=None,<br>rebuild_on_cycle=True)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>The SwarmVariable class generates a variable supported by a point cloud or 'swarm' and the
@@ -2553,7 +2553,7 @@ def sym_1d(self):
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.swarm.SwarmVariable.save"><code class="name flex">
-<span>def <span class="ident">save</span></span>(<span>self, filename: int, compression: Optional[bool] = False, compressionType: Optional[str] = 'gzip', force_sequential=False)</span>
+<span>def <span class="ident">save</span></span>(<span>self,<br>filename: int,<br>compression: bool | None = False,<br>compressionType: str | None = 'gzip',<br>force_sequential=False)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Save the swarm variable to a h5 file.</p>
@@ -2663,7 +2663,7 @@ Type of compression to use, 'gzip' and 'lzf' supported. 'gzip' is default. Compr
 </nav>
 </main>
 <footer id="footer">
-<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.1</a>.</p>
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.3</a>.</p>
 </footer>
 </body>
 </html>
