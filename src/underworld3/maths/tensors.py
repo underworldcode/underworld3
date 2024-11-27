@@ -257,3 +257,8 @@ def rank4_identity(dim):
                     )
 
     return I
+
+def rank2_inner_product(A,B):
+    r"""p = \Sum_i \Sum_j A_{ij} \cdot B_{ij}"""
+
+    return sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(A, B),(1,3)),(0,1))

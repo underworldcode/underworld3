@@ -4,6 +4,7 @@ import os
 
 def initialise(jupyter_backend):
 
+
     import pyvista as pv
 
     pv.global_theme.background = "white"
