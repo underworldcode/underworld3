@@ -241,7 +241,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <ul>
   <li><a href="#exercise---7.1" id="toc-exercise---7.1" class="nav-link active" data-scroll-target="#exercise---7.1">Exercise - 7.1</a></li>
   </ul>
-<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworldcode/underworld3/development?labpath=WebBook/Notebooks"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
+<div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li><li><a href="https://www.underworlcode.org"><i class="bi bi-newspaper"></i>Underworld3 Blog</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -311,23 +311,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    mesh, </span>
 <span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln, </span>
 <span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln, </span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    solver_name<span class="op">=</span><span class="st">"Navier_stokes"</span>,</span>
-<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    rho<span class="op">=</span>reynolds_number,</span>
-<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    order<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>navier_stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
-<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>navier_stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>navier_stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-3</span></span>
-<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>navier_stokes.petsc_options[<span class="st">"fieldsplit_velocity_mg_coarse_pc_type"</span>] <span class="op">=</span> <span class="st">"svd"</span></span>
-<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>navier_stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">0</span>))</span>
-<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Inflow boundary - incoming jet</span></span>
-<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc(((<span class="dv">4</span><span class="op">*</span>y<span class="op">*</span>(<span class="dv">1</span><span class="op">-</span>y))<span class="op">**</span><span class="dv">8</span>, <span class="dv">0</span>), <span class="st">"Left"</span>)</span>
-<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
-<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    rho<span class="op">=</span>reynolds_number,</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    order<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>navier_stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>navier_stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>navier_stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-3</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>navier_stokes.petsc_options[<span class="st">"fieldsplit_velocity_mg_coarse_pc_type"</span>] <span class="op">=</span> <span class="st">"svd"</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>navier_stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">0</span>))</span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="co"># Inflow boundary - incoming jet</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc(((<span class="dv">4</span><span class="op">*</span>y<span class="op">*</span>(<span class="dv">1</span><span class="op">-</span>y))<span class="op">**</span><span class="dv">8</span>, <span class="dv">0</span>), <span class="st">"Left"</span>)</span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>navier_stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div id="7ecf2fbf-f714-4c5f-9d99-bbe86b462da8" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>vorticity_from_v <span class="op">=</span> uw.systems.Projection(mesh, vorticity)</span>
