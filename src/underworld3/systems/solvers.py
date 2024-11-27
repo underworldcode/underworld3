@@ -366,7 +366,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     ## Properties
 
-      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
+      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint parameter $\mathbf{p}$
 
       - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
     one of the scalar `uw.constitutive_models` classes and populating the parameters.
@@ -491,6 +491,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return f0
 
+    # deprecated
     @timing.routine_timer_decorator
     def stokes_problem_description(self):
 
@@ -1403,15 +1404,23 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         ## estimate dt of adv and diff components
 
+        self.dt_adv = 0.0
+        self.dt_diff = 0.0
+
         if max_magvel_glob == 0.0:
             dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
             dt_estimate = dt_diff
         elif diffusivity_glob == 0.0:
             dt_adv = min_dx / max_magvel_glob
+            self.dt_adv = dt_adv
             dt_estimate = dt_adv
         else:
             dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
             dt_adv = min_dx / max_magvel_glob
+            self.dt_adv = dt_adv
+
             dt_estimate = min(dt_diff, dt_adv)
 
         return dt_estimate

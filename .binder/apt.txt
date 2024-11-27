@@ -1,8 +1,0 @@
-libgl1-mesa-glx
-libxcursor-dev
-libglu1
-libxft2
-libxinerama1
-libfltk1.3-dev
-libfreetype6-dev
-libgl1-mesa-dev
