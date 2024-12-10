@@ -2721,7 +2721,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dof = section.getFieldDof(p, field)
                 if dof > 0:
                     offset = section.getFieldOffset(p, field)
-                    if not unconstrained:
+                    if not unconstrained and self.Unknowns.p.continuous:
                         indices.append(offset)
                     else:
                         cind = section.getFieldConstraintIndices(p, field)
