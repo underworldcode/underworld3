@@ -234,21 +234,21 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     ## Update cells etc, but don't migrate as
     ## we don't want to distrupt the data layout
 
-    cellid = swarm1.dm.getField("DMSwarm_cellid")
-    coords = swarm1.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
+    cellid = swarm1._dm_get_field("DMSwarm_cellid")
+    coords = swarm1._dm_get_field("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
 
     coords[...] = found_coords[...]
     if n_found > 0:
         cellid[:] = mesh1.get_closest_cells(coords)  ## found points
 
-    swarm1.dm.restoreField("DMSwarmPIC_coor")
-    swarm1.dm.restoreField("DMSwarm_cellid")
+    swarm1._dm_restore_field("DMSwarmPIC_coor")
+    swarm1._dm_restore_field("DMSwarm_cellid")
 
     # Add in the data fields for the found points
 
     offset = swarm1.dim
     for swarmVar in swarmVarList:
-        varField = swarm1.dm.getField(swarmVar.clean_name)
+        varField = swarm1._dm_get_field(swarmVar.clean_name)
         varCpts = swarmVar.num_components
         varData = swarm_data[:, offset : offset + varCpts]
         fieldData = varField.reshape(-1, varCpts)
@@ -258,7 +258,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
                 swarmVar.dtype
             )
 
-        swarm1.dm.restoreField(swarmVar.clean_name)
+        swarm1._dm_restore_field(swarmVar.clean_name)
         offset += varCpts
 
     uw.mpi.barrier()
@@ -279,16 +279,16 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
 
     swarm1.dm.addNPoints(adds)
 
-    cellid = swarm1.dm.getField("DMSwarm_cellid")
-    coords = swarm1.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
+    cellid = swarm1._dm_get_field("DMSwarm_cellid")
+    coords = swarm1._dm_get_field("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
 
     coords[psize + 1 :, :] = global_unallocated_coords[found1, :]
 
     if n_found1 > 0:
         cellid[psize + 1 :] = cell[found1]  ## gathered points
 
-    swarm1.dm.restoreField("DMSwarm_cellid")
-    swarm1.dm.restoreField("DMSwarmPIC_coor")
+    swarm1._dm_restore_field("DMSwarm_cellid")
+    swarm1._dm_restore_field("DMSwarmPIC_coor")
 
     # print(
     #     f"{uw.mpi.rank}/i: {swarm1.dm.getLocalSize()} / {swarm1.dm.getSize()} cf {swarm0.dm.getSize()}",
@@ -300,7 +300,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
 
     offset = swarm1.dim
     for swarmVar in swarmVarList:
-        varField = swarm1.dm.getField(swarmVar.clean_name)
+        varField = swarm1._dm_get_field(swarmVar.clean_name)
         varCpts = swarmVar.num_components
         varData = global_unallocated_data[:, offset : offset + varCpts]
         fieldData = varField.reshape(-1, varCpts)
@@ -310,7 +310,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
                 found1, offset : offset + varCpts
             ]
 
-        swarm1.dm.restoreField(swarmVar.clean_name)
+        swarm1._dm_restore_field(swarmVar.clean_name)
         offset += varCpts
 
     ## Update proxy variables if present

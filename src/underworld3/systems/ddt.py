@@ -294,13 +294,13 @@ class SemiLagrangian(uw_object):
             nR0_field_name = self._nswarm_psi._nR0.name
             nI0_field_name = self._nswarm_psi._nI0.name
 
-            orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
-            node_ranks = self._nswarm_psi.dm.getField("DMSwarm_rank")
+            orig_ranks = self._nswarm_psi._dm_get_field(nR0_field_name)
+            node_ranks = self._nswarm_psi._dm_get_field("DMSwarm_rank")
 
             node_ranks[...] = orig_ranks[...]
 
-            self._nswarm_psi.dm.restoreField(nR0_field_name)
-            self._nswarm_psi.dm.restoreField("DMSwarm_rank")
+            self._nswarm_psi._dm_restore_field(nR0_field_name)
+            self._nswarm_psi._dm_restore_field("DMSwarm_rank")
 
             # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
 

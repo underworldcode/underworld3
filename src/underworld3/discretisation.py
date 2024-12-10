@@ -1326,9 +1326,17 @@ class Mesh(Stateful, uw_object):
 
         ## ?? is this required given no migration ??
         # tempSwarm.migrate(remove_sent_points=True)
-
-        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
-        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
+        temp_coords     = tempSwarm.getField("DMSwarmPIC_coor") 
+        if isinstance(temp_coords, tuple):
+            PIC_coords = temp_coords[0].reshape(-1, self.dim)
+        else:
+            PIC_coords = temp_coords.reshape(-1, self.dim)
+            
+        temp_cellid     = tempSwarm.getField("DMSwarm_cellid")
+        if isinstance(temp_cellid, tuple):
+            PIC_cellid = temp_cellid[0]
+        else:
+            PIC_cellid = temp_cellid
 
         self._indexCoords = PIC_coords.copy()
         self._index = uw.kdtree.KDTree(self._indexCoords)
@@ -2381,6 +2389,7 @@ class _MeshVariable(Stateful, uw_object):
         self.field_id = self.mesh.dm.getNumFields()
         self.mesh.dm.addField(petsc_fe)
         field, _ = self.mesh.dm.getField(self.field_id)
+
         field.setName(self.clean_name)
         self.mesh.dm.createDS()
 
