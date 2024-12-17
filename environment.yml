@@ -12,23 +12,24 @@ dependencies:
   - cython=3.*
   - mpmath<=1.3
   - mesalib
-  - numpy
-  - scipy
-  - mpi4py
-  - h5py
-  - sympy
-  - pytest
-  - ipython
   - pyvista
-  - pip
   # gmsh dependencies (prefer not to use apt.txt)
   - xorg-libxft
   - xorg-libxinerama
+  - pytest
+  - numpy<2
+  - pip
   - pip:
-      - gmsh
-      - gmsh-api
-      - jupyterlab
-      - jupytext
-      - pygments
-      - trame-vtk
-      - trame-vuetify
+    - scipy
+    - sympy
+    - ipython
+    - mpi4py
+    - h5py
+    - gmsh
+    - gmsh-api
+    - jupyterlab
+    - jupytext
+    - pygments
+    - trame-vtk
+    - trame-vuetify
+    - pint
