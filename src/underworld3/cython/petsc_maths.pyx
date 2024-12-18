@@ -25,9 +25,9 @@ class Integral:
 
     Parameters
     ----------
-    mesh : 
+    mesh :
         The mesh over which integration is performed.
-    fn : 
+    fn :
         Function to be integrated.
 
     Example
@@ -41,7 +41,7 @@ class Integral:
     >>> np.allclose( 1., volumeIntegral.evaluate(), rtol=1e-8)
     True
     """
-    
+
     @timing.routine_timer_decorator
     def __init__( self,
                   mesh:  underworld3.discretisation.Mesh,
@@ -52,23 +52,23 @@ class Integral:
         super().__init__()
 
     @timing.routine_timer_decorator
-    def evaluate(self) -> float:
+    def evaluate(self, verbose=False) -> float:
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"
                                "This is a PETSc limitation.")
-                               
+
         # Create JIT extension.
-        # 
+        #
         # Note that - we pass in the mesh variables as primary variables, as this
         # is how they are represented on the mesh DM.
 
-        # Note that -  (at this time) PETSc does not support vector integrands, so 
+        # Note that -  (at this time) PETSc does not support vector integrands, so
         # if we wish to do vector integrals we'll need to split out the components
         # and calculate them individually. Let's support only scalars for now.
 
         # Note that - DMPlexComputeIntegralFEM returns an array even though we have set only
-        # one objective function and only expect one non-zero value to be returned 
-        # Temporary workaround for this is to over-allocate the array we collect. 
+        # one objective function and only expect one non-zero value to be returned
+        # Temporary workaround for this is to over-allocate the array we collect.
 
         if isinstance(self.fn, sympy.vector.Vector):
             raise RuntimeError("Integral evaluation for Vector integrands not supported.")
@@ -78,8 +78,8 @@ class Integral:
 
         self.dm = self.mesh.dm  # .clone()
         mesh=self.mesh
-        
-        compiled_extns, dictionaries = getext(self.mesh, [self.fn,], [], [], [], [], self.mesh.vars.values(), verbose=False)
+
+        compiled_extns, dictionaries = getext(self.mesh, [self.fn,], [], [], [], [], self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = compiled_extns
 
         # Pull out vec for variables, and go ahead with the integral
@@ -90,12 +90,12 @@ class Integral:
 
         cdef Vec cgvec
         cgvec = a_global
-   
+
         cdef DM dm = self.dm
         cdef DS ds = self.dm.getDS()
         cdef PetscScalar val_array[256]
 
-        # Now set callback... 
+        # Now set callback...
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
         ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, &(val_array[0]), NULL); CHKERRQ(ierr)
 
@@ -118,9 +118,9 @@ class CellWiseIntegral:
 
     Parameters
     ----------
-    mesh : 
+    mesh :
         The mesh over which integration is performed.
-    fn : 
+    fn :
         Function to be integrated.
 
     Example
@@ -134,7 +134,7 @@ class CellWiseIntegral:
     >>> np.allclose( 1., volumeIntegral.evaluate(), rtol=1e-8)
     True
     """
-    
+
     @timing.routine_timer_decorator
     def __init__( self,
                   mesh:  underworld3.discretisation.Mesh,
@@ -149,12 +149,12 @@ class CellWiseIntegral:
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"
                                "This is a PETSc limitation.")
-                               
+
         # Create JIT extension.
         # Note that we pass in the mesh variables as primary variables, as this
         # is how they are represented on the mesh DM.
 
-        # Note that (at this time) PETSc does not support vector integrands, so 
+        # Note that (at this time) PETSc does not support vector integrands, so
         # if we wish to do vector integrals we'll need to split out the components
         # and calculate them individually. Let's support only scalars for now.
         if isinstance(self.fn, sympy.vector.Vector):
@@ -172,7 +172,7 @@ class CellWiseIntegral:
         cgvec = a_global
 
         ## Does this need to be consistent with everything else ?
-       
+
         cdef DM dmc = self.mesh.dm.clone()
         cdef FE fec = FE().createDefault(self.dim, 1, False, -1)
         dmc.setField(0, fec)
@@ -180,7 +180,7 @@ class CellWiseIntegral:
 
         cdef DS ds = dmc.getDS()
         CHKERRQ( PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]) )
-        
+
         cdef Vec rvec = dmc.createGlobalVec()
         CHKERRQ( DMPlexComputeCellwiseIntegralFEM(dmc.dm, cgvec.vec, rvec.vec, NULL) )
         self.mesh.dm.restoreGlobalVec(a_global)
@@ -189,6 +189,3 @@ class CellWiseIntegral:
         rvec.destroy()
 
         return results
-
-
-
