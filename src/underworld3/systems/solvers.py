@@ -10,6 +10,7 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 
+
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 
@@ -433,7 +434,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             (self.div_u,)
         )  # by default, incompressibility constraint
 
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+        self._bodyforce = uw.function.expression(fR"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
+                                                sympy.Matrix([[0] * self.mesh.dim]),
+                                                "Stokes pointwise force term: f_0(u)",)
 
         # this attrib records if we need to setup the problem (again)
         self.is_setup = False
@@ -450,21 +453,23 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @property
     def F0(self):
 
-        f0 = uw.function.expression(
-            r"\mathbf{f}_0\left( \mathbf{u} \right)",
-            -self.bodyforce,
-            "Stokes pointwise force term: f_0(u)",
-        )
+        # f0 = uw.function.expression(
+        #     r"\mathbf{f}_0\left( \mathbf{u} \right)",
+        #     -self.bodyforce,
+        #     "Stokes pointwise force term: f_0(u)",
+        # )
 
         # backward compatibility
-        self._u_f0 = f0
+        self._u_f0 = self._bodyforce
 
-        return f0
+        return self._bodyforce
 
     @property
     def F1(self):
 
         dim = self.mesh.dim
+
+        ## Should not define a new function on each call (madness !)
 
         F1_val = uw.function.expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
@@ -479,6 +484,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def PF0(self):
+
+        ## Should not define a new function on each call (madness !)
 
         f0 = uw.function.expression(
             r"\mathbf{h}_0\left( \mathbf{p} \right)",
@@ -564,7 +571,10 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @bodyforce.setter
     def bodyforce(self, value):
         self.is_setup = False
-        self._bodyforce = self.mesh.vector.to_matrix(value)
+        if isinstance(value, uw.function.expressions.UWexpression):
+            self._bodyforce.sym = value.sym
+        else:
+            self._bodyforce.sym = sympy.Matrix(value)
 
     @property
     def saddle_preconditioner(self):
@@ -1580,7 +1590,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         self.restore_points_to_domain_func = restore_points_func
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
         self._constitutive_model = None
 
         # self._E = self.mesh.vector.strain_tensor(self.u.sym)
