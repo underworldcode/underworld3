@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
-<meta name="generator" content="pdoc3 0.11.3">
+<meta name="generator" content="pdoc3 0.11.5">
 <title>underworld3.constitutive_models API documentation</title>
 <meta name="description" content="">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
-<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
 <style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
 <style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
 <script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
@@ -18,6 +18,17 @@
 <script>window.addEventListener('DOMContentLoaded', () => {
 hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
 hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
 })</script>
 </head>
 <body>
@@ -39,6 +50,37 @@ hljs.highlightAll();
 <span>def <span class="ident">validate_parameters</span></span>(<span>symbol, input, default=None, allow_number=True, allow_expression=True)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def validate_parameters(
+    symbol, input, default=None, allow_number=True, allow_expression=True
+):
+
+    if allow_number and isinstance(input, (float)):
+        # print(f&#34;{symbol}: Converting number to uw expression {input}&#34;)
+        input = expression(symbol, input, &#34;(converted from float)&#34;)
+
+    elif allow_number and isinstance(input, (int)):
+        # print(f&#34;{symbol}: Converting number to uw expression {input}&#34;)
+        input = expression(symbol, input, &#34;(converted from int)&#34;)
+
+    elif allow_expression and isinstance(input, sympy.core.basic.Basic):
+        # print(f&#34;{symbol}: Converting sympy fn to uw expression {input}&#34;)
+        input = expression(symbol, input, &#34;(imported sympy expression)&#34;)
+
+    elif input is None and default is not None:
+        input = expression(symbol, default, &#34;(default value)&#34;)
+
+    else:
+        # That&#39;s about all we can fix automagically
+        print(f&#34;Unable to set parameter: {symbol} from {input}&#34;)
+        print(f&#34;An underworld `expression` or `function` is required&#34;, flush=True)
+        return None
+
+    return input</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 </dl>
@@ -51,31 +93,6 @@ hljs.highlightAll();
 <span>(</span><span>unknowns)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Constititutive laws relate gradients in the unknowns to fluxes of quantities
-(for example, heat fluxes are related to temperature gradients through a thermal conductivity)
-The <code><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></code> class is a base class for building <code>underworld</code> constitutive laws</p>
-<p>In a scalar problem, the relationship is</p>
-<p><span><span class="MathJax_Preview">
-q_i = k_{ij} \frac{\partial T}{\partial x_j}
-</span><script type="math/tex; mode=display">
-q_i = k_{ij} \frac{\partial T}{\partial x_j}
-</script></span></p>
-<p>and the constitutive parameters describe $ k_{ij}$. The template assumes $ k_{ij} = \delta_{ij} $</p>
-<p>In a vector problem (such as the Stokes problem), the relationship is</p>
-<p><span><span class="MathJax_Preview">
-t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
-</span><script type="math/tex; mode=display">
-t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
-</script></span></p>
-<p>but is usually written to eliminate the anti-symmetric part of the displacement or velocity gradients (for example):</p>
-<p><span><span class="MathJax_Preview">
-t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-</span><script type="math/tex; mode=display">
-t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-</script></span></p>
-<p>and the constitutive parameters describe $c_{ijkl}$. The template assumes
-$ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
-4th rank identity tensor accounting for symmetry in the flux and the gradient terms.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -327,6 +344,31 @@ $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} 
             )
         )</code></pre>
 </details>
+<div class="desc"><p>Constititutive laws relate gradients in the unknowns to fluxes of quantities
+(for example, heat fluxes are related to temperature gradients through a thermal conductivity)
+The <code><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></code> class is a base class for building <code>underworld</code> constitutive laws</p>
+<p>In a scalar problem, the relationship is</p>
+<p><span><span class="MathJax_Preview">
+q_i = k_{ij} \frac{\partial T}{\partial x_j}
+</span><script type="math/tex; mode=display">
+q_i = k_{ij} \frac{\partial T}{\partial x_j}
+</script></span></p>
+<p>and the constitutive parameters describe $ k_{ij}$. The template assumes $ k_{ij} = \delta_{ij} $</p>
+<p>In a vector problem (such as the Stokes problem), the relationship is</p>
+<p><span><span class="MathJax_Preview">
+t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
+</span><script type="math/tex; mode=display">
+t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
+</script></span></p>
+<p>but is usually written to eliminate the anti-symmetric part of the displacement or velocity gradients (for example):</p>
+<p><span><span class="MathJax_Preview">
+t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
+</span><script type="math/tex; mode=display">
+t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
+</script></span></p>
+<p>and the constitutive parameters describe $c_{ijkl}$. The template assumes
+$ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
+4th rank identity tensor accounting for symmetry in the flux and the gradient terms.</p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li>underworld3.utilities._api_tools.uw_object</li>
@@ -343,11 +385,6 @@ $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} 
 <dl>
 <dt id="underworld3.constitutive_models.Constitutive_Model.C"><code class="name">prop <span class="ident">C</span></code></dt>
 <dd>
-<div class="desc"><p>The matrix form of the constitutive model (the <code>c</code> property)
-that relates fluxes to gradients.
-For scalar problem, this is the matrix representation of the rank 2 tensor.
-For vector problems, the Mandel form of the rank 4 tensor is returned.
-NOTE: this is an immutable object that is <em>a view</em> of the underlying tensor</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -371,10 +408,14 @@ def C(self):
     else:
         return uw.maths.tensor.rank4_to_mandel(self._c, d).as_immutable()</code></pre>
 </details>
+<div class="desc"><p>The matrix form of the constitutive model (the <code>c</code> property)
+that relates fluxes to gradients.
+For scalar problem, this is the matrix representation of the rank 2 tensor.
+For vector problems, the Mandel form of the rank 4 tensor is returned.
+NOTE: this is an immutable object that is <em>a view</em> of the underlying tensor</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.DFDt"><code class="name">prop <span class="ident">DFDt</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -383,10 +424,10 @@ def C(self):
 def DFDt(self):
     return self._DFDt</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.DuDt"><code class="name">prop <span class="ident">DuDt</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -395,10 +436,10 @@ def DFDt(self):
 def DuDt(self):
     return self._DuDt</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.K"><code class="name">prop <span class="ident">K</span></code></dt>
 <dd>
-<div class="desc"><p>The constitutive property for this flow law</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -408,10 +449,10 @@ def K(self):
     &#34;&#34;&#34;The constitutive property for this flow law&#34;&#34;&#34;
     return self._K</code></pre>
 </details>
+<div class="desc"><p>The constitutive property for this flow law</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.Unknowns"><code class="name">prop <span class="ident">Unknowns</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -420,12 +461,10 @@ def K(self):
 def Unknowns(self):
     return self._Unknowns</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.c"><code class="name">prop <span class="ident">c</span></code></dt>
 <dd>
-<div class="desc"><p>The tensor form of the constitutive model that relates fluxes to gradients. In scalar
-problems, <code>c</code> and <code>C</code> are equivalent (matrices), but in vector problems, <code>c</code> is a
-rank 4 tensor. NOTE: <code>c</code> is the canonical form of the constitutive relationship.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -442,12 +481,12 @@ def c(self):
 
     return self._c.as_immutable()</code></pre>
 </details>
+<div class="desc"><p>The tensor form of the constitutive model that relates fluxes to gradients. In scalar
+problems, <code>c</code> and <code>C</code> are equivalent (matrices), but in vector problems, <code>c</code> is a
+rank 4 tensor. NOTE: <code>c</code> is the canonical form of the constitutive relationship.</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.flux"><code class="name">prop <span class="ident">flux</span></code></dt>
 <dd>
-<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
-(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
-may be required to evaluate the flux.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -463,13 +502,12 @@ def flux(self):
 
     return self._q(ddu)</code></pre>
 </details>
+<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
+(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
+may be required to evaluate the flux.</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.flux_1d"><code class="name">prop <span class="ident">flux_1d</span></code></dt>
 <dd>
-<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
-(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
-may be required to evaluate the flux. Returns the Voigt form that is flattened so as to
-match the PETSc field storage pattern for symmetric tensors.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -497,10 +535,13 @@ def flux_1d(self):
 
     return uw.maths.tensor.rank2_to_voigt(flux, dim=self.dim)</code></pre>
 </details>
+<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
+(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
+may be required to evaluate the flux. Returns the Voigt form that is flattened so as to
+match the PETSc field storage pattern for symmetric tensors.</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.grad_u"><code class="name">prop <span class="ident">grad_u</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -511,10 +552,10 @@ def grad_u(self):
     # return mesh.vector.gradient(self.Unknowns.u.sym)
     return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.Constitutive_Model.u"><code class="name">prop <span class="ident">u</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -523,6 +564,7 @@ def grad_u(self):
 def u(self):
     return self.Unknowns.u</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 </dl>
 </dd>
@@ -531,20 +573,6 @@ def u(self):
 <span>(</span><span>unknowns)</span>
 </code></dt>
 <dd>
-<div class="desc"><pre><code class="language-python">class DarcyFlowModel(Constitutive_Model)
-...
-</code></pre>
-<pre><code class="language-python">diffusion_model = DiffusionModel(dim)
-diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-scalar_solver.constititutive_model = diffusion_model
-</code></pre>
-<p><span><span class="MathJax_Preview">q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)</span><script type="math/tex; mode=display">q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)</script></span></p>
-<p>where $\kappa$ is the permeability, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
-any valid combination of those types. $s$ is the body force 'source' of pressure gradients.</p>
-<p>Access the constitutive model using:</p>
-<pre><code class="language-python">flux = darcy_flow_model.flux
-</code></pre>
-<hr></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -664,6 +692,20 @@ any valid combination of those types. $s$ is the body force 'source' of pressure
 
         return self._q(ddu)</code></pre>
 </details>
+<div class="desc"><pre><code class="language-python">class DarcyFlowModel(Constitutive_Model)
+...
+</code></pre>
+<pre><code class="language-python">diffusion_model = DiffusionModel(dim)
+diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
+scalar_solver.constititutive_model = diffusion_model
+</code></pre>
+<p><span><span class="MathJax_Preview">q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)</span><script type="math/tex; mode=display">q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)</script></span></p>
+<p>where $\kappa$ is the permeability, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
+any valid combination of those types. $s$ is the body force 'source' of pressure gradients.</p>
+<p>Access the constitutive model using:</p>
+<pre><code class="language-python">flux = darcy_flow_model.flux
+</code></pre>
+<hr></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></li>
@@ -687,19 +729,6 @@ any valid combination of those types. $s$ is the body force 'source' of pressure
 <span>(</span><span>unknowns)</span>
 </code></dt>
 <dd>
-<div class="desc"><pre><code class="language-python">class DiffusionModel(Constitutive_Model)
-...
-</code></pre>
-<pre><code class="language-python">diffusion_model = DiffusionModel(dim)
-diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-scalar_solver.constititutive_model = diffusion_model
-</code></pre>
-<p><span><span class="MathJax_Preview">q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}</span><script type="math/tex; mode=display">q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}</script></span></p>
-<p>where $\kappa$ is a diffusivity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
-any valid combination of those types. Access the constitutive model using:</p>
-<pre><code class="language-python">flux = diffusion_model.flux(gradient_matrix)
-</code></pre>
-<hr></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -789,6 +818,19 @@ any valid combination of those types. Access the constitutive model using:</p>
 
         return</code></pre>
 </details>
+<div class="desc"><pre><code class="language-python">class DiffusionModel(Constitutive_Model)
+...
+</code></pre>
+<pre><code class="language-python">diffusion_model = DiffusionModel(dim)
+diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
+scalar_solver.constititutive_model = diffusion_model
+</code></pre>
+<p><span><span class="MathJax_Preview">q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}</span><script type="math/tex; mode=display">q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}</script></span></p>
+<p>where $\kappa$ is a diffusivity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
+any valid combination of those types. Access the constitutive model using:</p>
+<pre><code class="language-python">flux = diffusion_model.flux(gradient_matrix)
+</code></pre>
+<hr></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></li>
@@ -798,7 +840,6 @@ any valid combination of those types. Access the constitutive model using:</p>
 <dl>
 <dt id="underworld3.constitutive_models.DiffusionModel.diffusivity"><code class="name">prop <span class="ident">diffusivity</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -807,6 +848,7 @@ any valid combination of those types. Access the constitutive model using:</p>
 def diffusivity(self):
     return self.Parameters.diffusivity</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 </dl>
 <h3>Inherited members</h3>
@@ -827,9 +869,6 @@ def diffusivity(self):
 <span>(</span><span>material_swarmVariable: <a title="underworld3.swarm.IndexSwarmVariable" href="swarm.html#underworld3.swarm.IndexSwarmVariable">IndexSwarmVariable</a> | None = None,<br>constitutive_models: list | None = [])</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Manage multiple materials in a constitutive framework.</p>
-<p>Bundles multiple materials into a single consitutive law. The expectation
-is that these all have compatible flux terms.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -873,6 +912,9 @@ is that these all have compatible flux terms.</p></div>
 
         return</code></pre>
 </details>
+<div class="desc"><p>Manage multiple materials in a constitutive framework.</p>
+<p>Bundles multiple materials into a single consitutive law. The expectation
+is that these all have compatible flux terms.</p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></li>
@@ -896,28 +938,6 @@ is that these all have compatible flux terms.</p></div>
 <span>(</span><span>dim)</span>
 </code></dt>
 <dd>
-<div class="desc"><pre><code class="language-python">class TransverseIsotropicFlowModel(Constitutive_Model)
-...
-</code></pre>
-<pre><code class="language-python">viscous_model = TransverseIsotropicFlowModel(dim)
-viscous_model.material_properties = viscous_model.Parameters(eta_0=viscosity_fn,
-                                                            eta_1=weak_viscosity_fn,
-                                                            director=orientation_vector_fn)
-solver.constititutive_model = viscous_model
-</code></pre>
-<p><span><span class="MathJax_Preview"> \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] </span><script type="math/tex; mode=display"> \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] </script></span></p>
-<p>where $\eta$ is the viscosity tensor defined as:</p>
-<p><span><span class="MathJax_Preview"> \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
-n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] </span><script type="math/tex; mode=display"> \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
-n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] </script></span></p>
-<p>and $ \hat{\mathbf{n}} \equiv \left{ n_i \right} $ is the unit vector
-defining the local orientation of the weak plane (a.k.a. the director).</p>
-<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
-in <code>viscous_model.c</code>.
-Apply the constitutive model using:</p>
-<pre><code class="language-python">tau = viscous_model.flux(gradient_matrix)
-</code></pre>
-<hr></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1086,6 +1106,28 @@ Apply the constitutive model using:</p>
             )
         )</code></pre>
 </details>
+<div class="desc"><pre><code class="language-python">class TransverseIsotropicFlowModel(Constitutive_Model)
+...
+</code></pre>
+<pre><code class="language-python">viscous_model = TransverseIsotropicFlowModel(dim)
+viscous_model.material_properties = viscous_model.Parameters(eta_0=viscosity_fn,
+                                                            eta_1=weak_viscosity_fn,
+                                                            director=orientation_vector_fn)
+solver.constititutive_model = viscous_model
+</code></pre>
+<p><span><span class="MathJax_Preview"> \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] </span><script type="math/tex; mode=display"> \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] </script></span></p>
+<p>where $\eta$ is the viscosity tensor defined as:</p>
+<p><span><span class="MathJax_Preview"> \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
+n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] </span><script type="math/tex; mode=display"> \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
+n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] </script></span></p>
+<p>and $ \hat{\mathbf{n}} \equiv \left{ n_i \right} $ is the unit vector
+defining the local orientation of the weak plane (a.k.a. the director).</p>
+<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
+in <code>viscous_model.c</code>.
+Apply the constitutive model using:</p>
+<pre><code class="language-python">tau = viscous_model.flux(gradient_matrix)
+</code></pre>
+<hr></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></li>
@@ -1109,16 +1151,6 @@ Apply the constitutive model using:</p>
 <span>(</span><span>unknowns, order=1)</span>
 </code></dt>
 <dd>
-<div class="desc"><h3 id="formulation">Formulation</h3>
-<p>The stress (flux term) is given by</p>
-<p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
-<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
-any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
-<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
-in <code>viscous_model.c</code>.
-Apply the constitutive model using:</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1785,6 +1817,16 @@ Apply the constitutive model using:</p></div>
 
         return True</code></pre>
 </details>
+<div class="desc"><h3 id="formulation">Formulation</h3>
+<p>The stress (flux term) is given by</p>
+<p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
+<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
+any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
+relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
+<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
+in <code>viscous_model.c</code>.
+Apply the constitutive model using:</p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.ViscousFlowModel" href="#underworld3.constitutive_models.ViscousFlowModel">ViscousFlowModel</a></li>
@@ -1795,7 +1837,6 @@ Apply the constitutive model using:</p></div>
 <dl>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.E_eff"><code class="name">prop <span class="ident">E_eff</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1827,10 +1868,10 @@ def E_eff(self):
 
     return self._E_eff</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.E_eff_inv_II"><code class="name">prop <span class="ident">E_eff_inv_II</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1843,12 +1884,10 @@ def E_eff_inv_II(self):
 
     return self._E_eff_inv_II</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.flux"><code class="name">prop <span class="ident">flux</span></code></dt>
 <dd>
-<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
-(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
-may be required to evaluate the flux. For viscoelasticity, the</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1870,10 +1909,12 @@ def flux(self):
 
     return stress</code></pre>
 </details>
+<div class="desc"><p>Computes the effect of the constitutive tensor on the gradients of the unknowns.
+(always uses the <code>c</code> form of the tensor). In general cases, the history of the gradients
+may be required to evaluate the flux. For viscoelasticity, the</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.is_elastic"><code class="name">prop <span class="ident">is_elastic</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1890,10 +1931,10 @@ def is_elastic(self):
 
     return True</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.is_viscoplastic"><code class="name">prop <span class="ident">is_viscoplastic</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1905,10 +1946,10 @@ def is_viscoplastic(self):
 
     return True</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.order"><code class="name">prop <span class="ident">order</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1917,10 +1958,10 @@ def is_viscoplastic(self):
 def order(self):
     return self._order</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.stress_2star"><code class="name">prop <span class="ident">stress_2star</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1938,10 +1979,10 @@ def stress_2star(self):
 
     return self._stress_2star</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.stress_star"><code class="name">prop <span class="ident">stress_star</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1953,6 +1994,7 @@ def stress_star(self):
 
     return self._stress_star</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 </dl>
 <h3>Methods</h3>
@@ -1961,18 +2003,122 @@ def stress_star(self):
 <span>def <span class="ident">plastic_correction</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def plastic_correction(self):
+    parameters = self.Parameters
+
+    if parameters.yield_stress == sympy.oo:
+        return sympy.sympify(1)
+
+    stress = self.stress_projection()
+
+    # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
+    stress_inv_II = sympy.sqrt((stress**2).trace() / 2)
+    correction = parameters.yield_stress / stress_inv_II
+
+    return correction
+    # return sympy.Min(1, correction)</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.stress"><code class="name flex">
 <span>def <span class="ident">stress</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def stress(self):
+    &#34;&#34;&#34;viscoelastic stress projection (no plastic response)&#34;&#34;&#34;
+
+    edot = self.grad_u
+
+    # This is a scalar viscosity ...
+
+    stress = 2 * self.viscosity * edot
+
+    if self.Unknowns.DFDt is not None:
+
+        if self.is_elastic:
+            if self.order != 2:
+                stress_star = self.Unknowns.DFDt.psi_star[0].sym
+                stress += (
+                    2
+                    * self.viscosity
+                    * (
+                        stress_star
+                        / (
+                            2
+                            * self.Parameters.dt_elastic
+                            * self.Parameters.shear_modulus
+                        )
+                    )
+                )
+
+            else:
+                stress_star = self.Unknowns.DFDt.psi_star[0].sym
+                stress_2star = self.Unknowns.DFDt.psi_star[1].sym
+
+                stress += (
+                    2
+                    * self.viscosity
+                    * (
+                        stress_star
+                        / (
+                            self.Parameters.dt_elastic
+                            * self.Parameters.shear_modulus
+                        )
+                        - stress_2star
+                        / (
+                            4
+                            * self.Parameters.dt_elastic
+                            * self.Parameters.shear_modulus
+                        )
+                    )
+                )
+
+    stress = sympy.simplify(stress)
+
+    return stress</code></pre>
+</details>
 <div class="desc"><p>viscoelastic stress projection (no plastic response)</p></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscoElasticPlasticFlowModel.stress_projection"><code class="name flex">
 <span>def <span class="ident">stress_projection</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def stress_projection(self):
+    &#34;&#34;&#34;viscoelastic stress projection (no plastic response)&#34;&#34;&#34;
+
+    edot = self.grad_u
+
+    # This is a scalar viscosity ...
+
+    stress = 2 * self.Parameters.ve_effective_viscosity * edot
+
+    if self.Unknowns.DFDt is not None:
+        stress_star = self.Unknowns.DFDt.psi_star[0]
+
+        if self.is_elastic:
+            # 1st order
+            stress += (
+                self.Parameters.ve_effective_viscosity
+                * stress_star.sym
+                / (self.Parameters.dt_elastic * self.Parameters.shear_modulus)
+            )
+
+    stress = sympy.simplify(stress)
+
+    return stress</code></pre>
+</details>
 <div class="desc"><p>viscoelastic stress projection (no plastic response)</p></div>
 </dd>
 </dl>
@@ -1994,22 +2140,6 @@ def stress_star(self):
 <span>(</span><span>unknowns)</span>
 </code></dt>
 <dd>
-<div class="desc"><p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
-<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
-any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
-<p>In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the <em>yield stress</em>.
-In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
-model needs to define the yield surface carefully and only a sub-set of possible cases is available in <code>Underworld</code></p>
-<p>This constitutive model is a convenience function that simplifies the code at run-time but can be reproduced easily by using the appropriate
-<code>sympy</code> functions in the standard viscous constitutive model. **If you see <code>not~yet~defined</code> in the definition of the effective viscosity, this means
-that you have not yet defined all the required functions. The behaviour is to default to the standard viscous constitutive law if yield terms are
-not specified.</p>
-<p>The Mandel constitutive matrix is available in <code>viscoplastic_model.C</code> and the rank 4 tensor form is
-in <code>viscoplastic_model.c</code>.
-Apply the constitutive model using:</p>
-<hr></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -2257,6 +2387,22 @@ Apply the constitutive model using:</p>
 
         return</code></pre>
 </details>
+<div class="desc"><p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
+<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
+any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
+relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
+<p>In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the <em>yield stress</em>.
+In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
+model needs to define the yield surface carefully and only a sub-set of possible cases is available in <code>Underworld</code></p>
+<p>This constitutive model is a convenience function that simplifies the code at run-time but can be reproduced easily by using the appropriate
+<code>sympy</code> functions in the standard viscous constitutive model. **If you see <code>not~yet~defined</code> in the definition of the effective viscosity, this means
+that you have not yet defined all the required functions. The behaviour is to default to the standard viscous constitutive law if yield terms are
+not specified.</p>
+<p>The Mandel constitutive matrix is available in <code>viscoplastic_model.C</code> and the rank 4 tensor form is
+in <code>viscoplastic_model.c</code>.
+Apply the constitutive model using:</p>
+<hr></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.ViscousFlowModel" href="#underworld3.constitutive_models.ViscousFlowModel">ViscousFlowModel</a></li>
@@ -2269,6 +2415,26 @@ Apply the constitutive model using:</p>
 <span>def <span class="ident">plastic_correction</span></span>(<span>self) ‑> float</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def plastic_correction(self) -&gt; float:
+    parameters = self.Parameters
+
+    if parameters.yield_stress == sympy.oo:
+        return sympy.sympify(1)
+
+    stress = self.stress_projection()
+
+    # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
+
+    stress_II = sympy.sqrt((stress**2).trace() / 2)
+
+    correction = parameters.yield_stress / stress_II
+
+    return correction</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 </dl>
@@ -2291,14 +2457,6 @@ Apply the constitutive model using:</p>
 <span>(</span><span>unknowns)</span>
 </code></dt>
 <dd>
-<div class="desc"><h3 id="viscous-flow-model">Viscous Flow Model</h3>
-<p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
-<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
-any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
-<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
-in <code>viscous_model.c</code>.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -2470,6 +2628,14 @@ in <code>viscous_model.c</code>.</p></div>
             )
         )</code></pre>
 </details>
+<div class="desc"><h3 id="viscous-flow-model">Viscous Flow Model</h3>
+<p><span><span class="MathJax_Preview">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</span><script type="math/tex; mode=display">\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]</script></span></p>
+<p>where $\eta$ is the viscosity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or
+any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
+relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
+constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.</p>
+<p>The Mandel constitutive matrix is available in <code>viscous_model.C</code> and the rank 4 tensor form is
+in <code>viscous_model.c</code>.</p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li><a title="underworld3.constitutive_models.Constitutive_Model" href="#underworld3.constitutive_models.Constitutive_Model">Constitutive_Model</a></li>
@@ -2484,7 +2650,6 @@ in <code>viscous_model.c</code>.</p></div>
 <dl>
 <dt id="underworld3.constitutive_models.ViscousFlowModel.grad_u"><code class="name">prop <span class="ident">grad_u</span></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -2499,11 +2664,10 @@ def grad_u(self):
     # edot = (ddu + ddu.T) / 2
     # return edot</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.constitutive_models.ViscousFlowModel.viscosity"><code class="name">prop <span class="ident">viscosity</span></code></dt>
 <dd>
-<div class="desc"><p>Whatever the consistutive model defines as the effective value of viscosity
-in the form of an uw.expression</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -2515,6 +2679,8 @@ def viscosity(self):
 
     return self.Parameters._shear_viscosity_0</code></pre>
 </details>
+<div class="desc"><p>Whatever the consistutive model defines as the effective value of viscosity
+in the form of an uw.expression</p></div>
 </dd>
 </dl>
 <h3>Inherited members</h3>
@@ -2615,7 +2781,7 @@ def viscosity(self):
 </nav>
 </main>
 <footer id="footer">
-<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.3</a>.</p>
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.5</a>.</p>
 </footer>
 </body>
 </html>

@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
-<meta name="generator" content="pdoc3 0.11.3">
+<meta name="generator" content="pdoc3 0.11.5">
 <title>underworld3.discretisation API documentation</title>
 <meta name="description" content="">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
-<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
 <style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
 <style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
 <script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
@@ -18,6 +18,17 @@
 <script>window.addEventListener('DOMContentLoaded', () => {
 hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
 hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
 })</script>
 </head>
 <body>
@@ -39,6 +50,109 @@ hljs.highlightAll();
 <span>def <span class="ident">MeshVariable</span></span>(<span>varname: str | list,<br>mesh: <a title="underworld3.discretisation.Mesh" href="#underworld3.discretisation.Mesh">Mesh</a>,<br>num_components: int | tuple = None,<br>vtype: ForwardRef('uw.VarType') | None = None,<br>degree: int = 1,<br>continuous: bool = True,<br>varsymbol: str | list = None)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def MeshVariable(
+    varname: Union[str, list],
+    mesh: &#34;Mesh&#34;,
+    num_components: Union[int, tuple] = None,
+    vtype: Optional[&#34;uw.VarType&#34;] = None,
+    degree: int = 1,
+    continuous: bool = True,
+    varsymbol: Union[str, list] = None,
+):
+    &#34;&#34;&#34;
+    The MeshVariable class generates a variable supported by a finite element mesh and the
+    underlying sympy representation that makes it possible to construct expressions that
+    depend on the values of the MeshVariable.
+
+    To set / read nodal values, use the numpy interface via the &#39;data&#39; property.
+
+    Parameters
+    ----------
+    varname :
+        A text name for this variable. Use an R-string if a latex-expression is used
+    mesh :
+        The supporting underworld mesh.
+    num_components :
+        The number of components this variable has.
+        For example, scalars will have `num_components=1`,
+        while a 2d vector would have `num_components=2`.
+    vtype :
+        Optional. The underworld variable type for this variable.
+        If not defined it will be inferred from `num_components`
+        if possible.
+    degree :
+        The polynomial degree for this variable.
+    varsymbol:
+        Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
+
+    &#34;&#34;&#34;
+
+    if isinstance(varname, list):
+        name = varname[0] + R&#34;+ \dots&#34;
+    else:
+        name = varname
+
+    ## Smash if already defined (we need to check this BEFORE the old meshVariable object is destroyed)
+
+    import re
+
+    clean_name = re.sub(r&#34;[^a-zA-Z0-9_]&#34;, &#34;&#34;, name)
+
+    if clean_name in mesh.vars.keys():
+        print(f&#34;Variable with name {name} already exists on the mesh - Skipping.&#34;)
+        return mesh.vars[clean_name]
+
+    if mesh._accessed:
+        ## Before adding a new variable, we first snapshot the data from the mesh.dm
+        ## (if not accessed, then this will not be necessary and may break)
+
+        mesh.update_lvec()
+
+        old_gvec = mesh.dm.getGlobalVec()
+        mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
+
+    new_meshVariable = _MeshVariable(
+        name, mesh, num_components, vtype, degree, continuous, varsymbol
+    )
+
+    if mesh._accessed:
+        ## Recreate the mesh variable dm and restore the data
+
+        dm0 = mesh.dm
+        dm1 = mesh.dm.clone()
+        dm0.copyFields(dm1)
+        dm1.createDS()
+
+        mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
+
+        mesh._lvec.destroy()
+        mesh._lvec = dm1.createLocalVec()
+        new_gvec = dm1.getGlobalVec()
+        new_gvec_sub = new_gvec.getSubVector(mdm_is)
+
+        # Copy the array data and push to gvec
+        new_gvec_sub.array[...] = old_gvec.array[...]
+        new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
+
+        # Copy the data to mesh._lvec and delete gvec
+        dm1.globalToLocal(new_gvec, mesh._lvec)
+
+        dm1.restoreGlobalVec(new_gvec)
+        dm0.restoreGlobalVec(old_gvec)
+
+        # destroy old dm
+        dm0.destroy
+
+        # Set new dm on mesh
+        mesh.dm = dm1
+        mesh.dm_hierarchy[-1] = dm1
+
+    return new_meshVariable</code></pre>
+</details>
 <div class="desc"><p>The MeshVariable class generates a variable supported by a finite element mesh and the
 underlying sympy representation that makes it possible to construct expressions that
 depend on the values of the MeshVariable.</p>
@@ -65,18 +179,253 @@ Over-ride the varname with a symbolic form for printing etc (latex). Should be a
 <span>def <span class="ident">checkpoint_xdmf</span></span>(<span>filename: str,<br>meshUpdates: bool = True,<br>meshVars: list | None = [],<br>swarmVars: list | None = [],<br>index: int | None = 0)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def checkpoint_xdmf(
+    filename: str,
+    meshUpdates: bool = True,
+    meshVars: Optional[list] = [],
+    swarmVars: Optional[list] = [],
+    index: Optional[int] = 0,
+):
+    import h5py
+    import os
+
+    &#34;&#34;&#34;Create xdmf file for checkpoints&#34;&#34;&#34;
+
+    ## Identify the mesh file. Use the
+    ## zeroth one if this option is turned off
+
+    if not meshUpdates:
+        mesh_filename = filename + &#34;.mesh.00000.h5&#34;
+    else:
+        mesh_filename = filename + f&#34;.mesh.{index:05}.h5&#34;
+
+    ## Obtain the mesh information
+
+    h5 = h5py.File(mesh_filename, &#34;r&#34;)
+    if &#34;viz&#34; in h5 and &#34;geometry&#34; in h5[&#34;viz&#34;]:
+        geomPath = &#34;viz/geometry&#34;
+        geom = h5[&#34;viz&#34;][&#34;geometry&#34;]
+    else:
+        geomPath = &#34;geometry&#34;
+        geom = h5[&#34;geometry&#34;]
+
+    if &#34;viz&#34; in h5 and &#34;topology&#34; in h5[&#34;viz&#34;]:
+        topoPath = &#34;viz/topology&#34;
+        topo = h5[&#34;viz&#34;][&#34;topology&#34;]
+    else:
+        topoPath = &#34;topology&#34;
+        topo = h5[&#34;topology&#34;]
+
+    vertices = geom[&#34;vertices&#34;]
+    numVertices = vertices.shape[0]
+    spaceDim = vertices.shape[1]
+    cells = topo[&#34;cells&#34;]
+    numCells = cells.shape[0]
+    numCorners = cells.shape[1]
+    cellDim = topo[&#34;cells&#34;].attrs[&#34;cell_dim&#34;]
+
+    h5.close()
+
+    # We only use a subset of the possible cell types
+    if spaceDim == 2:
+        if numCorners == 3:
+            topology_type = &#34;Triangle&#34;
+        else:
+            topology_type = &#34;Quadrilateral&#34;
+        geomType = &#34;XY&#34;
+    else:
+        if numCorners == 4:
+            topology_type = &#34;Tetrahedron&#34;
+        else:
+            topology_type = &#34;Hexahedron&#34;
+        geomType = &#34;XYZ&#34;
+
+    ## Create the header
+
+    header = f&#34;&#34;&#34;&lt;?xml version=&#34;1.0&#34; ?&gt;
+&lt;!DOCTYPE Xdmf SYSTEM &#34;Xdmf.dtd&#34; [
+&lt;!ENTITY MeshData &#34;{os.path.basename(mesh_filename)}&#34;&gt;
+&#34;&#34;&#34;
+    for var in meshVars:
+        var_filename = filename + f&#34;.mesh.{var.clean_name}.{index:05}.h5&#34;
+        header += f&#34;&#34;&#34;
+&lt;!ENTITY {var.clean_name}_Data &#34;{os.path.basename(var_filename)}&#34;&gt;&#34;&#34;&#34;
+
+    for var in swarmVars:
+        var_filename = filename + f&#34;.proxy.{var.clean_name}.{index:05}.h5&#34;
+        header += f&#34;&#34;&#34;
+&lt;!ENTITY {var.clean_name}_Data &#34;{os.path.basename(var_filename)}&#34;&gt;&#34;&#34;&#34;
+
+    header += &#34;&#34;&#34;
+]&gt;&#34;&#34;&#34;
+
+    xdmf_start = f&#34;&#34;&#34;
+&lt;Xdmf&gt;
+  &lt;Domain Name=&#34;domain&#34;&gt;
+    &lt;DataItem Name=&#34;cells&#34;
+              ItemType=&#34;Uniform&#34;
+              Format=&#34;HDF&#34;
+              NumberType=&#34;Float&#34; Precision=&#34;8&#34;
+              Dimensions=&#34;{numCells} {numCorners}&#34;&gt;
+      &amp;MeshData;:/{topoPath}/cells
+    &lt;/DataItem&gt;
+    &lt;DataItem Name=&#34;vertices&#34;
+              Format=&#34;HDF&#34;
+              Dimensions=&#34;{numVertices} {spaceDim}&#34;&gt;
+      &amp;MeshData;:/{geomPath}/vertices
+    &lt;/DataItem&gt;
+    &lt;!-- ============================================================ --&gt;
+      &lt;Grid Name=&#34;domain&#34; GridType=&#34;Uniform&#34;&gt;
+        &lt;Topology
+           TopologyType=&#34;{topology_type}&#34;
+           NumberOfElements=&#34;{numCells}&#34;&gt;
+          &lt;DataItem Reference=&#34;XML&#34;&gt;
+            /Xdmf/Domain/DataItem[@Name=&#34;cells&#34;]
+          &lt;/DataItem&gt;
+        &lt;/Topology&gt;
+        &lt;Geometry GeometryType=&#34;{geomType}&#34;&gt;
+          &lt;DataItem Reference=&#34;XML&#34;&gt;
+            /Xdmf/Domain/DataItem[@Name=&#34;vertices&#34;]
+          &lt;/DataItem&gt;
+        &lt;/Geometry&gt;
+&#34;&#34;&#34;
+
+    ## The mesh Var attributes
+
+    attributes = &#34;&#34;
+    for var in meshVars:
+        var_filename = filename + f&#34;mesh.{var.clean_name}.{index:05}.h5&#34;
+        if var.num_components == 1:
+            variable_type = &#34;Scalar&#34;
+        else:
+            variable_type = &#34;Vector&#34;
+        # We should add a tensor type here ...
+
+        var_attribute = f&#34;&#34;&#34;
+        &lt;Attribute
+           Name=&#34;{var.clean_name}&#34;
+           Type=&#34;{variable_type}&#34;
+           Center=&#34;Node&#34;&gt;
+          &lt;DataItem ItemType=&#34;HyperSlab&#34;
+                    Dimensions=&#34;1 {numVertices} {var.num_components}&#34;
+                    Type=&#34;HyperSlab&#34;&gt;
+            &lt;DataItem
+               Dimensions=&#34;3 3&#34;
+               Format=&#34;XML&#34;&gt;
+              0 0 0
+              1 1 1
+              1 {numVertices} {var.num_components}
+            &lt;/DataItem&gt;
+            &lt;DataItem
+               DataType=&#34;Float&#34; Precision=&#34;8&#34;
+               Dimensions=&#34;1 {numVertices} {var.num_components}&#34;
+               Format=&#34;HDF&#34;&gt;
+              &amp;{var.clean_name+&#34;_Data&#34;};:/vertex_fields/{var.clean_name+&#34;_P&#34;+str(var.degree)}
+            &lt;/DataItem&gt;
+          &lt;/DataItem&gt;
+        &lt;/Attribute&gt;
+    &#34;&#34;&#34;
+        attributes += var_attribute
+
+    for var in swarmVars:
+        var_filename = filename + f&#34;.proxy.{var.clean_name}.{index:05}.h5&#34;
+        if var.num_components == 1:
+            variable_type = &#34;Scalar&#34;
+        else:
+            variable_type = &#34;Vector&#34;
+        # We should add a tensor type here ...
+
+        var_attribute = f&#34;&#34;&#34;
+        &lt;Attribute
+           Name=&#34;{var.clean_name}&#34;
+           Type=&#34;{variable_type}&#34;
+           Center=&#34;Node&#34;&gt;
+          &lt;DataItem ItemType=&#34;HyperSlab&#34;
+                    Dimensions=&#34;1 {numVertices} {var.num_components}&#34;
+                    Type=&#34;HyperSlab&#34;&gt;
+            &lt;DataItem
+               Dimensions=&#34;3 3&#34;
+               Format=&#34;XML&#34;&gt;
+              0 0 0
+              1 1 1
+              1 {numVertices} {var.num_components}
+            &lt;/DataItem&gt;
+            &lt;DataItem
+               DataType=&#34;Float&#34; Precision=&#34;8&#34;
+               Dimensions=&#34;1 {numVertices} {var.num_components}&#34;
+               Format=&#34;HDF&#34;&gt;
+              &amp;{var.clean_name+&#34;_Data&#34;};:/vertex_fields/{var.clean_name+&#34;_P&#34;+str(var._meshVar.degree)}
+            &lt;/DataItem&gt;
+          &lt;/DataItem&gt;
+        &lt;/Attribute&gt;
+    &#34;&#34;&#34;
+        attributes += var_attribute
+
+    xdmf_end = f&#34;&#34;&#34;
+    &lt;/Grid&gt;
+  &lt;/Domain&gt;
+&lt;/Xdmf&gt;
+    &#34;&#34;&#34;
+
+    xdmf_filename = filename + f&#34;.mesh.{index:05}.xdmf&#34;
+    with open(xdmf_filename, &#34;w&#34;) as fp:
+        fp.write(header)
+        fp.write(xdmf_start)
+        fp.write(attributes)
+        fp.write(xdmf_end)
+
+    return</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.extend_enum"><code class="name flex">
 <span>def <span class="ident">extend_enum</span></span>(<span>inherited)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def extend_enum(inherited):
+   def wrapper(final):
+     joined = {}
+     inherited.append(final)
+     for i in inherited:
+        for j in i:
+           joined[j.name] = j.value
+     return Enum(final.__name__, joined)
+   return wrapper</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.meshVariable_lookup_by_symbol"><code class="name flex">
 <span>def <span class="ident">meshVariable_lookup_by_symbol</span></span>(<span>mesh, sympy_object)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def meshVariable_lookup_by_symbol(mesh, sympy_object):
+    &#34;&#34;&#34;Given a sympy object, scan the mesh variables in `mesh` to find the
+    location (meshvariable, component in the data array) corresponding to the symbol
+    or return None if not found
+    &#34;&#34;&#34;
+
+    for meshvar in mesh.vars.values():
+        if meshvar.sym == sympy_object:
+            return meshvar, -1
+        else:
+            for comp, subvar in enumerate(meshvar.sym_1d):
+                if subvar == sympy_object:
+                    return meshvar, comp
+
+    return None</code></pre>
+</details>
 <div class="desc"><p>Given a sympy object, scan the mesh variables in <code>mesh</code> to find the
 location (meshvariable, component in the data array) corresponding to the symbol
 or return None if not found</p></div>
@@ -85,6 +434,85 @@ or return None if not found</p></div>
 <span>def <span class="ident">petsc_dm_find_labeled_points_local</span></span>(<span>dm, label_name, label_value, sectionIndex=False, verbose=False)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def petsc_dm_find_labeled_points_local(
+    dm, label_name, label_value, sectionIndex=False, verbose=False
+):
+    &#34;&#34;&#34;Identify local points associated with &#34;Label&#34;
+
+    dm -&gt; expects a petscDM object
+    label_name -&gt; &#34;String Name for Label&#34;
+    sectionIndex -&gt; False: leave points as indexed by the relevant section on the dm
+                    True: index into the local coordinate array
+
+    NOTE: Assumes uniform element types
+    &#34;&#34;&#34;
+
+    import numpy as np
+
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    fStart, fEnd = dm.getDepthStratum(2)
+
+    # print(f&#34;Label: {label_name} / {label_value}&#34;)
+    # print(f&#34;points: {pStart}: {pEnd}&#34;)
+    # print(f&#34;edges : {eStart}: {eEnd}&#34;)
+    # print(f&#34;faces : {fStart}: {fEnd}&#34;)
+    # print(f&#34;&#34;, flush=True)
+
+    label = dm.getLabel(label_name)
+    if not label:
+        print(f&#34;{uw.mpi.rank} Label {label_name} is not present on the dm&#34;, flush=True)
+        return np.array([0])
+
+    pointIS = dm.getStratumIS(&#34;depth&#34;, 0)
+    edgeIS = dm.getStratumIS(&#34;depth&#34;, 1)
+    faceIS = dm.getStratumIS(&#34;depth&#34;, 2)
+
+    point_indices = pointIS.getIndices()
+    edge_indices = edgeIS.getIndices()
+    face_indices = faceIS.getIndices()
+
+    # _, iset_lab = label.convertToSection()
+    iset_lab = label.getStratumIS(label_value)
+    if not iset_lab:
+        return None
+
+    # We need to associate edges and faces with their point indices to
+    # build a field representation
+
+    IndicesP = np.intersect1d(iset_lab.getIndices(), pointIS.getIndices())
+    IndicesE = np.intersect1d(iset_lab.getIndices(), edgeIS.getIndices())
+    IndicesF = np.intersect1d(iset_lab.getIndices(), faceIS.getIndices())
+
+    # print(f&#34;Label {label_name}&#34;)
+    # print(f&#34;P -&gt; {len(IndicesP)}, E-&gt;{len(IndicesE)}, F-&gt;{len(IndicesF)},&#34;)
+
+    IndicesFe = np.empty((IndicesF.shape[0], dm.getConeSize(fStart)), dtype=int)
+    for f in range(IndicesF.shape[0]):
+        IndicesFe[f] = dm.getCone(IndicesF[f])
+
+    IndicesFE = np.union1d(IndicesE, IndicesFe)
+
+    # All faces are now recorded as edges
+
+    IndicesFEP = np.empty((IndicesFE.shape[0], dm.getConeSize(eStart)), dtype=int)
+
+    for e in range(IndicesFE.shape[0]):
+        IndicesFEP[e] = dm.getCone(IndicesFE[e])
+
+    # all faces / edges are now points
+
+    if sectionIndex:
+        Indices = np.union1d(IndicesP, IndicesFEP)
+    else:
+        Indices = np.union1d(IndicesP, IndicesFEP) - pStart
+
+    return Indices</code></pre>
+</details>
 <div class="desc"><p>Identify local points associated with "Label"</p>
 <p>dm -&gt; expects a petscDM object
 label_name -&gt; "String Name for Label"
@@ -102,7 +530,6 @@ True: index into the local coordinate array</p>
 <span>(</span><span>plex_or_meshfile,<br>degree=1,<br>simplex=True,<br>coordinate_system_type=None,<br>qdegree=2,<br>markVertices=None,<br>useRegions=None,<br>useMultipleTags=None,<br>filename=None,<br>refinement=None,<br>refinement_callback=None,<br>return_coords_to_bounds=None,<br>boundaries=None,<br>boundary_normals=None,<br>name=None,<br>verbose=False,<br>*args,<br>**kwargs)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Mesh class for uw - documentation needed</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1584,6 +2011,7 @@ True: index into the local coordinate array</p>
 
         return meshVar</code></pre>
 </details>
+<div class="desc"><p>Mesh class for uw - documentation needed</p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li>underworld3.utilities._api_tools.Stateful</li>
@@ -1600,7 +2028,6 @@ True: index into the local coordinate array</p>
 <dl>
 <dt id="underworld3.discretisation.Mesh.CoordinateSystem"><code class="name">prop <span class="ident">CoordinateSystem</span> : <a title="underworld3.coordinates.CoordinateSystem" href="coordinates.html#underworld3.coordinates.CoordinateSystem">CoordinateSystem</a></code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1609,10 +2036,10 @@ True: index into the local coordinate array</p>
 def CoordinateSystem(self) -&gt; CoordinateSystem:
     return self._CoordinateSystem</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.Gamma"><code class="name">prop <span class="ident">Gamma</span> : sympy.vector.coordsysrect.CoordSys3D</code></dt>
 <dd>
-<div class="desc"><p>The mesh coordinate system.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1624,10 +2051,10 @@ def Gamma(self) -&gt; sympy.vector.CoordSys3D:
     &#34;&#34;&#34;
     return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T</code></pre>
 </details>
+<div class="desc"><p>The mesh coordinate system.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.Gamma_N"><code class="name">prop <span class="ident">Gamma_N</span> : sympy.vector.coordsysrect.CoordSys3D</code></dt>
 <dd>
-<div class="desc"><p>The mesh coordinate system.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1639,10 +2066,10 @@ def Gamma_N(self) -&gt; sympy.vector.CoordSys3D:
     &#34;&#34;&#34;
     return self._Gamma</code></pre>
 </details>
+<div class="desc"><p>The mesh coordinate system.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.N"><code class="name">prop <span class="ident">N</span> : sympy.vector.coordsysrect.CoordSys3D</code></dt>
 <dd>
-<div class="desc"><p>The mesh coordinate system.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1654,10 +2081,10 @@ def N(self) -&gt; sympy.vector.CoordSys3D:
     &#34;&#34;&#34;
     return self._N</code></pre>
 </details>
+<div class="desc"><p>The mesh coordinate system.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.X"><code class="name">prop <span class="ident">X</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
 <dd>
-<div class="desc"></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1666,10 +2093,10 @@ def N(self) -&gt; sympy.vector.CoordSys3D:
 def X(self) -&gt; sympy.Matrix:
     return self._CoordinateSystem.X</code></pre>
 </details>
+<div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.block_vars"><code class="name">prop <span class="ident">block_vars</span></code></dt>
 <dd>
-<div class="desc"><p>A list of variables recorded on the mesh.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1681,10 +2108,10 @@ def block_vars(self):
     &#34;&#34;&#34;
     return self._block_vars</code></pre>
 </details>
+<div class="desc"><p>A list of variables recorded on the mesh.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.cdim"><code class="name">prop <span class="ident">cdim</span> : int</code></dt>
 <dd>
-<div class="desc"><p>The mesh dimensionality.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1696,10 +2123,10 @@ def cdim(self) -&gt; int:
     &#34;&#34;&#34;
     return self.dm.getCoordinateDim()</code></pre>
 </details>
+<div class="desc"><p>The mesh dimensionality.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.data"><code class="name">prop <span class="ident">data</span> : numpy.ndarray</code></dt>
 <dd>
-<div class="desc"><p>The array of mesh element vertex coordinates.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1713,10 +2140,10 @@ def data(self) -&gt; numpy.ndarray:
     arr = self.dm.getCoordinatesLocal().array
     return arr.reshape(-1, self.cdim)</code></pre>
 </details>
+<div class="desc"><p>The array of mesh element vertex coordinates.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.dim"><code class="name">prop <span class="ident">dim</span> : int</code></dt>
 <dd>
-<div class="desc"><p>The mesh dimensionality.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1728,11 +2155,10 @@ def dim(self) -&gt; int:
     &#34;&#34;&#34;
     return self.dm.getDimension()</code></pre>
 </details>
+<div class="desc"><p>The mesh dimensionality.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.lvec"><code class="name">prop <span class="ident">lvec</span> : petsc4py.PETSc.Vec</code></dt>
 <dd>
-<div class="desc"><p>Returns a local Petsc vector containing the flattened array
-of all the mesh variables.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1749,10 +2175,11 @@ def lvec(self) -&gt; PETSc.Vec:
         )
     return self._lvec</code></pre>
 </details>
+<div class="desc"><p>Returns a local Petsc vector containing the flattened array
+of all the mesh variables.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.r"><code class="name">prop <span class="ident">r</span> : Tuple[sympy.vector.scalar.BaseScalar]</code></dt>
 <dd>
-<div class="desc"><p>The tuple of base scalar objects (N.x,N.y,N.z) for the mesh.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1764,10 +2191,10 @@ def r(self) -&gt; Tuple[sympy.vector.BaseScalar]:
     &#34;&#34;&#34;
     return self._N.base_scalars()[0 : self.cdim]</code></pre>
 </details>
+<div class="desc"><p>The tuple of base scalar objects (N.x,N.y,N.z) for the mesh.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.rvec"><code class="name">prop <span class="ident">rvec</span> : sympy.vector.vector.Vector</code></dt>
 <dd>
-<div class="desc"><p>The r vector, <code>r = N.x*N.i + N.y*N.j [+ N.z*N.k]</code>.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1788,10 +2215,10 @@ def rvec(self) -&gt; sympy.vector.Vector:
 
     return r_vec</code></pre>
 </details>
+<div class="desc"><p>The r vector, <code>r = N.x*N.i + N.y*N.j [+ N.z*N.k]</code>.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.vars"><code class="name">prop <span class="ident">vars</span></code></dt>
 <dd>
-<div class="desc"><p>A list of variables recorded on the mesh.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -1805,6 +2232,7 @@ def vars(self):
 
     # ToDo: rename this so it does not clash with the vars built in</code></pre>
 </details>
+<div class="desc"><p>A list of variables recorded on the mesh.</p></div>
 </dd>
 </dl>
 <h3>Methods</h3>
@@ -1813,6 +2241,121 @@ def vars(self):
 <span>def <span class="ident">access</span></span>(<span>self,<br>*writeable_vars: <a title="underworld3.discretisation.MeshVariable" href="#underworld3.discretisation.MeshVariable">MeshVariable()</a>)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def access(self, *writeable_vars: &#34;MeshVariable&#34;):
+    &#34;&#34;&#34;
+    This context manager makes the underlying mesh variables data available to
+    the user. The data should be accessed via the variables `data` handle.
+
+    As default, all data is read-only. To enable writeable data, the user should
+    specify which variable they wish to modify.
+
+    Parameters
+    ----------
+    writeable_vars
+        The variables for which data write access is required.
+
+    Example
+    -------
+    &gt;&gt;&gt; import underworld3 as uw
+    &gt;&gt;&gt; someMesh = uw.discretisation.FeMesh_Cartesian()
+    &gt;&gt;&gt; with someMesh.deform_mesh():
+    ...     someMesh.data[0] = [0.1,0.1]
+    &gt;&gt;&gt; someMesh.data[0]
+    array([ 0.1,  0.1])
+    &#34;&#34;&#34;
+
+    import time
+
+    timing._incrementDepth()
+    stime = time.time()
+
+    if writeable_vars is not None:
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
+
+    self._accessed = True
+    deaccess_list = []
+    for var in self.vars.values():
+        # if already accessed within higher level context manager, continue.
+        if var._is_accessed == True:
+            continue
+
+        # set flag so variable status can be known elsewhere
+        var._is_accessed = True
+        # add to de-access list to rewind this later
+        deaccess_list.append(var)
+
+        # create &amp; set vec
+        var._set_vec(available=True)
+
+        # grab numpy object, setting read only if necessary
+        var._data = var.vec.array.reshape(-1, var.num_components)
+
+        if var not in writeable_vars:
+            var._old_data_flag = var._data.flags.writeable
+            var._data.flags.writeable = False
+        else:
+            # increment variable state
+            var._increment()
+
+        # make view for each var component
+
+        for i in range(0, var.shape[0]):
+            for j in range(0, var.shape[1]):
+                # var._data_ij[i, j] = var.data[:, var._data_layout(i, j)]
+                var._data_container[i, j] = var._data_container[i, j]._replace(
+                    data=var.data[:, var._data_layout(i, j)],
+                )
+
+    class exit_manager:
+        def __init__(self, mesh):
+            self.mesh = mesh
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, *args):
+            for var in self.mesh.vars.values():
+                # only de-access variables we have set access for.
+                if var not in deaccess_list:
+                    continue
+                # set this back, although possibly not required.
+                if var not in writeable_vars:
+                    var._data.flags.writeable = var._old_data_flag
+                # perform sync for any modified vars.
+
+                if var in writeable_vars:
+                    indexset, subdm = self.mesh.dm.createSubDM(var.field_id)
+
+                    # sync ghost values
+                    subdm.localToGlobal(var.vec, var._gvec, addv=False)
+                    subdm.globalToLocal(var._gvec, var.vec, addv=False)
+
+                    indexset.destroy()
+                    subdm.destroy()
+                    self.mesh._stale_lvec = True
+
+                var._data = None
+                var._set_vec(available=False)
+                var._is_accessed = False
+
+                for i in range(0, var.shape[0]):
+                    for j in range(0, var.shape[1]):
+                        var._data_container[i, j] = var._data_container[
+                            i, j
+                        ]._replace(
+                            data=f&#34;MeshVariable[...].data is only available within mesh.access() context&#34;,
+                        )
+
+            timing._decrementDepth()
+            timing.log_result(time.time() - stime, &#34;Mesh.access&#34;, 1)
+
+    return exit_manager(self)</code></pre>
+</details>
 <div class="desc"><p>This context manager makes the underlying mesh variables data available to
 the user. The data should be accessed via the variables <code>data</code> handle.</p>
 <p>As default, all data is read-only. To enable writeable data, the user should
@@ -1835,12 +2378,60 @@ array([ 0.1,  0.1])
 <span>def <span class="ident">clone_dm_hierarchy</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def clone_dm_hierarchy(self):
+    &#34;&#34;&#34;
+    Clone the dm hierarchy on the mesh
+    &#34;&#34;&#34;
+
+    dm_hierarchy = self.dm_hierarchy
+
+    new_dm_hierarchy = []
+    for dm in dm_hierarchy:
+        new_dm_hierarchy.append(dm.clone())
+
+    for i, dm in enumerate(new_dm_hierarchy[:-1]):
+        new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
+
+    return new_dm_hierarchy</code></pre>
+</details>
 <div class="desc"><p>Clone the dm hierarchy on the mesh</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.deform_mesh"><code class="name flex">
 <span>def <span class="ident">deform_mesh</span></span>(<span>self, new_coords: numpy.ndarray, verbose=False)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
+    &#34;&#34;&#34;
+    This method will update the mesh coordinates and reset any cached coordinates in
+    the mesh and in equation systems that are registered on the mesh.
+
+    The coord array that is passed in should match the shape of self.data
+    &#34;&#34;&#34;
+
+    coord_vec = self.dm.getCoordinatesLocal()
+    coords = coord_vec.array.reshape(-1, self.cdim)
+    coords[...] = new_coords[...]
+
+    self.dm.setCoordinatesLocal(coord_vec)
+    self.nuke_coords_and_rebuild()
+
+    # This should not be necessary any more as we now check the
+    # coordinates on the DM to see if they have changed (and we rebuild the
+    # discretisation as needed)
+    #
+    # for eq_system in self._equation_systems_register:
+    #     eq_system._rebuild_after_mesh_update(verbose)
+
+    return</code></pre>
+</details>
 <div class="desc"><p>This method will update the mesh coordinates and reset any cached coordinates in
 the mesh and in equation systems that are registered on the mesh.</p>
 <p>The coord array that is passed in should match the shape of self.data</p></div>
@@ -1849,6 +2440,30 @@ the mesh and in equation systems that are registered on the mesh.</p>
 <span>def <span class="ident">generate_xdmf</span></span>(<span>self, filename: str)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def generate_xdmf(self, filename: str):
+    &#34;&#34;&#34;
+    This method generates an xdmf schema for the specified file.
+
+    The filename of the generated file will be the same as the hdf5 file
+    but with the `xmf` extension.
+
+    Parameters
+    ----------
+    filename :
+        File name of the checkpointed hdf5 file for which the
+        xdmf schema will be written.
+    &#34;&#34;&#34;
+    from underworld3.utilities import generateXdmf
+
+    if uw.mpi.rank == 0:
+        generateXdmf(filename)
+
+    return</code></pre>
+</details>
 <div class="desc"><p>This method generates an xdmf schema for the specified file.</p>
 <p>The filename of the generated file will be the same as the hdf5 file
 but with the <code>xmf</code> extension.</p>
@@ -1861,6 +2476,51 @@ xdmf schema will be written.</p></div>
 <span>def <span class="ident">get_closest_cells</span></span>(<span>self, coords: numpy.ndarray) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def get_closest_cells(self, coords: numpy.ndarray) -&gt; numpy.ndarray:
+    &#34;&#34;&#34;
+    This method uses a kd-tree algorithm to find the closest
+    cells to the provided coords. For a regular mesh, this should
+    be exactly the owning cell, but if the mesh is deformed, this
+    is not guaranteed. Note, the nearest point does may not be all
+    that close by - use get_closest_local_cells to filter out points
+    that are (probably) not within any local cell.
+
+    Parameters:
+    -----------
+    coords:
+        An array of the coordinates for which we wish to determine the
+        closest cells. This should be a 2-dimensional array of
+        shape (n_coords,dim).
+
+    Returns:
+    --------
+    closest_cells:
+        An array of indices representing the cells closest to the provided
+        coordinates. This will be a 1-dimensional array of
+        shape (n_coords).
+    &#34;&#34;&#34;
+
+    self._build_kd_tree_index()
+
+    if len(coords) &gt; 0:
+        closest_points, dist, found = self._index.find_closest_point(coords)
+    else:
+        ### returns an empty array if no coords are on a proc
+        closest_points, dist, found = False, False, numpy.array([None])
+
+    if found.any() != None:
+        if not numpy.allclose(found, True):
+            raise RuntimeError(
+                &#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;
+            )
+
+    return self._indexMap[closest_points]</code></pre>
+</details>
 <div class="desc"><p>This method uses a kd-tree algorithm to find the closest
 cells to the provided coords. For a regular mesh, this should
 be exactly the owning cell, but if the mesh is deformed, this
@@ -1882,6 +2542,53 @@ shape (n_coords).</p></div>
 <span>def <span class="ident">get_closest_local_cells</span></span>(<span>self, coords: numpy.ndarray) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_closest_local_cells(self, coords: numpy.ndarray) -&gt; numpy.ndarray:
+    &#34;&#34;&#34;
+    This method uses a kd-tree algorithm to find the closest
+    cells to the provided coords. For a regular mesh, this should
+    be exactly the owning cell, but if the mesh is deformed, this
+    is not guaranteed. Also compares the distance from the cell to the
+    point - if this is larger than the &#34;cell size&#34; then returns -1
+
+    Parameters:
+    -----------
+    coords:
+        An array of the coordinates for which we wish to determine the
+        closest cells. This should be a 2-dimensional array of
+        shape (n_coords,dim).
+
+    Returns:
+    --------
+    closest_cells:
+        An array of indices representing the cells closest to the provided
+        coordinates. This will be a 1-dimensional array of
+        shape (n_coords).
+
+
+    &#34;&#34;&#34;
+
+    # Create index if required
+    self._build_kd_tree_index()
+
+    if len(coords) &gt; 0:
+        closest_points, dist, found = self._index.find_closest_point(coords)
+    else:
+        return -1
+
+    # This is tuned a little bit so that points on a single CPU are never lost
+
+    cells = self._indexMap[closest_points]
+    invalid = (
+        dist &gt; 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
+    )  # 0.25 * self._radii[cells] ** 2
+    cells[invalid] = -1
+
+    return cells</code></pre>
+</details>
 <div class="desc"><p>This method uses a kd-tree algorithm to find the closest
 cells to the provided coords. For a regular mesh, this should
 be exactly the owning cell, but if the mesh is deformed, this
@@ -1902,12 +2609,54 @@ shape (n_coords).</p></div>
 <span>def <span class="ident">get_max_radius</span></span>(<span>self) ‑> float</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_max_radius(self) -&gt; float:
+    &#34;&#34;&#34;
+    This method returns the global maximum distance from any cell centroid to a face.
+    &#34;&#34;&#34;
+
+    ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+    ## does not obtain the minimum radius for the mesh.
+
+    import numpy as np
+
+    all_max_radii = uw.utilities.gather_data(
+        np.array((self._radii.max(),)), bcast=True
+    )
+
+    return all_max_radii.max()</code></pre>
+</details>
 <div class="desc"><p>This method returns the global maximum distance from any cell centroid to a face.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.get_min_radius"><code class="name flex">
 <span>def <span class="ident">get_min_radius</span></span>(<span>self) ‑> float</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_min_radius(self) -&gt; float:
+    &#34;&#34;&#34;
+    This method returns the global minimum distance from any cell centroid to a face.
+    It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
+    returns zero.
+    &#34;&#34;&#34;
+
+    ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+    ## does not obtain the minimum radius for the mesh.
+
+    import numpy as np
+
+    all_min_radii = uw.utilities.gather_data(
+        np.array((self._radii.min(),)), bcast=True
+    )
+
+    return all_min_radii.min()</code></pre>
+</details>
 <div class="desc"><p>This method returns the global minimum distance from any cell centroid to a face.
 It wraps to the PETSc <code>DMPlexGetMinRadius</code> routine. The petsc4py equivalent always
 returns zero.</p></div>
@@ -1916,6 +2665,27 @@ returns zero.</p></div>
 <span>def <span class="ident">get_min_radius_old</span></span>(<span>self) ‑> float</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_min_radius_old(self) -&gt; float:
+    &#34;&#34;&#34;
+    This method returns the global minimum distance from any cell centroid to a face.
+    It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
+    returns zero.
+    &#34;&#34;&#34;
+
+    ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
+    ## does not obtain the minimum radius for the mesh.
+
+    from underworld3.cython.petsc_discretisation import petsc_fvm_get_min_radius
+
+    if (not hasattr(self, &#34;_min_radius&#34;)) or (self._min_radius == None):
+        self._min_radius = petsc_fvm_get_min_radius(self)
+
+    return self._min_radius</code></pre>
+</details>
 <div class="desc"><p>This method returns the global minimum distance from any cell centroid to a face.
 It wraps to the PETSc <code>DMPlexGetMinRadius</code> routine. The petsc4py equivalent always
 returns zero.</p></div>
@@ -1924,6 +2694,37 @@ returns zero.</p></div>
 <span>def <span class="ident">meshVariable_mask_from_label</span></span>(<span>self, label_name, label_value)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def meshVariable_mask_from_label(self, label_name, label_value):
+    &#34;&#34;&#34;Extract single label value and make a point mask - note: this produces a mask on the mesh points and
+    assumes a 1st order mesh. Cell labels are not respected in this function.&#34;&#34;&#34;
+
+    meshVar = MeshVariable(
+        f&#34;Mask_{label_name}_{label_value}&#34;,
+        self,
+        vtype=uw.VarType.SCALAR,
+        degree=1,
+        continuous=True,
+        varsymbol=rf&#34;\cal{{M}}^{{[{label_name:.4}]}}&#34;,
+    )
+
+    point_indices = petsc_dm_find_labeled_points_local(
+        self.dm,
+        label_name,
+        label_value,
+        sectionIndex=False,
+    )
+
+    with self.access(meshVar):
+        meshVar.data[...] = 0.0
+        if point_indices is not None:
+            meshVar.data[point_indices] = 1.0
+
+    return meshVar</code></pre>
+</details>
 <div class="desc"><p>Extract single label value and make a point mask - note: this produces a mask on the mesh points and
 assumes a 1st order mesh. Cell labels are not respected in this function.</p></div>
 </dd>
@@ -1931,12 +2732,131 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
 <span>def <span class="ident">nuke_coords_and_rebuild</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def nuke_coords_and_rebuild(self):
+    # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
+    #
+    #
+
+    self.dm.clearDS()
+    self.dm.createDS()
+
+    self._coord_array = {}
+
+    # let&#39;s go ahead and do an initial projection from linear (the default)
+    # to linear. this really is a nothing operation, but a
+    # side effect of this operation is that coordinate DM DMField is
+    # converted to the required `PetscFE` type. this may become necessary
+    # later where we call the interpolation routines to project from the linear
+    # mesh coordinates to other mesh coordinates.
+
+    options = PETSc.Options()
+    options.setValue(
+        f&#34;meshproj_{self.mesh_instances}_petscspace_degree&#34;, self.degree
+    )
+
+    self.petsc_fe = PETSc.FE().createDefault(
+        self.dim,
+        self.cdim,
+        self.isSimplex,
+        self.qdegree,
+        f&#34;meshproj_{self.mesh_instances}_&#34;,
+    )
+
+    if (
+        PETSc.Sys.getVersion() &lt;= (3, 20, 5)
+        and PETSc.Sys.getVersionInfo()[&#34;release&#34;] == True
+    ):
+        self.dm.projectCoordinates(self.petsc_fe)
+    else:
+        self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
+
+    # now set copy of this array into dictionary
+
+    arr = self.dm.getCoordinatesLocal().array
+
+    key = (
+        self.isSimplex,
+        self.degree,
+        True,
+    )  # True here assumes continuous basis for coordinates ...
+
+    self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
+
+    # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+    self._index = None
+    self._build_kd_tree_index()
+
+    (
+        self._min_size,
+        self._radii,
+        self._centroids,
+        self._search_lengths,
+    ) = self._get_mesh_sizes()
+
+    self.dm.copyDS(self.dm_hierarchy[-1])
+
+    return</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.petsc_save_checkpoint"><code class="name flex">
 <span>def <span class="ident">petsc_save_checkpoint</span></span>(<span>self, index: int, meshVars: list | None = [], outputPath: str | None = '')</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def petsc_save_checkpoint(
+    self,
+    index: int,
+    meshVars: Optional[list] = [],
+    outputPath: Optional[str] = &#34;&#34;,
+):
+    &#34;&#34;&#34;
+
+    Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
+
+    Parameters
+    ----------
+    meshVars:
+        List of UW mesh variables to save. If left empty then just the mesh is saved.
+    index :
+        An index which might correspond to the timestep or output number (for example).
+    outputPath :
+        Path to save the data. If left empty it will save the data in the current working directory.
+    &#34;&#34;&#34;
+
+    if meshVars != None and not isinstance(meshVars, list):
+        raise RuntimeError(&#34;`meshVars` does not appear to be a list.&#34;)
+
+    from underworld3.utilities import generateXdmf
+
+    ### save mesh vars
+    fname = f&#34;./{outputPath}{&#39;_step_&#39;}{index:05d}.h5&#34;
+    xfname = f&#34;./{outputPath}{&#39;_step_&#39;}{index:05d}.xdmf&#34;
+    #### create petsc viewer
+    viewer = PETSc.ViewerHDF5().createHDF5(
+        fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
+    )
+
+    viewer(self.dm)
+
+    ### Empty meshVars will save just the mesh
+    if meshVars != None:
+        for var in meshVars:
+            viewer(var._gvec)
+
+    viewer.destroy()
+
+    if uw.mpi.rank == 0:
+        generateXdmf(fname, xfname)</code></pre>
+</details>
 <div class="desc"><p>Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.</p>
 <h2 id="parameters">Parameters</h2>
 <p>meshVars:
@@ -1950,6 +2870,50 @@ Path to save the data. If left empty it will save the data in the current workin
 <span>def <span class="ident">stats</span></span>(<span>self, uw_function, uw_meshVariable, basis=None)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def stats(self, uw_function, uw_meshVariable, basis=None):
+    &#34;&#34;&#34;
+    Returns various norms on the mesh for the provided function.
+      - size
+      - mean
+      - min
+      - max
+      - sum
+      - L2 norm
+      - rms
+
+      NOTE: this currently assumes scalar variables !
+    &#34;&#34;&#34;
+
+    #       This uses a private work MeshVariable and the various norms defined there but
+    #       could either be simplified to just use petsc vectors, or extended to
+    #       compute integrals over the elements which is in line with uw1 and uw2
+
+    if basis is None:
+        basis = self.N
+
+    from petsc4py.PETSc import NormType
+
+    tmp = uw_meshVariable
+
+    with self.access(tmp):
+        tmp.data[...] = uw.function.evaluate(
+            uw_function, tmp.coords, basis
+        ).reshape(-1, 1)
+
+    vsize = tmp._gvec.getSize()
+    vmean = tmp.mean()
+    vmax = tmp.max()[1]
+    vmin = tmp.min()[1]
+    vsum = tmp.sum()
+    vnorm2 = tmp.norm(NormType.NORM_2)
+    vrms = vnorm2 / numpy.sqrt(vsize)
+
+    return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms</code></pre>
+</details>
 <div class="desc"><p>Returns various norms on the mesh for the provided function.
 - size
 - mean
@@ -1964,6 +2928,49 @@ Path to save the data. If left empty it will save the data in the current workin
 <span>def <span class="ident">update_lvec</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def update_lvec(self):
+    &#34;&#34;&#34;
+    This method creates and/or updates the mesh variable local vector.
+    If the local vector is already up to date, this method will do nothing.
+    &#34;&#34;&#34;
+
+    if self._stale_lvec:
+        if not self._lvec:
+            self.dm.clearDS()
+            self.dm.createDS()
+            # create the local vector (memory chunk) and attach to original dm
+            self._lvec = self.dm.createLocalVec()
+
+        # push avar arrays into the parent dm array
+        a_global = self.dm.getGlobalVec()
+
+        # The field decomposition seems to fail if coarse DMs are present
+        names, isets, dms = self.dm.createFieldDecomposition()
+
+        with self.access():
+            # traverse subdms, taking user generated data in the subdm
+            # local vec, pushing it into a global sub vec
+            for var, subiset, subdm in zip(self.vars.values(), isets, dms):
+                lvec = var.vec
+                subvec = a_global.getSubVector(subiset)
+                subdm.localToGlobal(lvec, subvec, addv=False)
+                a_global.restoreSubVector(subiset, subvec)
+
+
+        for iset in isets:
+            iset.destroy()
+        for dm in dms:
+            dm.destroy()
+
+        self.dm.globalToLocal(a_global, self._lvec)
+        self.dm.restoreGlobalVec(a_global)
+        self._stale_lvec = False</code></pre>
+</details>
 <div class="desc"><p>This method creates and/or updates the mesh variable local vector.
 If the local vector is already up to date, this method will do nothing.</p></div>
 </dd>
@@ -1971,24 +2978,223 @@ If the local vector is already up to date, this method will do nothing.</p></div
 <span>def <span class="ident">view</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def view(self):
+
+    import numpy as np
+
+    if uw.mpi.rank == 0:
+        print(f&#34;\n&#34;)
+        print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
+
+        if len(self.vars) &gt; 0:
+            print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
+            print(f&#34;| ---------------------------------------------------------- |&#34;)
+            for vname in self.vars.keys():
+                v = self.vars[vname]
+                print(
+                    f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                )
+
+            print(f&#34;| ---------------------------------------------------------- |&#34;)
+            print(&#34;\n&#34;, flush=True)
+        else:
+            print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
+
+    ## Boundary information
+
+    if uw.mpi.rank == 0:
+        if len(self.boundaries) &gt; 0:
+            print(
+                f&#34;| Boundary Name            | ID    | Min Size | Max Size |&#34;,
+                flush=True,
+            )
+            print(
+                f&#34;| ------------------------------------------------------ |&#34;,
+                flush=True,
+            )
+        else:
+            print(f&#34;No boundary labels are defined on the mesh\n&#34;, flush=True)
+
+    for bd in self.boundaries:
+        l = self.dm.getLabel(bd.name)
+        if l:
+            i = l.getStratumSize(bd.value)
+        else:
+            i = 0
+
+        ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
+
+        if uw.mpi.rank == 0:
+            print(
+                f&#34;| {bd.name:&lt;20}     | {bd.value:&lt;5} | {ii.min():&lt;8} | {ii.max():&lt;8} |&#34;,
+                flush=True,
+            )
+
+    # ## PETSc marked boundaries:
+    # l = self.dm.getLabel(&#34;All_Boundaries&#34;)
+    # if l:
+    #     i = l.getStratumSize(1001)
+    # else:
+    #     i = 0
+
+    ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
+
+    if uw.mpi.rank == 0:
+        print(
+            f&#34;| {&#39;All_Boundaries&#39;:&lt;20}     | 1001  | {ii.min():&lt;8} | {ii.max():&lt;8} |&#34;,
+            flush=True,
+        )
+
+    ## UW_Boundaries:
+    l = self.dm.getLabel(&#34;UW_Boundaries&#34;)
+    i = 0
+    if l:
+        for bd in self.boundaries:
+            i += l.getStratumSize(bd.value)
+
+    ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
+
+    if uw.mpi.rank == 0:
+        print(
+            f&#34;| {&#39;UW_Boundaries&#39;:&lt;20}     | --    | {ii.min():&lt;8} | {ii.max():&lt;8} |&#34;,
+            flush=True,
+        )
+
+    if uw.mpi.rank == 0:
+        print(f&#34;| ------------------------------------------------------ |&#34;)
+        print(&#34;\n&#34;, flush=True)
+
+    ## Information on the mesh DM
+    self.dm.view()</code></pre>
+</details>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.view_parallel"><code class="name flex">
 <span>def <span class="ident">view_parallel</span></span>(<span>self)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def view_parallel(self):
+    &#34;&#34;&#34;
+    returns the break down of boundary labels from each processor
+    &#34;&#34;&#34;
+
+    import numpy as np
+
+    if uw.mpi.rank == 0:
+        print(f&#34;\n&#34;)
+        print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
+
+        if len(self.vars) &gt; 0:
+            print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
+            print(f&#34;| ---------------------------------------------------------- |&#34;)
+            for vname in self.vars.keys():
+                v = self.vars[vname]
+                print(
+                    f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                )
+
+            print(f&#34;| ---------------------------------------------------------- |&#34;)
+            print(&#34;\n&#34;, flush=True)
+        else:
+            print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
+
+    ## Boundary information on each proc
+
+    if uw.mpi.rank == 0:
+        if len(self.boundaries) &gt; 0:
+            print(f&#34;| Boundary Name            | ID    | Size | Proc ID      |&#34;)
+            print(f&#34;| ------------------------------------------------------ |&#34;)
+        else:
+            print(f&#34;No boundary labels are defined on the mesh\n&#34;)
+
+    ### goes through each processor and gets the label size
+    with uw.mpi.call_pattern(pattern=&#34;sequential&#34;):
+        for bd in self.boundaries:
+            l = self.dm.getLabel(bd.name)
+            if l:
+                i = l.getStratumSize(bd.value)
+            else:
+                i = 0
+            print(
+                f&#34;| {bd.name:&lt;20}     | {bd.value:&lt;5} | {i:&lt;8} | {uw.mpi.rank:&lt;8} |&#34;
+            )
+
+    uw.mpi.barrier()
+
+    if uw.mpi.rank == 0:
+        print(f&#34;| ------------------------------------------------------ |&#34;)
+        print(&#34;\n&#34;, flush=True)
+
+    ## Information on the mesh DM
+    # self.dm.view()</code></pre>
+</details>
 <div class="desc"><p>returns the break down of boundary labels from each processor</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.vtk"><code class="name flex">
 <span>def <span class="ident">vtk</span></span>(<span>self, filename: str)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def vtk(self, filename: str):
+    &#34;&#34;&#34;
+    Save mesh to the specified file
+    &#34;&#34;&#34;
+
+    viewer = PETSc.Viewer().createVTK(filename, &#34;w&#34;, comm=PETSc.COMM_WORLD)
+    viewer(self.dm)
+    viewer.destroy()</code></pre>
+</details>
 <div class="desc"><p>Save mesh to the specified file</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.write"><code class="name flex">
 <span>def <span class="ident">write</span></span>(<span>self, filename: str, index: int | None = None)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def write(self, filename: str, index: Optional[int] = None):
+    &#34;&#34;&#34;
+    Save mesh data to the specified hdf5 file.
+
+
+    Parameters
+    ----------
+    filename :
+        The filename for the mesh checkpoint file.
+    index :
+        Not yet implemented. An optional index which might
+        correspond to the timestep (for example).
+
+    &#34;&#34;&#34;
+
+    viewer = PETSc.ViewerHDF5().create(filename, &#34;w&#34;, comm=PETSc.COMM_WORLD)
+    if index:
+        raise RuntimeError(&#34;Recording `index` not currently supported&#34;)
+        ## JM:To enable timestep recording, the following needs to be called.
+        ## I&#39;m unsure if the corresponding xdmf functionality is enabled via
+        ## the PETSc xdmf script.
+        # viewer.pushTimestepping(viewer)
+        # viewer.setTimestep(index)
+
+    viewer(self.dm)
+
+    # Not sure if the files are correctly written if we do not explicitly destroy the viewer
+    viewer.destroy()</code></pre>
+</details>
 <div class="desc"><p>Save mesh data to the specified hdf5 file.</p>
 <h2 id="parameters">Parameters</h2>
 <p>filename :
@@ -2001,6 +3207,72 @@ correspond to the timestep (for example).</p></div>
 <span>def <span class="ident">write_checkpoint</span></span>(<span>self,<br>filename: str,<br>meshUpdates: bool = True,<br>meshVars: list | None = [],<br>swarmVars: list | None = [],<br>index: int | None = 0,<br>unique_id: bool | None = False)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def write_checkpoint(
+    self,
+    filename: str,
+    meshUpdates: bool = True,
+    meshVars: Optional[list] = [],
+    swarmVars: Optional[list] = [],
+    index: Optional[int] = 0,
+    unique_id: Optional[bool] = False,
+):
+    &#34;&#34;&#34;Write data in a format that can be restored for restarting the simulation
+    The difference between this and the visualisation is 1) the parallel section needs
+    to be stored to reload the data correctly, and 2) the visualisation information (vertex form of fields)
+    is not stored. This routines uses dmplex *VectorView and *VectorLoad functionality
+
+    &#34;&#34;&#34;
+
+    # The mesh checkpoint is the same as the one required for visualisation
+
+    if not meshUpdates:
+        from pathlib import Path
+
+        mesh_file = filename + &#34;.mesh.0.h5&#34;
+        path = Path(mesh_file)
+        if not path.is_file():
+            self.save(mesh_file)
+
+    else:
+        self.save(filename + f&#34;.mesh.{index:05}.h5&#34;)
+
+    # Checkpoint file
+
+    if unique_id:
+        checkpoint_file = filename + f&#34;{uw.mpi.unique}.checkpoint.{index:05}.h5&#34;
+    else:
+        checkpoint_file = filename + f&#34;.checkpoint.{index:05}.h5&#34;
+
+    self.dm.setName(&#34;uw_mesh&#34;)
+    viewer = PETSc.ViewerHDF5().create(checkpoint_file, &#34;w&#34;, comm=PETSc.COMM_WORLD)
+
+    # Store the parallel-mesh section information for restoring the checkpoint.
+    self.dm.sectionView(viewer, self.dm)
+
+    if meshVars is not None:
+        for var in meshVars:
+            iset, subdm = self.dm.createSubDM(var.field_id)
+            subdm.setName(var.clean_name)
+            self.dm.globalVectorView(viewer, subdm, var._gvec)
+            self.dm.sectionView(viewer, subdm)
+            # v._gvec.view(viewer) # would add viz information plus a duplicate of the data
+
+    if swarmVars is not None:
+        for svar in swarmVars:
+            var = svar._meshVar
+            iset, subdm = self.dm.createSubDM(var.field_id)
+            subdm.setName(var.clean_name)
+            self.dm.globalVectorView(viewer, subdm, var._gvec)
+            self.dm.sectionView(viewer, subdm)
+
+    uw.mpi.barrier()  # should not be required
+    viewer.destroy()</code></pre>
+</details>
 <div class="desc"><p>Write data in a format that can be restored for restarting the simulation
 The difference between this and the visualisation is 1) the parallel section needs
 to be stored to reload the data correctly, and 2) the visualisation information (vertex form of fields)
@@ -2010,6 +3282,85 @@ is not stored. This routines uses dmplex <em>VectorView and </em>VectorLoad func
 <span>def <span class="ident">write_timestep</span></span>(<span>self,<br>filename: str,<br>index: int,<br>outputPath: str | None = '',<br>meshVars: list | None = [],<br>swarmVars: list | None = [],<br>meshUpdates: bool = False)</span>
 </code></dt>
 <dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def write_timestep(
+    self,
+    filename: str,
+    index: int,
+    outputPath: Optional[str] = &#34;&#34;,
+    meshVars: Optional[list] = [],
+    swarmVars: Optional[list] = [],
+    meshUpdates: bool = False,
+):
+    &#34;&#34;&#34;
+    Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
+    An xdmf file is generated and the overall package can then be read by paraview or pyvista.
+    Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order
+    &#34;&#34;&#34;
+
+    options = PETSc.Options()
+    options.setValue(&#34;viewer_hdf5_sp_output&#34;, True)
+    options.setValue(&#34;viewer_hdf5_collective&#34;, False)
+
+    output_base_name = os.path.join(outputPath, filename)
+
+    # check the directory where we will write checkpoint
+    dir_path = os.path.dirname(output_base_name)  # get directory
+
+    # check if path exists
+    if os.path.exists(os.path.abspath(dir_path)):  # easier to debug abs
+        pass
+    else:
+        raise RuntimeError(f&#34;{os.path.abspath(dir_path)} does not exist&#34;)
+
+    # check if we have write access
+    if os.access(os.path.abspath(dir_path), os.W_OK):
+        pass
+    else:
+        raise RuntimeError(f&#34;No write access to {os.path.abspath(dir_path)}&#34;)
+
+    # Checkpoint the mesh file itself if required
+
+    if not meshUpdates:
+        from pathlib import Path
+
+        mesh_file = output_base_name + &#34;.mesh.00000.h5&#34;
+        path = Path(mesh_file)
+        if not path.is_file():
+            self.write(mesh_file)
+
+    else:
+        self.write(output_base_name + f&#34;.mesh.{index:05}.h5&#34;)
+
+    if meshVars is not None:
+        for var in meshVars:
+            save_location = (
+                output_base_name + f&#34;.mesh.{var.clean_name}.{index:05}.h5&#34;
+            )
+            var.write(save_location)
+
+    if swarmVars is not None:
+        for svar in swarmVars:
+            save_location = (
+                output_base_name + f&#34;.proxy.{svar.clean_name}.{index:05}.h5&#34;
+            )
+            svar.write(save_location)
+
+    if uw.mpi.rank == 0:
+        checkpoint_xdmf(
+            output_base_name,
+            meshUpdates,
+            meshVars,
+            swarmVars,
+            index,
+        )
+
+    return</code></pre>
+</details>
 <div class="desc"><p>Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
 An xdmf file is generated and the overall package can then be read by paraview or pyvista.
 Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order</p></div>
@@ -2085,7 +3436,7 @@ Vertex values (on the mesh points) are stored for all variables regardless of th
 </nav>
 </main>
 <footer id="footer">
-<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.3</a>.</p>
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.5</a>.</p>
 </footer>
 </body>
 </html>
