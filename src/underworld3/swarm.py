@@ -359,7 +359,7 @@ class SwarmVariable(Stateful, uw_object):
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
-        # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+        # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
 
         import numpy as np
