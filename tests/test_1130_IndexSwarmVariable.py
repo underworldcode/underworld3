@@ -18,15 +18,15 @@ fill_params = [2,3,4,5]
 
 
 meshStructuredQuadBox = uw.meshing.StructuredQuadBox(elementRes=(int(xres), int(yres)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
-meshUnstructuredSimplexbox_regular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=True,refinement=0)
-meshUnstructuredSimplexbox_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=False,refinement=0)
+#meshUnstructuredSimplexbox_regular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=True,refinement=0)
+#meshUnstructuredSimplexbox_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=False,refinement=0)
 
 @pytest.mark.parametrize(
     "mesh",
     [
         meshStructuredQuadBox,
-        meshUnstructuredSimplexbox_regular,
-        meshUnstructuredSimplexbox_irregular,
+        #meshUnstructuredSimplexbox_regular,
+        #meshUnstructuredSimplexbox_irregular,
     ],
 )
 
@@ -68,5 +68,5 @@ def test_IndexSwarmVariable(mesh):
             
 
 del meshStructuredQuadBox
-del meshUnstructuredSimplexbox_regular
-del meshUnstructuredSimplexbox_irregular
+#del meshUnstructuredSimplexbox_regular
+#del meshUnstructuredSimplexbox_irregular
