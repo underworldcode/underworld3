@@ -63,12 +63,27 @@ def configure():
             join(PETSC_DIR, "include"),
         ]
         LIBRARY_DIRS += [join(PETSC_DIR, PETSC_ARCH, "lib")]
+        petscvars = join(PETSC_DIR,PETSC_ARCH,"lib","petsc","conf","petscvariables")
     else:
         if PETSC_ARCH:
             pass  # XXX should warn ...
         INCLUDE_DIRS += [join(PETSC_DIR, "include")]
         LIBRARY_DIRS += [join(PETSC_DIR, "lib")]
+        petscvars = join(PETSC_DIR,"lib","petsc","conf","petscvariables")
+
     LIBRARIES += ["petsc"]
+
+    # set CC compiler to be PETSc's compiler.
+    # This ought include mpi's details, ie mpicc --showme,
+    # needed to compile UW cython extensions
+    compiler = ""
+    with open(petscvars,"r") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("CC ="):
+                compiler = line.split("=",1)[1].strip()
+    #print(f"***\n The c compiler is: {compiler}\n*****")
+    os.environ["CC"] = compiler
 
     # PETSc for Python
     INCLUDE_DIRS += [petsc4py.get_include()]
