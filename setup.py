@@ -168,9 +168,24 @@ extensions = [
     ),
 ]
 
+# util function to get version information from file with __version__=
+def get_version(filename):
+    try:
+        with open(filename, "r") as f:
+            for line in f:
+                if line.startswith("__version__"):
+                    # extract the version string and strip it
+                    version = line.split('"')[1].strip().strip('"').strip("'")
+                return version
+    except FileNotFoundError:
+        print( f"Cannot get version information from {filename}" )
+    except:
+        raise
+
 setup(
     name="underworld3",
     packages=find_packages(),
+    version=get_version('./src/underworld3/_version.py'),
     package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
     ext_modules=cythonize(
         extensions,

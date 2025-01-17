@@ -32,13 +32,6 @@ class _uw_record():
             # get the start time of this piece of code
             start_t = datetime.datetime.now().isoformat()
 
-            # get the git version
-            try:
-                gv = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
-            except Exception as e:
-                gv = None
-                #warnings.warn( f"Warning: Underworld can't retrieving commit hash: {e}" )
-
             # get petsc information
             try:
                 import petsc4py as _petsc4py
@@ -74,7 +67,6 @@ class _uw_record():
             from underworld3 import __version__ as uw_version
 
             self._install_data = {
-                "git_version": gv,
                 "uw_version": uw_version,
                 "python_versions": sys.version,
                 "petsc_version": petsc_version,
