@@ -416,7 +416,7 @@ def sym_1d(self):
 </dd>
 <dt id="underworld3.swarm.NodalPointSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f1a54620670>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f234e4b0670>, verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3433,7 +3433,7 @@ SwarmPICLayout.SUBDIVISION defines points on the centroid of a sub-divided refer
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
-        # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+        # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
 
         import numpy as np
@@ -3723,7 +3723,7 @@ def sym_1d(self):
 </summary>
 <pre><code class="python">def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
     # An inverse-distance mapping is quite robust here ... as long
-    # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+    # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
     # We try to eliminate contributions from recently remeshed particles
 
     import numpy as np

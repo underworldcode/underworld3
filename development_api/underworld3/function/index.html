@@ -90,9 +90,9 @@ el.replaceWith(d);
                 for t in x.as_ordered_terms():
                     d += sympy.diff(t, variable, evaluate=False)
 
-                return d
+                return
 
-            derivative = expression.applyfunc(f)
+            derivative = expression.applyfunc(f).as_mutable()
 
             # f = lambda x: sympy.diff(
             #         x, variable, evaluate=False

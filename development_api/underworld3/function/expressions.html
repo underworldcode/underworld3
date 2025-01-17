@@ -248,7 +248,7 @@ el.replaceWith(d);
             )
 
         self.symbol = self._unique_name
-        self.sym = sympy.sympify(sym)
+        self.sym = sym     # Accept anything, sympify is opinionated
         self.description = description
 
         # this is not being honoured by sympy Symbol so do it by hand
@@ -286,7 +286,10 @@ el.replaceWith(d);
 
     @sym.setter
     def sym(self, new_value):
-        self._sym = sympy.sympify(new_value)
+        if isinstance(new_value, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+            self._sym = new_value
+        else:
+            self._sym = sympy.sympify(new_value)
         return
 
     # TODO: DEPRECATION
@@ -312,7 +315,7 @@ el.replaceWith(d);
 
     @property
     def expression(self):
-        return self.sub_all()
+        return self.unwrap()
 
     @property
     def description(self):
@@ -326,19 +329,6 @@ el.replaceWith(d);
     def unwrap(self, keep_constants=True, return_self=True):
         return unwrap(self, keep_constants=keep_constants)
 
-    # # This should be the thing that gets called by sympy when we ask for self.diff()
-    # def fdiff(self, variable, evaluate=True):
-    #     if evaluate:
-    #         return sympy.diff(self.unwrap(keep_constants=False, return_self=False), variable, evaluate=True)
-    #     else:
-    #         if isinstance(self, (sympy.Matrix, sympy.ImmutableMatrix)):
-    #             f = lambda x: sympy.diff(
-    #                     x, variable, evaluate=False
-    #                 )
-    #             return self.applyfunc(f)
-    #         else:
-    #             return sympy.diff(self, variable, evaluate=False)
-
     def sub_all(self, keep_constants=True):
         return substitute(self, keep_constants=keep_constants)
 
@@ -348,7 +338,7 @@ el.replaceWith(d);
         return self_s
 
     def dependencies(self, keep_constants=True):
-        return extract_expressions(self)
+        return extract_expressions(self, keep_constants)
 
     def all_dependencies(self, keep_constants=True):
         return extract_expressions_and_functions(self)
@@ -364,6 +354,11 @@ el.replaceWith(d);
 
         level = max(1, level)
 
+        if isinstance(self.sym, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+            latex = self.sym._repr_latex_()
+        else:
+            latex = sympy.sympify(self.sym)._repr_latex_()
+
         ## feedback on this instance
         if sympy.sympify(self.sym) is not None:
             display(
@@ -373,7 +368,7 @@ el.replaceWith(d);
                     + &#34;$&#34;
                     + self._repr_latex_()
                     + &#34;$=$&#34;
-                    + sympy.sympify(self.sym)._repr_latex_()
+                    + latex
                 ),
             )
             if description == True:
@@ -451,7 +446,7 @@ def description(self):
 </summary>
 <pre><code class="python">@property
 def expression(self):
-    return self.sub_all()</code></pre>
+    return self.unwrap()</code></pre>
 </details>
 <div class="desc"></div>
 </dd>
@@ -555,7 +550,7 @@ def value(self):
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">def dependencies(self, keep_constants=True):
-    return extract_expressions(self)</code></pre>
+    return extract_expressions(self, keep_constants)</code></pre>
 </details>
 <div class="desc"></div>
 </dd>
