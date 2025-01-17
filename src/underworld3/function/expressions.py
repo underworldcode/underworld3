@@ -17,10 +17,9 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
     else:
         expr = fn
 
-    for atom in extract_expressions(fn):
-
+    for atom in extract_expressions_and_functions(fn):
         if isinstance(atom, UWexpression):
-            if keep_constants and isinstance(atom.sym, (float, int, Number)):
+            if keep_constants and is_constant_expr(atom):
                 continue
             else:
                 expr = expr.subs(atom, atom.sym)
@@ -57,7 +56,7 @@ def _unwrap_expressions(fn, keep_constants=True, return_self=True):
 
     while expr is not expr_s:
         expr = expr_s
-        expr_s = _substitute_all_once(expr, keep_constants)
+        expr_s = _substitute_all_once(expr, keep_constants, return_self)
 
     return expr
 
@@ -192,7 +191,7 @@ class UWexpression(uw_object, Symbol):
             )
 
         self.symbol = self._unique_name
-        self.sym = sympy.sympify(sym)
+        self.sym = sym     # Accept anything, sympify is opinionated
         self.description = description
 
         # this is not being honoured by sympy Symbol so do it by hand
@@ -230,7 +229,10 @@ class UWexpression(uw_object, Symbol):
 
     @sym.setter
     def sym(self, new_value):
-        self._sym = sympy.sympify(new_value)
+        if isinstance(new_value, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+            self._sym = new_value
+        else:
+            self._sym = sympy.sympify(new_value)
         return
 
     # TODO: DEPRECATION
@@ -256,7 +258,7 @@ class UWexpression(uw_object, Symbol):
 
     @property
     def expression(self):
-        return self.sub_all()
+        return self.unwrap()
 
     @property
     def description(self):
@@ -270,19 +272,6 @@ class UWexpression(uw_object, Symbol):
     def unwrap(self, keep_constants=True, return_self=True):
         return unwrap(self, keep_constants=keep_constants)
 
-    # # This should be the thing that gets called by sympy when we ask for self.diff()
-    # def fdiff(self, variable, evaluate=True):
-    #     if evaluate:
-    #         return sympy.diff(self.unwrap(keep_constants=False, return_self=False), variable, evaluate=True)
-    #     else:
-    #         if isinstance(self, (sympy.Matrix, sympy.ImmutableMatrix)):
-    #             f = lambda x: sympy.diff(
-    #                     x, variable, evaluate=False
-    #                 )
-    #             return self.applyfunc(f)
-    #         else:
-    #             return sympy.diff(self, variable, evaluate=False)
-
     def sub_all(self, keep_constants=True):
         return substitute(self, keep_constants=keep_constants)
 
@@ -292,7 +281,7 @@ class UWexpression(uw_object, Symbol):
         return self_s
 
     def dependencies(self, keep_constants=True):
-        return extract_expressions(self)
+        return extract_expressions(self, keep_constants)
 
     def all_dependencies(self, keep_constants=True):
         return extract_expressions_and_functions(self)
@@ -308,6 +297,11 @@ class UWexpression(uw_object, Symbol):
 
         level = max(1, level)
 
+        if isinstance(self.sym, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+            latex = self.sym._repr_latex_()
+        else:
+            latex = sympy.sympify(self.sym)._repr_latex_()
+
         ## feedback on this instance
         if sympy.sympify(self.sym) is not None:
             display(
@@ -317,7 +311,7 @@ class UWexpression(uw_object, Symbol):
                     + "$"
                     + self._repr_latex_()
                     + "$=$"
-                    + sympy.sympify(self.sym)._repr_latex_()
+                    + latex
                 ),
             )
             if description == True:
