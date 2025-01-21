@@ -4082,12 +4082,12 @@ def BoxInternalBoundary(
                 nx,ny = elementRes
                 ny_a,ny_b = zelementRes
 
-            p1 = gmsh.model.geo.add_point(xmin, ymin, cellSize)
-            p2 = gmsh.model.geo.add_point(xmax, ymin, cellSize)
-            p3 = gmsh.model.geo.add_point(xmin, ymax, cellSize)
-            p4 = gmsh.model.geo.add_point(xmax, ymax, cellSize)
-            p5 = gmsh.model.geo.add_point(xmin, yint, cellSize)
-            p6 = gmsh.model.geo.add_point(xmax, yint, cellSize)
+            p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, cellSize)
+            p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0, cellSize)
+            p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, cellSize)
+            p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, cellSize)
+            p5 = gmsh.model.geo.add_point(xmin, yint, 0.0, cellSize)
+            p6 = gmsh.model.geo.add_point(xmax, yint, 0.0, cellSize)
 
             l1 = gmsh.model.geo.add_line(p1, p2)
             l2 = gmsh.model.geo.add_line(p3, p4)

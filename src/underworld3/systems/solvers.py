@@ -460,9 +460,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         # )
 
         # backward compatibility
-        self._u_f0 = self._bodyforce
+        self._u_f0 = -self._bodyforce
 
-        return self._bodyforce
+        return -self._bodyforce
 
     @property
     def F1(self):
