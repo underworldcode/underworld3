@@ -14,17 +14,19 @@ dependencies:
   - mesalib
   - pyvista
   # gmsh dependencies (prefer not to use apt.txt)
-  - xorg-libxft
-  - xorg-libxinerama
+  #  - xorg-libxft
+  #- xorg-libxinerama
   - pytest
   - numpy<2
+  - scipy
+  - sympy
+  - ipython
+  - mpi4py
+  - h5py
+  - trame
+  - ipywidgets
   - pip
   - pip:
-    - scipy
-    - sympy
-    - ipython
-    - mpi4py
-    - h5py
     - gmsh
     - gmsh-api
     - jupyterlab
