@@ -460,9 +460,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         # )
 
         # backward compatibility
-        self._u_f0 = -self._bodyforce
+        self._u_f0 = self._bodyforce
 
-        return -self._bodyforce
+        return self._bodyforce
 
     @property
     def F1(self):
@@ -572,9 +572,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def bodyforce(self, value):
         self.is_setup = False
         if isinstance(value, uw.function.expressions.UWexpression):
-            self._bodyforce.sym = value.sym
+            self._bodyforce.sym = -1*value.sym
         else:
-            self._bodyforce.sym = sympy.Matrix(value)
+            self._bodyforce.sym = sympy.Matrix(-1*value)
 
     @property
     def saddle_preconditioner(self):
