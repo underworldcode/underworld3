@@ -11,9 +11,6 @@ dependencies:
   - mpmath<=1.3
   - mesalib
   - pyvista
-  # gmsh dependencies (prefer not to use apt.txt)
-  #  - xorg-libxft
-  #- xorg-libxinerama
   - pytest
   - numpy<2
   - scipy
