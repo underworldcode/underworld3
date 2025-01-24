@@ -20,13 +20,13 @@ dependencies:
   - h5py=*=mpi*
   - trame
   - ipywidgets
+  - gmsh
+  - jupyterlab
+  - jupytext
+  - trame-vtk
+  - trame-vuetify
+  - pygments
+  - pint
   - pip
   - pip:
-    - gmsh
-    - gmsh-api
-    - jupyterlab
-    - jupytext
-    - pygments
-    - trame-vtk
-    - trame-vuetify
-    - pint
+    - gmsh-api # is this used still in UW?
