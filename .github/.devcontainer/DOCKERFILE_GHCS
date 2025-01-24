@@ -7,11 +7,6 @@ RUN conda install -n base -c conda-forge mamba
 COPY .devcontainer/uw_environment.yml  /tmp/conda-tmp/
 RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yml 
 
-RUN export PETSC_DIR=/opt/conda \
-    && pip install petsc4py 
-
-RUN pip install gmsh
-
 # Add other dependencies that can't be installed correctly.
 
 ##
