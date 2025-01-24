@@ -1,9 +1,11 @@
 import underworld3 as uw
 from mpi4py import MPI
 
-# simple parallel test to determine if nodal swarm particles 
-# are lost during large (going to different processors) advection steps
-# make sure to run this with 4 processors to ensure that test scenario happens
+# A simple parallel test of the SemiLagrangian's nodal swarm advection.
+# This determines if nodal swarm particles are lost during
+# large (going to different processors) advection steps.
+# NOTE: Make sure to run this with 4 processors to ensure
+# that the test scenario (particles going beyond neighboring processors) happens.
 
 dt = 1
 maxsteps = 1
@@ -40,7 +42,7 @@ DuDt = uw.systems.ddt.SemiLagrangian(
 with mesh.access(v):
     v.data[:, 0] = velocity
 
-# we are only interested in monitoring the number of nodal swarm particles 
+# we are only interested in monitoring the number of nodal swarm particles
 # before and after advection
 with mesh.access(vec_tst):
     vec_tst.data[:, 0] = 1.
@@ -66,7 +68,8 @@ with DuDt._nswarm_psi.access(DuDt._nswarm_psi):
 
 after_total = comm.allreduce(after_adv_swarm_num, op = MPI.SUM)
 
-# print(f"After advection; rank {uw.mpi.rank} particles: {after_adv_swarm_num}", flush = True)
+#print(f"After advection; rank {uw.mpi.rank} particles: {after_adv_swarm_num}", flush = True)
+
 if uw.mpi.rank == 0:
     print(f"Before advection; Total particles in all ranks: {before_total}", flush = True)
     print(f"After advection; Total particles in all ranks: {after_total}", flush = True)
