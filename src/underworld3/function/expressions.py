@@ -229,7 +229,7 @@ class UWexpression(uw_object, Symbol):
 
     @sym.setter
     def sym(self, new_value):
-        if isinstance(new_value, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+        if isinstance(new_value, (sympy.Basic, sympy.matrices.MatrixBase)):
             self._sym = new_value
         else:
             self._sym = sympy.sympify(new_value)
@@ -297,7 +297,7 @@ class UWexpression(uw_object, Symbol):
 
         level = max(1, level)
 
-        if isinstance(self.sym, (sympy.Basic, sympy.matrices.matrixbase.MatrixBase)):
+        if isinstance(self.sym, (sympy.Basic, sympy.matrices.MatrixBase)):
             latex = self.sym._repr_latex_()
         else:
             latex = sympy.sympify(self.sym)._repr_latex_()
