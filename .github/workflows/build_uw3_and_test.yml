@@ -16,29 +16,22 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Conda environment with Micromamba
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
-          environment-file: ./.github/workflows/envs/build_uw_test.yml
+          environment-file: ./environment.yaml
           cache-downloads: true
           cache-environment: true
 
-      # the following may be needed if conda-forge is out of date
-      # - name: Add compatible petsc4py
-      #   shell: bash -l {0}
-      #   run: |
-      #    export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
-      #    pip3 install petsc4py==3.18 --upgrade
-
-      # gmsh is such a pig to install properly
-      - name: Add gmsh package
-        shell: bash -l {0}
-        run: |
-          pip install gmsh
+          # # gmsh is such a pig to install properly
+          # - name: Add gmsh package
+          #   shell: bash -l {0}
+          #   run: |
+          #     pip install gmsh
 
       - name: Build UW3
         shell: bash -l {0}
@@ -47,7 +40,7 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
-          python3 setup.py develop
+          #python3 setup.py develop
           pip3 install -e .
 
       # Test - split into short, low memory tests 0???_*
