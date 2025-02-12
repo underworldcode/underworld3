@@ -57,13 +57,13 @@ This API documentation is build with
 ```shell
 ./docs.sh
 ```
+Open `uw3_api_docs/index.html` to browse. 
 
 ## To uninstall
 
 ```shell
 pip uninstall underworld3
 ```
-Open `uw3_api_docs/index.html` to browse. 
 
 """
 
