@@ -10,9 +10,6 @@ import os
 import numpy
 import petsc4py
 
-# PETSc version check - 3.18 or higher
-from petsc4py import PETSc
-
 def configure():
 
     INCLUDE_DIRS = []
