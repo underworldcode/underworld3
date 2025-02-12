@@ -41,7 +41,7 @@ jobs:
           echo "UW - version " ${VERSION}
 
           #python3 setup.py develop
-          pip3 install -e .
+          ./compile.py
 
       # Test - split into short, low memory tests 0???_*
       #        and longer, solver-based tests 1???_*
