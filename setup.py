@@ -13,44 +13,47 @@ import petsc4py
 # PETSc version check - 3.18 or higher
 from petsc4py import PETSc
 
-petscVer = PETSc.Sys().getVersion()
-print(f"Petsc version: {petscVer[0]}.{petscVer[1]}.{petscVer[2]} ", flush=True)
-
-if petscVer[0] != 3 or petscVer[1] < 18:
-    msg = (
-        f"Minimum compatible version of petsc is 3.18.0, detected version "
-        f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
-    )
-    raise RuntimeError(msg)
-
 def configure():
 
     INCLUDE_DIRS = []
     LIBRARY_DIRS = []
     LIBRARIES = []
 
+    PETSC_DIR = ""
+    PETSC_ARCH = ""
+
+    # try get PETSC_DIR from petsc pip installation
+    try:
+        import petsc
+        PETSC_DIR = petsc.get_petsc_dir()
+    except:
+        pass
+
     # PETSc
     import os
 
-    print(f"PETSC_INFO - {petsc4py.get_config()}")
-    PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
-    PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
-
-    print(f"PETSC_DIR: {PETSC_DIR}")
-    print(f"PETSC_ARCH: {PETSC_ARCH}")
+    if not os.path.exists(PETSC_DIR):
+        print(f"PETSC_INFO from petsc4py - {petsc4py.get_config()}")
+        PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
+        PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
 
     # It is preferable to use the petsc4py paths to the
     # petsc libraries for consistency but the pip installation
     # of PETSc sometimes points to the temporary setup up path
 
     if not os.path.exists(PETSC_DIR):
+        print(f"PETSC_DIR {PETSC_DIR} is bad - trying another ...")
+
         if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python3.1", "site-packages", "petsc") # symlink to latest python
+            import sys
+            py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python"+py_version, "site-packages", "petsc") # symlink to latest python
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
         else:
             PETSC_DIR = os.environ["PETSC_DIR"]
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
+    print(f"Using PETSc:")
     print(f"PETSC_DIR: {PETSC_DIR}")
     print(f"PETSC_ARCH: {PETSC_ARCH}")
 
