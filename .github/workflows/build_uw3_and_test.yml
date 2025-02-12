@@ -40,9 +40,10 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
-          #python3 setup.py develop
-          ./compile.py
-
+          ## TODO. Use compile.sh once it is in development
+          pip install -e . --no-build-isolation
+          ## ./compile.sh
+          
       # Test - split into short, low memory tests 0???_*
       #        and longer, solver-based tests 1???_*
 
