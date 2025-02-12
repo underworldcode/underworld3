@@ -31,13 +31,14 @@ Refer to the Dockerfile for uw3 build instructions.
 
 To install from the repository
 ```shell
-pip install .
+./compile.sh
 ```
 
-The in-place `pip` installation may be helpful for developers (after the above)
+An in-place installation may be helpful for developers (as distinct from above)
+(`compile.sh` is a convenience wrapper to `pip install`)
 
 ```shell
-pip install -e .
+pip install -e . --no-build-isolation
 ```
 
 To clean the git repository or all files ... be careful.
@@ -57,6 +58,11 @@ This API documentation is build with
 ./docs.sh
 ```
 
+## To uninstall
+
+```shell
+pip uninstall underworld3
+```
 Open `uw3_api_docs/index.html` to browse. 
 
 """
