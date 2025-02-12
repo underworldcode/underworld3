@@ -158,6 +158,7 @@ extensions = [
             "src/underworld3/function/petsc_tools.c",
         ],
         extra_compile_args=extra_compile_args,
+        define_macros=[('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')],
         **conf,
     ),
     Extension(
