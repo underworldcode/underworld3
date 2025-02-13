@@ -12,7 +12,7 @@ dependencies:
   - mesalib
   - pyvista
   - pytest
-  - numpy<2
+  - numpy
   - scipy
   - sympy
   - ipython
