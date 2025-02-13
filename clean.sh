@@ -9,4 +9,4 @@ find . -name __pycache__ -exec rm -r {} +
 rm -rf underworld3.egg-info
 rm -rf .pytest_cache
 rm -rf uw3_api_docs
-git clean -dfX
+#git clean -dfX
