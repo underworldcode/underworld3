@@ -2,4 +2,4 @@
 
 set -x  # show commands
 
-pip install . --no-build-isolation -v | tee compile.log
+pip install . --no-build-isolation 2>&1 | tee compile.log
