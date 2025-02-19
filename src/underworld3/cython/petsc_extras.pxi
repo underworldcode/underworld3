@@ -67,10 +67,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
     PetscErrorCode DMGetLabel(PetscDM dm, const char name[], PetscDMLabel *label)
 
-    # These do not appear to be in the 3.17.2 release
-    PetscErrorCode DMProjectCoordinates(PetscDM dm, PetscFE disc)
-    PetscErrorCode DMCreateSubDM(PetscDM, PetscInt, const PetscInt *, PetscIS *, PetscDM *)
-    PetscErrorCode DMDestroy(PetscDM *dm)
+    PetscErrorCode DMPlexOrientLabel(DM dm, DMLabel label)
 
     # Changed recently: Commit 6858538e
     # PetscErrorCode DMGetPeriodicity(PetscDM dm, PetscReal **maxCell, PetscReal **Lstart, PetscReal **L)
