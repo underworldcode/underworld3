@@ -2768,10 +2768,10 @@ def RegionalSphericalBox(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        North = 3
-        South = 4
-        East = 5
-        West = 6
+        North = 4
+        South = 3
+        East = 6
+        West = 5
 
     lt_min = np.radians(SWcorner[1])
     lt_max = np.radians(NEcorner[1])
@@ -2903,16 +2903,16 @@ def RegionalSphericalBox(
 
         ## These probably have the wrong names ... check ordering
 
-        gmsh.model.addPhysicalGroup(2, [3], boundaries.North.value)
+        gmsh.model.addPhysicalGroup(2, [4], boundaries.North.value)
         gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
 
-        gmsh.model.addPhysicalGroup(2, [4], boundaries.West.value)
+        gmsh.model.addPhysicalGroup(2, [6], boundaries.West.value)
         gmsh.model.setPhysicalName(2, boundaries.West.value, "West")
 
-        gmsh.model.addPhysicalGroup(2, [5], boundaries.South.value)
+        gmsh.model.addPhysicalGroup(2, [3], boundaries.South.value)
         gmsh.model.setPhysicalName(2, boundaries.South.value, "South")
 
-        gmsh.model.addPhysicalGroup(2, [6], boundaries.East.value)
+        gmsh.model.addPhysicalGroup(2, [5], boundaries.East.value)
         gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
 
         gmsh.model.addPhysicalGroup(3, [1, 2], 99999)
