@@ -79,10 +79,11 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         return indices.getIndices() if indices else None
 
     # Cache face and vertex labels to avoid repeated function calls
-    label_cache = {
-        (name, value): get_label_indices(plex, name, value)
-        for dim_labels in vertices_labels_values for name, value in dim_labels
-    }
+    label_cache = {}
+    for dim_labels in vertices_labels_values:
+        for name, value in dim_labels:
+            indices = get_label_indices(plex, name, value) - tet_End
+            label_cache[(name, value)] = indices
 
     # Label Triangles 
     face_labels_values = (
@@ -104,7 +105,8 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         conepoints = np.sort(coneclose[-3:] - tet_End)
 
         if np.any(np.all(sorted_triangles == conepoints, axis=1)):
-            plex.setLabelValue("TriangleLabels", i, 300 + triangles_indx[i - tri_Start])
+            index_tri = np.where(np.all(sorted_triangles == conepoints, axis=1))[0][0] # fetch the where conepoints matches in sorted_triangles list
+            plex.setLabelValue("TriangleLabels", i, 300 + triangles_indx[index_tri])
 
         # boundary labeling using cached indices
         for j in range(dim):
@@ -126,6 +128,7 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         conepoints = np.sort(coneclose[-2:] - tet_End)
 
         if np.any(np.all(sorted_edges == conepoints, axis=1)):
-            plex.setLabelValue("LineLabels", i, 200 + edges_indx[i - edge_Start])
+            index_edge = np.where(np.all(sorted_edges == conepoints, axis=1))[0][0] # fetch the where conepoints matches in sorted_edges list
+            plex.setLabelValue("LineLabels", i, 200 + edges_indx[index_edge])
 
     return plex
