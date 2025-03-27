@@ -17,7 +17,8 @@ In addition to the notebooks in this brief set of examples, there are a number o
   - [The Underworld Website / Blog](https://www.underworldcode.org)
 
   - [The API documentation](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
-  (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text. There is also a set of [API docs](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html) for the development branch.
+  (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text. 
+  There is also a set of [API docs](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html) for the development branch.
 
   - The [`underworld3` GitHub repository](https://github.com/underworldcode/underworld3) is the most active development community for the code.
 
