@@ -34,6 +34,6 @@ More specifically:
         git checkout -b newFeature
     ```
 
-  3. Make your changes! Remember to write comments, write a test if applicable and follow the [coding style](/docs/developmer/CodingStyle.md) of the project for details).
+  3. Make your changes! Remember to write comments, write a test if applicable and follow the [coding style](/docs/developer/CodingStyle.md) of the project for details).
 
   4. Push your changes to your GitHub fork and then submit a PR to the ``development`` branch of underworld3 via Github.
