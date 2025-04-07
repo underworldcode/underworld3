@@ -1,4 +1,4 @@
-This page provides information about contributing to Underworld’s codebase.
+This page provides information about contributing to Underworld3's (aka Underworld’s) codebase.
 
 For contributions of Underworld models or workflows, please see https://github.com/underworld-community
 
@@ -25,15 +25,15 @@ More specifically:
         git clone https://github.com/YOUR_GITHUB_ACCOUNT/underworld3
     ```
 
-  2. Add the master Underworld repository as an additional remote source (named `uwmaster`) for your local repo and pull down its latest changesets. Checkout to the master/development repo state, and then create a new local branch which will contain your forthcoming changes.
+  2. Add the original Underworld repository as an additional remote source (named `upsteam`) for your local repo and pull down its latest changesets. Checkout to the upstream/development repo state, and then create a new local branch which will contain your forthcoming changes.
 
     ```bash
-        git remote add uwmaster https://github.com/underworldcode/underworld3
-        git pull uwmaster
-        git checkout uwmaster/development
+        git remote add upstream https://github.com/underworldcode/underworld3
+        git pull upstream
+        git checkout upstream/development
         git checkout -b newFeature
     ```
 
   3. Make your changes! Remember to write comments, write a test if applicable and follow the [coding style](/docs/developer/CodingStyle.md) of the project for details).
 
-  4. Push your changes to your GitHub fork and then submit a PR to the ``development`` branch of underworld3 via Github.
+  4. Push your changes to your GitHub fork and then submit a PR to the ``development`` branch of Underworld via Github.
