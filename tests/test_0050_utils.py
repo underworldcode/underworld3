@@ -58,7 +58,7 @@ def vis_model(mesh):
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
+    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.sqrt(v.sym.dot(v.sym)))
     pvmesh.point_data["V1"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym[1])
 
     pl.add_mesh(
