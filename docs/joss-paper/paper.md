@@ -64,25 +64,32 @@ The symbolic forms in (2,3) are used to construct a finite element representatio
 
 Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects as well as mathematical ones. This allows symbolic prototyping and validation of PDE solvers in scripts that can immediately be deployed in a parallel HPC environment.
 
+
 # Statement of need
 
-The problems in global planetary dynamics and tectonics that `underworld3` is designed to address have a number of defining characteristics:  geomaterials are non-linear, viscoelastic/plastic and have a propensity for strain-dependent softening during deformation; strain localisation is very common as a consequence. Geological structures that we seek to understand are often emergent over the course of loading and are observed in the very-large deformation limit. Material properties have strong spatial gradients arising from pressure and temperature dependence and jumps of several orders of magnitude resulting from material interfaces.
+Underworld is built around a general, symbolic partial differential equation solver but provides template forms to solve common geophysical fluid dynamics problems such as the Stokes equation for mantle convection, subduction-zone evolution, lithospheric deformation, glacial isostatic adjustment, ice flow; Navier-Stokes equations for finite Prandtl number fluid flow and short-timescale, viscoelastic deformation; and Darcy Flow for porous media problems including groundwater flow and contaminant transport.
+
+These problems have a number of defining characteristics:  geomaterials are non-linear, viscoelastic/plastic and have a propensity for strain-dependent softening during deformation; strain localisation is very common as a consequence. Geological structures that we seek to understand are often emergent over the course of loading and are observed in the very-large deformation limit. Material properties have strong spatial gradients arising from pressure and temperature dependence and jumps of several orders of magnitude resulting from material interfaces.
 
 `underworld3` automatically handles much of the complexity of combining the non-linearities in rheology, boundary conditions and time-discretisation, forming their derivatives, and simplifying expressions to generate an efficient, parallel `PETSc` script. `underworld3` provides a textbook-like mathematical experience for users who are confident in understanding physical modelling. A number of equation-system templates are provided for typical geophysical fluid dynamics problems such as Stokes-flow, Navier-Stokes-flow, and Darcy flow which provide both usage and mathematical documentation at run-time.
 
 ## Mathematical Framework
 
-`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. The strong-form of the problem is defined through the functional $\mathcal{F}$ that expresses the balance between fluxes, forces, and unknowns:
+The symbolic layer of `underworld3` works with the "strong form" of a problem which is typically how the governing equations are derived and disseminated in publications and textbooks. The finite element method is based on a corresponding weak or variational form [e.g. 'standard' finite element textbooks such as @hughesFiniteElementMethod1987, @batheFiniteElementMethod2008, @zienkiewiczFiniteElementMethod2013].
+
+`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. We start from the strong-form of the problem which is defined through the functional $\mathcal{F}$ that expresses the balance between fluxes ($F(u, \nabla u)$), forces, $f(u, \nabla u)$, and unknowns $u$:
 
 \begin{equation}\label{eq:petsc-strong-form}
 \mathcal{F}(u) \sim \nabla \cdot F(u, \nabla u) - f(u, \nabla u) = 0
 \end{equation}
 
-The discrete weak form and its Jacobian derivative can be expressed as follows
+The discrete weak form and its Jacobian derivative would then be expressed as follows:
 
 \begin{equation}\label{eq:petsc-weak-form}
  \mathcal{F}(u) \sim \sum_e \epsilon_e^T \left[ B^T W f(u^q, \nabla u^q) + \sum_k D_k^T W F^k (u^q, \nabla u^q) \right] = 0
 \end{equation}
+
+Here $\epsilon$ is the element restriction operator; $B$ is the matrix of basis function derivatives and $D$ is the constitutive matrix that, together, describe the relation between the unknowns and the flux. $q$ indicates that the values are determined at a set of quadrature points, and $W$ is a diagonal matrix of weights for these points.
 
 \begin{equation}\label{eq:petsc-jacobian}
  \mathcal{F}'(u) \sim \sum _e \epsilon _{e^T}
@@ -107,14 +114,24 @@ The discrete weak form and its Jacobian derivative can be expressed as follows
 The symbolic representation of the strong-form that is encoded in `underworld3` is:
 
 \begin{equation}\label{eq:sympy-strong-form}
-\underbrace{ \Bigl[ {D u}/{D t} \Bigr]}_{\dot{u} }
--\nabla \cdot \underbrace{\Bigl[ \mathrm{F}(u, \nabla u) \Bigr]}_{\mathbf{F}}
--\underbrace{\Bigl[ \mathrm{H}(\mathbf{x},t) \Bigr]}_{\mathbf{h}}
+ \Bigl[ {D u}/{D t} \Bigr]
+-\nabla \cdot \Bigl[ \sigma(u, \nabla u, \mathbf{x}, t)) \Bigr]
+-\Bigl[ \mathrm{h}(u, \nabla u, \mathbf{x},t) \Bigr]
 = 0
 \end{equation}
 
-This symbolic form (\ref{eq:sympy-strong-form})
-contains material / time derivatives of the unknowns which are not present in the `PETSc` template because, after discretisation, these simplify to produce terms that are combinations of fluxes and flux history terms (which modify $F$) and forces (which modify $h$). In `underworld3`, the user interacts with the time derivatives themselves and `sympy` combines all the flux-like terms and all the force-like terms just prior to forming the Jacobians and compiling the `C` functions.
+Here $\mathrm{H}$ represents sources and sinks of $u$, and ${D u}/{D t}$ is the material time derivative of $u$. The material / time derivatives of the unknowns are not present in the `PETSc` template but, after time-discretisation, they produce terms that are combinations of fluxes and flux history terms (which combine with $\boldsymbol{\sigma}$ to contribute to $F$) and forces (which combine with $\mathbf{h}$ to contribute to $f$). The explicit time / position dependence in $\sigma$ is to highlight potential changes to boundary conditions or constitutive properties.
+
+In `underworld3`, the user interacts with the time derivatives explicitly, and provides strong-form expressions for the template \ref{eq:sympy-strong-form}. `Sympy` automatically gathers all the flux-like terms and all the force-like terms into the form required by the `PETSc` template. All evaluations, derivatives and simplifications of functions in the `underworld3` symbolic layer are deferred until final assembly of the `PETSc` template and the compilation of the `C` functions.
+
+The main benefits of combining `sympy` with the `PETSc` weak form template is a user environment that 1) provides symbolic, mathematical introspection, particularly in the context of Jupyter notebooks; 2) eliminates much of the `python` or `C` coding required for complex constitutive models; 3) eliminates any need for users to compute derivatives for the Newton solvers in `PETSc`.
+
+# State of the Field
+
+`Underworld3` is one among a small number of specialised codes for studying Earth deformation on medium to long geological time-scales. Early geodynamics codes, of which there were too many to recite individually, were highly specialised for specific tasks. A second generation of codes are built around generic partial differential equation solvers with scriptable interfaces.  These include: Aspect [C++ plugin architecture: @heisterHighAccuracyMantle2017], Underworld 1 and 2 [xml object composition / python scripting respectively, @mansourUnderworld2PythonGeodynamics2020; @moresiComputationalApproachesStudying2007], Fluidity [xml combined with python scripting, @daviesFluidityFullyUnstructured2011a], Milamin [Matlab front end, @dabrowskiMILAMINMATLABbasedFinite2008], LaMEM [julia scripting @boriskausLaMEM2024], TerraFERMA [Unified Form Language, @wilsonTerraFERMARansparent2017], GAdopt [Unified Form Language / python @daviesAutomaticFiniteelementMethods2022].
+
+`Underworld3` uses python and the python package `sympy` as its scripting interface. The advantage of `sympy` is that it is a fully featured symbolic algebra package which allows much of the logic of the mathematical problem description to be defined symbolically and dynamically rather than as static relationships between objects. It also provides deep, mathematical introspection when developing and debugging models.
+
 
 # Discussion
 
@@ -133,3 +150,23 @@ The development and testing of our codes is also supported by computational reso
 The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
 
 # References
+
+
+
+## Reviewer comments
+
+~~The statement of need could use one sentence at the beginning containing examples of actual applications that Underword3 is designed to solve. Currently you mention the properties of the models (nonlinear rheology, strain weakening, ...), but applications like mantle convection, lithosphere dynamics, porous flow, crustal deformation would make it much easier to users to understand if the code would work for them.~~
+
+JOSS requires a section on the state of the field and how Underworld3 fits into it. This is currently missing. From the JOSS guidelines: State of the field: Do the authors describe how this software compares to other commonly-used packages? I think you already describe in depth what makes Underworld special. One additional sentence would be sufficient to mention that there are packages fully based on python and matlab with examples, and fully compiled modeling packages with some examples, and that Underworld bridges the gap (or something similar, the content is up to you, but you need that section/comparison).
+
+~~The section on the mathematical framework is pretty dense with little introduction and explanation. I know this was probably done to save space and keep a 2-page limit, but in order to be more useful I would suggest to at least:~~
+
+~~rephrase the sentence at the beginning to something like this: `Underworld generates the weak forms of the equations through PETSc, which provides a template form for the automatic generation ...~~
+
+~~make sure in line 51 and 52 to mention which symbols in the equation represent the fluxes (F), forces (f) and unknowns (u).~~
+
+~~equations 2 and 3 contain a number of unexplained symbols that would be necessary to spell out to make this useful to the average reader.~~
+
+~~add one sentence at the end of the section that explains what the benefit of using this framework is in the context of underworld.~~
+
+Generally I think the paper is in great shape, and with the small changes above (even if it adds half a page of length or so) should be ready to be published.

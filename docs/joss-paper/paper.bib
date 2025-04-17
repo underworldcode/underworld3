@@ -1,4 +1,4 @@
-@techreport{balay.etal.PETSc.2024,
+@techreport{balayPETScTAOUsers2024,
   title = {{{PETSc}}/{{TAO Users Manual V}}.3.21},
   author = {Balay, S. and Abhyankar, S. and Adams, M. and Benson, S. and Brown, J. and Brune, P. and Buschelman, K. and Constantinescu, E. and Dalcin, L. and Dener, A. and Eijkhout, V. and Faibussowitsch, J. and Gropp, W. and Hapla, V. and Isaac, T. and Jolivet, P. and Karpeev, D. and Kaushik, D. and Knepley, M. and Kong, F. and Kruger, S. and May, D. and McInnes, L. and Mills, R. and Mitchell, L. and Munson, T. and Roman, J. and Rupp, K. and Sanan, P. and Sarich, J. and Smith, B. and Zampini, S. and Zhang, H. and Zhang, H. and Zhang, J.},
   year = {2024},
@@ -10,6 +10,22 @@
   file = {/Users/lmoresi/Zotero/storage/FTX49W6P/Balay et al. - 2024 - PETScTAO Users Manual V.3.21.pdf}
 }
 
+@incollection{batheFiniteElementMethod2008,
+  title = {Finite {{Element Method}}},
+  booktitle = {Wiley {{Encyclopedia}} of {{Computer Science}} and {{Engineering}}},
+  author = {Bathe, Klaus-J{\dbend}{\dbend}rgen},
+  editor = {Wah, Benjamin W.},
+  year = {2008},
+  month = jun,
+  pages = {ecse159},
+  publisher = {John Wiley \& Sons, Inc.},
+  address = {Hoboken, NJ, USA},
+  doi = {10.1002/9780470050118.ecse159},
+  urldate = {2022-04-27},
+  isbn = {978-0-470-05011-8},
+  langid = {english}
+}
+
 @article{behnel2011cython,
   title = {Cython: {{The}} Best of Both Worlds},
   author = {Behnel, Stefan and Bradshaw, Robert and Citro, Craig and Dalcin, Lisandro and Seljebotn, Dag Sverre and Smith, Kurt},
@@ -18,11 +34,11 @@
   volume = {13},
   number = {2},
   pages = {31--39},
-  doi = {10.1109/mcse.2010.118},
-  publisher = {IEEE}
+  publisher = {IEEE},
+  doi = {10.1109/mcse.2010.118}
 }
 
-@article{beucher.etal.UWGeodynamics.2019,
+@article{beucherUWGeodynamicsTeachingResearch2019,
   title = {{{UWGeodynamics}}: {{A}} Teaching and Research Tool for Numerical Geodynamic Modelling},
   shorttitle = {{{UWGeodynamics}}},
   author = {Beucher, Romain and Moresi, Louis and Giordani, Julian and Mansour, John and Sandiford, Dan and Farrington, Rebecca and Mondy, Luke and Mallard, Claire and Rey, Patrice and Duclaux, Guillaume and Kaluza, Owen and Laik, Arijit and Mor{\'o}n, Sara},
@@ -39,6 +55,38 @@ ZSCC: NoCitationData[s0]},
   file = {/Users/lmoresi/Zotero/storage/G5UVAHXM/Beucher et al. - 2019 - UWGeodynamics A teaching and research tool for nu.pdf}
 }
 
+@misc{boriskausLaMEM2024,
+  title = {{{LaMEM}}},
+  shorttitle = {{{UniMainzGeo}}/{{LaMEM}}},
+  author = {Boris Kaus and Anton Popov and Garrett\_Ito and Arne Spang and {greuber} and Iskander Ibragimov and {xinxinwang01} and {thomasAmorrow} and Adina Pusok and APiccolo89 and ChristianSchuler and Patrick Sanan and {sasbrune} and YangJianfeng2015 and Arthur Bauville and {birand-zz}},
+  year = {2024},
+  month = feb,
+  doi = {10.5281/ZENODO.10718860},
+  urldate = {2025-04-17},
+  abstract = {What's Changed PhaseTransitions - fix for problems with phase==0 by @boriskaus in https://github.com/UniMainzGeo/LaMEM/pull/15 Bugfix upon restart  by @APiccolo89 in https://github.com/UniMainzGeo/LaMEM/pull/16 Plasticity regularisation by @boriskaus in https://github.com/UniMainzGeo/LaMEM/pull/17 New Contributors @APiccolo89 made their first contribution in https://github.com/UniMainzGeo/LaMEM/pull/16 Full Changelog: https://github.com/UniMainzGeo/LaMEM/compare/2.1.3...v2.1.4},
+  copyright = {Creative Commons Attribution 4.0 International},
+  howpublished = {Zenodo}
+}
+
+@article{dabrowskiMILAMINMATLABbasedFinite2008,
+  title = {{{MILAMIN}}: {{MATLAB}}-based Finite Element Method Solver for Large Problems},
+  shorttitle = {{{MILAMIN}}},
+  author = {Dabrowski, M. and Krotkiewski, M. and Schmid, D. W.},
+  year = {2008},
+  month = apr,
+  journal = {Geochem Geophys Geosyst},
+  volume = {9},
+  number = {4},
+  pages = {2007GC001719},
+  issn = {1525-2027, 1525-2027},
+  doi = {10.1029/2007GC001719},
+  urldate = {2025-04-17},
+  abstract = {The finite element method (FEM) combined with unstructured meshes forms an elegant and versatile approach capable of dealing with the complexities of problems in Earth science. Practical applications often require high-resolution models that necessitate advanced computational strategies. We therefore developed ``Million a Minute'' (MILAMIN), an efficient MATLAB implementation of FEM that is capable of setting up, solving, and postprocessing two-dimensional problems with one million unknowns in one minute on a modern desktop computer. MILAMIN allows the user to achieve numerical resolutions that are necessary to resolve the heterogeneous nature of geological materials. In this paper we provide the technical knowledge required to develop such models without the need to buy a commercial FEM package, programming compiler-language code, or hiring a computer specialist. It has been our special aim that all the components of MILAMIN perform efficiently, individually and as a package. While some of the components rely on readily available routines, we develop others from scratch and make sure that all of them work together efficiently. One of the main technical focuses of this paper is the optimization of the global matrix computations. The performance bottlenecks of the standard FEM algorithm are analyzed. An alternative approach is developed that sustains high performance for any system size. Applied optimizations eliminate Basic Linear Algebra Subprograms (BLAS) drawbacks when multiplying small matrices, reduce operation count and memory requirements when dealing with symmetric matrices, and increase data transfer efficiency by maximizing cache reuse. Applying loop interchange allows us to use BLAS on large matrices. In order to avoid unnecessary data transfers between RAM and CPU cache we introduce loop blocking. The optimization techniques are useful in many areas as demonstrated with our MILAMIN applications for thermal and incompressible flow (Stokes) problems. We use these to provide performance comparisons to other open source as well as commercial packages and find that MILAMIN is among the best performing solutions, in terms of both speed and memory usage. The corresponding MATLAB source code for the entire MILAMIN, including input generation, FEM solver, and postprocessing, is available from the authors (               http://www.milamin.org               ) and can be downloaded as auxiliary material.},
+  copyright = {http://onlinelibrary.wiley.com/termsAndConditions\#vor},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/2L6VENKN/Dabrowski et al. - 2008 - MILAMIN MATLAB‐based finite element method solver for large problems.pdf}
+}
+
 @article{dalcinpazklercosimo2011,
   title = {Parallel Distributed Computing Using {{Python}}},
   author = {Dalcin, Lisandro D. and Paz, Rodrigo R. and Kler, Pablo A. and Cosimo, Alejandro},
@@ -51,13 +99,49 @@ ZSCC: NoCitationData[s0]},
   doi = {10.1016/j.advwatres.2011.04.013}
 }
 
-@article{granger.perez.Jupyter.2021,
+@article{daviesAutomaticFiniteelementMethods2022,
+  title = {Towards Automatic Finite-Element Methods for Geodynamics via {{Firedrake}}},
+  author = {Davies, D. Rhodri and Kramer, Stephan C. and Ghelichkhan, Sia and Gibson, Angus},
+  year = {2022},
+  month = jul,
+  journal = {Geosci. Model Dev.},
+  volume = {15},
+  number = {13},
+  pages = {5127--5166},
+  issn = {1991-9603},
+  doi = {10.5194/gmd-15-5127-2022},
+  urldate = {2025-04-17},
+  abstract = {Abstract. Firedrake is an automated system for solving partial differential equations using the finite-element method. By applying sophisticated performance optimisations through automatic code-generation techniques, it provides a means of creating accurate, efficient, flexible, easily extensible, scalable, transparent and reproducible research software that is ideally suited to simulating a wide range of problems in geophysical fluid dynamics. Here, we demonstrate the applicability of Firedrake for geodynamical simulation, with a focus on mantle dynamics. The accuracy and efficiency of the approach are confirmed via comparisons against a suite of analytical and benchmark cases of systematically increasing complexity, whilst parallel scalability is demonstrated up to 12\,288 compute cores, where the problem size and the number of processing cores are simultaneously increased. In addition, Firedrake's flexibility is highlighted via straightforward application to different physical (e.g. complex non-linear rheologies, compressibility) and geometrical (2-D and 3-D Cartesian and spherical domains) scenarios. Finally, a representative simulation of global mantle convection is examined, which incorporates 230\,Myr of plate motion history as a kinematic surface boundary condition, confirming Firedrake's suitability for addressing research problems at the frontiers of global mantle dynamics research.},
+  copyright = {https://creativecommons.org/licenses/by/4.0/},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/NYDXUW75/Davies et al. - 2022 - Towards automatic finite-element methods for geodynamics via Firedrake.pdf}
+}
+
+@article{daviesFluidityFullyUnstructured2011a,
+  title = {Fluidity: {{A}} Fully Unstructured Anisotropic Adaptive Mesh Computational Modeling Framework for Geodynamics: {{FLUIDITY-MODELING GEODYNAMICAL FLOWS}}},
+  shorttitle = {Fluidity},
+  author = {Davies, D. Rhodri and Wilson, Cian R. and Kramer, Stephan C.},
+  year = {2011},
+  month = jun,
+  journal = {Geochem. Geophys. Geosyst.},
+  volume = {12},
+  number = {6},
+  pages = {n/a-n/a},
+  issn = {15252027},
+  doi = {10.1029/2011GC003551},
+  urldate = {2025-04-17},
+  copyright = {http://doi.wiley.com/10.1002/tdm\_license\_1.1},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/7CUESFPV/Davies et al. - 2011 - Fluidity A fully unstructured anisotropic adaptive mesh computational modeling framework for geodyn.pdf}
+}
+
+@article{grangerJupyterThinkingStorytelling2021,
   title = {Jupyter: {{Thinking}} and {{Storytelling With Code}} and {{Data}}},
   shorttitle = {Jupyter},
   author = {Granger, Brian E. and Perez, Fernando},
   year = {2021},
   month = mar,
-  journal = {Computing in Science \& Engineering},
+  journal = {Comput. Sci. Eng.},
   volume = {23},
   number = {2},
   pages = {7--14},
@@ -68,7 +152,36 @@ ZSCC: NoCitationData[s0]},
   file = {/Users/lmoresi/Zotero/storage/HB3LE5Q2/Granger and Perez - 2021 - Jupyter Thinking and Storytelling With Code and D.pdf}
 }
 
-@article{knepley.etal.Achieving.2013,
+@article{heisterHighAccuracyMantle2017,
+  title = {High Accuracy Mantle Convection Simulation through Modern Numerical Methods -- {{II}}: Realistic Models and Problems},
+  shorttitle = {High Accuracy Mantle Convection Simulation through Modern Numerical Methods -- {{II}}},
+  author = {Heister, Timo and Dannberg, Juliane and Gassm{\"o}ller, Rene and Bangerth, Wolfgang},
+  year = {2017},
+  month = aug,
+  journal = {Geophysical Journal International},
+  volume = {210},
+  number = {2},
+  pages = {833--851},
+  issn = {0956-540X, 1365-246X},
+  doi = {10.1093/gji/ggx195},
+  urldate = {2025-04-16},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/VZUZJ736/Heister et al. - 2017 - High accuracy mantle convection simulation through modern numerical methods – II realistic models a.pdf}
+}
+
+@book{hughesFiniteElementMethod1987,
+  title = {The Finite Element Method: Linear Static and Dynamic Finite Element Analysis},
+  shorttitle = {The Finite Element Method},
+  author = {Hughes, Thomas J. R.},
+  year = {1987},
+  edition = {1. Dr.},
+  publisher = {Prentice Hall},
+  address = {Englewood Cliffs, N.J.},
+  isbn = {978-0-13-317017-7 978-0-13-317025-2},
+  langid = {english}
+}
+
+@article{knepleyAchievingHighPerformance2013,
   title = {Achieving {{High Performance}} with {{Unified Residual Evaluation}}},
   author = {Knepley, Matthew G. and Brown, Jed and Rupp, Karl and Smith, Barry F.},
   year = {2013},
@@ -85,13 +198,29 @@ ZSCC: NoCitationData[s0]},
   file = {/Users/lmoresi/Zotero/storage/7H2PC7HT/Knepley et al. - 2013 - Achieving High Performance with Unified Residual E.pdf}
 }
 
-@article{mansour.etal.Underworld2.2020,
+@book{loggAutomatedSolutionDifferential2012,
+  title = {Automated {{Solution}} of {{Differential Equations}} by the {{Finite Element Method}}: {{The FEniCS Book}}},
+  shorttitle = {Automated {{Solution}} of {{Differential Equations}} by the {{Finite Element Method}}},
+  editor = {Logg, Anders and Mardal, Kent-Andre and Wells, Garth},
+  year = {2012},
+  series = {Lecture {{Notes}} in {{Computational Science}} and {{Engineering}}},
+  volume = {84},
+  publisher = {Springer Berlin Heidelberg},
+  address = {Berlin, Heidelberg},
+  doi = {10.1007/978-3-642-23099-8},
+  urldate = {2025-04-16},
+  copyright = {https://www.springernature.com/gp/researchers/text-and-data-mining},
+  isbn = {978-3-642-23098-1 978-3-642-23099-8},
+  langid = {english}
+}
+
+@article{mansourUnderworld2PythonGeodynamics2020,
   title = {Underworld2: {{Python Geodynamics Modelling}} for {{Desktop}}, {{HPC}} and {{Cloud}}},
   shorttitle = {Underworld2},
   author = {Mansour, John and Giordani, Julian and Moresi, Louis and Beucher, Romain and Kaluza, Owen and Velic, Mirko and Farrington, Rebecca and Quenette, Steve and Beall, Adam},
   year = {2020},
   month = mar,
-  journal = {Journal of Open Source Software},
+  journal = {JOSS},
   volume = {5},
   number = {47},
   pages = {1797},
@@ -104,7 +233,7 @@ ZSCC: 0000000},
   file = {/Users/lmoresi/Zotero/storage/K3FPTFCQ/Mansour et al. - 2020 - Underworld2 Python Geodynamics Modelling for Desk.pdf}
 }
 
-@article{meurer.etal.SymPy.2017,
+@article{meurerSymPySymbolicComputing2017,
   title = {{{SymPy}}: Symbolic Computing in {{Python}}},
   shorttitle = {{{SymPy}}},
   author = {Meurer, Aaron and Smith, Christopher P. and Paprocki, Mateusz and {\v C}ert{\'i}k, Ond{\v r}ej and Kirpichev, Sergey B. and Rocklin, Matthew and Kumar, {\relax Am}iT and Ivanov, Sergiu and Moore, Jason K. and Singh, Sartaj and Rathnayake, Thilina and Vig, Sean and Granger, Brian E. and Muller, Richard P. and Bonazzi, Francesco and Gupta, Harsh and Vats, Shivam and Johansson, Fredrik and Pedregosa, Fabian and Curry, Matthew J. and Terrel, Andy R. and Rou{\v c}ka, {\v S}t{\v e}p{\'a}n and Saboo, Ashutosh and Fernando, Isuru and Kulal, Sumith and Cimrman, Robert and Scopatz, Anthony},
@@ -122,7 +251,23 @@ ZSCC: 0000000},
   file = {/Users/lmoresi/Zotero/storage/SEV8M2E6/Meurer et al. - 2017 - SymPy symbolic computing in Python.pdf}
 }
 
-@article{moresi.etal.Computational.2007,
+@incollection{moresiChapter23Literate2023,
+  title = {Chapter 23 - {{Literate}}, {{Reusable}}, {{Geodynamic Modeling}}},
+  booktitle = {Dynamics of {{Plate Tectonics}} and {{Mantle Convection}}},
+  author = {Moresi, Louis},
+  editor = {Duarte, Jo{\~a}o C.},
+  year = {2023},
+  month = jan,
+  pages = {573--582},
+  publisher = {Elsevier},
+  doi = {10.1016/B978-0-323-85733-8.00010-X},
+  copyright = {All rights reserved},
+  isbn = {978-0-323-85733-8},
+  keywords = {Finite element models,Geodynamics,Literate computing,Reproducible research,Symbolic algebra},
+  file = {/Users/lmoresi/Zotero/storage/2KKSG2LD/Moresi - 2023 - Chapter 23 - Literate, Reusable, Geodynamic Modeli.pdf}
+}
+
+@article{moresiComputationalApproachesStudying2007,
   title = {Computational Approaches to Studying Non-Linear Dynamics of the Crust and Mantle},
   author = {Moresi, L. and Quenette, S. and Lemiale, V. and M{\'e}riaux, C. and Appelbe, B. and M{\"u}hlhaus, H. -B.},
   year = {2007},
@@ -143,7 +288,7 @@ ZSCC: 0000003},
   file = {/Users/lmoresi/Zotero/storage/WVUEQZMD/Moresi et al. - 2007 - Computational approaches to studying non-linear dy.pdf}
 }
 
-@article{moresi.etal.Lagrangian.2003,
+@article{moresiLagrangianIntegrationPoint2003,
   title = {A {{Lagrangian}} Integration Point Finite Element Method for Large Deformation Modeling of Viscoelastic Geomaterials},
   author = {Moresi, L. and Dufour, F. and M{\"u}hlhaus, H.-B.},
   year = {2003},
@@ -156,4 +301,56 @@ ZSCC: 0000003},
   annotation = {391 citations (Semantic Scholar/DOI) [2022-04-28]\\
 296 citations (Crossref) [2022-04-28]},
   file = {/Users/lmoresi/Zotero/storage/UZGHI342/Moresi et al. - 2003 - A Lagrangian integration point finite element meth.pdf}
+}
+
+@article{wilsonTerraFERMARansparent2017,
+  title = {Terra {{{\textsc{FERMA}}}} : {{The}} {{{\textsc{T}}}} Ransparent {{{\textsc{F}}}} Inite {{{\textsc{E}}}} Lement {{{\textsc{R}}}} Apid {{{\textsc{M}}}} Odel {{{\textsc{A}}}} Ssembler for Multiphysics Problems in {{{\textsc{E}}}} Arth Sciences},
+  shorttitle = {Terra},
+  author = {Wilson, Cian R. and Spiegelman, Marc and Van Keken, Peter E.},
+  year = {2017},
+  month = feb,
+  journal = {Geochem Geophys Geosyst},
+  volume = {18},
+  number = {2},
+  pages = {769--810},
+  issn = {1525-2027, 1525-2027},
+  doi = {10.1002/2016GC006702},
+  urldate = {2025-04-17},
+  abstract = {Abstract                            We introduce and describe a new software infrastructure TerraFERMA, the               Transparent Finite Element Rapid Model Assembler               , for the rapid and reproducible description and solution of coupled multiphysics problems. The design of TerraFERMA is driven by two computational needs in Earth sciences. The first is the need for increased flexibility in both problem description and solution strategies for coupled problems where small changes in model assumptions can lead to dramatic changes in physical behavior. The second is the need for software and models that are more transparent so that results can be verified, reproduced, and modified in a manner such that the best ideas in computation and Earth science can be more easily shared and reused. TerraFERMA leverages three advanced open-source libraries for scientific computation that provide high-level problem description (FEniCS), composable solvers for coupled multiphysics problems (PETSc), and an options handling system (SPuD) that allows the hierarchical management of all model options. TerraFERMA integrates these libraries into an interface that organizes the scientific and computational choices required in a model into a single options file from which a custom compiled application is generated and run. Because all models share the same infrastructure, models become more reusable and reproducible, while still permitting the individual researcher considerable latitude in model construction. TerraFERMA solves partial differential equations using the finite element method. It is particularly well suited for nonlinear problems with complex coupling between components. TerraFERMA is open-source and available at               http://terraferma.github.io               , which includes links to documentation and example input files.                        ,              Key Points                                                                We present new software for more reproducible and reusable solutions of multiphysics problems                                                     The software leverages advanced parallel computational libraries                                                                          TerraFERMA is open source and available at                     http://terraferma.github.io},
+  copyright = {http://onlinelibrary.wiley.com/termsAndConditions\#am},
+  langid = {english},
+  file = {/Users/lmoresi/Zotero/storage/QVZF4T5G/Wilson et al. - 2017 - Terra FERMA  The span style=font-variantsmall-caps.pdf;/Users/lmoresi/Zotero/storage/UYI47HE6/Wilson et al. - 2017 - Terra FERMA  The span style=font-variantsmall-caps.pdf}
+}
+
+@incollection{zhong705NumericalMethods2015,
+  title = {7.05 - {{Numerical Methods}} for {{Mantle Convection}}},
+  booktitle = {Treatise on {{Geophysics}} ({{Second Edition}})},
+  author = {Zhong, S. J. and Yuen, D. A. and Moresi, L. N. and Knepley, M. G.},
+  editor = {Schubert, Gerald},
+  year = {2015},
+  month = jan,
+  pages = {197--222},
+  publisher = {Elsevier},
+  address = {Oxford},
+  doi = {10.1016/B978-0-444-53802-4.00130-5},
+  urldate = {2019-10-11},
+  abstract = {Over the past 40 years, numerical methods used to model mantle convection have matured significantly and now occupy a distinctive niche in computational fluid dynamics. The central issue for the partial differential equations governing mantle dynamics concerns the rheology governing the flow of mantle rocks under relevant temperature and pressure conditions. The momentum equation is the most computationally intensive portion of this coupled system because of its strongly nonlinear, elliptical character. We review the various discretization methods, ranging from finite differences to finite elements, which have been employed. We present in detail finite-element implementations of the Uzawa algorithm for the momentum equation and of the streamline Petrov--Galerkin algorithm for the energy equation. We review the application of modern techniques such as the Schur complement solvers and least-squares commutator preconditioners in the solution of the elliptical equation. We discuss the computational libraries available for massively parallel simulation and their application to this system of equations and give a preview of approaches suitable for exascale computing, which is a major challenge for the decade ahead.},
+  copyright = {All rights reserved},
+  isbn = {978-0-444-53803-1},
+  keywords = {Finite element,High-performance computing,Mantle convection,Multigrid,Non-Newtonian rheology,Nonlinear elliptical equations,Nonlinear rheology,Nonlinear solvers,Saddle point system,Variable viscosity},
+  annotation = {ZSCC: NoCitationData[s0]}
+}
+
+@book{zienkiewiczFiniteElementMethod2013,
+  title = {The Finite Element Method: Its Basis and Fundamentals},
+  shorttitle = {The Finite Element Method},
+  author = {Zienkiewicz, O. C. and Taylor, Robert L. and Zhu, J. Z.},
+  year = {2013},
+  edition = {Seventh edition},
+  publisher = {Elsevier, Butterworth-Heinemann},
+  address = {Amsterdam},
+  isbn = {978-1-85617-633-0},
+  lccn = {TA640.2 .Z5 2013},
+  keywords = {Engineering mathematics,Finite element method,Fluid dynamics},
+  annotation = {OCLC: ocn852808496}
 }
