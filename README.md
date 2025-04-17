@@ -8,6 +8,12 @@ Welcome to `Underworld3`, a mathematically self-describing, finite-element code 
 
 All `Underworld3` source code is released under the LGPL-3 open source licence. This covers all files in `underworld3` constituting the Underworld3 Python module. Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License.
 
+[![Build and test UW3](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=main)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
+
+[![Build and test UW3 - dev](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=development)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
+
+
+
 ## Documentation
 
 Start with the online [Quick Start Guide](https://underworldcode.github.io/underworld3/development/_quickstart/index.html) for a brief overview of the code.
