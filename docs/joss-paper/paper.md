@@ -115,8 +115,8 @@ The symbolic representation of the strong-form that is encoded in `underworld3` 
 
 \begin{equation}\label{eq:sympy-strong-form}
  \Bigl[ {D u}/{D t} \Bigr]
--\nabla \cdot \Bigl[ \sigma(u, \nabla u, \mathbf{x}, t)) \Bigr]
--\Bigl[ \mathrm{h}(u, \nabla u, \mathbf{x},t) \Bigr]
+-\nabla \cdot \Bigl[ \sigma(u, \nabla u, \mathbf{x}, t) \Bigr]
+-\Bigl[ \mathrm{H}(u, \nabla u, \mathbf{x},t) \Bigr]
 = 0
 \end{equation}
 
@@ -128,10 +128,9 @@ The main benefits of combining `sympy` with the `PETSc` weak form template is a 
 
 # State of the Field
 
-`Underworld3` is one among a small number of specialised codes for studying Earth deformation on medium to long geological time-scales. Early geodynamics codes, of which there were too many to recite individually, were highly specialised for specific tasks. A second generation of codes are built around generic partial differential equation solvers with scriptable interfaces.  These include: Aspect [C++ plugin architecture: @heisterHighAccuracyMantle2017], Underworld 1 and 2 [xml object composition / python scripting respectively, @mansourUnderworld2PythonGeodynamics2020; @moresiComputationalApproachesStudying2007], Fluidity [xml combined with python scripting, @daviesFluidityFullyUnstructured2011a], Milamin [Matlab front end, @dabrowskiMILAMINMATLABbasedFinite2008], LaMEM [julia scripting @boriskausLaMEM2024], TerraFERMA [Unified Form Language, @wilsonTerraFERMARansparent2017], GAdopt [Unified Form Language / python @daviesAutomaticFiniteelementMethods2022].
+`Underworld3` is one among a small number of codes for studying Earth deformation on medium to long geological time-scales. Early geodynamics codes, of which there were too many to recite individually, were highly specialised for specific tasks with little flexibility for user-defined problems. A subsequent generation of codes, currently in use, was built around generic partial differential equation solvers with scriptable interfaces.  These include: Aspect [C++ plugin architecture: @heisterHighAccuracyMantle2017], Underworld 1 and 2 [xml object composition / python scripting respectively, @mansourUnderworld2PythonGeodynamics2020; @moresiComputationalApproachesStudying2007], Fluidity [xml combined with python scripting, @daviesFluidityFullyUnstructured2011a], Milamin [Matlab front end, @dabrowskiMILAMINMATLABbasedFinite2008], LaMEM [julia scripting @boriskausLaMEM2024], TerraFERMA [Unified Form Language, @wilsonTerraFERMARansparent2017], GAdopt [Unified Form Language / python @daviesAutomaticFiniteelementMethods2022].
 
-`Underworld3` uses python and the python package `sympy` as its scripting interface. The advantage of `sympy` is that it is a fully featured symbolic algebra package which allows much of the logic of the mathematical problem description to be defined symbolically and dynamically rather than as static relationships between objects. It also provides deep, mathematical introspection when developing and debugging models.
-
+`Underworld3` uses python and the python package `sympy` as the scripting interface that overlies the generic partial differential equation layer. The advantage of `sympy` is that it is a fully featured symbolic algebra package which allows much of the logic of the mathematical problem description to be defined symbolically and dynamically rather than as static relationships between objects. It also provides deep, mathematical introspection when developing and debugging models.
 
 # Discussion
 
@@ -150,23 +149,3 @@ The development and testing of our codes is also supported by computational reso
 The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
 
 # References
-
-
-
-## Reviewer comments
-
-~~The statement of need could use one sentence at the beginning containing examples of actual applications that Underword3 is designed to solve. Currently you mention the properties of the models (nonlinear rheology, strain weakening, ...), but applications like mantle convection, lithosphere dynamics, porous flow, crustal deformation would make it much easier to users to understand if the code would work for them.~~
-
-JOSS requires a section on the state of the field and how Underworld3 fits into it. This is currently missing. From the JOSS guidelines: State of the field: Do the authors describe how this software compares to other commonly-used packages? I think you already describe in depth what makes Underworld special. One additional sentence would be sufficient to mention that there are packages fully based on python and matlab with examples, and fully compiled modeling packages with some examples, and that Underworld bridges the gap (or something similar, the content is up to you, but you need that section/comparison).
-
-~~The section on the mathematical framework is pretty dense with little introduction and explanation. I know this was probably done to save space and keep a 2-page limit, but in order to be more useful I would suggest to at least:~~
-
-~~rephrase the sentence at the beginning to something like this: `Underworld generates the weak forms of the equations through PETSc, which provides a template form for the automatic generation ...~~
-
-~~make sure in line 51 and 52 to mention which symbols in the equation represent the fluxes (F), forces (f) and unknowns (u).~~
-
-~~equations 2 and 3 contain a number of unexplained symbols that would be necessary to spell out to make this useful to the average reader.~~
-
-~~add one sentence at the end of the section that explains what the benefit of using this framework is in the context of underworld.~~
-
-Generally I think the paper is in great shape, and with the small changes above (even if it adds half a page of length or so) should be ready to be published.
