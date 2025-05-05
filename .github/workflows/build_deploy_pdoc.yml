@@ -45,10 +45,7 @@ jobs:
           export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
-
-          ## TODO. Use compile.sh once it is in development
-          pip install -e . --no-build-isolation
-          ## ./compile.sh
+          ./compile.sh
 
       - name: Build docs with pdoc
         shell: bash -l {0}
@@ -56,7 +53,7 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           # mkdir -p docs
-          mamba install pdoc3
+          pip install pdoc3
           ./build_api_docs.sh
 
       # There is an action to build the jupyter book to a different directory
