@@ -15,15 +15,23 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Conda environment with Micromamba
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
-          environment-file: ./.github/workflows/envs/build_uw_docs.yml
+          environment-file: ./environment.yml
           cache-downloads: true
-          cache-env: true
+          cache-environment: true
+
+          # # gmsh is such a pig to install properly
+          # - name: Add gmsh package
+          #   shell: bash -l {0}
+          #   run: |
+          #     pip install gmsh
+
 
       # the following may be needed if conda-forge is out of date
       # - name: Add compatible petsc4py
@@ -31,16 +39,16 @@ jobs:
       #   run: |
       #     export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
       #     pip3 install petsc4py==3.18 --upgrade
-
       - name: Build UW3
         shell: bash -l {0}
         run: |
-          export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_docs"
+          export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
-          python3 setup.py develop
-          pip3 install -e .
+          ## TODO. Use compile.sh once it is in development
+          pip install -e . --no-build-isolation
+          ## ./compile.sh
 
       - name: Build docs with pdoc
         shell: bash -l {0}
