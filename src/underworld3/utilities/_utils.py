@@ -5,14 +5,16 @@ import sys
 from collections import UserString
 from contextlib import redirect_stdout, redirect_stderr
 
-class _uw_record():
+
+class _uw_record:
     """
     A class to record runtime information about the underworld3 execution environment.
     """
 
     def __init__(self):
-        try: 
+        try:
             import mpi4py
+
             comm = mpi4py.MPI.COMM_WORLD
         except ImportError:
             raise ImportError("Can't import mpi4py for runtime information.")
@@ -34,16 +36,20 @@ class _uw_record():
             try:
                 import petsc4py as _petsc4py
                 from petsc4py import PETSc as _PETSc
+
                 petsc_version = _PETSc.Sys.getVersion()
-                petsc_dir = _petsc4py.get_config()['PETSC_DIR']
+                petsc_dir = _petsc4py.get_config()["PETSC_DIR"]
             except Exception as e:
                 petsc_version = None
                 petsc_dir = None
-                warnings.warn( f"Warning: Underworld can't retrieving petsc installation details: {e}" )
+                warnings.warn(
+                    f"Warning: Underworld can't retrieving petsc installation details: {e}"
+                )
 
             # get h5py information
             try:
                 import h5py as _h5py
+
                 h5py_dir = _h5py.__file__
                 h5py_version = _h5py.version.version
                 hdf5_version = _h5py.version.hdf5_version
@@ -51,15 +57,20 @@ class _uw_record():
                 h5py_dir = None
                 h5py_version = None
                 hdf5_version = None
-                warnings.warn( f"Warning: Underworld can't retrieving h5py installation details: {e}" )
+                warnings.warn(
+                    f"Warning: Underworld can't retrieving h5py installation details: {e}"
+                )
 
             # get mpi4py information
             try:
                 import mpi4py as _mpi4py
+
                 mpi4py_version = _mpi4py.__version__
             except Exception as e:
                 mpi4py_version = None
-                warnings.warn( f"Warning: Underworld can't retrieving mpi4py installation details: {e}" )
+                warnings.warn(
+                    f"Warning: Underworld can't retrieving mpi4py installation details: {e}"
+                )
 
             # get just the version
             from underworld3 import __version__ as uw_version
@@ -85,19 +96,20 @@ class _uw_record():
 
     @property
     def get_installation_data(self):
-        '''
+        """
         Get the installation data for the underworld3 installation.
-        '''
+        """
         return self._install_data
 
     @property
     def get_runtime_data(self):
-        '''
+        """
         Get the runtime data for the underworld3 installation.
         Note this requires a MPI broadcast to get the data.
-        '''
+        """
         import datetime
         import mpi4py
+
         comm = mpi4py.MPI.COMM_WORLD
 
         if comm.rank == 0:
@@ -105,13 +117,16 @@ class _uw_record():
             self._runtime_data.update({"current_time": now})
 
             from underworld3.utilities._api_tools import uw_object
+
             object_count = uw_object.uw_object_counter()
             self._runtime_data.update({"uw_object_count": object_count})
 
         self._runtime_data = comm.bcast(self._runtime_data, root=0)
         return self._runtime_data
 
+
 auditor = _uw_record()
+
 
 class CaptureStdout(UserString, redirect_stdout):
     """
@@ -179,7 +194,6 @@ def mem_footprint():
 
 
 def gather_data(val, bcast=False, dtype="float64"):
-
     """
     gather values on root (bcast=False) or all (bcast = True) processors
     Parameters:
@@ -196,11 +210,10 @@ def gather_data(val, bcast=False, dtype="float64"):
 
     ### make sure all data comes in the same order
     with uw.mpi.call_pattern(pattern="sequential"):
-        if len(val > 0):
+        if isinstance(val, np.ndarray):
             val_local = np.ascontiguousarray(val.copy())
         else:
-            val_local = np.array([np.nan], dtype=dtype)
-
+            val_local = np.array([val], dtype=dtype)
 
     comm.barrier()
 

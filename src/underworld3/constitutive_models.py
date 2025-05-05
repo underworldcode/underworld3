@@ -243,7 +243,7 @@ class Constitutive_Model(uw_object):
             flux = c * ddu.T
         else:  # rank==4
             flux = sympy.tensorcontraction(
-                sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (0, 1)
+                sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (1, 5)), (0, 3)
             )
 
         return sympy.Matrix(flux)
@@ -407,7 +407,7 @@ class ViscousFlowModel(Constitutive_Model):
             flux = c * edot
         else:  # rank==4
             flux = sympy.tensorcontraction(
-                sympy.tensorcontraction(sympy.tensorproduct(c, edot), (3, 5)), (0, 1)
+                sympy.tensorcontraction(sympy.tensorproduct(c, edot), (1, 5)), (0, 3)
             )
 
         return sympy.Matrix(flux)
@@ -1582,7 +1582,7 @@ class DarcyFlowModel(Constitutive_Model):
         return self._q(ddu)
 
 
-class TransverseIsotropicFlowModel(Constitutive_Model):
+class TransverseIsotropicFlowModel(ViscousFlowModel):
     r"""
     ```python
     class TransverseIsotropicFlowModel(Constitutive_Model)
@@ -1614,6 +1614,21 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
     ---
     """
 
+    def __init__(self, unknowns):
+        # All this needs to do is define the
+        # viscosity property and init the parent(s)
+        # In this case, nothing seems to be needed.
+        # The viscosity is completely defined
+        # in terms of the Parameters
+
+        super().__init__(unknowns)
+
+        # self._viscosity = uw.function.expression(
+        #     R"{\eta_0}",
+        #     1,
+        #     " Apparent viscosity",
+        # )
+
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
@@ -1623,16 +1638,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         def __init__(
             inner_self,
             _owning_model,
-            eta_0: Union[float, sympy.Function] = 1,
-            eta_1: Union[float, sympy.Function] = 1,
-            director: Union[sympy.Matrix, sympy.Function] = sympy.Matrix([0, 0, 1]),
         ):
             inner_self._owning_model = _owning_model
 
-            inner_self._eta_0 = eta_0
-            inner_self._eta_1 = eta_1
-            inner_self._director = director
-            # inner_self.constitutive_model_class = const_model
+            inner_self._eta_0 = expression(r"\eta_0", 1, "Shear viscosity")
+            inner_self._eta_1 = expression(r"\eta_1", 1, "Second viscosity")
+            inner_self._director = expression(r"\hat{n}", 1, "Director orientation")
 
         ## Note the inefficiency below if we change all these values one after the other
 
@@ -1645,7 +1656,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self,
             value: Union[float, sympy.Function],
         ):
-            inner_self._eta_0 = value
+            visc_expr = validate_parameters(
+                R"\eta_0", value, default=None, allow_number=True
+            )
+
+            inner_self._eta_0.copy(visc_expr)
+            del visc_expr
             inner_self._reset()
 
         @property
@@ -1657,7 +1673,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self,
             value: Union[float, sympy.Function],
         ):
-            inner_self._eta_1 = value
+            visc_expr = validate_parameters(
+                R"\eta_1", value, default=None, allow_number=True
+            )
+
+            inner_self._eta_1.copy(visc_expr)
+            del visc_expr
             inner_self._reset()
 
         @property
@@ -1667,21 +1688,37 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         @director.setter
         def director(
             inner_self,
-            value: Union[sympy.Matrix, sympy.Function],
+            value: Union[sympy.Matrix, sympy.Function, expression],
         ):
-            inner_self._director = value
+
+            inner_self._director._sym = value
             inner_self._reset()
 
-    def __init__(self, dim):
-        u_dim = dim
-        super().__init__(dim, u_dim)
+    ## End of parameters
 
-        # default values ... maybe ??
-        return
+    @property
+    def viscosity(self):
+        """Whatever the consistutive model defines as the effective value of viscosity
+        in the form of an uw.expression"""
+
+        return self.Parameters._eta_0
+
+    @property
+    def K(self):
+        """Whatever the consistutive model defines as the effective value of viscosity
+        in the form of an uw.expression"""
+
+        return self.Parameters._eta_0
+
+    @property
+    def grad_u(self):
+        mesh = self.Unknowns.u.mesh
+
+        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
 
     def _build_c_tensor(self):
         """For this constitutive law, we expect two viscosity functions
-        and a sympy matrix that describes the director components n_{i}"""
+        and a sympy row-matrix that describes the director components n_{i}"""
 
         if self._is_setup:
             return
@@ -1691,25 +1728,28 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
 
         eta_0 = self.Parameters.eta_0
         eta_1 = self.Parameters.eta_1
-        n = self.Parameters.director
+        n = self.Parameters.director.sym
 
-        Delta = eta_1 - eta_0
-
-        lambda_mat = uw.maths.tensor.rank4_identity(d) * eta_0
+        Delta = eta_0 - eta_1
+        lambda_mat = 2 * uw.maths.tensor.rank4_identity(d) * eta_0
 
         for i in range(d):
             for j in range(d):
                 for k in range(d):
                     for l in range(d):
-                        lambda_mat[i, j, k, l] += Delta * (
-                            (
-                                n[i] * n[k] * int(j == l)
-                                + n[j] * n[k] * int(l == i)
-                                + n[i] * n[l] * int(j == k)
-                                + n[j] * n[l] * int(k == i)
+                        lambda_mat[i, j, k, l] -= (
+                            2
+                            * Delta
+                            * (
+                                (
+                                    n[i] * n[k] * int(j == l)
+                                    + n[j] * n[k] * int(l == i)
+                                    + n[i] * n[l] * int(j == k)
+                                    + n[j] * n[l] * int(k == i)
+                                )
+                                / 2
+                                - 2 * n[i] * n[j] * n[k] * n[l]
                             )
-                            / 2
-                            - 2 * n[i] * n[j] * n[k] * n[l]
                         )
 
         lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))

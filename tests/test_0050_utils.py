@@ -114,7 +114,7 @@ s1.solve()
 # vis_model(mesh)
 
 
-def disable_test_auditor():
+def dont_test_auditor():
     # assert not values are in install data are None
     for v in uw.auditor.get_installation_data.values():
         assert v is not None

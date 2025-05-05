@@ -316,8 +316,9 @@ class SNES_Darcy(SNES_Scalar):
 
         # Now solve flow field
 
-        self._v_projector.petsc_options["snes_rtol"] = 1.0e-6
-        self._v_projector.petsc_options.delValue("ksp_monitor")
+        # self._v_projector.petsc_options["snes_rtol"] = 1.0e-6
+        # self._v_projector.petsc_options.delValue("ksp_monitor")
+        self._v_projector.uw_function = self.darcy_flux
         self._v_projector.solve(zero_init_guess)
 
         return
@@ -434,9 +435,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             (self.div_u,)
         )  # by default, incompressibility constraint
 
-        self._bodyforce = uw.function.expression(fR"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
-                                                sympy.Matrix([[0] * self.mesh.dim]),
-                                                "Stokes pointwise force term: f_0(u)",)
+        self._bodyforce = uw.function.expression(
+            Rf"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
+            sympy.Matrix([[0] * self.mesh.dim]),
+            "Stokes pointwise force term: f_0(u)",
+        )
 
         # this attrib records if we need to setup the problem (again)
         self.is_setup = False
@@ -572,9 +575,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def bodyforce(self, value):
         self.is_setup = False
         if isinstance(value, uw.function.expressions.UWexpression):
-            self._bodyforce.sym = -1*value.sym
+            self._bodyforce.sym = -1 * value.sym
         else:
-            self._bodyforce.sym = sympy.Matrix(-1*value)
+            self._bodyforce.sym = sympy.Matrix(-1 * value)
 
     @property
     def saddle_preconditioner(self):
@@ -594,6 +597,15 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def penalty(self, value):
         self.is_setup = False
         self._penalty.sym = value
+
+    # @property
+    # def continuity_rhs(self):
+    #     return self._continuity_rhs
+
+    # @continuity_rhs.setter
+    # def continuity_rhs(self, value):
+    #     self.is_setup = False
+    #     self._continuity_rhs.sym = value
 
 
 class SNES_VE_Stokes(SNES_Stokes):
@@ -854,7 +866,6 @@ class SNES_Projection(SNES_Scalar):
         self._f1 = F1_val
 
         return F1_val
-
 
     @property
     def uw_function(self):

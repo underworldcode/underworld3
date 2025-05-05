@@ -10,6 +10,7 @@ from ._function import (
 )
 
 from .expressions import UWexpression as expression
+from .expressions import UWDerivativeExpression as _derivative_expression
 from .expressions import substitute as fn_substitute_expressions
 from .expressions import unwrap as fn_unwrap
 from .expressions import substitute_expr as fn_substitute_one_expression
@@ -39,27 +40,45 @@ def derivative(expression, variable, evaluate=True):
         )
 
     else:
-        if isinstance(expression, (sympy.Matrix, sympy.ImmutableMatrix)):
-            def f(x):
-                d = sympy.sympify(0)
-                for t in x.as_ordered_terms():
-                    d += sympy.diff(t, variable, evaluate=False)
-
-                return
-
-            derivative = expression.applyfunc(f).as_mutable()
-
-            # f = lambda x: sympy.diff(
-            #         x, variable, evaluate=False
-            #     )
-            # derivative = expression.applyfunc(f)
-        else:
-            derivative = sympy.diff(
-                    expression,
-                    variable,
-                    evaluate=False,
-                )
-
-
+        derivative = deferred_derivative(expression, variable)
 
     return derivative
+
+
+def deferred_derivative(expr, diff_variable):
+
+    import sympy
+
+    latex_expr = sympy.latex(expr)
+    latex_diff_variable = sympy.latex(diff_variable)
+    latex = (
+        r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+    )
+
+    if isinstance(diff_variable, expression):
+        diff_variable = diff_variable.sym
+
+    # We need to return a Matrix of \partial Expr \partial {diff_variable_i}
+
+    try:
+        rows, cols = sympy.Matrix(diff_variable).shape
+    except TypeError:
+        rows, cols = (1, 1)
+
+    # Good question: should we return a 1x1 matrix or the actual derivative ?
+    if rows == 1 and cols == 1:
+        # ddx = sympy.Matrix((_derivative_expression(latex, expr, diff_variable),))
+        ddx = _derivative_expression(latex, expr, diff_variable)
+    else:
+        ddx = sympy.Matrix.zeros(rows=rows, cols=cols)
+        for i in range(rows):
+            for j in range(cols):
+                latex = (
+                    r"\partial \left["
+                    + sympy.latex(expr)
+                    + r"\right] / \partial "
+                    + sympy.latex(diff_variable[i, j])
+                )
+                ddx[i, j] = _derivative_expression(latex, expr, diff_variable[i, j])
+
+    return ddx

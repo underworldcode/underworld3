@@ -20,3 +20,4 @@ from ._utils import CaptureStdout, h5_scan, mem_footprint, gather_data, auditor,
 
 from .read_medit_ascii import read_medit_ascii, print_medit_mesh_info
 from .create_dmplex_from_medit import create_dmplex_from_medit
+from .geometry_tools import *

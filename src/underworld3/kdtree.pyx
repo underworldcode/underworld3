@@ -332,6 +332,4 @@ cdef class KDTree:
         del distance_n
         del Weights
 
-
-
         return Values

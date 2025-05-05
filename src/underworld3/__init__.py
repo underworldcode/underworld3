@@ -1,11 +1,12 @@
 """## Underworld3 Python package
-`Underworld3` is a finite element, particle-in-cell geodynamics code that produces 
-mathematically self-describing models through an interface with `sympy` Underworld3 builds upon the `PETSc` 
-parallel finite element and solver package, using their `petsc4py` library. 
+
+`Underworld3` is a finite element, particle-in-cell geodynamics code that produces
+mathematically self-describing models through an interface with `sympy` Underworld3 builds upon the `PETSc`
+parallel finite element and solver package, using their `petsc4py` library.
 
 A common pattern for building `underworld3` models is to develop python scripts in notebook-friendly form
-(e.g. with `jupytext`) which are thoroughly documented through markdown descriptions. `underworld` objects 
-are similarly documented so that their underlying algorithmic and mathemcical structure can be examined in 
+(e.g. with `jupytext`) which are thoroughly documented through markdown descriptions. `underworld` objects
+are similarly documented so that their underlying algorithmic and mathemcical structure can be examined in
 a notebook.
 
 `python` scripts built this way will also be compatible with `mpirun` for parallel execution.
@@ -27,7 +28,7 @@ The development branch has similar documentation:
 
 ## Building / installation
 
-Refer to the Dockerfile for uw3 build instructions.  
+Refer to the Dockerfile for uw3 build instructions.
 
 To install from the repository
 ```shell
@@ -53,11 +54,11 @@ Run the `pytest` testing suite with
 ./test.sh
 ```
 
-This API documentation is build with 
+This API documentation is build with
 ```shell
 ./docs.sh
 ```
-Open `uw3_api_docs/index.html` to browse. 
+Open `uw3_api_docs/index.html` to browse.
 
 ## To uninstall
 
@@ -84,7 +85,8 @@ PETSc.Sys.popErrorHandler()
 try:
     from ._version import __version__
 except ImportError:
-    __version__ = "Unknown" # check src/underworld3/_version.py
+    __version__ = "Unknown"  # check src/underworld3/_version.py
+
 
 def view():
     from IPython.display import Latex, Markdown, display
@@ -110,7 +112,8 @@ from .utilities._nb_tools import *
 from .utilities._utils import auditor
 
 from .utilities import _api_tools
-#from underworld3.utilities import _api_tools
+
+# from underworld3.utilities import _api_tools
 from .utilities._utils import auditor
 
 import underworld3.adaptivity
