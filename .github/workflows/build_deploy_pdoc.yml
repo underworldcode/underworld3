@@ -56,6 +56,7 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           # mkdir -p docs
+          mamba install pdoc3
           ./build_api_docs.sh
 
       # There is an action to build the jupyter book to a different directory
