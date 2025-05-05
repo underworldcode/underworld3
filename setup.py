@@ -183,6 +183,13 @@ def get_version(filename):
     except:
         raise
 
+# Create uwid if it doesn't exist
+idfile = './src/underworld3/_uwid.py'
+if not os.path.isfile(idfile):
+    import uuid
+    with open(idfile, "w+") as f:
+        f.write("uwid = \'" + str(uuid.uuid4()) + "\'")
+        
 setup(
     name="underworld3",
     packages=find_packages(),

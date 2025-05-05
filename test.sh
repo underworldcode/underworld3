@@ -6,6 +6,7 @@
 #  PETSc objects which we cannot always guarantee that PETSc / petsc4py will free
 #  This makes it possible for individual tests to interact with each other.
 
+export UW_NO_USAGE_METRICS=0
 PYTEST="pytest --config-file=tests/pytest.ini"
 
 # Run simple tests

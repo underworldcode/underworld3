@@ -27,6 +27,7 @@ old
 keep/*
 *.swp
 nohup.out
+src/underworld3/_uwid.py
 *.png # Add these explicitly if you want to keep them 
 
 # quarto build relics
