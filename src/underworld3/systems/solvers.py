@@ -10,6 +10,10 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 
+from underworld3.function import expression as public_expression
+
+expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
@@ -84,7 +88,7 @@ class SNES_Poisson(SNES_Scalar):
     @property
     def F0(self):
 
-        f0_val = uw.function.expression(
+        f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f,
             "Poisson pointwise force term: f_0(u)",
@@ -98,7 +102,7 @@ class SNES_Poisson(SNES_Scalar):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             sympy.simplify(self.constitutive_model.flux.T),
             "Poisson pointwise flux term: F_1(u)",
@@ -223,7 +227,7 @@ class SNES_Darcy(SNES_Scalar):
     @property
     def F0(self):
 
-        f0_val = uw.function.expression(
+        f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f,
             "Darcy pointwise force term: f_0(u)",
@@ -237,7 +241,7 @@ class SNES_Darcy(SNES_Scalar):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             sympy.simplify(self.darcy_flux),
             "Darcy pointwise flux term: F_1(u)",
@@ -430,12 +434,12 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         self._Estar = None
 
-        self._penalty = uw.function.expression(R"\uplambda", 0, "Numerical Penalty")
+        self._penalty = expression(R"\uplambda", 0, "Numerical Penalty")
         self._constraints = sympy.Matrix(
             (self.div_u,)
         )  # by default, incompressibility constraint
 
-        self._bodyforce = uw.function.expression(
+        self._bodyforce = expression(
             Rf"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
             sympy.Matrix([[0] * self.mesh.dim]),
             "Stokes pointwise force term: f_0(u)",
@@ -456,7 +460,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @property
     def F0(self):
 
-        # f0 = uw.function.expression(
+        # f0 = expression(
         #     r"\mathbf{f}_0\left( \mathbf{u} \right)",
         #     -self.bodyforce,
         #     "Stokes pointwise force term: f_0(u)",
@@ -474,7 +478,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         ## Should not define a new function on each call (madness !)
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(dim)),
             "Stokes pointwise flux term: F_1(u)",
@@ -490,7 +494,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         ## Should not define a new function on each call (madness !)
 
-        f0 = uw.function.expression(
+        f0 = expression(
             r"\mathbf{h}_0\left( \mathbf{p} \right)",
             sympy.simplify(sympy.Matrix((self.constraints))),
             "Pointwise force term: h_0(p)",
@@ -842,7 +846,7 @@ class SNES_Projection(SNES_Scalar):
     @property
     def F0(self):
 
-        f0_val = uw.function.expression(
+        f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             (self.u.sym - self.uw_function) * self.uw_weighting_function,
             "Scalar Projection pointwise misfit term: f_0(u)",
@@ -856,7 +860,7 @@ class SNES_Projection(SNES_Scalar):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.smoothing * self.mesh.vector.gradient(self.u.sym),
             "Scalar projection pointwise smoothing term: F_1(u)",
@@ -953,7 +957,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @property
     def F0(self):
 
-        f0_val = uw.function.expression(
+        f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             (self.u.sym - self.uw_function) * self.uw_weighting_function,
             "Vector projection pointwise misfit term: f_0(u)",
@@ -967,7 +971,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.smoothing * self.Unknowns.E
             + self.penalty
@@ -1121,7 +1125,7 @@ class SNES_Tensor_Projection(SNES_Projection):
     @property
     def F0(self):
 
-        f0_val = uw.function.expression(
+        f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
             "Scalar subproblem of tensor projection: f_0(u)",
@@ -1135,7 +1139,7 @@ class SNES_Tensor_Projection(SNES_Projection):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.smoothing * self.mesh.vector.gradient(self.u.sym),
             "Scalar subproblem of tensor projection (smoothing): F_1(u)",
@@ -1247,9 +1251,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self._constitutive_model = None
 
         # These are unique to the advection solver
-        self._delta_t = uw.function.expression(
-            R"\Delta t", 0, "Physically motivated timestep"
-        )
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
         self.is_setup = False
 
         self.restore_points_to_domain_func = restore_points_func
@@ -1312,7 +1314,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @property
     def F0(self):
 
-        f0 = uw.function.expression(
+        f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + self.DuDt.bdf(0) / self.delta_t,
             "Poisson pointwise force term: f_0(u)",
@@ -1326,7 +1328,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
             "Poisson pointwise flux term: F_1(u)",
@@ -1587,18 +1589,14 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         )
 
         # These are unique to the advection solver
-        self._delta_t = uw.function.expression(
-            r"\Delta t", sympy.oo, "Navier-Stokes timestep"
-        )
+        self._delta_t = expression(r"\Delta t", sympy.oo, "Navier-Stokes timestep")
 
         self.is_setup = False
-        self._rho = uw.function.expression(R"{\uprho}", rho, "Density")
+        self._rho = expression(R"{\uprho}", rho, "Density")
         self._first_solve = True
 
         self._order = order
-        self._penalty = uw.function.expression(
-            R"{\uplambda}", 0, "Incompressibility Penalty"
-        )
+        self._penalty = expression(R"{\uplambda}", 0, "Incompressibility Penalty")
 
         self.restore_points_to_domain_func = restore_points_func
         self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
@@ -1661,7 +1659,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # I think this should be bdf(1) ... the higher order
         # terms are introduced through the adams_moulton fluxes
 
-        f0 = uw.function.expression(
+        f0 = expression(
             r"\mathbf{f}_0\left( \mathbf{u} \right)",
             -self.bodyforce + self.rho * DuDt.bdf(1) / self.delta_t,
             "NStokes pointwise force term: f_0(u)",
@@ -1681,7 +1679,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             # We can flag to only do this if the constitutive model has been updated
             DFDt.psi_fn = self._constitutive_model.flux.T
 
-            F1 = uw.function.expression(
+            F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
                 DFDt.adams_moulton_flux()
                 - sympy.eye(self.mesh.dim) * (self.p.sym[0])
@@ -1691,7 +1689,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # Is the else condition useful - other than to prevent a crash ?
         # Yes, because then it can just live on the Stokes solver ...
         else:
-            F1 = uw.function.expression(
+            F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
                 self._constitutive_model.flux.T
                 - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
@@ -1707,7 +1705,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         dim = self.mesh.dim
 
-        f0 = uw.function.expression(
+        f0 = expression(
             r"\mathbf{F}_1\left( \mathbf{p} \right)",
             sympy.simplify(sympy.Matrix((self.constraints))),
             "NStokes pointwise flux term: f_0(p)",

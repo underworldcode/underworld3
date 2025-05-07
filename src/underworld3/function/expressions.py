@@ -156,28 +156,52 @@ class UWexpression(uw_object, Symbol):
     """
 
     _expr_count = 0
+    _expr_names = []
 
     def __new__(
         cls,
         name,
         *args,
+        _unique_name_generation=False,
         **kwargs,
     ):
 
+        import warnings
+
         instance_no = UWexpression._expr_count
 
-        invisible = rf"\hspace{{ {instance_no/100}pt }}"
-        unique_name = f"{{ {name} {invisible} }}"
+        if name in UWexpression._expr_names and _unique_name_generation == False:
+            warnings.warn(
+                message=f"EXPRESSIONS {name}: Each expression should have a unique name - new expression was not generated",
+            )
+            return None
+
+        if name in UWexpression._expr_names and _unique_name_generation == True:
+
+            invisible = rf"\hspace{{ {instance_no/100}pt }}"
+            unique_name = f"{{ {name} {invisible} }}"
+
+        else:
+            unique_name = name
+
+        UWexpression._expr_names.append(unique_name)
+
         obj = Symbol.__new__(cls, unique_name)
         obj._instance_no = instance_no
         obj._unique_name = unique_name
+        obj._given_name = name
 
         UWexpression._expr_count += 1
 
         return obj
 
     def __init__(
-        self, name, sym=None, description="No description provided", value=None
+        self,
+        name,
+        sym=None,
+        description="No description provided",
+        value=None,
+        **kwargs,
     ):
         if value is not None and sym is None:
             import warnings
@@ -192,7 +216,7 @@ class UWexpression(uw_object, Symbol):
                 "Both 'sym' and 'value' attributes are provided, please use one"
             )
 
-        self.symbol = self._unique_name
+        self.symbol = self._given_name
         self.sym = sym  # Accept anything, sympify is opinionated
         self.description = description
 
@@ -206,9 +230,14 @@ class UWexpression(uw_object, Symbol):
         if not isinstance(other, UWexpression):
             raise ValueError
         else:
-            self.symbol = other.symbol
+            # Note: sympy symbols are uniquely defined by name and so
+            # the uw expressions based on symbols cannot be renamed: only the
+            # value can be changed. As a result, copy is just an assignment to
+            # self.sym and should be deprecated.
+
+            # self.symbol = other.symbol # Can't change this
             self._sym = other._sym
-            self.description = other.description
+            # self.description = other.description # Shouldn't change this
 
         return
 
@@ -293,6 +322,14 @@ class UWexpression(uw_object, Symbol):
 
         display(Markdown("$" + self.symbol + "$"))
 
+    def __repr__(self):
+        # print("Customised !")
+        return str(self.symbol)
+
+    def _repr_latex_(self):
+        # print("Customised !")
+        return rf"$\\displaystyle {str(self.symbol)}$"
+
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
         import sympy
@@ -368,8 +405,7 @@ class UWDerivativeExpression(UWexpression):
         description="derivative of expression provided",
     ):
 
-        self.symbol = self._unique_name
-        self._sym = None
+        self.symbol = self._given_name
         self.diff_variable = None
 
         self._sym = expr  # Accept anything, sympify is overly opinionated if we try to `sympify`

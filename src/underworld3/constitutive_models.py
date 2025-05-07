@@ -19,7 +19,10 @@ from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
-from underworld3.function import expression
+
+from underworld3.function import expression as public_expression
+
+expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
 # How do we use the default here if input is required ?
@@ -341,7 +344,7 @@ class ViscousFlowModel(Constitutive_Model):
 
         super().__init__(unknowns)
 
-        # self._viscosity = uw.function.expression(
+        # self._viscosity = expression(
         #     R"{\eta_0}",
         #     1,
         #     " Apparent viscosity",
@@ -503,13 +506,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         super().__init__(unknowns)
 
-        self._strainrate_inv_II = uw.function.expression(
+        self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
             sympy.sqrt((self.grad_u**2).trace() / 2),
             "Strain rate 2nd Invariant",
         )
 
-        self._plastic_eff_viscosity = uw.function.expression(
+        self._plastic_eff_viscosity = expression(
             R"{\eta_\textrm{eff,p}}",
             1,
             "Effective viscosity (plastic)",
@@ -1133,7 +1136,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                     2 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
                 )
 
-        strainrate_inv_II = uw.function.expression(
+        strainrate_inv_II = expression(
             R"{\dot\varepsilon_{II}'}",
             sympy.sqrt((Edot**2).trace() / 2),
             "Strain rate 2nd Invariant including elastic strain rate term",
@@ -1623,7 +1626,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
         super().__init__(unknowns)
 
-        # self._viscosity = uw.function.expression(
+        # self._viscosity = expression(
         #     R"{\eta_0}",
         #     1,
         #     " Apparent viscosity",
