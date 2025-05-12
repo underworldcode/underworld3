@@ -6,8 +6,8 @@
            version="5.3.1"
            xsi:schemaLocation="http://www.crossref.org/schema/5.3.1 http://www.crossref.org/schemas/crossref5.3.1.xsd">
   <head>
-    <doi_batch_id>20250417113506-b69e4fcdb92ad9bd087cfbdeff82a67b2a9a6732</doi_batch_id>
-    <timestamp>20250417113506</timestamp>
+    <doi_batch_id>20250512120715-b69e4fcdb92ad9bd087cfbdeff82a67b2a9a6732</doi_batch_id>
+    <timestamp>20250512120715</timestamp>
     <depositor>
       <depositor_name>JOSS Admin</depositor_name>
       <email_address>admin@theoj.org</email_address>
@@ -157,6 +157,13 @@
           </collection>
         </doi_data>
         <citation_list>
+          <citation key="balayPETScTAOUsers2024">
+            <article_title>PETSc/TAO Users Manual V.3.21</article_title>
+            <author>Balay</author>
+            <doi>10.2172/2337606</doi>
+            <cYear>2024</cYear>
+            <unstructured_citation>Balay, S., Abhyankar, S., Adams, M., Benson, S., Brown, J., Brune, P., Buschelman, K., Constantinescu, E., Dalcin, L., Dener, A., Eijkhout, V., Faibussowitsch, J., Gropp, W., Hapla, V., Isaac, T., Jolivet, P., Karpeev, D., Kaushik, D., Knepley, M., … Zhang, J. (2024). PETSc/TAO Users Manual V.3.21 (ANL–21/39-Rev-3.21, 2337606, 188499; pp. ANL-21/39-Rev-3.21, 2337606, 188499). https://doi.org/10.2172/2337606</unstructured_citation>
+          </citation>
           <citation key="batheFiniteElementMethod2008">
             <article_title>Finite Element Method</article_title>
             <author>Bathe</author>
@@ -240,9 +247,17 @@
           <citation key="hughesFiniteElementMethod1987">
             <volume_title>The finite element method: Linear static and dynamic finite element analysis</volume_title>
             <author>Hughes</author>
+            <doi>10.1016/0045-7825(87)90013-2</doi>
             <isbn>978-0-13-317025-2</isbn>
             <cYear>1987</cYear>
-            <unstructured_citation>Hughes, T. J. R. (1987). The finite element method: Linear static and dynamic finite element analysis (1. Dr.). Prentice Hall. ISBN: 978-0-13-317025-2</unstructured_citation>
+            <unstructured_citation>Hughes, T. J. R. (1987). The finite element method: Linear static and dynamic finite element analysis (1. Dr.). Prentice Hall. https://doi.org/10.1016/0045-7825(87)90013-2</unstructured_citation>
+          </citation>
+          <citation key="knepleyAchievingHighPerformance2013">
+            <article_title>Achieving High Performance with Unified Residual Evaluation</article_title>
+            <author>Knepley</author>
+            <journal_title>arXiv:1309.1204 [cs]</journal_title>
+            <cYear>2013</cYear>
+            <unstructured_citation>Knepley, M. G., Brown, J., Rupp, K., &amp; Smith, B. F. (2013). Achieving High Performance with Unified Residual Evaluation. arXiv:1309.1204 [Cs]. https://arxiv.org/abs/1309.1204</unstructured_citation>
           </citation>
           <citation key="mansourUnderworld2PythonGeodynamics2020">
             <article_title>Underworld2: Python Geodynamics Modelling for Desktop, HPC and Cloud</article_title>
@@ -266,6 +281,16 @@
             <cYear>2007</cYear>
             <unstructured_citation>Moresi, L., Quenette, S., Lemiale, V., Mériaux, C., Appelbe, B., &amp; Mühlhaus, H.-B. (2007). Computational approaches to studying non-linear dynamics of the crust and mantle. Physics of the Earth and Planetary Interiors, 163(1), 69–82. https://doi.org/10.1016/j.pepi.2007.06.009</unstructured_citation>
           </citation>
+          <citation key="moresiLagrangianIntegrationPoint2003">
+            <article_title>A Lagrangian integration point finite element method for large deformation modeling of viscoelastic geomaterials</article_title>
+            <author>Moresi</author>
+            <journal_title>Journal of Computational Physics</journal_title>
+            <issue>2</issue>
+            <volume>184</volume>
+            <doi>10.1016/S0021-9991(02)00031-1</doi>
+            <cYear>2003</cYear>
+            <unstructured_citation>Moresi, L., Dufour, F., &amp; Mühlhaus, H.-B. (2003). A Lagrangian integration point finite element method for large deformation modeling of viscoelastic geomaterials. Journal of Computational Physics, 184(2), 476–497. https://doi.org/10.1016/S0021-9991(02)00031-1</unstructured_citation>
+          </citation>
           <citation key="wilsonTerraFERMARansparent2017">
             <article_title>Terra FERMA : The T ransparent F inite E lement R apid M odel A ssembler for multiphysics problems in E arth sciences</article_title>
             <author>Wilson</author>
@@ -280,9 +305,10 @@
           <citation key="zienkiewiczFiniteElementMethod2013">
             <volume_title>The finite element method: Its basis and fundamentals</volume_title>
             <author>Zienkiewicz</author>
+            <doi>10.1016/b978-1-85617-633-0.00019-7</doi>
             <isbn>978-1-85617-633-0</isbn>
             <cYear>2013</cYear>
-            <unstructured_citation>Zienkiewicz, O. C., Taylor, R. L., &amp; Zhu, J. Z. (2013). The finite element method: Its basis and fundamentals (Seventh edition). Elsevier, Butterworth-Heinemann. ISBN: 978-1-85617-633-0</unstructured_citation>
+            <unstructured_citation>Zienkiewicz, O. C., Taylor, R. L., &amp; Zhu, J. Z. (2013). The finite element method: Its basis and fundamentals (Seventh edition). Elsevier, Butterworth-Heinemann. https://doi.org/10.1016/b978-1-85617-633-0.00019-7</unstructured_citation>
           </citation>
         </citation_list>
       </journal_article>

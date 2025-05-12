@@ -56,9 +56,9 @@ bibliography: paper.bib
 
 # Summary
 
-`Underworld3` is a finite element, geophysical-fluid-dynamics modelling framework designed to be both straightforward to use and highly scalable to peak high-performance computing environments. It implements the Lagrangian-particle finite element methodology outlined in @moresi.etal.Lagrangian.2003.
+`Underworld3` is a finite element, geophysical-fluid-dynamics modelling framework designed to be both straightforward to use and highly scalable to peak high-performance computing environments. It implements the Lagrangian-particle finite element methodology outlined in @moresiLagrangianIntegrationPoint2003.
 
- `Underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balay.etal.PETSc.2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
+ `Underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balayPETScTAOUsers2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
 
 The symbolic forms in (2,3) are used to construct a finite element representation using `sympy` [@meurer.etal.SymPy.2017] and `cython` [@behnel2011cython]. These forms are just-in-time (JIT) compiled as `C` functions libraries and pointers to these libraries are given to PETSc to describe the finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions.
 
@@ -77,22 +77,20 @@ These problems have a number of defining characteristics:  geomaterials are non-
 
 The symbolic layer of `underworld3` works with the "strong form" of a problem which is typically how the governing equations are derived and disseminated in publications and textbooks. The finite element method is based on a corresponding weak or variational form [e.g. 'standard' finite element textbooks such as @hughesFiniteElementMethod1987, @batheFiniteElementMethod2008, @zienkiewiczFiniteElementMethod2013].
 
-`PETSc` provides a template form for the automatic generation of weak forms [see @knepley.etal.Achieving.2013]. We start from the strong-form of the problem which is defined through the functional $\mathcal{F}$ that expresses the balance between fluxes ($F(u, \nabla u)$), forces, $f(u, \nabla u)$, and unknowns $u$:
+`PETSc` provides a template form for the automatic generation of weak forms [see @knepleyAchievingHighPerformance2013]. We start from the strong-form of the problem which is defined through the functional $\mathcal{F}_s$ that expresses the balance between fluxes ($F(u, \nabla u)$), forces, $f(u, \nabla u)$, and unknowns $u$:
 
 \begin{equation}\label{eq:petsc-strong-form}
-\mathcal{F}(u) \sim \nabla \cdot F(u, \nabla u) - f(u, \nabla u) = 0
+\mathcal{F}_s(u) \sim \nabla \cdot F(u, \nabla u) - f(u, \nabla u) = 0
 \end{equation}
 
-The discrete weak form and its Jacobian derivative would then be expressed as follows:
+The discrete weak form and its Jacobian derivative would then be expressed through the related functional $\mathcal{F}_w$  as follows:
 
 \begin{equation}\label{eq:petsc-weak-form}
- \mathcal{F}(u) \sim \sum_e \epsilon_e^T \left[ B^T W f(u^q, \nabla u^q) + \sum_k D_k^T W F^k (u^q, \nabla u^q) \right] = 0
+ \mathcal{F}_w(u) \sim \sum_e \epsilon_e^T \left[ B^T W f(u^q, \nabla u^q) + \sum_k D_k^T W F^k (u^q, \nabla u^q) \right] = 0
 \end{equation}
 
-Here $\epsilon$ is the element restriction operator; $B$ is the matrix of basis function derivatives and $D$ is the constitutive matrix that, together, describe the relation between the unknowns and the flux. $q$ indicates that the values are determined at a set of quadrature points, and $W$ is a diagonal matrix of weights for these points.
-
 \begin{equation}\label{eq:petsc-jacobian}
- \mathcal{F}'(u) \sim \sum _e \epsilon _{e^T}
+ \mathcal{F}_w'(u) \sim \sum _e \epsilon _{e^T}
                 \left[ \begin{array}{cc}
                     B^T  & D^T \\
                 \end{array} \right]
@@ -110,6 +108,9 @@ Here $\epsilon$ is the element restriction operator; $B$ is the matrix of basis 
                     \end{array} \right]
                 \epsilon _{e}
 \end{equation}
+
+
+Here $\epsilon$ is the element restriction operator; $B$ is the matrix of basis function derivatives and $D$ is the constitutive matrix that, together, describe the relation between the unknowns and the flux. $q$ indicates that the values are determined at a set of quadrature points, and $W$ is a diagonal matrix of weights for these points.
 
 The symbolic representation of the strong-form that is encoded in `underworld3` is:
 
