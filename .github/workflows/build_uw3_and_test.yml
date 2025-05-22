@@ -50,17 +50,4 @@ jobs:
       - name: Run pytest
         shell: bash -l {0}
         run: |
-          pytest tests/test_00??*py
-          pytest tests/test_0[1-9]??*py
-
-          # Poisson solver tests
-          pytest tests/test_100[0-9]*py
-
-          # Stokes solver tests
-          pytest tests/test_1010*py
-          pytest tests/test_1011*py
-          pytest tests/test_1050*py
-
-          # Advection/Diffusion solvers
-          pytest tests/test_1100*py
-          pytest tests/test_1110*py
+          ./test.sh
