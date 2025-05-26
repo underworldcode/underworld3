@@ -205,7 +205,6 @@ __pdoc__ = {}
 # Cython files cannot be documented. We should move pure
 # python out of these files if we can
 
-__pdoc__["kdtree"] = False
 __pdoc__["cython"] = False
 # __pdoc__["function.analytic"] = False
 

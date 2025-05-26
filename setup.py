@@ -124,15 +124,6 @@ extensions = [
         **conf,
     ),
     Extension(
-        "underworld3.kdtree",
-        sources=[
-            "src/underworld3/kdtree.pyx",
-        ],
-        extra_compile_args=extra_compile_args + ["-std=c++11"],
-        language="c++",
-        **conf,
-    ),
-    Extension(
         "underworld3.cython.petsc_types",
         sources=[
             "src/underworld3/cython/petsc_types.pyx",

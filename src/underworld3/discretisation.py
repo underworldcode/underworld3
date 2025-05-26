@@ -1409,7 +1409,6 @@ class Mesh(Stateful, uw_object):
 
         self._indexCoords = PIC_coords.copy()
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._index.build_index()
         self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
 
         tempSwarm.restoreField("DMSwarmPIC_coor")
@@ -1425,7 +1424,7 @@ class Mesh(Stateful, uw_object):
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
         be exactly the owning cell, but if the mesh is deformed, this
-        is not guaranteed. Note, the nearest point does may not be all
+        is not guaranteed. Note, the nearest point may not be all
         that close by - use get_closest_local_cells to filter out points
         that are (probably) not within any local cell.
 
@@ -1443,20 +1442,18 @@ class Mesh(Stateful, uw_object):
             coordinates. This will be a 1-dimensional array of
             shape (n_coords).
         """
+        import numpy as np
 
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            closest_points, dist, found = self._index.find_closest_point(coords)
+            #closest_points, dist, found = self._index.find_closest_point(coords)
+            dist, closest_points = self._index.query(coords, k=1)
+            if np.any(closest_points > self._index.n):
+                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
         else:
             ### returns an empty array if no coords are on a proc
             closest_points, dist, found = False, False, numpy.array([None])
-
-        if found.any() != None:
-            if not numpy.allclose(found, True):
-                raise RuntimeError(
-                    "An error was encountered attempting to find the closest cells to the provided coordinates."
-                )
 
         return self._indexMap[closest_points]
 
@@ -1484,22 +1481,25 @@ class Mesh(Stateful, uw_object):
 
 
         """
+        import numpy as np
 
         # Create index if required
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            closest_points, dist, found = self._index.find_closest_point(coords)
+            dist, closest_points = self._index.query(coords, k=1)
+            if np.any(closest_points > self._index.n):
+                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
         else:
             return -1
 
         # This is tuned a little bit so that points on a single CPU are never lost
 
         cells = self._indexMap[closest_points]
-        invalid = (
-            dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
-        )  # 0.25 * self._radii[cells] ** 2
-        cells[invalid] = -1
+        #invalid = (
+        #    dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
+        #)  # 0.25 * self._radii[cells] ** 2
+        #cells[invalid] = -1
 
         return cells
 
@@ -1526,7 +1526,8 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            _, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
+            #_, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k=1)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
@@ -2102,7 +2103,7 @@ class _MeshVariable(Stateful, uw_object):
     # that is stable when used for EXTRAPOLATION but
     # not accurate.
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
@@ -2121,8 +2122,7 @@ class _MeshVariable(Stateful, uw_object):
             print("Building K-D tree", flush=True)
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
-        mesh_kdt.build_index()
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
         del mesh_kdt
 
         return values
@@ -2294,15 +2294,14 @@ class _MeshVariable(Stateful, uw_object):
 
             return X, D
 
-        def map_to_vertex_values(X, D, nnn=4, verbose=False):
+        def map_to_vertex_values(X, D, nnn=4, p=2, verbose=False):
             # Map from "swarm" of points to nodal points
             # This is a permutation if we building on the checkpointed
             # mesh file
 
             mesh_kdt = uw.kdtree.KDTree(X)
-            mesh_kdt.build_index()
 
-            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, verbose)
+            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, p, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
             mesh = mesh_variable.mesh
