@@ -41,7 +41,7 @@ class SNES_Poisson(SNES_Scalar):
     $$
     \nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
     $$
 
     The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$
@@ -144,10 +144,10 @@ class SNES_Darcy(SNES_Scalar):
     of the Groundwater flow equations
 
     $$
-    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{f}}}} -
+    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
     \nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}}}
+            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
     $$
 
     The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients
@@ -350,7 +350,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     (or near-incompressibility) constraint.
 
     $$
-    \nabla \cdot
+    -\nabla \cdot
             \color{Blue}{\underbrace{\Bigl[
                     \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
             \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
@@ -390,7 +390,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     the term in the `sympy` expression.
 
       - A preconditioner is usually required for the saddle point system and this is provided
-    though the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
 
     ## Notes
 
@@ -622,14 +622,14 @@ class SNES_VE_Stokes(SNES_Stokes):
     All other functionality is inherited from SNES_Stokes
 
     $$
-    \nabla \cdot
+    -\nabla \cdot
             \color{Blue}{\underbrace{\Bigl[
                     \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
     $$
 
     $$
-    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{f}_p} = 0
+    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
     $$
 
     The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
@@ -639,7 +639,7 @@ class SNES_VE_Stokes(SNES_Stokes):
         \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
     $$
 
-    The constraint equation, $\mathbf{f}_p = 0$ is incompressible flow by default but can be set
+    The constraint equation, $\mathbf{h}_p = 0$ is incompressible flow by default but can be set
     to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
 
     ## Properties
@@ -662,7 +662,7 @@ class SNES_VE_Stokes(SNES_Stokes):
     the term in the `sympy` expression.
 
       - A preconditioner is usually required for the saddle point system and this is provided
-    though the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
 
     ## Notes
 
@@ -810,9 +810,9 @@ class SNES_Projection(SNES_Scalar):
     The projection implemented by creating a solver for this problem
 
     $$
-    \nabla \cdot
+    -\nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{f}}} = 0
+            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
     $$
 
     Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
@@ -921,9 +921,9 @@ class SNES_Vector_Projection(SNES_Vector):
     The projection is implemented by creating a solver for this problem
 
     $$
-    \nabla \cdot
+    -\nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
     $$
 
     Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
@@ -1057,9 +1057,9 @@ class SNES_Tensor_Projection(SNES_Projection):
     The projection implemented by creating a solver for this problem
 
     $$
-    \nabla \cdot
+    -\nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{f}}} = 0
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
     $$
 
     Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
@@ -1174,16 +1174,16 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     which is described in Spiegelman & Katz, (2006).
 
     $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
     \nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
     $$
 
     The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
 
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
+    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
     the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
     swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
 
@@ -1505,18 +1505,18 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     distributed sampling of upstream values taken from an arbitrary swarm variable.
 
     $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} -
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{f}}}} -
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
+                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
         \nabla \cdot
             \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
                     \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{f}}}
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
     $$
 
     The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{f}}$ term.
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
 
-    The term $\dot{\mathbf{f}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
+    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
     the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
     A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
     for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
