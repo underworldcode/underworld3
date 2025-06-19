@@ -1167,10 +1167,10 @@ class Mesh(Stateful, uw_object):
             mesh_file = filename + ".mesh.0.h5"
             path = Path(mesh_file)
             if not path.is_file():
-                self.save(mesh_file)
+                self.write(mesh_file)
 
         else:
-            self.save(filename + f".mesh.{index:05}.h5")
+            self.write(filename + f".mesh.{index:05}.h5")
 
         # Checkpoint file
 
