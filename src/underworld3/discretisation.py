@@ -508,94 +508,206 @@ class Mesh(Stateful, uw_object):
         """
         return self.dm.getCoordinateDim()
 
-    def view(self):
+    def view(self, level=0):
+        '''
+        Displays mesh information at different levels.
+        
+        Parameters
+        ----------
+        level : int (0 default) 
+            The display level. 
+            0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)
+        '''
 
         import numpy as np
+        if level==0:
+            if uw.mpi.rank == 0:
+                print(f"\n")
+                print(f"Mesh # {self.instance}: {self.name}\n")
 
-        if uw.mpi.rank == 0:
-            print(f"\n")
-            print(f"Mesh # {self.instance}: {self.name}\n")
+                uw.visualisation.plot_mesh(self)
 
-            if len(self.vars) > 0:
-                print(f"| Variable Name       | component | degree |     type        |")
-                print(f"| ---------------------------------------------------------- |")
-                for vname in self.vars.keys():
-                    v = self.vars[vname]
+                #Total number of cells
+                nstart, nend=self.dm.getHeightStratum(0)
+                num_cells=nend-nstart
+                print(f"Number of cells: {num_cells}\n")
+
+                if len(self.vars) > 0:
+                    print(f"| Variable Name       | component | degree |     type        |")
+                    print(f"| ---------------------------------------------------------- |")
+                    for vname in self.vars.keys():
+                        v = self.vars[vname]
+                        print(
+                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        )
+
+                    print(f"| ---------------------------------------------------------- |")
+                    print("\n", flush=True)
+                else:
+                    print(f"No variables are defined on the mesh\n", flush=True)
+
+            ## Boundary information
+
+            if uw.mpi.rank == 0:
+                if len(self.boundaries) > 0:
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        f"| Boundary Name            | ID    |",
+                        flush=True,
+                    )
+                    print(
+                        f"| -------------------------------- |",
+                        flush=True,
+                    )
+                else:
+                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+
+            for bd in self.boundaries:
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
+
+                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+                if uw.mpi.rank == 0:
+                    print(
+                        f"| {bd.name:<20}     | {bd.value:<5} |",
+                        flush=True,
                     )
 
-                print(f"| ---------------------------------------------------------- |")
-                print("\n", flush=True)
-            else:
-                print(f"No variables are defined on the mesh\n", flush=True)
-
-        ## Boundary information
-
-        if uw.mpi.rank == 0:
-            if len(self.boundaries) > 0:
-                print(
-                    f"| Boundary Name            | ID    | Min Size | Max Size |",
-                    flush=True,
-                )
-                print(
-                    f"| ------------------------------------------------------ |",
-                    flush=True,
-                )
-            else:
-                print(f"No boundary labels are defined on the mesh\n", flush=True)
-
-        for bd in self.boundaries:
-            l = self.dm.getLabel(bd.name)
-            if l:
-                i = l.getStratumSize(bd.value)
-            else:
-                i = 0
+            # ## PETSc marked boundaries:
+            # l = self.dm.getLabel("All_Boundaries")
+            # if l:
+            #     i = l.getStratumSize(1001)
+            # else:
+            #     i = 0
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
             if uw.mpi.rank == 0:
                 print(
-                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                    f"| {'All_Boundaries':<20}     | 1001  |",
                     flush=True,
                 )
 
-        # ## PETSc marked boundaries:
-        # l = self.dm.getLabel("All_Boundaries")
-        # if l:
-        #     i = l.getStratumSize(1001)
-        # else:
-        #     i = 0
+            ## UW_Boundaries:
+            l = self.dm.getLabel("UW_Boundaries")
+            i = 0
+            if l:
+                for bd in self.boundaries:
+                    i += l.getStratumSize(bd.value)
 
-        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-        if uw.mpi.rank == 0:
-            print(
-                f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
-                flush=True,
-            )
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'UW_Boundaries':<20}     | --    |",
+                    flush=True,
+                )
 
-        ## UW_Boundaries:
-        l = self.dm.getLabel("UW_Boundaries")
-        i = 0
-        if l:
+            if uw.mpi.rank == 0:
+                print(f"| -------------------------------- |")
+                print("\n", flush=True)
+
+            ## Information on the mesh DM
+            # self.dm.view()
+            print(f"Use view(1) to view detailed mesh information.\n")
+
+        elif level==1:
+            if uw.mpi.rank == 0:
+                print(f"\n")
+                print(f"Mesh # {self.instance}: {self.name}\n")
+                uw.visualisation.plot_mesh(self)
+
+                #Total number of cells
+                nstart, nend=self.dm.getHeightStratum(0)
+                num_cells=nend-nstart
+                print(f"Number of cells: {num_cells}\n")
+
+                if len(self.vars) > 0:
+                    print(f"| Variable Name       | component | degree |     type        |")
+                    print(f"| ---------------------------------------------------------- |")
+                    for vname in self.vars.keys():
+                        v = self.vars[vname]
+                        print(
+                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        )
+
+                    print(f"| ---------------------------------------------------------- |")
+                    print("\n", flush=True)
+                else:
+                    print(f"No variables are defined on the mesh\n", flush=True)
+
+            ## Boundary information
+
+            if uw.mpi.rank == 0:
+                if len(self.boundaries) > 0:
+                    print(
+                        f"| Boundary Name            | ID    | Min Size | Max Size |",
+                        flush=True,
+                    )
+                    print(
+                        f"| ------------------------------------------------------ |",
+                        flush=True,
+                    )
+                else:
+                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+
             for bd in self.boundaries:
-                i += l.getStratumSize(bd.value)
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
 
-        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-        if uw.mpi.rank == 0:
-            print(
-                f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
-                flush=True,
-            )
+                if uw.mpi.rank == 0:
+                    print(
+                        f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                        flush=True,
+                    )
 
-        if uw.mpi.rank == 0:
-            print(f"| ------------------------------------------------------ |")
-            print("\n", flush=True)
+            # ## PETSc marked boundaries:
+            # l = self.dm.getLabel("All_Boundaries")
+            # if l:
+            #     i = l.getStratumSize(1001)
+            # else:
+            #     i = 0
 
-        ## Information on the mesh DM
-        self.dm.view()
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
+                )
+
+            ## UW_Boundaries:
+            l = self.dm.getLabel("UW_Boundaries")
+            i = 0
+            if l:
+                for bd in self.boundaries:
+                    i += l.getStratumSize(bd.value)
+
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
+                )
+
+            if uw.mpi.rank == 0:
+                print(f"| ------------------------------------------------------ |")
+                print("\n", flush=True)
+
+            ## Information on the mesh DM
+            self.dm.view()
+
+        else:
+            print(f"\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.")
 
     def view_parallel(self):
         """
