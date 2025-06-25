@@ -17,6 +17,8 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
+from .ddt import Eulerian as Eulerian_DDt
+from .ddt import Symbolic as Symbolic_DDt
 
 
 # class UW_Scalar_Temple(SNES_Scalar):
@@ -1490,6 +1492,305 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         self.DuDt.update_post_solve(timestep, verbose=verbose)
         self.DFDt.update_post_solve(timestep, verbose=verbose)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+    
+
+class SNES_Diffusion(SNES_Scalar):
+    r"""
+    This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+    $$
+
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. 
+
+    ## Properties
+
+      - The unknown is $u$.
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
+        It is usually a constant or a function of position / time and may also be non-linear
+        or anisotropic.
+
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+        `meshVariable` or `swarmVariable` types.
+
+
+
+    """
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
+        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable,
+        order: int = 1,
+        theta: float = 0.,
+        evalf: Optional[bool] = False,
+        verbose=False,
+        DuDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        ## Parent class will set up default values etc
+        super().__init__(
+            mesh,
+            u_Field,
+            u_Field.degree,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
+
+        self.theta = theta
+
+        # These are unique to the advection solver
+        self._delta_t = uw.function.expression(
+            R"\Delta t", 0, "Physically motivated timestep"
+        )
+        self.is_setup = False
+
+        ### Setup the history terms ... This version should not build anything
+        ### by default - it's the template / skeleton
+
+        ## NB - Smoothing is generally required for stability. 0.0001 is effective
+        ## at the various resolutions tested.
+
+        if DuDt is None:
+            self.Unknowns.DuDt = Eulerian_DDt(
+                self.mesh,
+                u_Field,
+                vtype=uw.VarType.SCALAR,
+                degree=u_Field.degree,
+                continuous=u_Field.continuous,
+                varsymbol=u_Field.symbol,
+                verbose=verbose,
+                evalf=evalf,
+                bcs=self.essential_bcs,
+                order=order,
+                smoothing=0.0,
+            )
+
+        else:
+            # validation
+            if order is None:
+                order = DuDt.order
+
+            else:
+                if DuDt.order < order:
+                    raise RuntimeError(
+                        f"DuDt supplied is order {DuDt.order} but order requested is {order}"
+                    )
+
+            self.Unknowns.DuDt = DuDt
+
+        if DFDt is None:
+            self.Unknowns.DFDt = Symbolic_DDt(
+                sympy.Matrix(
+                    [[0] * self.mesh.dim] ),
+                    varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                    theta=theta,
+                    bcs=None,
+                    order=order,
+            )
+            ### solution unable to solve after n timesteps, due to the projection of flux term (???)
+            # self.Unknowns.DFDt = Eulerian_DDt(
+            #     self.mesh,
+            #     sympy.Matrix(
+            #         [[0] * self.mesh.dim]
+            #     ),  # Actual function is not defined at this point
+            #     vtype=uw.VarType.VECTOR,
+            #     degree=u_Field.degree,
+            #     continuous=u_Field.continuous,
+            #     varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            #     theta=theta,
+            #     evalf=evalf,
+            #     verbose=verbose,
+            #     bcs=None,
+            #     order=order,
+            #     smoothing=0.0,
+            # )
+
+        return
+
+    @property
+    def F0(self):
+
+        f0 = uw.function.expression(
+            r"f_0 \left( \mathbf{u} \right)",
+            -self.f + sympy.simplify( self.DuDt.bdf() ) / self.delta_t,
+            "Diffusion pointwise force term: f_0(u)",
+        )
+
+        # backward compatibility
+        self._f0 = f0
+
+        return f0
+
+    @property
+    def F1(self):
+
+        F1_val = uw.function.expression(
+            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+            self.DFDt.adams_moulton_flux(),
+            "Diffusion pointwise flux term: F_1(u)",
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t.sym = value
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Calculates an appropriate timestep for the given
+        mesh and diffusivity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+        """
+
+        if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
+            if uw.function.fn_is_constant_expr(
+                self.constitutive_model.diffusivity.sym
+            ):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.diffusivity.sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.diffusivity.sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
+        else:
+            k = self.constitutive_model.diffusivity.sym
+            max_diffusivity = k
+
+        ### required modules
+        from mpi4py import MPI
+
+        ## get global max dif value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ## get radius
+        min_dx = self.mesh.get_min_radius()
+
+        ## estimate dt of adv and diff components
+        self.dt_diff = 0.0
+
+
+        dt_diff = (min_dx**2) / diffusivity_glob
+        self.dt_diff = dt_diff
+
+        dt_estimate = dt_diff
+
+        return dt_estimate
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        evalf: bool = False,
+        _force_setup: bool = False,
+        verbose=False,
+    ):
+        """
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        """
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            # self._flux =  self.constitutive_model.flux.T
+            # self._flux_star =  self._flux.copy()
+
+        
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Update History / Flux History terms
+        # SemiLagrange and Lagrange may have different sequencing.
+        # self.DuDt.update_pre_solve(verbose=verbose)
+        # self.DFDt.update_pre_solve(verbose=verbose)
+
+        super().solve(zero_init_guess, _force_setup)
+
+        self.DuDt.update_post_solve(evalf=evalf, verbose=verbose)
+        self.DFDt.update_post_solve(evalf=evalf, verbose=verbose)
+
+        # if isinstance(self.DFDt, Eulerian_DDt):
+        #     for i in range(order):
+        #         ### have to substitute the unknown history term into the symbolic flux term
+        #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
+
+        # self._flux_star =  self._flux.copy()
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True

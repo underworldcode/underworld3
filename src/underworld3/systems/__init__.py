@@ -24,6 +24,9 @@ from .solvers import SNES_Tensor_Projection as Tensor_Projection
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
+# import diffusion-only solver
+from .solvers import SNES_Diffusion as Diffusion
+
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm
 from .solvers import SNES_NavierStokes as NavierStokesSLCN
@@ -33,3 +36,6 @@ from .solvers import SNES_NavierStokes as NavierStokes
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
+from .ddt import Eulerian as Eulerian_DDt
+
+

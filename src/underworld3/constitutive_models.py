@@ -217,8 +217,10 @@ class Constitutive_Model(uw_object):
 
         if not self._is_setup:
             self._build_c_tensor()
-
-        return self._c.as_immutable()
+        if hasattr(self._c, "sym"):
+            return sympy.Matrix(self._c.sym).as_immutable()
+        else:
+            return self._c.as_immutable()
 
     @property
     def flux(self):
@@ -1467,6 +1469,141 @@ class DiffusionModel(Constitutive_Model):
         )
 
         return
+
+# AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
+class AnisotropicDiffusionModel(DiffusionModel):
+    class _Parameters:
+        def __init__(inner_self, _owning_model):
+            dim = _owning_model.dim
+            inner_self._owning_model = _owning_model
+            # Set default diffusivity as an identity matrix wrapped in an expression
+            default_diffusivity = sympy.ones(_owning_model.dim, 1)
+            elements = [default_diffusivity[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                comp = validate_parameters(
+                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                )
+                if comp is not None:
+                    validated.append(comp)
+            # Store the validated diffusivity as a diagonal matrix
+            inner_self._diffusivity = sympy.diag(*validated)
+        
+        @property
+        def diffusivity(inner_self):
+            return inner_self._diffusivity
+        
+        @diffusivity.setter
+        def diffusivity(inner_self, value: sympy.Matrix):
+            dim = inner_self._owning_model.dim
+
+            # Accept shape (dim, 1) or (1, dim)
+            if value.shape not in [(dim, 1), (1, dim)]:
+                raise ValueError(
+                    f"Diffusivity must be a vector of length {dim}. Got shape {value.shape}."
+                )
+            # Validate each component using validate_parameters
+            elements = [value[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                diff = validate_parameters(
+                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                )
+                if diff is not None:
+                    validated.append(diff)
+            # Store the validated diffusivity as a diagonal matrix
+            inner_self._diffusivity = sympy.diag(*validated)
+            inner_self._reset()
+
+    def _build_c_tensor(self):
+        """Constructs the anisotropic (diagonal) tensor from the diffusivity vector."""
+        self._c = self.Parameters.diffusivity
+        self._is_setup = True
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        
+        super()._object_viewer()
+        
+        diagonal = self.Parameters.diffusivity.diagonal()
+        latex_entries = ", ".join([sympy.latex(k) for k in diagonal])
+        kappa_latex = r"\kappa = \mathrm{diag}\left(" + latex_entries + r"\right)"
+        display(Latex(r"$\quad " + kappa_latex + r"$"))
+
+
+class GenericFluxModel(Constitutive_Model):
+    r"""
+    A generic constitutive model with symbolic flux expression.
+
+    Example usage:
+    ```python
+    grad_phi = sympy.Matrix([sp.Symbol("∂φ/∂x"), sp.Symbol("∂φ/∂y")])
+    flux_expr = sympy.Matrix([[kappa_11, kappa_12], [kappa_21, kappa_22]]) * grad_phi
+
+    model = GenericFluxModel(dim=2)
+    model.flux = flux_expr
+    scalar_solver.constititutive_model = model
+    ```
+    """
+
+    class _Parameters:
+        def __init__(inner_self, _owning_model):
+            inner_self._owning_model = _owning_model
+
+            default_flux = sympy.zeros(_owning_model.dim, 1)
+            elements = [default_flux[i] for i in range(_owning_model.dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                flux_component = validate_parameters(
+                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                )
+                if flux_component is not None:
+                    validated.append(flux_component)
+
+            inner_self._flux = sympy.Matrix(validated)
+
+        @property
+        def flux(inner_self):
+            return inner_self._flux
+
+        @flux.setter
+        def flux(inner_self, value: sympy.Matrix):
+            dim = inner_self._owning_model.dim
+
+            # Accept shape (dim, 1) or (1, dim)
+            if value.shape not in [(dim, 1), (1, dim)]:
+                raise ValueError(
+                    f"Flux must be a symbolic vector of length {dim}. "
+                    f"Got shape {value.shape}."
+                )
+
+            # Flatten and validate
+            elements = [value[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                flux_component = validate_parameters(
+                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                )
+                if flux_component is not None:
+                    validated.append(flux_component)
+
+            inner_self._flux = sympy.Matrix(validated).reshape(dim, 1)
+            inner_self._reset()
+
+    @property
+    def flux(self):
+        # if self._flux is None:
+        #     raise RuntimeError("Flux expression has not been set.")
+        return self.Parameters.flux
+
+
+    def _object_viewer(self):
+        from IPython.display import display, Latex
+        super()._object_viewer()
+        if self.flux is not None:
+            display(Latex(r"$\vec{q} = " + sympy.latex(self.flux) + "$"))
+        else:
+            display(Latex(r"No flux expression set."))
 
 
 class DarcyFlowModel(Constitutive_Model):
