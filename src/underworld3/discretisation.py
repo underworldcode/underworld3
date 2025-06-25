@@ -2922,7 +2922,7 @@ def checkpoint_xdmf(
                DataType="Float" Precision="8"
                Dimensions="1 {numVertices} {var.num_components}"
                Format="HDF">
-              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_P"+str(var.degree)}
+              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_"+var.clean_name}
             </DataItem>
           </DataItem>
         </Attribute>
