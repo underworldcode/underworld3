@@ -108,9 +108,9 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
         edgeIS = dm.getStratumIS("depth",1)
         faceIS = dm.getStratumIS("depth",2)
 
-        point_indices = pointIS.getIndices()
-        edge_indices = edgeIS.getIndices()
-        face_indices = faceIS.getIndices()
+        # point_indices = pointIS.getIndices()
+        # edge_indices = edgeIS.getIndices()
+        # face_indices = faceIS.getIndices()
 
         _, iset_lab = label.convertToSection()
 
@@ -120,29 +120,29 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         # print(f"Label {label_name}")
         # print(f"P -> {len(IndicesP)}, E->{len(IndicesE)}, F->{len(IndicesF)},")
-  
-        IndicesFe = np.empty((IndicesF.shape[0], dm.getConeSize(fStart)), dtype=int)
-        for f in range(IndicesF.shape[0]):
-                IndicesFe[f] = dm.getCone(IndicesF[f])
 
-        IndicesFE = np.union1d(IndicesE, IndicesFe)
+        if IndicesF.any():
+                IndicesFe = np.empty((IndicesF.shape[0], dm.getConeSize(fStart)), dtype=int)
+                for f in range(IndicesF.shape[0]):
+                        IndicesFe[f] = dm.getCone(IndicesF[f])
+
+                IndicesE = np.union1d(IndicesE, IndicesFe)
 
         # All faces are now recorded as edges
 
-        IndicesEp = np.empty((IndicesFE.shape[0], dm.getConeSize(eStart)), dtype=int)
+        if IndicesE.any():
+                IndicesEp = np.empty((IndicesE.shape[0], dm.getConeSize(eStart)), dtype=int)
+                for e in range(IndicesE.shape[0]):
+                        IndicesEp[e] = dm.getCone(IndicesE[e])
 
-        for e in range(IndicesFE.shape[0]):
-                IndicesEp[e] = dm.getCone(IndicesFE[e])
+                IndicesP = np.union1d(IndicesP, IndicesEp)
 
         # all faces / edges are now points
 
-        if sectionIndex:
-                Indices = np.union1d(IndicesP, IndicesEp)
-        else:
-                Indices = np.union1d(IndicesP, IndicesEp) - pStart
+        if IndicesP.any() and not sectionIndex:
+                IndicesP -= pStart
 
-        return Indices
-
+        return IndicesP
 
 
 ## Todo !
