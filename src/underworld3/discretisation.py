@@ -2894,9 +2894,9 @@ def checkpoint_xdmf(
 
     ## The mesh Var attributes
     
-    def get_cell_field_size(h5_filename):
+    def get_cell_field_size(h5_filename, mesh_var):
         with h5py.File(h5_filename, 'r') as f:
-            size = f[f'cell_fields/{var.clean_name}_{var.clean_name}'].shape[0]
+            size = f[f'cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}'].shape[0]
         return size
 
     attributes = ""
@@ -2911,7 +2911,7 @@ def checkpoint_xdmf(
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
         if not getattr(var, "continuous") or getattr(var, "degree")==0:
             center = "Cell"
-            numItems = get_cell_field_size(var_filename)
+            numItems = get_cell_field_size(var_filename, var)
             field_group = "cell_fields"
         else:
             center = "Node"
