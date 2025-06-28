@@ -21,20 +21,6 @@ from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
 
-# class UW_Scalar_Temple(SNES_Scalar):
-
-# class UW_Lagrangian_Helper:
-#     """Mixin style ... add some functions to manage swarm updates etc"""
-
-#     @property
-#     def phi_star(self):
-#         return "phi_star"
-
-#     @property
-#     def phi_star_star(self):
-#         return "phi_star_star"
-
-
 class SNES_Poisson(SNES_Scalar):
     r"""
     This class provides functionality for a discrete representation
