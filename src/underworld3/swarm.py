@@ -2284,70 +2284,67 @@ class BASIC_Swarm(Stateful, uw_object):
         if global_unclaimed_points == 0:
             return
 
-        for it in range(0, min(max_its, uw.mpi.size)):
+        # Migrate particles between processors if appropriate
+        # Otherwise skip the next step and just remove missing points
+        # and tidy up.
 
-            # Send unclaimed points to next processor in line
+        if uw.mpi.size > 1:
+            for it in range(0, min(max_its, uw.mpi.size)):
 
-            swarm_rank_array = self.dm.getField("DMSwarm_rank")
-            swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
-                (-1, self.dim)
-            )
+                # Send unclaimed points to next processor in line
 
-            # Should be able to do this only for unclaimed points
-            if len(swarm_coord_array > 0):
-                rank, dist = mesh_domain_kdtree.find_closest_n_points(
-                    it + 1, swarm_coord_array[not_my_points]
+                swarm_rank_array = self.dm.getField("DMSwarm_rank")
+                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
+                    (-1, self.dim)
                 )
-                swarm_rank_array[not_my_points, 0] = rank[:, it]
 
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_rank")
+                # Should be able to do this only for unclaimed points
+                if len(swarm_coord_array > 0):
+                    rank, dist = mesh_domain_kdtree.find_closest_n_points(
+                        it + 1, swarm_coord_array[not_my_points]
+                    )
+                    swarm_rank_array[not_my_points, 0] = rank[:, it]
 
-            # Now we send the points (basic migration)
-            self.dm.migrate(remove_sent_points=True)
-            uw.mpi.barrier()
+                self.dm.restoreField("DMSwarmPIC_coor")
+                self.dm.restoreField("DMSwarm_rank")
 
-            swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
-                (-1, self.dim)
-            )
+                # Now we send the points (basic migration)
+                self.dm.migrate(remove_sent_points=True)
+                uw.mpi.barrier()
 
-            in_or_not = self.mesh.points_in_domain(swarm_coord_array)
-            self.dm.restoreField("DMSwarmPIC_coor")
+                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
+                    (-1, self.dim)
+                )
 
-            num_points_in_domain = np.count_nonzero(in_or_not == True)
-            num_points_not_in_domain = np.count_nonzero(in_or_not == False)
-            not_my_points = np.where(in_or_not == False)[0]
+                in_or_not = self.mesh.points_in_domain(swarm_coord_array)
+                self.dm.restoreField("DMSwarmPIC_coor")
 
-            unclaimed_points_last_iteration = global_unclaimed_points
-            claimed_points_last_iteration = global_claimed_points
+                num_points_in_domain = np.count_nonzero(in_or_not == True)
+                num_points_not_in_domain = np.count_nonzero(in_or_not == False)
+                not_my_points = np.where(in_or_not == False)[0]
 
-            global_unclaimed_points = int(
-                uw.utilities.gather_data(
-                    num_points_not_in_domain,
-                    bcast=True,
-                    dtype=int,
-                ).sum()
-            )
+                unclaimed_points_last_iteration = global_unclaimed_points
+                claimed_points_last_iteration = global_claimed_points
 
-            global_claimed_points = int(
-                uw.utilities.gather_data(
-                    num_points_in_domain, bcast=True, dtype=int
-                ).sum()
-            )
+                global_unclaimed_points = int(
+                    uw.utilities.gather_data(
+                        num_points_not_in_domain,
+                        bcast=True,
+                        dtype=int,
+                    ).sum()
+                )
 
-            # print(
-            #     f"{uw.mpi.rank} - {num_points_in_domain} v {num_points_not_in_domain}",
-            #     f"|| {global_unclaimed_points} / {unclaimed_points_last_iteration}||",
-            #     f"|| {global_claimed_points} / {claimed_points_last_iteration}||",
-            #     f"{self.dm.getLocalSize()}",
-            #     flush=True,
-            # )
+                global_claimed_points = int(
+                    uw.utilities.gather_data(
+                        num_points_in_domain, bcast=True, dtype=int
+                    ).sum()
+                )
 
-            if (
-                global_unclaimed_points == unclaimed_points_last_iteration
-                and global_claimed_points == claimed_points_last_iteration
-            ):
-                break
+                if (
+                    global_unclaimed_points == unclaimed_points_last_iteration
+                    and global_claimed_points == claimed_points_last_iteration
+                ):
+                    break
 
         # Missing points for deletion if required
         if delete_lost_points:
@@ -2916,16 +2913,18 @@ class BASIC_Swarm(Stateful, uw_object):
                     # `SwarmVariable.data` interface is controlled by the context manager
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
+                    #
 
-                    coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
-                        (-1, self.em_swarm.dim)
-                    )
+                    if uw.mpi.size > 1:
 
-                    self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
+                        coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
+                            (-1, self.em_swarm.dim)
+                        )
 
-                    ## We'll need to identify the new processes here and update the particle rank value accordingly
+                        self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
 
-                    self.em_swarm.migrate(remove_sent_points=True)
+                        ## We'll need to identify the new processes here and update the particle rank value accordingly
+                        self.em_swarm.migrate(remove_sent_points=True)
 
                     # void these things too
                     self.em_swarm._index = None
@@ -3153,8 +3152,13 @@ class BASIC_Swarm(Stateful, uw_object):
 
             # forward Euler (1st order)
             else:
+
+                from time import time
+
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
+
+                    t0 = time()
 
                     if evalf:
                         for d in range(self.dim):
@@ -3167,6 +3171,8 @@ class BASIC_Swarm(Stateful, uw_object):
                                 V_fn_matrix[d], self.data
                             ).reshape(-1)
 
+                    t1 = time()
+
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -3175,6 +3181,12 @@ class BASIC_Swarm(Stateful, uw_object):
                         new_coords = restore_points_to_domain_func(new_coords)
 
                     self.data[...] = new_coords[...].copy()
+
+                    t2 = time()
+
+                    print(f"TIME: {t2-t1} / {t1-t0} ", flush=True)
+
+                print(f"{time()-t2} - migration", flush=True)
 
         ## End of substepping loop
 
@@ -3245,7 +3257,11 @@ class BASIC_Swarm(Stateful, uw_object):
             ## Determine RANK
             ##
 
-            self.dm.migrate(remove_sent_points=True)
+            # Migrate will already have been called by the access manager.
+            # Maybe we should hash the local particle coords to make this
+            # a little more user-friendly
+
+            # self.dm.migrate(remove_sent_points=True)
 
             with self.access(self._remeshed):
                 self._remeshed.data[...] = np.mod(
@@ -3253,6 +3269,8 @@ class BASIC_Swarm(Stateful, uw_object):
                 )
 
             self.cycle += 1
+
+            ## End of cycle_swarm loop
 
         return
 
