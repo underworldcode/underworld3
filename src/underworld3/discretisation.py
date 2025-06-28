@@ -588,7 +588,7 @@ class Mesh(Stateful, uw_object):
         The mesh dimensionality.
         """
         return self.dm.getCoordinateDim()
-      
+
     @property
     def element(self) -> dict:
         """
@@ -599,40 +599,46 @@ class Mesh(Stateful, uw_object):
         return self._element
 
     def view(self, level=0):
-        '''
+        """
         Displays mesh information at different levels.
-        
+
         Parameters
         ----------
-        level : int (0 default) 
-            The display level. 
+        level : int (0 default)
+            The display level.
             0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)
-        '''
-
+        """
 
         import numpy as np
-        if level==0:
+
+        if level == 0:
             if uw.mpi.rank == 0:
                 print(f"\n")
                 print(f"Mesh # {self.instance}: {self.name}\n")
 
                 uw.visualisation.plot_mesh(self)
 
-                #Total number of cells
-                nstart, nend=self.dm.getHeightStratum(0)
-                num_cells=nend-nstart
+                # Total number of cells
+                nstart, nend = self.dm.getHeightStratum(0)
+                num_cells = nend - nstart
                 print(f"Number of cells: {num_cells}\n")
 
                 if len(self.vars) > 0:
-                    print(f"| Variable Name       | component | degree |     type        |")
-                    print(f"| ---------------------------------------------------------- |")
+                    print(
+                        f"| Variable Name       | component | degree |     type        |"
+                    )
+                    print(
+                        f"| ---------------------------------------------------------- |"
+                    )
                     for vname in self.vars.keys():
                         v = self.vars[vname]
                         print(
                             f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
                         )
 
-                    print(f"| ---------------------------------------------------------- |")
+                    print(
+                        f"| ---------------------------------------------------------- |"
+                    )
                     print("\n", flush=True)
                 else:
                     print(f"No variables are defined on the mesh\n", flush=True)
@@ -705,28 +711,33 @@ class Mesh(Stateful, uw_object):
             # self.dm.view()
             print(f"Use view(1) to view detailed mesh information.\n")
 
-
-        elif level==1:
+        elif level == 1:
             if uw.mpi.rank == 0:
                 print(f"\n")
                 print(f"Mesh # {self.instance}: {self.name}\n")
                 uw.visualisation.plot_mesh(self)
 
-                #Total number of cells
-                nstart, nend=self.dm.getHeightStratum(0)
-                num_cells=nend-nstart
+                # Total number of cells
+                nstart, nend = self.dm.getHeightStratum(0)
+                num_cells = nend - nstart
                 print(f"Number of cells: {num_cells}\n")
 
                 if len(self.vars) > 0:
-                    print(f"| Variable Name       | component | degree |     type        |")
-                    print(f"| ---------------------------------------------------------- |")
+                    print(
+                        f"| Variable Name       | component | degree |     type        |"
+                    )
+                    print(
+                        f"| ---------------------------------------------------------- |"
+                    )
                     for vname in self.vars.keys():
                         v = self.vars[vname]
                         print(
                             f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
                         )
 
-                    print(f"| ---------------------------------------------------------- |")
+                    print(
+                        f"| ---------------------------------------------------------- |"
+                    )
                     print("\n", flush=True)
                 else:
                     print(f"No variables are defined on the mesh\n", flush=True)
@@ -799,7 +810,9 @@ class Mesh(Stateful, uw_object):
             self.dm.view()
 
         else:
-            print(f"\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.")
+            print(
+                f"\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh."
+            )
 
     def view_parallel(self):
         """
@@ -1593,7 +1606,7 @@ class Mesh(Stateful, uw_object):
 
         self._indexCoords = index_coords
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._index.build_index()
+        # self._index.build_index()
         self._indexMap = numpy.array(cell_id, dtype=numpy.int64)
 
         return
@@ -1669,7 +1682,7 @@ class Mesh(Stateful, uw_object):
 
         self._indexCoords = numpy.array(control_points_list)
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._index.build_index()
+        # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
         # We don't need an indexMap for this one because there is only one point per cell
@@ -1677,7 +1690,7 @@ class Mesh(Stateful, uw_object):
         # Note: self._centroids is not yet defined:
 
         self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        self._centroid_index.build_index()
+        # self._centroid_index.build_index()
 
         return
 
@@ -1722,14 +1735,14 @@ class Mesh(Stateful, uw_object):
         self._indexCoords = PIC_coords.copy()
         self._index = uw.kdtree.KDTree(self._indexCoords)
         self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
-        self._index.build_index()
+        # self._index.build_index()
 
         # We don't need an indexMap for this one because there is only one point per cell
         # and the returned kdtree value IS the index.
         # Note: self._centroids is not yet defined:
 
         self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        self._centroid_index.build_index()
+        # self._centroid_index.build_index()
 
         tempSwarm.restoreField("DMSwarmPIC_coor")
         tempSwarm.restoreField("DMSwarm_cellid")  #
@@ -2005,10 +2018,12 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            #closest_points, dist, found = self._index.find_closest_point(coords)
+            # closest_points, dist, found = self._index.find_closest_point(coords)
             dist, closest_points = self._index.query(coords, k=1)
             if np.any(closest_points > self._index.n):
-                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
+                raise RuntimeError(
+                    "An error was encountered attempting to find the closest cells to the provided coordinates."
+                )
         else:
             ### returns an empty array if no coords are on a proc
             closest_points, dist, found = False, False, numpy.array([None])
@@ -2049,7 +2064,9 @@ class Mesh(Stateful, uw_object):
         if len(coords) > 0:
             dist, closest_points = self._index.query(coords, k=1)
             if np.any(closest_points > self._index.n):
-                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
+                raise RuntimeError(
+                    "An error was encountered attempting to find the closest cells to the provided coordinates."
+                )
         else:
             return np.zeros((0,))
 
@@ -2065,11 +2082,11 @@ class Mesh(Stateful, uw_object):
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroid_index.kdtree_points().shape[0]
+        num_local_cells = self._centroid_index.data_pts.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
-        closest_centroids, dist2 = self._centroid_index.find_closest_n_points(
-            50, coords[lost_points]
+        dist2, closest_centroids = self._centroid_index.query(
+            coords[lost_points], k=num_testable_neighbours, sqr_dists=True
         )
 
         # This number is close to the point-point coordination value in 3D unstructured
@@ -2109,7 +2126,7 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            #_, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
+            # _, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
             distsq, _ = centroids_kd_tree.query(cell_coords, k=1)
 
             cell_length[cell] = np.sqrt(distsq.max())
@@ -2687,7 +2704,9 @@ class _MeshVariable(Stateful, uw_object):
     # that is stable when used for EXTRAPOLATION but
     # not accurate.
 
-    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
+    def rbf_interpolate(
+        self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None
+    ):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
@@ -2706,7 +2725,9 @@ class _MeshVariable(Stateful, uw_object):
             print("Building K-D tree", flush=True)
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
+        values = mesh_kdt.rbf_interpolator_local(
+            new_coords, D, nnn, p=p, verbose=verbose
+        )
         del mesh_kdt
 
         return values

@@ -332,15 +332,15 @@ class SwarmVariable(Stateful, uw_object):
         kd = uw.kdtree.KDTree(meshVar.coords)
 
         with self.swarm.access():
-            #n, d, b = kd.find_closest_point(self.swarm.data)
-            d, n    = kd.query(self.swarm.data, k=1)
+            # n, d, b = kd.find_closest_point(self.swarm.data)
+            d, n = kd.query(self.swarm.data, k=1)
 
             node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
             w = np.zeros(meshVar.coords.shape[0])
 
             if not self._nn_proxy:
                 for i in range(self.data.shape[0]):
-                    #if b[i]:
+                    # if b[i]:
                     node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
                     w[n[i]] += 1.0 / (1.0e-24 + d[i])
 
@@ -392,7 +392,7 @@ class SwarmVariable(Stateful, uw_object):
                 D = self.data.copy()
                 kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data[:, :])
 
-            #kdt.build_index()
+            # kdt.build_index()
 
             values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
 
@@ -719,14 +719,16 @@ class IndexSwarmVariable(SwarmVariable):
         """
         if self.update_type == 0:
             kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
-            
+
             with self.swarm.access():
-                #n_indices, n_distance = kd.find_closest_n_points(self.nnn,self.swarm.particle_coordinates.data)
-                n_distance, n_indices = kd.query(self.swarm.particle_coordinates.data, k=self.nnn)
+                # n_indices, n_distance = kd.find_closest_n_points(self.nnn,self.swarm.particle_coordinates.data)
+                n_distance, n_indices = kd.query(
+                    self.swarm.particle_coordinates.data, k=self.nnn
+                )
                 kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
-                #n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
+                # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
                 d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1)
-        
+
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
 
@@ -760,9 +762,11 @@ class IndexSwarmVariable(SwarmVariable):
         elif self.update_type == 1:
             with self.swarm.access():
                 kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
-                #n_indices, n_distance = kd.find_closest_n_points(self.nnn,self._meshLevelSetVars[0].coords)
-                n_distance, n_indices = kd.query(self._meshLevelSetVars[0].coords,k=self.nnn)
-                
+                # n_indices, n_distance = kd.find_closest_n_points(self.nnn,self._meshLevelSetVars[0].coords)
+                n_distance, n_indices = kd.query(
+                    self._meshLevelSetVars[0].coords, k=self.nnn
+                )
+
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
                 with self.swarm.mesh.access(meshVar), self.swarm.access():
@@ -999,9 +1003,9 @@ class Swarm(Stateful, uw_object):
         if np.any(newp_cells0 > self.mesh._centroids.shape[0]):
             raise RuntimeError("Some new coordinates can't find a owning cell - Error")
 
-        #valid = newp_cells0 != -1
-        #newp_coords = newp_coords0[valid]
-        #newp_cells = newp_cells0[valid]
+        # valid = newp_cells0 != -1
+        # newp_coords = newp_coords0[valid]
+        # newp_cells = newp_cells0[valid]
         newp_coords = newp_coords0
         newp_cells = newp_cells0
 
@@ -1661,8 +1665,8 @@ class Swarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            #self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
-            self._nnmapdict[digest] = self._index.query(meshvar_coords,k=1)[0]
+            # self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1)[0]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator
