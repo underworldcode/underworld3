@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.coordinates API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.coordinates</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.coordinates.expression"><code class="name flex">
+<span>def <span class="ident">expression</span></span>(<span>*x, **X)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">expression = lambda *x, **X: underworld3.function.expressions.UWexpression(
+    *x, _unique_name_generation=True, **X
+)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</section>
+<section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="underworld3.coordinates.CoordinateSystem"><code class="flex name class">
+<span>class <span class="ident">CoordinateSystem</span></span>
+<span>(</span><span>mesh,<br>system: <a title="underworld3.coordinates.CoordinateSystemType" href="#underworld3.coordinates.CoordinateSystemType">CoordinateSystemType</a> | None = CoordinateSystemType.CARTESIAN)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class CoordinateSystem:
+    R&#34;&#34;&#34;This class is attached to a mesh to provide programmatic access to coordinate system operations.
+
+    `CoordinateSystem.R` - the coordinates in the natural reference (sympy symbols)
+    `CoordinateSystem.xR` - the coordinates in the natural reference (sympy symbols in terms of mesh.X)
+    `CoordinateSystem._Rot` - the matrix to rotate from X to R, written symbolically
+    `CoordinateSystem._xRot` - the matrix to rotate from X to R, written in terms of mesh.X
+
+    Need these:
+
+      Coordinates N -&gt; Native, xi_1, xi_2 by default, but over-written with meaningful symbols if possible
+      Coordinates R -&gt; Natural XYZ or R Theta Phi or R Theta z
+      Coordinates X -&gt; Cartesian XYZ
+
+      nRotr - Matrix to map N to R
+      rRotn - nRotr.T
+      nRotx - Matrix to map N to X
+      xRotn - nRotx.T
+      xRotr = xRotn * nRotr
+      rRotx = rRotn * nRotx
+
+      Either R or X will be an alias for N depending on whether the DM is Cartesian  (Alias has the same vectors but different names)
+
+
+    &#34;&#34;&#34;
+
+    def __init__(
+        self,
+        mesh,
+        system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN,
+    ):
+        self.mesh = mesh
+        self.coordinate_type = system
+
+        # are the mesh coordinates XYZ or have they been replaced by
+        # &#34;Natural&#34; coordinates like r, theta, z ?
+        self.CartesianDM = True
+
+        # This is the default: Cartesian
+        self._N = sympy.Matrix(self.mesh.r).T
+        self._N[0]._latex_form = r&#34;\mathrm{x}&#34;
+        self._N[1]._latex_form = r&#34;\mathrm{y}&#34;
+        if self.mesh.cdim == 3:
+            self._N[2]._latex_form = r&#34;\mathrm{z}&#34;
+
+        self._R = self._N.copy()
+
+        # We need this to define zeros in the coordinate transforms
+        # (since they need to indicate they are coordinate functions even
+        # if they are independent of all coordinates)
+
+        if self.mesh.cdim == 3:
+            self.independent_of_N = expression(
+                r&#34;0(x,y,z)&#34;,
+                underworld3.maths.functions.vanishing
+                * self._N[0]
+                * self._N[1]
+                * self._N[2],
+                &#34;independent of N0, N1, N2&#34;,
+            )
+        else:
+            self.independent_of_N = expression(
+                r&#34;0(x,y,z)&#34;,
+                underworld3.maths.functions.vanishing * self._N[0] * self._N[1],
+                &#34;independent of N0, N1&#34;,
+            )
+
+        ## Change specific coordinates systems as required
+
+        if system == CoordinateSystemType.CYLINDRICAL2D and self.mesh.dim == 2:
+            &#34;&#34;&#34;
+            This describes the situation for an annulus mesh with base coordinates
+            in Cartesian (x,y,z).
+            &#34;&#34;&#34;
+
+            self.type = &#34;Cylindrical 2D&#34;
+
+            self._X = self._N.copy()
+            self._x = self._X
+
+            x, y = self.N
+            r = expression(R&#34;r&#34;, sympy.sqrt(x**2 + y**2), &#34;Radial Coordinate&#34;)
+
+            t = expression(
+                R&#34;\theta&#34;,
+                sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True)),
+                &#34;Angular coordinate&#34;,
+            )
+
+            self._R = sympy.Matrix([[r, t]])
+            self._r = sympy.Matrix([sympy.symbols(R&#34;r, \theta&#34;)], real=True)
+
+            th = self._r[1]
+            self._rRotN_sym = sympy.Matrix(
+                [
+                    [sympy.cos(th), sympy.sin(th)],
+                    [-sympy.sin(th), sympy.cos(th)],
+                ]
+            )
+            self._rRotN = self._rRotN_sym.subs(th, sympy.atan2(y, x))
+            self._xRotN = sympy.eye(self.mesh.dim)
+
+        ## The following is for the situation where the DM has r/theta coordinates loaded up
+        elif system == CoordinateSystemType.CYLINDRICAL2D_NATIVE and self.mesh.dim == 2:
+            self.type = &#34;Cylindrical 2D Native&#34;
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R&#34;r&#34;
+            self._N[1]._latex_form = R&#34;\theta&#34;
+            self._R = self._N.copy()
+            self._r = self._R
+
+            r, t = self.N
+            x = r * sympy.cos(t)
+            y = r * sympy.sin(t)
+
+            self._X = sympy.Matrix([[x, y]])
+            self._x = sympy.Matrix([sympy.symbols(R&#34;x, y&#34;)], real=True)
+
+            th = self.R[1]
+            self._xRotN_sym = sympy.Matrix(
+                [
+                    [sympy.cos(th), -sympy.sin(th)],
+                    [sympy.sin(th), sympy.cos(th)],
+                ]
+            )
+
+            self._xRotN = self._xRotN_sym
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        elif system == CoordinateSystemType.CYLINDRICAL3D and self.mesh.dim == 3:
+            self.type = &#34;Cylindrical 3D&#34;
+
+            self._X = self._N.copy()
+            self._x = self._X
+
+            self._r = sympy.Matrix([sympy.symbols(R&#34;r, \theta, z&#34;)], real=True)
+
+            x, y, z = self.X
+            r = sympy.sqrt(x**2 + y**2)
+            t = sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True))
+
+            self._R = sympy.Matrix([[r, t, z]])
+
+            th = self._r[1]
+            self._rRotN_sym = sympy.Matrix(
+                [
+                    [sympy.cos(th), sympy.sin(th), 0],
+                    [-sympy.sin(th), sympy.cos(th), 0],
+                    [0, 0, 1],
+                ]
+            )
+
+            self._rRotN = self._rRotN_sym.subs(th, t)
+            self._xRotN = sympy.eye(self.mesh.dim)
+
+        elif system == CoordinateSystemType.CYLINDRICAL3D_NATIVE and self.mesh.dim == 3:
+            self.type = &#34;Cylindrical 3D Native&#34;
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R&#34;r&#34;
+            self._N[1]._latex_form = R&#34;\theta&#34;
+            self._R = self._N.copy()
+            self._r = self._R
+
+            r, t, z = self.N
+            x = r * sympy.cos(t)
+            y = r * sympy.sin(t)
+
+            self._X = sympy.Matrix([[x, y, z]])
+            self._x = sympy.Matrix([sympy.symbols(R&#34;x, y, z&#34;)], real=True)
+            self._x[2] = z  # we should use the real one ?
+
+            th = self.R[1]
+            self._xRotN_sym = sympy.Matrix(
+                [
+                    [+sympy.cos(th), sympy.sin(th), self.independent_of_N],
+                    [-sympy.sin(th), sympy.cos(th), self.independent_of_N],
+                    [self.independent_of_N, self.independent_of_N, 1],
+                ]
+            )
+
+            self._xRotN = self._xRotN_sym
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
+            self.type = &#34;Spherical&#34;
+
+            self._X = self._N.copy()
+            self._x = self._X
+
+            self._r = sympy.Matrix([sympy.symbols(R&#34;r, \theta, \phi&#34;)])
+
+            x, y, z = self.X
+
+            r = expression(
+                R&#34;r&#34;,
+                sympy.sqrt(x**2 + y**2 + z**2),
+                &#34;Radial coordinate&#34;,
+            )
+
+            th = expression(
+                R&#34;\theta&#34;,
+                sympy.acos(z / r),
+                &#34;co-latitude&#34;,
+            )
+
+            ph = expression(
+                R&#34;\phi&#34;,
+                sympy.atan2(y, x),
+                &#34;longitude&#34;,
+            )
+
+            self._R = sympy.Matrix([[r, th, ph]])
+
+            r1 = self._r[1]
+            r2 = self._r[2]
+            rRotN_sym = sympy.Matrix(
+                [
+                    [
+                        sympy.sin(r1) * sympy.cos(r2),
+                        sympy.sin(r1) * sympy.sin(r2),
+                        sympy.cos(r1),
+                    ],
+                    [
+                        sympy.cos(r1) * sympy.cos(r2),
+                        sympy.cos(r1) * sympy.sin(r2),
+                        -sympy.sin(r1),
+                    ],
+                    [
+                        -sympy.sin(r2),
+                        +sympy.cos(r2),
+                        self.independent_of_N,
+                    ],
+                ]
+            )
+
+            rz = sympy.sqrt(x**2 + y**2)
+            r_x_rz = sympy.sqrt((x**2 + y**2 + z**2) * (x**2 + y**2))
+
+            rRotN = sympy.Matrix(
+                [
+                    [
+                        x / r,
+                        y / r,
+                        z / r,
+                    ],
+                    [
+                        (x * z) / r_x_rz,
+                        (y * z) / r_x_rz,
+                        -(x**2 + y**2) / r_x_rz,
+                    ],
+                    [
+                        -y / rz,
+                        +x / rz,
+                        self.independent_of_N,
+                    ],
+                ]
+            )
+
+            self._rRotN_sym = rRotN_sym
+            self._rRotN = rRotN
+
+            self._xRotN = sympy.eye(self.mesh.dim)
+
+        elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:
+            self.type = &#34;Spherical Native&#34;
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R&#34;r&#34;
+            self._N[1]._latex_form = R&#34;\theta&#34;
+            self._N[2]._latex_form = R&#34;\varphi&#34;
+            self._R = self._N.copy()
+            self._r = self._R
+
+            r, t, p = self.N
+
+            x = r * sympy.sin(t) * sympy.cos(p)
+            y = r * sympy.sin(t) * sympy.sin(p)
+            z = r * sympy.cos(t)
+
+            self._X = sympy.Matrix([[x, y, z]])
+            self._x = sympy.Matrix([sympy.symbols(R&#34;x, y, z&#34;)], real=True)
+
+            r1 = self._R[1]
+            r2 = self._R[2]
+            self._Rot = sympy.Matrix(  ## Check this next !
+                [
+                    [
+                        sympy.sin(r1) * sympy.cos(r2),
+                        sympy.sin(r1) * sympy.sin(r2),
+                        sympy.cos(r2),
+                    ],
+                    [
+                        sympy.cos(r1) * sympy.cos(r2),
+                        sympy.cos(r1) * sympy.sin(r2),
+                        -sympy.cos(r2),
+                    ],
+                    [
+                        -sympy.sin(r2),
+                        +sympy.cos(r2),
+                        self.independent_of_N,
+                    ],
+                ]
+            )
+
+            self._xRotN = self._Rot.subs([(r1, t), (r2, p)])
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        elif (
+            system == CoordinateSystemType.SPHERE_SURFACE_NATIVE and self.mesh.dim == 2
+        ):
+            self.type = &#34;Spherical Native&#34;
+            self.CartesianDM = False
+
+            self._N[0]._latex_form = R&#34;\lambda_1&#34;
+            self._N[1]._latex_form = R&#34;\lambda_2&#34;
+            self._R = self._N.copy()
+            self._r = self._R
+            l1, l2 = self.N
+
+            r = sympy.sympify(1)  # Maybe we will need to change this value
+            x = r * sympy.cos(l1) * sympy.cos(l2)
+            y = r * sympy.sin(l1) * sympy.cos(l2)
+            z = r * sympy.sin(l2)
+
+            self._X = sympy.Matrix([[x, y, z]])
+            self._x = sympy.Matrix([sympy.symbols(R&#34;x, y, z&#34;)], real=True)
+
+            # l1 is longitude, l2 is latitude
+            rl1 = self._R[0]
+            rl2 = self._R[1]
+            self._Rot = sympy.Matrix(
+                [
+                    [
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        +sympy.sin(rl1) * sympy.cos(rl2),
+                        sympy.sin(rl2),
+                    ],
+                    [
+                        -sympy.sin(rl1) * sympy.cos(rl2),
+                        +sympy.cos(rl1) * sympy.cos(rl2),
+                        self.independent_of_N,
+                    ],
+                    [
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        -sympy.cos(rl1) * sympy.sin(rl2),
+                        sympy.cos(rl2),
+                    ],
+                ]
+            )
+
+            self._xRotN = self._Rot.subs([(rl1, l1), (rl2, l2)])
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        else:  # Cartesian by default
+            self.type = f&#34;Cartesian {self.mesh.dim}D&#34;
+
+            self._X = self._N  # .copy()
+            self._x = self._X
+
+            self._xRotN = sympy.eye(self.mesh.dim)
+            self._rRotN = sympy.eye(self.mesh.dim)
+
+        # For all meshes
+        #
+
+        return
+
+    @property
+    def X(self) -&gt; sympy.Matrix:
+        return self._X
+
+    @property
+    def x(self) -&gt; sympy.Matrix:
+        return self._x
+
+    @property
+    def N(self) -&gt; sympy.Matrix:
+        return self._N
+
+    @property
+    def R(self) -&gt; sympy.Matrix:
+        return self._R
+
+    @property
+    def r(self) -&gt; sympy.Matrix:
+        return self._r
+
+    @property  # alias for backward compat
+    def xR(self) -&gt; sympy.Matrix:
+        return self._R
+
+    @property
+    def rRotN(self) -&gt; sympy.Matrix:
+        return self._rRotN
+
+    @property
+    def xRotN(self) -&gt; sympy.Matrix:
+        return self._xRotN
+
+    @property
+    def unit_e_0(self) -&gt; sympy.Matrix:
+        return self._rRotN[0, :]
+
+    @property
+    def unit_e_1(self) -&gt; sympy.Matrix:
+        return self._rRotN[1, :]
+
+    @property
+    def unit_e_2(self) -&gt; sympy.Matrix:
+        if self.mesh.dim == 3:
+            return self._rRotN[2, :]
+        else:
+            return None
+
+    @property
+    def unit_i(self) -&gt; sympy.Matrix:
+        return self._xRotN[0, :]
+
+    @property
+    def unit_j(self) -&gt; sympy.Matrix:
+        return self._xRotN[1, :]
+
+    @property
+    def unit_k(self) -&gt; sympy.Matrix:
+        if self.mesh.dim == 3:
+            return self._xRotN[2, :]
+        else:
+            return None
+
+    # Should validate on dim
+    def unit_ijk(self, dirn) -&gt; sympy.Matrix:
+        if dirn &lt;= self.mesh.dim:
+            return self._xRotN[dirn, :]
+        else:
+            return None
+
+    ## Here we can add an ipython_display method to add the class documentation and a description of the
+    ## entities that are defined (use sympy printing to make that work automatically)</code></pre>
+</details>
+<div class="desc"><p>This class is attached to a mesh to provide programmatic access to coordinate system operations.</p>
+<p><code><a title="underworld3.coordinates.CoordinateSystem.R" href="#underworld3.coordinates.CoordinateSystem.R">CoordinateSystem.R</a></code> - the coordinates in the natural reference (sympy symbols)
+<code><a title="underworld3.coordinates.CoordinateSystem.xR" href="#underworld3.coordinates.CoordinateSystem.xR">CoordinateSystem.xR</a></code> - the coordinates in the natural reference (sympy symbols in terms of mesh.X)
+<code>CoordinateSystem._Rot</code> - the matrix to rotate from X to R, written symbolically
+<code>CoordinateSystem._xRot</code> - the matrix to rotate from X to R, written in terms of mesh.X</p>
+<p>Need these:</p>
+<p>Coordinates N -&gt; Native, xi_1, xi_2 by default, but over-written with meaningful symbols if possible
+Coordinates R -&gt; Natural XYZ or R Theta Phi or R Theta z
+Coordinates X -&gt; Cartesian XYZ</p>
+<p>nRotr - Matrix to map N to R
+rRotn - nRotr.T
+nRotx - Matrix to map N to X
+xRotn - nRotx.T
+xRotr = xRotn * nRotr
+rRotx = rRotn * nRotx</p>
+<p>Either R or X will be an alias for N depending on whether the DM is Cartesian
+(Alias has the same vectors but different names)</p></div>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.coordinates.CoordinateSystem.N"><code class="name">prop <span class="ident">N</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def N(self) -&gt; sympy.Matrix:
+    return self._N</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.R"><code class="name">prop <span class="ident">R</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def R(self) -&gt; sympy.Matrix:
+    return self._R</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.X"><code class="name">prop <span class="ident">X</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def X(self) -&gt; sympy.Matrix:
+    return self._X</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.r"><code class="name">prop <span class="ident">r</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def r(self) -&gt; sympy.Matrix:
+    return self._r</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.rRotN"><code class="name">prop <span class="ident">rRotN</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def rRotN(self) -&gt; sympy.Matrix:
+    return self._rRotN</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_e_0"><code class="name">prop <span class="ident">unit_e_0</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_e_0(self) -&gt; sympy.Matrix:
+    return self._rRotN[0, :]</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_e_1"><code class="name">prop <span class="ident">unit_e_1</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_e_1(self) -&gt; sympy.Matrix:
+    return self._rRotN[1, :]</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_e_2"><code class="name">prop <span class="ident">unit_e_2</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_e_2(self) -&gt; sympy.Matrix:
+    if self.mesh.dim == 3:
+        return self._rRotN[2, :]
+    else:
+        return None</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_i"><code class="name">prop <span class="ident">unit_i</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_i(self) -&gt; sympy.Matrix:
+    return self._xRotN[0, :]</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_j"><code class="name">prop <span class="ident">unit_j</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_j(self) -&gt; sympy.Matrix:
+    return self._xRotN[1, :]</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_k"><code class="name">prop <span class="ident">unit_k</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def unit_k(self) -&gt; sympy.Matrix:
+    if self.mesh.dim == 3:
+        return self._xRotN[2, :]
+    else:
+        return None</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.x"><code class="name">prop <span class="ident">x</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def x(self) -&gt; sympy.Matrix:
+    return self._x</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.xR"><code class="name">prop <span class="ident">xR</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property  # alias for backward compat
+def xR(self) -&gt; sympy.Matrix:
+    return self._R</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystem.xRotN"><code class="name">prop <span class="ident">xRotN</span> : sympy.matrices.dense.MutableDenseMatrix</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def xRotN(self) -&gt; sympy.Matrix:
+    return self._xRotN</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.coordinates.CoordinateSystem.unit_ijk"><code class="name flex">
+<span>def <span class="ident">unit_ijk</span></span>(<span>self, dirn) ‑> sympy.matrices.dense.MutableDenseMatrix</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def unit_ijk(self, dirn) -&gt; sympy.Matrix:
+    if dirn &lt;= self.mesh.dim:
+        return self._xRotN[dirn, :]
+    else:
+        return None</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType"><code class="flex name class">
+<span>class <span class="ident">CoordinateSystemType</span></span>
+<span>(</span><span>*args, **kwds)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class CoordinateSystemType(Enum):
+    &#34;&#34;&#34;
+    Meshes can have natural coordinate systems which lie on top of the Cartesian
+    coordinate system that we use for constructing the solvers (usually)
+    &#34;&#34;&#34;
+
+    CARTESIAN = 0
+    CYLINDRICAL2D = 10  # Cyl2D and Polar are equivalent here
+    POLAR = 10  #
+    CYLINDRICAL2D_NATIVE = 11  # Cyl2D and Polar are equivalent here
+    POLAR_NATIVE = 11  #
+
+    CYLINDRICAL3D = 100  # (Not really used for anything)
+    CYLINDRICAL3D_NATIVE = 101  # (Not really used for anything)
+    SPHERICAL = 200
+    SPHERICAL_NATIVE = 201
+    SPHERICAL_NATIVE_RTP = 201
+    # SPHERICAL_NATIVE_RLONLAT = 7
+    SPHERE_SURFACE_NATIVE = 301  # theta / phi only R = 1 ...
+    # SPHERE_SURFACE_NATIVE_RLONLAT = 302  # theta / phi only R = 1 ...</code></pre>
+</details>
+<div class="desc"><p>Meshes can have natural coordinate systems which lie on top of the Cartesian
+coordinate system that we use for constructing the solvers (usually)</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>enum.Enum</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.coordinates.CoordinateSystemType.CARTESIAN"><code class="name">var <span class="ident">CARTESIAN</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D"><code class="name">var <span class="ident">CYLINDRICAL2D</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE"><code class="name">var <span class="ident">CYLINDRICAL2D_NATIVE</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D"><code class="name">var <span class="ident">CYLINDRICAL3D</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D_NATIVE"><code class="name">var <span class="ident">CYLINDRICAL3D_NATIVE</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.POLAR"><code class="name">var <span class="ident">POLAR</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.POLAR_NATIVE"><code class="name">var <span class="ident">POLAR_NATIVE</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.SPHERE_SURFACE_NATIVE"><code class="name">var <span class="ident">SPHERE_SURFACE_NATIVE</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.SPHERICAL"><code class="name">var <span class="ident">SPHERICAL</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE"><code class="name">var <span class="ident">SPHERICAL_NATIVE</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE_RTP"><code class="name">var <span class="ident">SPHERICAL_NATIVE_RTP</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+</dl>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3" href="index.html">underworld3</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.coordinates.expression" href="#underworld3.coordinates.expression">expression</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="underworld3.coordinates.CoordinateSystem" href="#underworld3.coordinates.CoordinateSystem">CoordinateSystem</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.coordinates.CoordinateSystem.N" href="#underworld3.coordinates.CoordinateSystem.N">N</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.R" href="#underworld3.coordinates.CoordinateSystem.R">R</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.X" href="#underworld3.coordinates.CoordinateSystem.X">X</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.r" href="#underworld3.coordinates.CoordinateSystem.r">r</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.rRotN" href="#underworld3.coordinates.CoordinateSystem.rRotN">rRotN</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_e_0" href="#underworld3.coordinates.CoordinateSystem.unit_e_0">unit_e_0</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_e_1" href="#underworld3.coordinates.CoordinateSystem.unit_e_1">unit_e_1</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_e_2" href="#underworld3.coordinates.CoordinateSystem.unit_e_2">unit_e_2</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_i" href="#underworld3.coordinates.CoordinateSystem.unit_i">unit_i</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_ijk" href="#underworld3.coordinates.CoordinateSystem.unit_ijk">unit_ijk</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_j" href="#underworld3.coordinates.CoordinateSystem.unit_j">unit_j</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.unit_k" href="#underworld3.coordinates.CoordinateSystem.unit_k">unit_k</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.x" href="#underworld3.coordinates.CoordinateSystem.x">x</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.xR" href="#underworld3.coordinates.CoordinateSystem.xR">xR</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystem.xRotN" href="#underworld3.coordinates.CoordinateSystem.xRotN">xRotN</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.coordinates.CoordinateSystemType" href="#underworld3.coordinates.CoordinateSystemType">CoordinateSystemType</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.CARTESIAN" href="#underworld3.coordinates.CoordinateSystemType.CARTESIAN">CARTESIAN</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D" href="#underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D">CYLINDRICAL2D</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE" href="#underworld3.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE">CYLINDRICAL2D_NATIVE</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D" href="#underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D">CYLINDRICAL3D</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D_NATIVE" href="#underworld3.coordinates.CoordinateSystemType.CYLINDRICAL3D_NATIVE">CYLINDRICAL3D_NATIVE</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.POLAR" href="#underworld3.coordinates.CoordinateSystemType.POLAR">POLAR</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.POLAR_NATIVE" href="#underworld3.coordinates.CoordinateSystemType.POLAR_NATIVE">POLAR_NATIVE</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.SPHERE_SURFACE_NATIVE" href="#underworld3.coordinates.CoordinateSystemType.SPHERE_SURFACE_NATIVE">SPHERE_SURFACE_NATIVE</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.SPHERICAL" href="#underworld3.coordinates.CoordinateSystemType.SPHERICAL">SPHERICAL</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE" href="#underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE">SPHERICAL_NATIVE</a></code></li>
+<li><code><a title="underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE_RTP" href="#underworld3.coordinates.CoordinateSystemType.SPHERICAL_NATIVE_RTP">SPHERICAL_NATIVE_RTP</a></code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>

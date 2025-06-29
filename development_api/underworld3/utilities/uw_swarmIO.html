@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.utilities.uw_swarmIO API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.utilities.uw_swarmIO</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.utilities.uw_swarmIO.swarm_h5"><code class="name flex">
+<span>def <span class="ident">swarm_h5</span></span>(<span>swarm,<br>fileName,<br>timestep,<br>fields=None,<br>outputPath='',<br>compression=False,<br>compressionType='gzip')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def swarm_h5(swarm, fileName, timestep, fields=None, outputPath=&#39;&#39;, compression=False, compressionType=&#39;gzip&#39;):
+    &#39;&#39;&#39;
+    Function to save swarm fields to h5 file for checkpointing purposes.
+    
+    swarm           : The swarm that contains the coordinate data
+    fileName        : Name of file the file where the swarm data is stored.
+    fields          : UW swarm variables that contain the data to save. Should be passed as a list.
+    timestep        : timestep of the model to save
+    outputPath      : Folder to save the data, can be left undefined to save in the current working directory
+    compression     : Whether to compress the h5 files [bool]
+    compressionType : The type of compression to use. &#39;gzip&#39; and &#39;lzf&#39; are the supported types, with &#39;gzip&#39; as the default.
+    
+    &gt;&gt;&gt; 
+    example usage:
+    without compression:
+    swarm_h5(swarm=swarm, fileName=&#39;swarm&#39;, fields=[material, strainRate], timestep=0)
+    
+    with compression:
+    swarm_h5(swarm=swarm, fileName=&#39;swarm&#39;, fields=[material, strainRate], timestep=0, compression=True, compressionType=&#39;gzip&#39;)
+    
+    &lt;&lt;&lt;&lt;
+    
+    &#39;&#39;&#39;
+
+    if fields != None and not isinstance(fields, list):
+        raise RuntimeError(&#34;`swarm_h5()` function parameter `fields` does not appear to be a list.&#34;)
+
+    else:     
+        ### save the swarm particle location
+        swarm.save(filename=f&#39;{outputPath}{fileName}-{timestep:04d}.h5&#39;, compression=compression, compressionType=compressionType)
+
+        #### Generate a h5 file for each field
+        if fields != None:
+            for field in fields:
+                field.save(filename=f&#39;{outputPath}{field.name}-{timestep:04d}.h5&#39;, compression=compression, compressionType=compressionType)</code></pre>
+</details>
+<div class="desc"><p>Function to save swarm fields to h5 file for checkpointing purposes.</p>
+<p>swarm
+: The swarm that contains the coordinate data
+fileName
+: Name of file the file where the swarm data is stored.
+fields
+: UW swarm variables that contain the data to save. Should be passed as a list.
+timestep
+: timestep of the model to save
+outputPath
+: Folder to save the data, can be left undefined to save in the current working directory
+compression
+: Whether to compress the h5 files [bool]
+compressionType : The type of compression to use. 'gzip' and 'lzf' are the supported types, with 'gzip' as the default.</p>
+<pre><code class="language-python-repl">&gt;&gt;&gt; 
+example usage:
+without compression:
+swarm_h5(swarm=swarm, fileName='swarm', fields=[material, strainRate], timestep=0)
+</code></pre>
+<p>with compression:
+swarm_h5(swarm=swarm, fileName='swarm', fields=[material, strainRate], timestep=0, compression=True, compressionType='gzip')</p>
+<p>&lt;&lt;&lt;&lt;</p></div>
+</dd>
+<dt id="underworld3.utilities.uw_swarmIO.swarm_xdmf"><code class="name flex">
+<span>def <span class="ident">swarm_xdmf</span></span>(<span>fileName, timestep, fields=None, outputPath='', time=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def swarm_xdmf(fileName, timestep, fields=None, outputPath=&#39;&#39;, time=None):
+    &#39;&#39;&#39;
+    Function to combine h5 files to a single xdmf to visualise the swarm in paraview. Should be run after the &#39;swarm_h5&#39; function.
+    
+    fileName   : Name of file the file where the swarm data is stored.
+    timestep   : timestep of the model to save
+    fields     : UW swarm variables that contain the data to save. Should be passed as a list.
+    outputPath : Folder to save the data, can be left undefined to save in the current working directory. This directory should also contain the h5 files
+    time       : Time of the model, can be left undefined and model output will be sequential but not contain the time data.
+    
+    &gt;&gt;&gt; 
+    example usage:
+    
+    swarm_xdmf(fileName=&#39;swarm&#39;, fields=[material, strainRate], timestep=0)
+    
+    &lt;&lt;&lt;&lt;
+    
+    &#39;&#39;&#39;
+    if fields != None and not isinstance(fields, list):
+        raise RuntimeError(&#34;`swarm_xdmf()` function parameter `fields` does not appear to be a list.&#34;)
+    
+    if fields != None:
+        for field in fields:
+            if not os.path.exists(f&#39;{outputPath}{field.name}-{timestep:04d}.h5&#39;):
+                raise RuntimeError(f&#34;`swarm_xdmf()` could not find &#39;{field.name}-{timestep:04d}.h5&#39;.&#34;) 
+            
+    if rank == 0:
+        &#39;&#39;&#39; only need to combine the h5 files to a single xdmf on one proc &#39;&#39;&#39;
+        
+        with open(f&#34;{outputPath}{fileName}-{timestep:04d}.xmf&#34;, &#34;w&#34;) as xdmf:
+            # Write the XDMF header
+            xdmf.write(&#39;&lt;?xml version=&#34;1.0&#34; ?&gt;\n&#39;)
+            xdmf.write(&#39;&lt;Xdmf xmlns:xi=&#34;http://www.w3.org/2001/XInclude&#34; Version=&#34;2.0&#34;&gt;\n&#39;)
+            xdmf.write(&#39;&lt;Domain&gt;\n&#39;)
+            xdmf.write(f&#39;&lt;Grid Name=&#34;{fileName}-{timestep:04d}&#34; GridType=&#34;Uniform&#34;&gt;\n&#39;)    
+
+
+            if time != None:
+                 xdmf.write(f&#39;  &lt;Time Value=&#34;{time}&#34; /&gt;\n&#39;)
+
+
+
+            # Write the grid element for the HDF5 dataset
+            with h5py.File(f&#34;{outputPath}{fileName}-{timestep:04}.h5&#34;, &#34;r&#34;) as h5f:
+                xdmf.write(f&#39;   &lt;Topology Type=&#34;POLYVERTEX&#34; NodesPerElement=&#34;{h5f[&#34;coordinates&#34;].shape[0]}&#34;&gt; &lt;/Topology&gt;\n&#39;)
+                if h5f[&#39;coordinates&#39;].shape[1] == 2:
+                    xdmf.write(&#39;                &lt;Geometry Type=&#34;XY&#34;&gt;\n&#39;)
+                elif h5f[&#39;coordinates&#39;].shape[1] == 3:
+                    xdmf.write(&#39;                &lt;Geometry Type=&#34;XYZ&#34;&gt;\n&#39;) 
+                xdmf.write(f&#39;                   &lt;DataItem Format=&#34;HDF&#34; NumberType=&#34;Float&#34; Precision=&#34;8&#34; Dimensions=&#34;{h5f[&#34;coordinates&#34;].shape[0]} {h5f[&#34;coordinates&#34;].shape[1]}&#34;&gt;{os.path.basename(h5f.filename)}:/coordinates&lt;/DataItem&gt;\n&#39;)
+                xdmf.write(&#39;            &lt;/Geometry&gt;\n&#39;)
+
+            # Write the attribute element for the field
+            if fields != None:
+                for field in fields:
+                    with h5py.File(f&#39;{outputPath}{field.name}-{timestep:04d}.h5&#39;, &#34;r&#34;) as h5f:
+                        if h5f[&#39;data&#39;].dtype == np.int32:
+                            xdmf.write(f&#39;       &lt;Attribute Type=&#34;Scalar&#34; Center=&#34;Node&#34; Name=&#34;{field.name}&#34;&gt;\n&#39;)
+                            xdmf.write(f&#39;                       &lt;DataItem Format=&#34;HDF&#34; NumberType=&#34;Int&#34; Precision=&#34;4&#34; Dimensions=&#34;{h5f[&#34;data&#34;].shape[0]} {h5f[&#34;data&#34;].shape[1]}&#34;&gt;{os.path.basename(h5f.filename)}:/data&lt;/DataItem&gt;\n&#39;)
+                        elif h5f[&#39;data&#39;].shape[1] == 1:
+                            xdmf.write(f&#39;       &lt;Attribute Type=&#34;Scalar&#34; Center=&#34;Node&#34; Name=&#34;{field.name}&#34;&gt;\n&#39;)
+                            xdmf.write(f&#39;                       &lt;DataItem Format=&#34;HDF&#34; NumberType=&#34;Float&#34; Precision=&#34;8&#34; Dimensions=&#34;{h5f[&#34;data&#34;].shape[0]} {h5f[&#34;data&#34;].shape[1]}&#34;&gt;{os.path.basename(h5f.filename)}:/data&lt;/DataItem&gt;\n&#39;)
+                        elif h5f[&#39;data&#39;].shape[1] == 2 or h5f[&#39;data&#39;].shape[1] == 3:
+                            xdmf.write(f&#39;       &lt;Attribute Type=&#34;Vector&#34; Center=&#34;Node&#34; Name=&#34;{field.name}&#34;&gt;\n&#39;)
+                            xdmf.write(f&#39;                       &lt;DataItem Format=&#34;HDF&#34; NumberType=&#34;Float&#34; Precision=&#34;8&#34; Dimensions=&#34;{h5f[&#34;data&#34;].shape[0]} {h5f[&#34;data&#34;].shape[1]}&#34;&gt;{os.path.basename(h5f.filename)}:/data&lt;/DataItem&gt;\n&#39;)
+                        else:
+                            xdmf.write(f&#39;       &lt;Attribute Type=&#34;Tensor&#34; Center=&#34;Node&#34; Name=&#34;{field.name}&#34;&gt;\n&#39;)
+                            xdmf.write(f&#39;                       &lt;DataItem Format=&#34;HDF&#34; NumberType=&#34;Float&#34; Precision=&#34;8&#34; Dimensions=&#34;{h5f[&#34;data&#34;].shape[0]} {h5f[&#34;data&#34;].shape[1]}&#34;&gt;{os.path.basename(h5f.filename)}:/data&lt;/DataItem&gt;\n&#39;)
+
+                        xdmf.write(&#39;    &lt;/Attribute&gt;\n&#39;)
+            else:
+                pass
+
+
+            # Write the XDMF footer
+            xdmf.write(&#39;&lt;/Grid&gt;\n&#39;)
+            xdmf.write(&#39;&lt;/Domain&gt;\n&#39;)
+            xdmf.write(&#39;&lt;/Xdmf&gt;\n&#39;)</code></pre>
+</details>
+<div class="desc"><p>Function to combine h5 files to a single xdmf to visualise the swarm in paraview. Should be run after the 'swarm_h5' function.</p>
+<p>fileName
+: Name of file the file where the swarm data is stored.
+timestep
+: timestep of the model to save
+fields
+: UW swarm variables that contain the data to save. Should be passed as a list.
+outputPath : Folder to save the data, can be left undefined to save in the current working directory. This directory should also contain the h5 files
+time
+: Time of the model, can be left undefined and model output will be sequential but not contain the time data.</p>
+<pre><code class="language-python-repl">&gt;&gt;&gt; 
+example usage:
+</code></pre>
+<p>swarm_xdmf(fileName='swarm', fields=[material, strainRate], timestep=0)</p>
+<p>&lt;&lt;&lt;&lt;</p></div>
+</dd>
+</dl>
+</section>
+<section>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3.utilities" href="index.html">underworld3.utilities</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.utilities.uw_swarmIO.swarm_h5" href="#underworld3.utilities.uw_swarmIO.swarm_h5">swarm_h5</a></code></li>
+<li><code><a title="underworld3.utilities.uw_swarmIO.swarm_xdmf" href="#underworld3.utilities.uw_swarmIO.swarm_xdmf">swarm_xdmf</a></code></li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,2574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.systems.ddt API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.systems.ddt</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="underworld3.systems.ddt.Eulerian"><code class="flex name class">
+<span>class <span class="ident">Eulerian</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: <function MeshVariable at 0x7fad3cbe9940> | sympy.core.basic.Basic,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>evalf: bool | None = False,<br>theta: float | None = 0.5,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class Eulerian(uw_object):
+    r&#34;&#34;&#34;Eulerian  (mesh based) History Manager:
+    This manages the update of a variable, $\psi$ on the mesh across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: Union[
+            uw.discretisation.MeshVariable, sympy.Basic
+        ],  # sympy function or mesh variable
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        evalf: Optional[bool] = False,
+        theta: Optional[float] = 0.5,
+        varsymbol: Optional[str] = r&#34;u&#34;,
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.theta = theta
+        self.bcs = bcs
+        self.verbose = verbose
+        self.degree = degree
+        self.vtype = vtype
+        self.continuous = continuous
+        self.smoothing = smoothing
+        self.evalf = evalf
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can&#39;t
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
+
+        if isinstance(psi_fn, uw.discretisation._MeshVariable):
+            self._psi_fn = psi_fn.sym ### get symbolic form of the meshvariable
+            self._psi_meshVar = psi_fn
+        else:
+            self._psi_fn = psi_fn ### already in symbolic form
+            self._psi_meshVar = None
+
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+
+        for i in range(order):
+            self.psi_star.append(
+                uw.discretisation.MeshVariable(
+                    f&#34;psi_star_Eulerian_{self.instance_number}_{i}&#34;,
+                    self.mesh,
+                    vtype=vtype,
+                    degree=degree,
+                    continuous=continuous,
+                    varsymbol=rf&#34;{varsymbol}^{{ {&#39;*&#39;*(i+1)} }}&#34;,
+                )
+            )
+
+        # print(&#39;initiating history fn&#39;, flush=True)
+        ### Initiate first history value in chain
+        self.initiate_history_fn()
+    
+
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn
+        # self._psi_star_projection_solver.uw_function = self.psi_fn
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        # display(Latex(r&#34;$\quad\psi = $ &#34; + self.psi._repr_latex_()))
+        # display(
+        #     Latex(
+        #         r&#34;$\quad\Delta t_{\textrm{phys}} = $ &#34;
+        #         + sympy.sympify(self.dt_physical)._repr_latex_()
+        #     )
+        # )
+        display(Latex(rf&#34;$\quad$History steps = {self.order}&#34;))
+
+
+    def _setup_projections(self):        
+        ### using this to store terms that can&#39;t be evaluated (e.g. derivatives)
+        # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
+        if self.vtype == uw.VarType.SCALAR:
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.psi_star[0], verbose=False
+            )
+        elif self.vtype == uw.VarType.VECTOR:
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self.psi_star[0], verbose=False
+                )
+            )
+        elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
+            self._WorkVar = uw.discretisation.MeshVariable(
+                f&#34;W_star_Eulerian_{self.instance_number}&#34;,
+                self.mesh,
+                vtype=uw.VarType.SCALAR,
+                degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=r&#34;W^{*}&#34;,
+            )
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Tensor_Projection(
+                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+                )
+            )
+
+        self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.bcs = self.bcs
+        self._psi_star_projection_solver.smoothing = self.smoothing
+    
+    def update_history_fn(self):
+        ### update first value in history chain
+        ### avoids projecting if function can be evaluated
+        try:
+            with self.mesh.access(self.psi_star[0]):
+                try:
+                    with self.mesh.access(self._psi_meshVar):
+                        self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+                    # print(&#39;copying data&#39;, flush=True)
+                except:
+                    if self.evalf:
+                        self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                        # print(&#39;evalf data&#39;, flush=True)
+                    else:
+                        self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                        # print(&#39;evaluate data&#39;, flush=True)
+    
+        except:
+            self._setup_projections()
+            self._psi_star_projection_solver.solve()
+            # print(&#39;projecting data&#39;, flush=True)
+
+    def initiate_history_fn(self):
+        self.update_history_fn()
+
+        ### set up all history terms to the initial values
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+        return
+    
+    def update(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # if average_over_dt:
+        #     phi = min(1.0, dt / self.dt_physical)
+        # else:
+        #     phi = 1.0
+
+        if verbose and uw.mpi.rank == 0:
+            print(f&#34;Update {self.psi_fn}&#34;, flush=True)
+
+
+        ### copy values down the chain
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
+        
+        ### update the history fn
+        self.update_history_fn()
+        # ### update the first value in the chain
+        # if self.evaluateable:
+        #     with self.mesh.access(self.psi_star[0]):
+        #         try:
+        #             with self.mesh.access(self._psi_meshVar):
+        #                 self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+        #         except:
+        #             if self.evalf:
+        #                 self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+        #             else:
+        #                 self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+        # else:
+        #     self._psi_star_projection_solver.uw_function = self.psi_fn
+        #     self._psi_star_projection_solver.solve()
+
+        return
+
+    def bdf(self, order=None):
+        r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+                # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am</code></pre>
+</details>
+<div class="desc"><p>Eulerian
+(mesh based) History Manager:
+This manages the update of a variable, $\psi$ on the mesh across timesteps.
+<span><span class="MathJax_Preview">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</span><script type="math/tex; mode=display">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</script></span></p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Eulerian.psi_fn"><code class="name">prop <span class="ident">psi_fn</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def psi_fn(self):
+    return self._psi_fn</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Eulerian.adams_moulton_flux"><code class="name flex">
+<span>def <span class="ident">adams_moulton_flux</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adams_moulton_flux(self, order=None):
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+
+    with sympy.core.evaluate(False):
+        if order == 1:
+            am = (self.psi_fn + self.psi_star[0].sym) / 2
+            # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
+
+        elif order == 2:
+            am = (
+                5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+            ) / 12
+
+        elif order == 3:
+            am = (
+                9 * self.psi_fn
+                + 19 * self.psi_star[0].sym
+                - 5 * self.psi_star[1].sym
+                + self.psi_star[2].sym
+            ) / 24
+
+    return am</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.bdf"><code class="name flex">
+<span>def <span class="ident">bdf</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def bdf(self, order=None):
+    r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+    Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+
+    with sympy.core.evaluate(False):
+        if order == 1:
+            bdf0 = self.psi_fn - self.psi_star[0].sym
+
+        elif order == 2:
+            bdf0 = (
+                3 * self.psi_fn / 2
+                - 2 * self.psi_star[0].sym
+                + self.psi_star[1].sym / 2
+            )
+
+        elif order == 3:
+            bdf0 = (
+                11 * self.psi_fn / 6
+                - 3 * self.psi_star[0].sym
+                + 3 * self.psi_star[1].sym / 2
+                - self.psi_star[2].sym / 3
+            )
+
+    return bdf0</code></pre>
+</details>
+<div class="desc"><p>Backwards differentiation form for calculating DuDt
+Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</p></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.initiate_history_fn"><code class="name flex">
+<span>def <span class="ident">initiate_history_fn</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def initiate_history_fn(self):
+    self.update_history_fn()
+
+    ### set up all history terms to the initial values
+    for i in range(self.order - 1, 0, -1):
+        with self.mesh.access(self.psi_star[i]):
+            self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.update"><code class="name flex">
+<span>def <span class="ident">update</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    self.update_pre_solve(evalf, verbose)
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.update_history_fn"><code class="name flex">
+<span>def <span class="ident">update_history_fn</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_history_fn(self):
+    ### update first value in history chain
+    ### avoids projecting if function can be evaluated
+    try:
+        with self.mesh.access(self.psi_star[0]):
+            try:
+                with self.mesh.access(self._psi_meshVar):
+                    self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+                # print(&#39;copying data&#39;, flush=True)
+            except:
+                if self.evalf:
+                    self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                    # print(&#39;evalf data&#39;, flush=True)
+                else:
+                    self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                    # print(&#39;evaluate data&#39;, flush=True)
+
+    except:
+        self._setup_projections()
+        self._psi_star_projection_solver.solve()
+        # print(&#39;projecting data&#39;, flush=True)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.update_post_solve"><code class="name flex">
+<span>def <span class="ident">update_post_solve</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_post_solve(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    # if average_over_dt:
+    #     phi = min(1.0, dt / self.dt_physical)
+    # else:
+    #     phi = 1.0
+
+    if verbose and uw.mpi.rank == 0:
+        print(f&#34;Update {self.psi_fn}&#34;, flush=True)
+
+
+    ### copy values down the chain
+    for i in range(self.order - 1, 0, -1):
+        with self.mesh.access(self.psi_star[i]):
+            self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
+    
+    ### update the history fn
+    self.update_history_fn()
+    # ### update the first value in the chain
+    # if self.evaluateable:
+    #     with self.mesh.access(self.psi_star[0]):
+    #         try:
+    #             with self.mesh.access(self._psi_meshVar):
+    #                 self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+    #         except:
+    #             if self.evalf:
+    #                 self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+    #             else:
+    #                 self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+    # else:
+    #     self._psi_star_projection_solver.uw_function = self.psi_fn
+    #     self._psi_star_projection_solver.solve()
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Eulerian.update_pre_solve"><code class="name flex">
+<span>def <span class="ident">update_pre_solve</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_pre_solve(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian"><code class="flex name class">
+<span>class <span class="ident">Lagrangian</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: sympy.core.function.Function,<br>V_fn: sympy.core.function.Function,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0,<br>fill_param=3)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class Lagrangian(uw_object):
+    r&#34;&#34;&#34;Swarm-based Lagrangian History Manager:
+
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+    &#34;&#34;&#34;
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r&#34;u&#34;,
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+        fill_param=3,
+    ):
+        super().__init__()
+
+        # create a new swarm to manage here
+        dudt_swarm = uw.swarm.Swarm(mesh)
+
+        self.mesh = mesh
+        self.swarm = dudt_swarm
+        self.psi_fn = psi_fn
+        self.V_fn = V_fn
+        self.verbose = verbose
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            print(f&#34;Creating psi_star[{i}]&#34;)
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f&#34;psi_star_sw_{self.instance_number}_{i}&#34;,
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf&#34;{varsymbol}^{{ {&#39;*&#39;*(i+1)} }}&#34;,
+                )
+            )
+
+        dudt_swarm.populate(fill_param)
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r&#34;$\quad\psi = $ &#34; + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r&#34;$\quad\Delta t_{\textrm{phys}} = $ &#34;
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf&#34;$\quad$History steps = {self.order}&#34;))
+
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_post_solve(dt, evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+
+            # copy the information down the chain
+            print(f&#34;Lagrange order = {self.order}&#34;)
+            print(f&#34;Lagrange copying {i-1} to {i}&#34;)
+
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Now update the swarm variable
+
+        if evalf:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        else:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = updated_psi
+
+        # Now update the swarm locations
+
+        self.swarm.advection(
+            self.V_fn,
+            delta_t=dt,
+            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+        )
+
+    def bdf(self, order=None):
+        r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+        if order is None:
+            order = self.order
+
+        with sympy.core.evaluate(True):
+            if order == 0:  # special case - no history term (catch )
+                bdf0 = sympy.simpify[0]
+
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+
+        with sympy.core.evaluate(True):
+            if order == 0:  # Special case - no history term
+                am = self.psi_fn
+
+            elif order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am</code></pre>
+</details>
+<div class="desc"><p>Swarm-based Lagrangian History Manager:</p>
+<p>This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.</p>
+<p>$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$</p>
+<p>$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$</p>
+<p>$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Lagrangian.instances"><code class="name">var <span class="ident">instances</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Lagrangian.adams_moulton_flux"><code class="name flex">
+<span>def <span class="ident">adams_moulton_flux</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adams_moulton_flux(self, order=None):
+    if order is None:
+        order = self.order
+
+    with sympy.core.evaluate(True):
+        if order == 0:  # Special case - no history term
+            am = self.psi_fn
+
+        elif order == 1:
+            am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+        elif order == 2:
+            am = (
+                5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+            ) / 12
+
+        elif order == 3:
+            am = (
+                9 * self.psi_fn
+                + 19 * self.psi_star[0].sym
+                - 5 * self.psi_star[1].sym
+                + self.psi_star[2].sym
+            ) / 24
+
+    return am</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian.bdf"><code class="name flex">
+<span>def <span class="ident">bdf</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def bdf(self, order=None):
+    r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+    Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+    if order is None:
+        order = self.order
+
+    with sympy.core.evaluate(True):
+        if order == 0:  # special case - no history term (catch )
+            bdf0 = sympy.simpify[0]
+
+        if order == 1:
+            bdf0 = self.psi_fn - self.psi_star[0].sym
+
+        elif order == 2:
+            bdf0 = (
+                3 * self.psi_fn / 2
+                - 2 * self.psi_star[0].sym
+                + self.psi_star[1].sym / 2
+            )
+
+        elif order == 3:
+            bdf0 = (
+                11 * self.psi_fn / 6
+                - 3 * self.psi_star[0].sym
+                + 3 * self.psi_star[1].sym / 2
+                - self.psi_star[2].sym / 3
+            )
+
+    return bdf0</code></pre>
+</details>
+<div class="desc"><p>Backwards differentiation form for calculating DuDt
+Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</p></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian.update"><code class="name flex">
+<span>def <span class="ident">update</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    self.update_post_solve(dt, evalf, verbose)
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian.update_post_solve"><code class="name flex">
+<span>def <span class="ident">update_post_solve</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_post_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    for h in range(self.order - 1):
+        i = self.order - (h + 1)
+
+        # copy the information down the chain
+        print(f&#34;Lagrange order = {self.order}&#34;)
+        print(f&#34;Lagrange copying {i-1} to {i}&#34;)
+
+        with self.swarm.access(self.psi_star[i]):
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+    # Now update the swarm variable
+
+    if evalf:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evalf(
+                        self.psi_fn[i, j], self.swarm.data
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
+
+    else:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j], self.swarm.data
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
+
+    # Now update the swarm locations
+
+    self.swarm.advection(
+        self.V_fn,
+        delta_t=dt,
+        restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+    )</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian.update_pre_solve"><code class="name flex">
+<span>def <span class="ident">update_pre_solve</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_pre_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm"><code class="flex name class">
+<span>class <span class="ident">Lagrangian_Swarm</span></span>
+<span>(</span><span>swarm: <a title="underworld3.swarm.Swarm" href="../swarm.html#underworld3.swarm.Swarm">Swarm</a>,<br>psi_fn: sympy.core.function.Function,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0,<br>step_averaging=2)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class Lagrangian_Swarm(uw_object):
+    r&#34;&#34;&#34;Swarm-based Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+
+    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+
+    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+
+    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+    &#34;&#34;&#34;
+
+    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        swarm: uw.swarm.Swarm,
+        psi_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        varsymbol: Optional[str] = r&#34;u&#34;,
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+        step_averaging=2,
+    ):
+        super().__init__()
+
+        self.mesh = swarm.mesh
+        self.swarm = swarm
+        self.psi_fn = psi_fn
+        self.verbose = verbose
+        self.order = order
+        self.step_averaging = step_averaging
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            print(f&#34;Creating psi_star[{i}]&#34;)
+            self.psi_star.append(
+                uw.swarm.SwarmVariable(
+                    f&#34;psi_star_sw_{self.instance_number}_{i}&#34;,
+                    self.swarm,
+                    vtype=vtype,
+                    proxy_degree=degree,
+                    proxy_continuous=continuous,
+                    varsymbol=rf&#34;{varsymbol}^{{ {&#39;*&#39;*(i+1)} }}&#34;,
+                )
+            )
+
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r&#34;$\quad\psi = $ &#34; + self.psi._repr_latex_()))
+        display(
+            Latex(
+                r&#34;$\quad\Delta t_{\textrm{phys}} = $ &#34;
+                + sympy.sympify(self.dt_physical)._repr_latex_()
+            )
+        )
+        display(Latex(rf&#34;$\quad$History steps = {self.order}&#34;))
+
+    ## Note: We may be able to eliminate this
+    ## The SL updater and the Lag updater have
+    ## different sequencing because of the way they
+    ## update the history. It makes more sense for the
+    ## full Lagrangian swarm to be updated after the solve
+    ## and this means we have to grab the history values first.
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_post_solve(dt, evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+
+            # copy the information down the chain
+            if verbose:
+                print(f&#34;Lagrange swarm order = {self.order}&#34;, flush=True)
+                print(
+                    f&#34;Mesh interpolant order = {self.psi_star[0]._meshVar.degree}&#34;,
+                    flush=True,
+                )
+                print(f&#34;Lagrange swarm copying {i-1} to {i}&#34;, flush=True)
+
+            with self.swarm.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        phi = 1 / self.step_averaging
+
+        # Now update the swarm variable
+        if evalf:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evalf(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
+        else:
+            psi_star_0 = self.psi_star[0]
+            with self.swarm.access(psi_star_0):
+                for i in range(psi_star_0.shape[0]):
+                    for j in range(psi_star_0.shape[1]):
+                        updated_psi = uw.function.evaluate(
+                            self.psi_fn[i, j], self.swarm.data
+                        )
+                        psi_star_0[i, j].data[:] = (
+                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                        )
+
+        return
+
+    def bdf(self, order=None):
+        r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order &lt;= 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+            bdf0 /= self.step_averaging
+
+        # This is actually calculated over several steps so scaling is required
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am</code></pre>
+</details>
+<div class="desc"><p>Swarm-based Lagrangian History Manager:
+This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.</p>
+<p>$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$</p>
+<p>$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$</p>
+<p>$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.instances"><code class="name">var <span class="ident">instances</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.adams_moulton_flux"><code class="name flex">
+<span>def <span class="ident">adams_moulton_flux</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adams_moulton_flux(self, order=None):
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+
+    with sympy.core.evaluate(False):
+        if order == 1:
+            am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+        elif order == 2:
+            am = (
+                5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+            ) / 12
+
+        elif order == 3:
+            am = (
+                9 * self.psi_fn
+                + 19 * self.psi_star[0].sym
+                - 5 * self.psi_star[1].sym
+                + self.psi_star[2].sym
+            ) / 24
+
+    return am</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.bdf"><code class="name flex">
+<span>def <span class="ident">bdf</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def bdf(self, order=None):
+    r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+    Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+
+    with sympy.core.evaluate(False):
+        if order &lt;= 1:
+            bdf0 = self.psi_fn - self.psi_star[0].sym
+
+        elif order == 2:
+            bdf0 = (
+                3 * self.psi_fn / 2
+                - 2 * self.psi_star[0].sym
+                + self.psi_star[1].sym / 2
+            )
+
+        elif order == 3:
+            bdf0 = (
+                11 * self.psi_fn / 6
+                - 3 * self.psi_star[0].sym
+                + 3 * self.psi_star[1].sym / 2
+                - self.psi_star[2].sym / 3
+            )
+
+        bdf0 /= self.step_averaging
+
+    # This is actually calculated over several steps so scaling is required
+    return bdf0</code></pre>
+</details>
+<div class="desc"><p>Backwards differentiation form for calculating DuDt
+Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</p></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.update"><code class="name flex">
+<span>def <span class="ident">update</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    self.update_post_solve(dt, evalf, verbose)
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.update_post_solve"><code class="name flex">
+<span>def <span class="ident">update_post_solve</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_post_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    for h in range(self.order - 1):
+        i = self.order - (h + 1)
+
+        # copy the information down the chain
+        if verbose:
+            print(f&#34;Lagrange swarm order = {self.order}&#34;, flush=True)
+            print(
+                f&#34;Mesh interpolant order = {self.psi_star[0]._meshVar.degree}&#34;,
+                flush=True,
+            )
+            print(f&#34;Lagrange swarm copying {i-1} to {i}&#34;, flush=True)
+
+        with self.swarm.access(self.psi_star[i]):
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+    phi = 1 / self.step_averaging
+
+    # Now update the swarm variable
+    if evalf:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evalf(
+                        self.psi_fn[i, j], self.swarm.data
+                    )
+                    psi_star_0[i, j].data[:] = (
+                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                    )
+    else:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j], self.swarm.data
+                    )
+                    psi_star_0[i, j].data[:] = (
+                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                    )
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Lagrangian_Swarm.update_pre_solve"><code class="name flex">
+<span>def <span class="ident">update_pre_solve</span></span>(<span>self, dt: float, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_pre_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.ddt.SemiLagrangian"><code class="flex name class">
+<span>class <span class="ident">SemiLagrangian</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: sympy.core.function.Function,<br>V_fn: sympy.core.function.Function,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>swarm_degree: int | None = None,<br>swarm_continuous: bool | None = None,<br>varsymbol: str | None = None,<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0,<br>preserve_moments=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SemiLagrangian(uw_object):
+    r&#34;&#34;&#34;Nodal-Swarm  Lagrangian History Manager:
+    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: sympy.Function,
+        V_fn: sympy.Function,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        swarm_degree: Optional[int] = None,
+        swarm_continuous: Optional[bool] = None,
+        varsymbol: Optional[str] = None,
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+        preserve_moments=False,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.bcs = bcs
+        self.verbose = verbose
+        self.degree = degree
+        self.continuous = continuous
+        self._psi_fn = psi_fn
+        self.V_fn = V_fn
+        self.order = order
+        self.preserve_moments = preserve_moments
+
+        if swarm_degree is None:
+            self.swarm_degree = degree
+        else:
+            self.swarm_degree = swarm_degree
+
+        if swarm_continuous is None:
+            self.swarm_continuous = continuous
+        else:
+            self.swarm_continuous = swarm_continuous
+
+        if varsymbol is None:
+            varsymbol = rf&#34;u_{{ [{self.instance_number}] }}&#34;
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can&#39;t
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # but psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
+
+        psi_star = []
+        self.psi_star = psi_star
+
+        for i in range(order):
+            self.psi_star.append(
+                uw.discretisation.MeshVariable(
+                    f&#34;psi_star_sl_{self.instance_number}_{i}&#34;,
+                    self.mesh,
+                    vtype=vtype,
+                    degree=self.degree,
+                    continuous=self.continuous,
+                    varsymbol=rf&#34;{{ {varsymbol}^{{ {&#39;*&#39;*(i+1)} }} }}&#34;,
+                )
+            )
+
+        # Working variable that has a potentially different discretisation from psi_star
+        # We project from this to psi_star and we use this variable to define the
+        # advection sample points
+
+        self._workVar = uw.discretisation.MeshVariable(
+            f&#34;W_{self.instance_number}_{i}&#34;,
+            self.mesh,
+            vtype=vtype,
+            degree=self.swarm_degree,
+            continuous=self.swarm_continuous,
+            varsymbol=rf&#34;{{ {varsymbol}^\nabla }}&#34;,
+        )
+
+        # We just need one swarm since this is inherently a sequential operation
+        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
+        self._nswarm_psi = nswarm
+
+        # The projection operator for mapping swarm values to the mesh - needs to be different for
+        # each variable type, unfortunately ...
+
+        if vtype == uw.VarType.SCALAR:
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.psi_star[0], verbose=False
+            )
+        elif vtype == uw.VarType.VECTOR:
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh,
+                    self.psi_star[0],
+                    verbose=False,
+                )
+            )
+
+        elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            self._WorkVarTP = uw.discretisation.MeshVariable(
+                f&#34;W_star_slcn_{self.instance_number}&#34;,
+                self.mesh,
+                vtype=uw.VarType.SCALAR,
+                degree=degree,
+                continuous=continuous,
+                varsymbol=r&#34;W^{*}&#34;,
+            )
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Tensor_Projection(
+                    self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
+                )
+            )
+
+        # We should find a way to add natural bcs here
+        # (self.Unknowns.u carried as a symbol from solver to solver)
+
+        self._psi_star_projection_solver.uw_function = self._workVar.sym
+        self._psi_star_projection_solver.bcs = bcs
+        self._psi_star_projection_solver.smoothing = smoothing
+
+        self._smoothing = smoothing
+
+        self.I = uw.maths.Integral(mesh, None)
+
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn
+        self._psi_star_projection_solver.uw_function = self._psi_fn
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        display(Latex(rf&#34;$\quad$History steps = {self.order}&#34;))
+
+    def update(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+        dt_physical: Optional = None,
+    ):
+        self.update_pre_solve(dt, evalf, verbose, dt_physical)
+        return
+
+    def update_post_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
+    ):
+        return
+
+    def update_pre_solve(
+        self,
+        dt: float,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+        dt_physical: Optional[float] = None,
+    ):
+
+        ## Progress from the oldest part of the history
+        # 1. Copy the stored values down the chain
+
+        if dt_physical is not None:
+            phi = min(1, dt / dt_physical)
+        else:
+            phi = sympy.sympify(1)
+
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = (
+                    phi * self.psi_star[i - 1].data[...]
+                    + (1 - phi) * self.psi_star[i].data[...]
+                )
+
+        # 2. Compute the upstream values from the psi_fn
+
+        # We use the u_star variable as a working value here so we have to work backwards
+        # so we don&#39;t over-write the history terms
+
+        for i in range(self.order - 1, -1, -1):
+            with self._nswarm_psi.access(self._nswarm_psi._X0):
+                self._nswarm_psi._X0.data[...] = self._nswarm_psi.data[...]
+
+            # march nodes backwards along characteristics
+            self._nswarm_psi.advection(
+                self.V_fn,
+                -dt,
+                order=1,
+                corrector=False,
+                restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+                evalf=False,
+                step_limit=True,
+                #! substepping: this seems to be too diffusive if left on.
+                #! Check the code carefully !
+            )
+
+            if i == 0:
+                # Recalculate psi_star from psi_fn. If psi_fn containts
+                # derivatives, the evaluation will fail and a projection
+                # is required instead.
+
+                try:
+                    # Note, we should honour the evalf flag here too.
+                    with self._workVar.mesh.access():
+                        self.psi_star[0].data[...] = uw.function.evaluate(
+                            self.psi_fn, self.psi_star[0].coords
+                        )
+                except:
+                    self._psi_star_projection_solver.uw_function = self.psi_fn
+                    self._psi_star_projection_solver.smoothing = 0.0
+                    self._psi_star_projection_solver.solve(verbose=verbose)
+
+            if evalf:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
+                        )
+            else:
+                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                    for d in range(self.psi_star[i].shape[1]):
+                        self._nswarm_psi.swarmVariable.data[
+                            :, d
+                        ] = uw.function.evaluate(
+                            self.psi_star[i].sym[d], self._nswarm_psi.data
+                        )
+
+            if self.preserve_moments and self._workVar.num_components == 1:
+
+                self.I.fn = self.psi_star[i].sym[0]
+                Imean0 = self.I.evaluate()
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+                IL20 = np.sqrt(self.I.evaluate())
+
+                # if uw.mpi.rank == 0:
+                #     print(f&#34;Pre advection:  {Imean0}, {IL20}&#34;, flush=True)
+
+            # restore coords (will call dm.migrate after context manager releases)
+            # We need some modifications to dm.migrate to snapback
+            # to original location without substepping
+
+            og_mig_type = uw.function.dm_swarm_get_migrate_type(
+                self._nswarm_psi
+            )  # get original migrate type
+            uw.function.dm_swarm_set_migrate_type(
+                self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC
+            )
+
+            # change the rank in DMSwarm_rank with the rank before advection
+            nR0_field_name = self._nswarm_psi._nR0.name
+            nI0_field_name = self._nswarm_psi._nI0.name
+
+            orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
+            node_ranks = self._nswarm_psi.dm.getField(&#34;DMSwarm_rank&#34;)
+
+            node_ranks[...] = orig_ranks[...]
+
+            self._nswarm_psi.dm.restoreField(nR0_field_name)
+            self._nswarm_psi.dm.restoreField(&#34;DMSwarm_rank&#34;)
+
+            # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
+
+            with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
+                self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
+
+            # reset to original migrate type
+            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
+
+            # Push data from swarm back to _workVar.data.
+            # Note: particles are removed when sent and added to the
+            # end of the swarm when received, so we need to re-order
+            # the data when we put it back onto the nodes
+
+            with self._nswarm_psi.access():
+                orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
+
+                with self.mesh.access(self._workVar):
+                    self._workVar.data[
+                        orig_index, :
+                    ] = self._nswarm_psi.swarmVariable.data[:, :]
+
+            # Project / Copy from advected swarm to semi-Lagrangian variables.
+
+            if self._workVar.coords.shape == self.psi_star[i].coords.shape:
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = self._workVar.data[...]
+            else:
+                self._psi_star_projection_solver.uw_function = self._workVar.sym
+                self._psi_star_projection_solver.smoothing = 0.0
+                self._psi_star_projection_solver.solve()
+
+            # Copy data from the projection operator if i!=0
+            if i != 0:
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+            # Optional: Conserve moments for scalar fields
+            # (could extend this to other field types but not
+            #  sure if this is wanted / warranted at all )
+
+            if self.preserve_moments and self._workVar.num_components == 1:
+
+                self.I.fn = self.psi_star[i].sym[0]
+                Imean = self.I.evaluate()
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
+                IL2 = np.sqrt(self.I.evaluate())
+
+                # if uw.mpi.rank == 0:
+                #     print(f&#34;Pre adjustment: {Imean}, {IL2}&#34;, flush=True)
+
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] += Imean0 - Imean
+
+                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+                IL2 = np.sqrt(self.I.evaluate())
+
+                with self.mesh.access(self.psi_star[i]):
+                    self.psi_star[i].data[...] = (
+                        self.psi_star[i].data[...] - Imean0
+                    ) * IL20 / IL2 + Imean0
+
+                # self.I.fn = self.psi_star[i].sym[0]
+                # Imean = self.I.evaluate()
+
+                # self.I.fn = (self.psi_star[0].sym[0] - Imean) ** 2
+                # IL2 = np.sqrt(self.I.evaluate())
+
+                # if uw.mpi.rank == 0:
+                #     print(f&#34;Post advection: {Imean}, {IL2}&#34;, flush=True)
+
+        return
+
+    def bdf(self, order=None):
+        r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(True):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(0, min(self.order, order))
+
+        with sympy.core.evaluate(True):
+
+            if order == 0:
+                am = self.psi_fn
+
+            elif order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am</code></pre>
+</details>
+<div class="desc"><p>Nodal-Swarm
+Lagrangian History Manager:
+This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+<span><span class="MathJax_Preview">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</span><script type="math/tex; mode=display">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</script></span></p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.ddt.SemiLagrangian.psi_fn"><code class="name">prop <span class="ident">psi_fn</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def psi_fn(self):
+    return self._psi_fn</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.ddt.SemiLagrangian.adams_moulton_flux"><code class="name flex">
+<span>def <span class="ident">adams_moulton_flux</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adams_moulton_flux(self, order=None):
+    if order is None:
+        order = self.order
+    else:
+        order = max(0, min(self.order, order))
+
+    with sympy.core.evaluate(True):
+
+        if order == 0:
+            am = self.psi_fn
+
+        elif order == 1:
+            am = (self.psi_fn + self.psi_star[0].sym) / 2
+
+        elif order == 2:
+            am = (
+                5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+            ) / 12
+
+        elif order == 3:
+            am = (
+                9 * self.psi_fn
+                + 19 * self.psi_star[0].sym
+                - 5 * self.psi_star[1].sym
+                + self.psi_star[2].sym
+            ) / 24
+
+    return am</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.SemiLagrangian.bdf"><code class="name flex">
+<span>def <span class="ident">bdf</span></span>(<span>self, order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def bdf(self, order=None):
+    r&#34;&#34;&#34;Backwards differentiation form for calculating DuDt
+    Note that you will need `bdf` / $\delta t$ in computing derivatives&#34;&#34;&#34;
+
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+
+    with sympy.core.evaluate(True):
+        if order == 1:
+            bdf0 = self.psi_fn - self.psi_star[0].sym
+
+        elif order == 2:
+            bdf0 = (
+                3 * self.psi_fn / 2
+                - 2 * self.psi_star[0].sym
+                + self.psi_star[1].sym / 2
+            )
+
+        elif order == 3:
+            bdf0 = (
+                11 * self.psi_fn / 6
+                - 3 * self.psi_star[0].sym
+                + 3 * self.psi_star[1].sym / 2
+                - self.psi_star[2].sym / 3
+            )
+
+    return bdf0</code></pre>
+</details>
+<div class="desc"><p>Backwards differentiation form for calculating DuDt
+Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</p></div>
+</dd>
+<dt id="underworld3.systems.ddt.SemiLagrangian.update"><code class="name flex">
+<span>def <span class="ident">update</span></span>(<span>self,<br>dt: float,<br>evalf: bool | None = False,<br>verbose: bool | None = False,<br>dt_physical: Optional = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+    dt_physical: Optional = None,
+):
+    self.update_pre_solve(dt, evalf, verbose, dt_physical)
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.SemiLagrangian.update_post_solve"><code class="name flex">
+<span>def <span class="ident">update_post_solve</span></span>(<span>self,<br>dt: float,<br>evalf: bool | None = False,<br>verbose: bool | None = False,<br>dt_physical: float | None = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_post_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+    dt_physical: Optional[float] = None,
+):
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.SemiLagrangian.update_pre_solve"><code class="name flex">
+<span>def <span class="ident">update_pre_solve</span></span>(<span>self,<br>dt: float,<br>evalf: bool | None = False,<br>verbose: bool | None = False,<br>dt_physical: float | None = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_pre_solve(
+    self,
+    dt: float,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+    dt_physical: Optional[float] = None,
+):
+
+    ## Progress from the oldest part of the history
+    # 1. Copy the stored values down the chain
+
+    if dt_physical is not None:
+        phi = min(1, dt / dt_physical)
+    else:
+        phi = sympy.sympify(1)
+
+    for i in range(self.order - 1, 0, -1):
+        with self.mesh.access(self.psi_star[i]):
+            self.psi_star[i].data[...] = (
+                phi * self.psi_star[i - 1].data[...]
+                + (1 - phi) * self.psi_star[i].data[...]
+            )
+
+    # 2. Compute the upstream values from the psi_fn
+
+    # We use the u_star variable as a working value here so we have to work backwards
+    # so we don&#39;t over-write the history terms
+
+    for i in range(self.order - 1, -1, -1):
+        with self._nswarm_psi.access(self._nswarm_psi._X0):
+            self._nswarm_psi._X0.data[...] = self._nswarm_psi.data[...]
+
+        # march nodes backwards along characteristics
+        self._nswarm_psi.advection(
+            self.V_fn,
+            -dt,
+            order=1,
+            corrector=False,
+            restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
+            evalf=False,
+            step_limit=True,
+            #! substepping: this seems to be too diffusive if left on.
+            #! Check the code carefully !
+        )
+
+        if i == 0:
+            # Recalculate psi_star from psi_fn. If psi_fn containts
+            # derivatives, the evaluation will fail and a projection
+            # is required instead.
+
+            try:
+                # Note, we should honour the evalf flag here too.
+                with self._workVar.mesh.access():
+                    self.psi_star[0].data[...] = uw.function.evaluate(
+                        self.psi_fn, self.psi_star[0].coords
+                    )
+            except:
+                self._psi_star_projection_solver.uw_function = self.psi_fn
+                self._psi_star_projection_solver.smoothing = 0.0
+                self._psi_star_projection_solver.solve(verbose=verbose)
+
+        if evalf:
+            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+                        self.psi_star[i].sym[d], self._nswarm_psi.data
+                    )
+        else:
+            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[
+                        :, d
+                    ] = uw.function.evaluate(
+                        self.psi_star[i].sym[d], self._nswarm_psi.data
+                    )
+
+        if self.preserve_moments and self._workVar.num_components == 1:
+
+            self.I.fn = self.psi_star[i].sym[0]
+            Imean0 = self.I.evaluate()
+
+            self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+            IL20 = np.sqrt(self.I.evaluate())
+
+            # if uw.mpi.rank == 0:
+            #     print(f&#34;Pre advection:  {Imean0}, {IL20}&#34;, flush=True)
+
+        # restore coords (will call dm.migrate after context manager releases)
+        # We need some modifications to dm.migrate to snapback
+        # to original location without substepping
+
+        og_mig_type = uw.function.dm_swarm_get_migrate_type(
+            self._nswarm_psi
+        )  # get original migrate type
+        uw.function.dm_swarm_set_migrate_type(
+            self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC
+        )
+
+        # change the rank in DMSwarm_rank with the rank before advection
+        nR0_field_name = self._nswarm_psi._nR0.name
+        nI0_field_name = self._nswarm_psi._nI0.name
+
+        orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
+        node_ranks = self._nswarm_psi.dm.getField(&#34;DMSwarm_rank&#34;)
+
+        node_ranks[...] = orig_ranks[...]
+
+        self._nswarm_psi.dm.restoreField(nR0_field_name)
+        self._nswarm_psi.dm.restoreField(&#34;DMSwarm_rank&#34;)
+
+        # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
+
+        with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
+            self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
+
+        # reset to original migrate type
+        uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
+
+        # Push data from swarm back to _workVar.data.
+        # Note: particles are removed when sent and added to the
+        # end of the swarm when received, so we need to re-order
+        # the data when we put it back onto the nodes
+
+        with self._nswarm_psi.access():
+            orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
+
+            with self.mesh.access(self._workVar):
+                self._workVar.data[
+                    orig_index, :
+                ] = self._nswarm_psi.swarmVariable.data[:, :]
+
+        # Project / Copy from advected swarm to semi-Lagrangian variables.
+
+        if self._workVar.coords.shape == self.psi_star[i].coords.shape:
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self._workVar.data[...]
+        else:
+            self._psi_star_projection_solver.uw_function = self._workVar.sym
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve()
+
+        # Copy data from the projection operator if i!=0
+        if i != 0:
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+        # Optional: Conserve moments for scalar fields
+        # (could extend this to other field types but not
+        #  sure if this is wanted / warranted at all )
+
+        if self.preserve_moments and self._workVar.num_components == 1:
+
+            self.I.fn = self.psi_star[i].sym[0]
+            Imean = self.I.evaluate()
+
+            self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
+            IL2 = np.sqrt(self.I.evaluate())
+
+            # if uw.mpi.rank == 0:
+            #     print(f&#34;Pre adjustment: {Imean}, {IL2}&#34;, flush=True)
+
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] += Imean0 - Imean
+
+            self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
+            IL2 = np.sqrt(self.I.evaluate())
+
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = (
+                    self.psi_star[i].data[...] - Imean0
+                ) * IL20 / IL2 + Imean0
+
+            # self.I.fn = self.psi_star[i].sym[0]
+            # Imean = self.I.evaluate()
+
+            # self.I.fn = (self.psi_star[0].sym[0] - Imean) ** 2
+            # IL2 = np.sqrt(self.I.evaluate())
+
+            # if uw.mpi.rank == 0:
+            #     print(f&#34;Post advection: {Imean}, {IL2}&#34;, flush=True)
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic"><code class="flex name class">
+<span>class <span class="ident">Symbolic</span></span>
+<span>(</span><span>psi_fn: sympy.core.basic.Basic,<br>theta: float | None = 0.5,<br>varsymbol: str | None = '\\psi',<br>verbose: bool | None = False,<br>bcs=[],<br>order: int = 1,<br>smoothing: float = 0.0)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class Symbolic(uw_object):
+    r&#34;&#34;&#34;
+    Symbolic History Manager:
+
+    This class manages the update of a variable ψ across timesteps.
+    The history operator stores ψ over several timesteps (given by &#39;order&#39;)
+    so that it can compute backward differentiation (BDF) or Adams–Moulton expressions.
+
+    The history operator is defined as follows:
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+
+
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        psi_fn: sympy.Basic,  # a sympy expression for ψ; can be scalar or matrix
+        theta: Optional[float] = 0.5,
+        varsymbol: Optional[str] = r&#34;\psi&#34;,
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order: int = 1,
+        smoothing: float = 0.0,
+    ):
+        super().__init__()
+        self.theta = theta
+        self.bcs = bcs
+        self.verbose = verbose
+        self.smoothing = smoothing
+        self.order = order
+
+        # Ensure psi_fn is a sympy Matrix.
+        if not isinstance(psi_fn, sympy.Matrix):
+            try:
+                psi_fn = sympy.Matrix(psi_fn)
+            except Exception:
+                psi_fn = sympy.Matrix([[psi_fn]])
+        self._psi_fn = psi_fn  # stored with its native shape
+        self._shape = psi_fn.shape  # capture the shape
+        
+        # Set the display symbol for psi_fn and for the history variable.
+        self._psi_fn_symbol = varsymbol              # e.g. &#34;\psi&#34;
+        self._psi_star_symbol = varsymbol + r&#34;^\ast&#34;    # e.g. &#34;\psi^\ast&#34;
+        
+        # Create the history list: each element is a Matrix of shape _shape.
+        self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
+        self.initiate_history_fn()
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        if not isinstance(new_fn, sympy.Matrix):
+            try:
+                new_fn = sympy.Matrix(new_fn)
+            except Exception:
+                new_fn = sympy.Matrix([[new_fn]])
+        # Optionally, one could check for matching shape; here we update both.
+        self._psi_fn = new_fn
+        self._shape = new_fn.shape
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        # Display the primary variable
+        display(Latex(rf&#34;$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$&#34;))
+        # Display the history variable using the different symbol.
+        history_latex = &#34;, &#34;.join([sympy.latex(elem) for elem in self.psi_star])
+        display(Latex(rf&#34;$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$&#34;))
+
+    def update_history_fn(self):
+        # Update the first history element with a copy of the current ψ.
+        self.psi_star[0] = self.psi_fn.copy()
+
+    def initiate_history_fn(self):
+        self.update_history_fn()
+        # Propagate the initial history to all history steps.
+        for i in range(1, self.order):
+            self.psi_star[i] = self.psi_star[0].copy()
+        return
+
+    def update(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # Default: no action.
+        return
+
+    def update_post_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        if verbose:
+            print(f&#34;Updating history for ψ = {self.psi_fn}&#34;, flush=True)
+
+            
+        # Shift history: copy each element down the chain.
+        for i in range(self.order - 1, 0, -1):
+            self.psi_star[i] = self.psi_star[i - 1].copy()
+        self.update_history_fn()
+        return
+
+    def bdf(self, order: Optional[int] = None):
+        r&#34;&#34;&#34;Compute the backward differentiation approximation of the time-derivative of ψ.
+           For order 1: bdf ≡ ψ - psi_star[0]
+        &#34;&#34;&#34;
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+        
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0]
+            elif order == 2:
+                bdf0 = (3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2)
+            elif order == 3:
+                bdf0 = (11 * self.psi_fn / 6 - 3 * self.psi_star[0] + (3 * self.psi_star[1]) / 2 - self.psi_star[2] / 3)
+        return bdf0
+
+    def adams_moulton_flux(self, order: Optional[int] = None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+        
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0]
+            elif order == 2:
+                am = (5 * self.psi_fn + 8 * self.psi_star[0] - self.psi_star[1]) / 12
+            elif order == 3:
+                am = (9 * self.psi_fn + 19 * self.psi_star[0] - 5 * self.psi_star[1] + self.psi_star[2]) / 24
+        return am</code></pre>
+</details>
+<div class="desc"><p>Symbolic History Manager:</p>
+<p>This class manages the update of a variable ψ across timesteps.
+The history operator stores ψ over several timesteps (given by 'order')
+so that it can compute backward differentiation (BDF) or Adams–Moulton expressions.</p>
+<p>The history operator is defined as follows:
+<span><span class="MathJax_Preview">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</script></span>
+<span><span class="MathJax_Preview">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</span><script type="math/tex; mode=display">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</script></span></p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Symbolic.psi_fn"><code class="name">prop <span class="ident">psi_fn</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def psi_fn(self):
+    return self._psi_fn</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.ddt.Symbolic.adams_moulton_flux"><code class="name flex">
+<span>def <span class="ident">adams_moulton_flux</span></span>(<span>self, order: int | None = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adams_moulton_flux(self, order: Optional[int] = None):
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+    
+    with sympy.core.evaluate(False):
+        if order == 1:
+            am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0]
+        elif order == 2:
+            am = (5 * self.psi_fn + 8 * self.psi_star[0] - self.psi_star[1]) / 12
+        elif order == 3:
+            am = (9 * self.psi_fn + 19 * self.psi_star[0] - 5 * self.psi_star[1] + self.psi_star[2]) / 24
+    return am</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.bdf"><code class="name flex">
+<span>def <span class="ident">bdf</span></span>(<span>self, order: int | None = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def bdf(self, order: Optional[int] = None):
+    r&#34;&#34;&#34;Compute the backward differentiation approximation of the time-derivative of ψ.
+       For order 1: bdf ≡ ψ - psi_star[0]
+    &#34;&#34;&#34;
+    if order is None:
+        order = self.order
+    else:
+        order = max(1, min(self.order, order))
+    
+    with sympy.core.evaluate(False):
+        if order == 1:
+            bdf0 = self.psi_fn - self.psi_star[0]
+        elif order == 2:
+            bdf0 = (3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2)
+        elif order == 3:
+            bdf0 = (11 * self.psi_fn / 6 - 3 * self.psi_star[0] + (3 * self.psi_star[1]) / 2 - self.psi_star[2] / 3)
+    return bdf0</code></pre>
+</details>
+<div class="desc"><p>Compute the backward differentiation approximation of the time-derivative of ψ.
+For order 1: bdf ≡ ψ - psi_star[0]</p></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.initiate_history_fn"><code class="name flex">
+<span>def <span class="ident">initiate_history_fn</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def initiate_history_fn(self):
+    self.update_history_fn()
+    # Propagate the initial history to all history steps.
+    for i in range(1, self.order):
+        self.psi_star[i] = self.psi_star[0].copy()
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.update"><code class="name flex">
+<span>def <span class="ident">update</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    self.update_pre_solve(evalf, verbose)
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.update_history_fn"><code class="name flex">
+<span>def <span class="ident">update_history_fn</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_history_fn(self):
+    # Update the first history element with a copy of the current ψ.
+    self.psi_star[0] = self.psi_fn.copy()</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.update_post_solve"><code class="name flex">
+<span>def <span class="ident">update_post_solve</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_post_solve(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    if verbose:
+        print(f&#34;Updating history for ψ = {self.psi_fn}&#34;, flush=True)
+
+        
+    # Shift history: copy each element down the chain.
+    for i in range(self.order - 1, 0, -1):
+        self.psi_star[i] = self.psi_star[i - 1].copy()
+    self.update_history_fn()
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.ddt.Symbolic.update_pre_solve"><code class="name flex">
+<span>def <span class="ident">update_pre_solve</span></span>(<span>self, evalf: bool | None = False, verbose: bool | None = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def update_pre_solve(
+    self,
+    evalf: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+):
+    # Default: no action.
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+</dl>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3.systems" href="index.html">underworld3.systems</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="underworld3.systems.ddt.Eulerian" href="#underworld3.systems.ddt.Eulerian">Eulerian</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.ddt.Eulerian.adams_moulton_flux" href="#underworld3.systems.ddt.Eulerian.adams_moulton_flux">adams_moulton_flux</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.bdf" href="#underworld3.systems.ddt.Eulerian.bdf">bdf</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.initiate_history_fn" href="#underworld3.systems.ddt.Eulerian.initiate_history_fn">initiate_history_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.psi_fn" href="#underworld3.systems.ddt.Eulerian.psi_fn">psi_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.update" href="#underworld3.systems.ddt.Eulerian.update">update</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.update_history_fn" href="#underworld3.systems.ddt.Eulerian.update_history_fn">update_history_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.update_post_solve" href="#underworld3.systems.ddt.Eulerian.update_post_solve">update_post_solve</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Eulerian.update_pre_solve" href="#underworld3.systems.ddt.Eulerian.update_pre_solve">update_pre_solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.ddt.Lagrangian" href="#underworld3.systems.ddt.Lagrangian">Lagrangian</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.ddt.Lagrangian.adams_moulton_flux" href="#underworld3.systems.ddt.Lagrangian.adams_moulton_flux">adams_moulton_flux</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian.bdf" href="#underworld3.systems.ddt.Lagrangian.bdf">bdf</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian.instances" href="#underworld3.systems.ddt.Lagrangian.instances">instances</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian.update" href="#underworld3.systems.ddt.Lagrangian.update">update</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian.update_post_solve" href="#underworld3.systems.ddt.Lagrangian.update_post_solve">update_post_solve</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian.update_pre_solve" href="#underworld3.systems.ddt.Lagrangian.update_pre_solve">update_pre_solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.ddt.Lagrangian_Swarm" href="#underworld3.systems.ddt.Lagrangian_Swarm">Lagrangian_Swarm</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.adams_moulton_flux" href="#underworld3.systems.ddt.Lagrangian_Swarm.adams_moulton_flux">adams_moulton_flux</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.bdf" href="#underworld3.systems.ddt.Lagrangian_Swarm.bdf">bdf</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.instances" href="#underworld3.systems.ddt.Lagrangian_Swarm.instances">instances</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.update" href="#underworld3.systems.ddt.Lagrangian_Swarm.update">update</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.update_post_solve" href="#underworld3.systems.ddt.Lagrangian_Swarm.update_post_solve">update_post_solve</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Lagrangian_Swarm.update_pre_solve" href="#underworld3.systems.ddt.Lagrangian_Swarm.update_pre_solve">update_pre_solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.ddt.SemiLagrangian" href="#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.adams_moulton_flux" href="#underworld3.systems.ddt.SemiLagrangian.adams_moulton_flux">adams_moulton_flux</a></code></li>
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.bdf" href="#underworld3.systems.ddt.SemiLagrangian.bdf">bdf</a></code></li>
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.psi_fn" href="#underworld3.systems.ddt.SemiLagrangian.psi_fn">psi_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.update" href="#underworld3.systems.ddt.SemiLagrangian.update">update</a></code></li>
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.update_post_solve" href="#underworld3.systems.ddt.SemiLagrangian.update_post_solve">update_post_solve</a></code></li>
+<li><code><a title="underworld3.systems.ddt.SemiLagrangian.update_pre_solve" href="#underworld3.systems.ddt.SemiLagrangian.update_pre_solve">update_pre_solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.ddt.Symbolic" href="#underworld3.systems.ddt.Symbolic">Symbolic</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.ddt.Symbolic.adams_moulton_flux" href="#underworld3.systems.ddt.Symbolic.adams_moulton_flux">adams_moulton_flux</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.bdf" href="#underworld3.systems.ddt.Symbolic.bdf">bdf</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.initiate_history_fn" href="#underworld3.systems.ddt.Symbolic.initiate_history_fn">initiate_history_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.psi_fn" href="#underworld3.systems.ddt.Symbolic.psi_fn">psi_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.update" href="#underworld3.systems.ddt.Symbolic.update">update</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.update_history_fn" href="#underworld3.systems.ddt.Symbolic.update_history_fn">update_history_fn</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.update_post_solve" href="#underworld3.systems.ddt.Symbolic.update_post_solve">update_post_solve</a></code></li>
+<li><code><a title="underworld3.systems.ddt.Symbolic.update_pre_solve" href="#underworld3.systems.ddt.Symbolic.update_pre_solve">update_pre_solve</a></code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>
