@@ -2893,40 +2893,55 @@ def checkpoint_xdmf(
 """
 
     ## The mesh Var attributes
+    
+    def get_cell_field_size(h5_filename, mesh_var):
+        with h5py.File(h5_filename, 'r') as f:
+            size = f[f'cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}'].shape[0]
+        return size
 
     attributes = ""
     for var in meshVars:
-        var_filename = filename + f"mesh.{var.clean_name}.{index:05}.h5"
+        var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
             variable_type = "Vector"
-        # We should add a tensor type here ...
+
+        # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
+        if not getattr(var, "continuous") or getattr(var, "degree")==0:
+            center = "Cell"
+            numItems = get_cell_field_size(var_filename, var)
+            field_group = "cell_fields"
+        else:
+            center = "Node"
+            numItems = numVertices
+            field_group = "vertex_fields"
 
         var_attribute = f"""
         <Attribute
            Name="{var.clean_name}"
            Type="{variable_type}"
-           Center="Node">
+           Center="{center}">
           <DataItem ItemType="HyperSlab"
-        	    Dimensions="1 {numVertices} {var.num_components}"
-        	    Type="HyperSlab">
+                Dimensions="1 {numItems} {var.num_components}"
+                Type="HyperSlab">
             <DataItem
                Dimensions="3 3"
                Format="XML">
               0 0 0
               1 1 1
-              1 {numVertices} {var.num_components}
+              1 {numItems} {var.num_components}
             </DataItem>
             <DataItem
                DataType="Float" Precision="8"
-               Dimensions="1 {numVertices} {var.num_components}"
+               Dimensions="1 {numItems} {var.num_components}"
                Format="HDF">
-              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_"+var.clean_name}
+              &{var.clean_name+"_Data"};:/{field_group}/{var.clean_name+"_"+var.clean_name}
             </DataItem>
           </DataItem>
         </Attribute>
-    """
+        """
         attributes += var_attribute
 
     for var in swarmVars:
