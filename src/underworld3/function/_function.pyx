@@ -22,6 +22,10 @@ cdef extern from "petsc.h" nogil:
     ctypedef enum DMSwarmMigrateType:
         pass
 
+cdef extern from "petsc.h" nogil:
+    ctypedef enum DMSwarmType:
+        pass
+
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
@@ -753,9 +757,37 @@ def evalf(  expr,
 
 evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
 
+
+
+## Not sure these belong with the uw function cython
+
 def dm_swarm_get_migrate_type(swarm):
 
-    cdef DM dm = swarm.dm
+    # cdef DM dm = swarm.dm
+    # cdef PetscErrorCode ierr
+    # cdef DMSwarmMigrateType mtype
+
+    # ierr = DMSwarmGetMigrateType(dm.dm, &mtype); CHKERRQ(ierr)
+
+    mtype = _dmswarm_get_migrate_type(swarm.dm)
+
+    return mtype
+
+def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+
+    _dmswarm_set_migrate_type(swarm.dm, mtype)
+
+    # cdef DM dm = swarm.dm
+    # cdef PetscErrorCode ierr
+    # cdef DMSwarmMigrateType mig = mtype
+
+    # ierr = DMSwarmSetMigrateType(dm.dm, mig); CHKERRQ(ierr)
+
+    return
+
+def _dmswarm_get_migrate_type(sdm):
+
+    cdef DM dm = sdm
     cdef PetscErrorCode ierr
     cdef DMSwarmMigrateType mtype
 
@@ -763,9 +795,9 @@ def dm_swarm_get_migrate_type(swarm):
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+def _dmswarm_set_migrate_type(sdm, mtype:PETsc.DMSwarm.MigrateType):
 
-    cdef DM dm = swarm.dm
+    cdef DM dm = sdm
     cdef PetscErrorCode ierr
     cdef DMSwarmMigrateType mig = mtype
 
