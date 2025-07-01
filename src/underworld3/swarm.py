@@ -332,7 +332,6 @@ class SwarmVariable(Stateful, uw_object):
         kd = uw.kdtree.KDTree(meshVar.coords)
 
         with self.swarm.access():
-            # n, d, b = kd.find_closest_point(self.swarm.data)
             d, n = kd.query(self.swarm.data, k=1)
 
             node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
@@ -721,13 +720,14 @@ class IndexSwarmVariable(SwarmVariable):
             kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
 
             with self.swarm.access():
-                # n_indices, n_distance = kd.find_closest_n_points(self.nnn,self.swarm.particle_coordinates.data)
                 n_distance, n_indices = kd.query(
                     self.swarm.particle_coordinates.data, k=self.nnn
                 )
                 kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
-                d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1)
+                d, n = kd_swarm.query(
+                    self._meshLevelSetVars[0].coords, k=1, sqr_dist=True
+                )
 
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
@@ -762,9 +762,8 @@ class IndexSwarmVariable(SwarmVariable):
         elif self.update_type == 1:
             with self.swarm.access():
                 kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
-                # n_indices, n_distance = kd.find_closest_n_points(self.nnn,self._meshLevelSetVars[0].coords)
                 n_distance, n_indices = kd.query(
-                    self._meshLevelSetVars[0].coords, k=self.nnn
+                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dist=True
                 )
 
             for ii in range(self.indices):
@@ -810,6 +809,106 @@ class IndexSwarmVariable(SwarmVariable):
 
 
 class Swarm(Stateful, uw_object):
+    """
+    Particle swarm implementation with automatic mesh-particle interactions.
+
+    The `Swarm` class is Underworld's primary particle management system, built on PETSc's
+    DMSWARM_PIC type. It provides automatic particle migration, mesh-particle connectivity,
+    and streamlined particle operations for Lagrangian particle tracking and data storage.
+
+    Differences from UW_Swarm:
+    - **Mesh Integration**: Built-in particle-in-cell (PIC) connectivity with automatic cell tracking
+    - **Migration**: Uses the standard PETSc strategy for migration which depends on the DM type. This requires
+      calculation of cell-relationships each time the coordinates are updated and particles that are not found will
+      be deleted.
+
+
+    Parameters
+    ----------
+    mesh : uw.discretisation.Mesh
+        The mesh object that defines the computational domain. Particles will be
+        automatically associated with mesh cells for efficient spatial operations.
+    recycle_rate : int, optional
+        Rate at which particles are recycled for streak management. If > 1, enables
+        streak particle functionality where particles are duplicated and tracked
+        across multiple cycles. Default is 0 (no recycling).
+    verbose : bool, optional
+        Enable verbose output for debugging and monitoring particle operations.
+        Default is False.
+
+    Attributes
+    ----------
+    mesh : uw.discretisation.Mesh
+        Reference to the associated mesh object.
+    dim : int
+        Spatial dimension of the mesh (2D or 3D).
+    cdim : int
+        Coordinate dimension of the mesh.
+    data : numpy.ndarray
+        Direct access to particle coordinate data.
+    particle_coordinates : SwarmVariable
+        SwarmVariable containing particle coordinate information (auto-created).
+    particle_cellid : SwarmVariable
+        SwarmVariable containing particle cell ID information (auto-created).
+    recycle_rate : int
+        Current recycle rate for streak management.
+    cycle : int
+        Current cycle number for streak particles.
+
+    Methods
+    -------
+    populate_petsc(fill_param=1)
+        Populate swarm using PETSc's built-in particle generation.
+    populate(fill_param=1, layout=SwarmPICLayout.GAUSS)
+        Populate the swarm with particles using specified layout.
+    add_particles_with_coordinates(coords)
+        Add new particles at specified coordinate locations.
+    add_variable(name, size, dtype=float)
+        Add a new variable to track additional particle properties.
+    save(filename, meshUnits=1.0, swarmUnits=1.0, units="dimensionless")
+        Save swarm data to file.
+    read_timestep(filename, step_name, outputPath="./output/")
+        Read swarm data from a specific timestep file.
+    advection(V_fn, delta_t, evalf=False, corrector=True, restore_points_func=None)
+        Advect particles using a velocity field with automatic migration.
+    estimate_dt(V_fn, dt_min=1.0e-15, dt_max=1.0)
+        Estimate appropriate timestep for particle advection.
+
+    Examples
+    --------
+    Create a standard swarm with automatic features:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1))
+    >>> swarm = uw.swarm.Swarm(mesh=mesh)
+    >>> swarm.populate(fill_param=2, layout=uw.swarm.SwarmPICLayout.GAUSS)
+
+    Access automatic coordinate and cell ID fields:
+
+    >>> coords = swarm.particle_coordinates.data
+    >>> cell_ids = swarm.particle_cellid.data
+
+    Create a streak swarm with recycling:
+
+    >>> streak_swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
+    >>> streak_swarm.populate(fill_param=1)
+
+    Add custom particle data and perform advection:
+
+    >>> temperature = swarm.add_variable("temperature", 1)
+    >>> velocity_field = mesh.add_variable("velocity", mesh.dim)
+    >>> # ... set up velocity field ...
+    >>> swarm.advection(velocity_field.sym, delta_t=0.01)  # Automatic migration
+
+    Notes
+    -----
+    - Particle migration occurs automatically during advection operations
+    - Coordinate and cell ID fields are created and managed automatically at the
+      PETSc level
+
+
+    """
+
     instances = 0
 
     @timing.routine_timer_decorator
@@ -2075,7 +2174,98 @@ class NodalPointSwarm(Swarm):
 ##  - No automatic definition of coordinate fields (need to add by hand)
 
 
-class BASIC_Swarm(Stateful, uw_object):
+class UW_Swarm(Stateful, uw_object):
+    """
+    A basic particle swarm implementation for Lagrangian particle tracking and data storage.
+
+    The `UW_Swarm` class provides a simplified particle management system that uses
+    PETSc's DMSWARM_BASIC type. Unlike the standard `Swarm` class, this implementation
+    does not rely on PETSc to determine ranks for particle migration but instead uses
+    our own kdtree neighbour-domain computations.
+
+    This class is preferred for most operations except where particle / cell relationships
+    are always required.
+
+    Parameters
+    ----------
+    mesh : uw.discretisation.Mesh
+        The mesh object that defines the computational domain for particle operations.
+        Particles will be associated with this mesh for spatial queries and operations.
+    recycle_rate : int, optional
+        Rate at which particles are recycled for streak management. If > 1, enables
+        streak particle functionality where particles are duplicated and tracked
+        across multiple cycles. Default is 0 (no recycling).
+    verbose : bool, optional
+        Enable verbose output for debugging and monitoring particle operations.
+        Default is False.
+
+    Attributes
+    ----------
+    mesh : uw.discretisation.Mesh
+        Reference to the associated mesh object.
+    dim : int
+        Spatial dimension of the mesh (2D or 3D).
+    cdim : int
+        Coordinate dimension of the mesh.
+    data : numpy.ndarray
+        Direct access to particle coordinate data.
+    particle_coordinates : SwarmVariable
+        SwarmVariable containing particle coordinate information.
+    recycle_rate : int
+        Current recycle rate for streak management.
+    cycle : int
+        Current cycle number for streak particles.
+
+    Methods
+    -------
+    populate(fill_param=1)
+        Populate the swarm with particles throughout the domain.
+    migrate(remove_sent_points=True, delete_lost_points=True, max_its=10)
+        Manually migrate particles across MPI processes after coordinate updates.
+    add_particles_with_coordinates(coords)
+        Add new particles at specified coordinate locations.
+    add_particles_with_global_coordinates(coords)
+        Add particles using global coordinate system.
+    add_variable(name, size, dtype=float)
+        Add a new variable to track additional particle properties.
+    save(filename, meshUnits=1.0, swarmUnits=1.0, units="dimensionless")
+        Save swarm data to file.
+    read_timestep(filename, step_name, outputPath="./output/")
+        Read swarm data from a specific timestep file.
+    advection(V_fn, delta_t, evalf=False, corrector=True, restore_points_func=None)
+        Advect particles using a velocity field.
+    estimate_dt(V_fn, dt_min=1.0e-15, dt_max=1.0)
+        Estimate appropriate timestep for particle advection.
+
+    Examples
+    --------
+    Create a basic swarm and populate with particles:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1))
+    >>> swarm = uw.swarm.UW_Swarm(mesh=mesh)
+    >>> swarm.populate(fill_param=2)
+
+    Create a streak swarm with recycling:
+
+    >>> streak_swarm = uw.swarm.UW_Swarm(mesh=mesh, recycle_rate=5)
+    >>> streak_swarm.populate(fill_param=1)
+
+    Add custom particle data:
+
+    >>> temperature = swarm.add_variable("temperature", 1)
+    >>> velocity = swarm.add_variable("velocity", mesh.dim)
+
+    Manual particle migration after coordinate updates:
+
+    Note: particle migration is still called automatically when we
+    `access` and update the particle_coordinates variables
+
+    Note: `swarm.populate` uses a the mesh point locations for discontinuous interpolants to
+    determine the particle locations.
+
+    """
+
     instances = 0
 
     @timing.routine_timer_decorator
@@ -2169,10 +2359,6 @@ class BASIC_Swarm(Stateful, uw_object):
         fill_param:
             Parameter determining the particle count per cell (per dimension)
             for the given layout, using the mesh degree.
-
-        cell_search:
-            Use k-d tree to locate nearest cells (fails if this swarm is used to build a k-d tree)
-
         """
 
         self.fill_param = fill_param
@@ -2188,10 +2374,7 @@ class BASIC_Swarm(Stateful, uw_object):
         self.dm.addNPoints(newp_coords.shape[0] + 1)
 
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
-
         coords[...] = newp_coords[...]
-        cellid[:] = newp_cells[:]
-
         self.dm.restoreField("DMSwarmPIC_coor")
 
         if self.recycle_rate > 1:
@@ -2258,7 +2441,6 @@ class BASIC_Swarm(Stateful, uw_object):
         time_c = time()
         centroids = self.mesh._get_domain_centroids()
         mesh_domain_kdtree = uw.kdtree.KDTree(centroids)
-        mesh_domain_kdtree.build_index()
 
         time0 = time()
         time1 = time()
@@ -2305,12 +2487,25 @@ class BASIC_Swarm(Stateful, uw_object):
                     (-1, self.dim)
                 )
 
-                # Should be able to do this only for unclaimed points
+                print(f"{uw.mpi.rank} - Migration: iteration {it}", flush=True)
+
                 if len(swarm_coord_array > 0):
-                    rank, dist = mesh_domain_kdtree.find_closest_n_points(
-                        it + 1, swarm_coord_array[not_my_points]
+                    dist, rank = mesh_domain_kdtree.query(
+                        swarm_coord_array[not_my_points],
+                        k=it + 1,
                     )
-                    swarm_rank_array[not_my_points, 0] = rank[:, it]
+
+                    print(
+                        f"{uw.mpi.rank} - Migration: {swarm_coord_array.shape} - IN {num_points_in_domain}, OUT: {num_points_not_in_domain}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"{uw.mpi.rank} - Migration: dist {dist.shape} - rank {rank.shape}",
+                        flush=True,
+                    )
+
+                    swarm_rank_array[not_my_points, 0] = rank.reshape(-1, it + 1)[:, it]
 
                 self.dm.restoreField("DMSwarmPIC_coor")
                 self.dm.restoreField("DMSwarm_rank")
@@ -2993,6 +3188,7 @@ class BASIC_Swarm(Stateful, uw_object):
         if self.vtype == uw.VarType.MATRIX:
             return i + j * self.shape[0]
 
+    ## Check this - the interface to kdtree has changed, are we picking the correct field ?
     @timing.routine_timer_decorator
     def _get_map(self, var):
         # generate tree if not avaiable
@@ -3012,7 +3208,7 @@ class BASIC_Swarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1)[1]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator
@@ -3321,120 +3517,167 @@ class BASIC_Swarm(Stateful, uw_object):
             return None
 
 
-class NodalPointSwarm(Swarm):
-    r"""Swarm with particles located at the coordinate points of a meshVariable
+class NodalPointBasicSwarm(UW_Swarm):
+    """
+    A nodal point swarm implementation using UW_Swarm class.
 
-    The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
-    after they have been moved.
+    This creates a swarm with particles located at the coordinate points
+    of a mesh variable, but using the basic swarm infrastructure instead
+    of the PIC swarm.
+    """
 
-    The purpose of this Swarm is to manage sample points for advection schemes based on upstream sampling
-    (method of characteristics etc)"""
+    def __init__(self, trackedVariable: uw.discretisation.MeshVariable, verbose=False):
+        """
+        Initialize the nodal point swarm based on a tracked mesh variable.
 
-    def __init__(
-        self,
-        trackedVariable: uw.discretisation.MeshVariable,
-        verbose=False,
-    ):
+        Parameters:
+        -----------
+        trackedVariable : uw.discretisation.MeshVariable
+            The mesh variable whose nodes will be used as particle locations
+        verbose : bool
+            Enable verbose output
+        """
         self.trackedVariable = trackedVariable
-        self.swarmVariable = None
-
         mesh = trackedVariable.mesh
 
-        # Set up a standard swarm
-        super().__init__(mesh, verbose)
+        # Initialize the basic swarm
+        super().__init__(mesh, verbose=verbose)
 
-        nswarm = self
+        # Since UW_Swarm doesn't automatically create coordinate fields,
+        # we need to manually register them
 
+        # Register coordinate field (similar to DMSwarmPIC_coor)
+        self._coord_var = uw.swarm.SwarmVariable(
+            "coordinates",
+            self,
+            self.cdim,
+            dtype=float,
+            _register=True,
+            _proxy=False,
+            rebuild_on_cycle=False,
+        )
+
+        # Create variable to store original positions (for potential reset functionality)
+        self._X0 = uw.swarm.SwarmVariable(
+            "X0_positions",
+            self,
+            self.cdim,
+            dtype=float,
+            _register=True,
+            _proxy=False,
+            rebuild_on_cycle=False,
+        )
+
+        # Create variable to store original node indices
+        self._node_indices = uw.swarm.SwarmVariable(
+            "node_indices",
+            self,
+            1,
+            dtype=int,
+            _register=True,
+            _proxy=False,
+            rebuild_on_cycle=False,
+        )
+
+        # Create variable to track the swarm variable values
         meshVar_name = trackedVariable.clean_name
         meshVar_symbol = trackedVariable.symbol
 
-        ks = str(self.instance_number)
-        name = f"{meshVar_name}_star"
-        symbol = rf"{{ {meshVar_symbol} }}^{{ <*> }}"
+        name = f"{meshVar_name}_nodal"
+        symbol = f"{{{meshVar_symbol}}}_{{nodal}}"
 
         self.swarmVariable = uw.swarm.SwarmVariable(
             name,
-            nswarm,
+            self,
             vtype=trackedVariable.vtype,
             _proxy=False,
-            # proxy_degree=trackedVariable.degree,
-            # proxy_continuous=trackedVariable.continuous,
             varsymbol=symbol,
         )
 
-        # The launch point location
-        name = f"ns_X0_{ks}"
-        symbol = r"X0^{*^{{[" + ks + "]}}}"
-        nX0 = uw.swarm.SwarmVariable(name, nswarm, nswarm.dim, _proxy=False)
+        # Finalize field registration and add particles
+        self._setup_particles()
 
-        # The launch point index
-        name = f"ns_I_{ks}"
-        symbol = r"I^{*^{{[" + ks + "]}}}"
-        nI0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
+    def _setup_particles(self):
+        """Setup particles at nodal locations"""
+        # Get the coordinates from the tracked variable
+        node_coords = self.trackedVariable.coords
+        n_nodes = node_coords.shape[0]
 
-        # The launch point processor rank
-        name = f"ns_R0_{ks}"
-        symbol = r"R0^{*^{{[" + ks + "]}}}"
-        nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
+        # Finalize field registration before adding points
+        self.dm.finalizeFieldRegister()
 
-        nswarm.dm.finalizeFieldRegister()
-        nswarm.dm.addNPoints(
-            trackedVariable.coords.shape[0] + 1
-        )  # why + 1 ? That's the number of spots actually allocated
+        # Add points to the swarm
+        self.dm.addNPoints(n_nodes)
 
-        cellid = nswarm.dm.getField("DMSwarm_cellid")
-        coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
-        coords[...] = trackedVariable.coords[...]
-        cellid[:] = self.mesh.get_closest_local_cells(coords)
+        # Set particle coordinates
+        with self.access(self._coord_var, self._X0, self._node_indices):
+            self._coord_var.data[:] = node_coords
+            self._X0.data[:] = node_coords  # Store original positions
+            self._node_indices.data[:, 0] = np.arange(n_nodes)  # Store node indices
 
-        # Move slightly within the chosen cell to avoid edge effects
-        centroid_coords = self.mesh._centroids[cellid]
+    @property
+    def particle_coordinates(self):
+        """Access to particle coordinates"""
+        return self._coord_var
 
-        shift = 0.001
-        coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
+    @property
+    def mesh(self):
+        """Access to the underlying mesh"""
+        return self._mesh
 
-        nswarm.dm.restoreField("DMSwarmPIC_coor")
-        nswarm.dm.restoreField("DMSwarm_cellid")
+    def reset_to_nodal_positions(self):
+        """Reset particles back to their original nodal positions"""
+        with self.access(self._coord_var, self._X0):
+            self._coord_var.data[:] = self._X0.data[:]
 
-        nswarm.dm.migrate(remove_sent_points=True)
+    def interpolate_to_mesh_variable(self):
+        """Interpolate swarm variable values back to the mesh variable"""
+        with self.access(self.swarmVariable):
+            with self.mesh.access(self.trackedVariable):
+                # Simple 1:1 mapping since particles are at nodes
+                if self.swarmVariable.vtype == uw.VarType.SCALAR:
+                    self.trackedVariable.data[:, 0] = self.swarmVariable.data[:, 0]
+                else:
+                    self.trackedVariable.data[:] = self.swarmVariable.data[:]
 
-        with nswarm.access(nX0, nI0):
-            nX0.data[:, :] = coords
-            nI0.data[:, 0] = range(0, coords.shape[0])
 
-        self._nswarm = nswarm
-        self._nX0 = nX0
-        self._nI0 = nI0
-        self._nR0 = nR0
+# Example usage:
+def create_nodal_point_swarm_example():
+    """
+    Example of how to create and use a nodal point swarm with UW_swarm
+    """
 
-        return
+    # Create a simple 2D mesh
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1
+    )
 
-    @timing.routine_timer_decorator
-    def advection(
-        self,
-        V_fn,
-        delta_t,
-        order=2,
-        corrector=False,
-        restore_points_to_domain_func=None,
-        evalf=False,
-        step_limit=True,
-    ):
+    # Create a mesh variable to track
+    temperature = uw.discretisation.MeshVariable(
+        "Temperature", mesh, 1, degree=1  # scalar field
+    )
 
-        with self.access(self._X0):
-            self._X0.data[...] = self._nX0.data[...]
-
-        with self.access(self._nR0):
-            self._nR0.data[...] = uw.mpi.rank
-
-        super().advection(
-            V_fn,
-            delta_t,
-            order,
-            corrector,
-            restore_points_to_domain_func,
-            evalf,
-            step_limit,
+    # Initialize with some values
+    with mesh.access(temperature):
+        temperature.data[:, 0] = np.sin(temperature.coords[:, 0] * np.pi) * np.cos(
+            temperature.coords[:, 1] * np.pi
         )
 
-        return
+    # Create the nodal point swarm
+    nodal_swarm = NodalPointBasicSwarm(temperature)
+
+    # Copy initial values to swarm
+    with nodal_swarm.access(nodal_swarm.swarmVariable):
+        with mesh.access(temperature):
+            nodal_swarm.swarmVariable.data[:, 0] = temperature.data[:, 0]
+
+    # Example: advect particles (would require velocity field)
+    # nodal_swarm.advection(velocity_function, dt)
+
+    # Reset particles to original positions
+    nodal_swarm.reset_to_nodal_positions()
+
+    # Interpolate values back to mesh
+    nodal_swarm.interpolate_to_mesh_variable()
+
+    return nodal_swarm, temperature, mesh
