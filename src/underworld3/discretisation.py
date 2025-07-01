@@ -673,13 +673,6 @@ class Mesh(Stateful, uw_object):
                         flush=True,
                     )
 
-            # ## PETSc marked boundaries:
-            # l = self.dm.getLabel("All_Boundaries")
-            # if l:
-            #     i = l.getStratumSize(1001)
-            # else:
-            #     i = 0
-
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
             if uw.mpi.rank == 0:
@@ -868,44 +861,6 @@ class Mesh(Stateful, uw_object):
 
         ## Information on the mesh DM
         # self.dm.view()
-
-    # This only works for local - we can't access global information'
-    # and so this is not a suitable function for use during advection
-    #
-    # def _return_coords_to_bounds(self, coords, meshVar=None):
-    #     """
-    #     Restore the provided coordinates to the interior of the domain.
-    #     The default behaviour is to find the nearest node in the kdtree to each
-    #     coordinate and use that value. If a meshVar is provided, we can use the nearest node
-    #     for that discretisation instead.
-
-    #     This can be over-ridden for specific meshes
-    #     (e.g. periodic) where a more appropriate choice is available.
-    #     """
-
-    #     import numpy as np
-
-    #     if meshVar is None:
-    #         target_coords = self.data
-    #     else:
-    #         target_coords = meshVar.coords
-
-    #     ## Find which coords are invalid
-
-    #     invalid = self.get_closest_local_cells(coords) == -1
-
-    #     if np.count_nonzero(invalid) == 0:
-    #         return coords
-
-    #     print(f"{uw.mpi.rank}: Number of invalid coords {np.count_nonzero(invalid)}")
-
-    #     kdt = uw.kdtree.KDTree(target_coords)
-    #     idx , _ , _ = kdt.find_closest_point(coords[invalid])
-
-    #     valid_coords = coords.copy()
-    #     valid_coords[invalid] = target_coords[idx]
-
-    #     return valid_coords
 
     def clone_dm_hierarchy(self):
         """
@@ -1681,7 +1636,7 @@ class Mesh(Stateful, uw_object):
             control_points_cell_list.append(cell_id)
 
         self._indexCoords = numpy.array(control_points_list)
-        self._index = uw.kdtree.KDTree(self._indexCoords)
+        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
@@ -1715,8 +1670,6 @@ class Mesh(Stateful, uw_object):
         tempSwarm.setCellDM(self.dm)
         tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
         tempSwarm.finalizeFieldRegister()
-
-        self.dm.view()
 
         # 3^dim or 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
@@ -1966,8 +1919,8 @@ class Mesh(Stateful, uw_object):
         if points.shape[0] == 0:
             return False
 
-        closest_control_points_ext, dist2, _ = (
-            self.boundary_face_control_points_kdtree.find_closest_point(points)
+        dist2, closest_control_points_ext = (
+            self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
         )
         in_or_not = (
             self.boundary_face_control_points_sign[closest_control_points_ext] > 0
@@ -2018,7 +1971,6 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            # closest_points, dist, found = self._index.find_closest_point(coords)
             dist, closest_points = self._index.query(coords, k=1)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
@@ -2126,8 +2078,7 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            # _, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
-            distsq, _ = centroids_kd_tree.query(cell_coords, k=1)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
