@@ -164,7 +164,138 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
+
 def evaluate(   expr,
+                np.ndarray coords=None,
+                coord_sys=None,
+                other_arguments=None,
+                simplify=True,
+                verbose=False, ):
+    """
+    Evaluate a given expression at a list of coordinates.
+
+    Note it is not efficient to call this function to evaluate an expression at
+    a single coordinate. Instead the user should provide a numpy array of all
+    coordinates requiring evaluation.
+
+    Parameters
+    ----------
+    expr: sympy.Basic
+        Sympy expression requiring evaluation.
+    coords: numpy.ndarray
+        Numpy array of coordinates to evaluate expression at.
+    coord_sys: mesh.N vector coordinate system
+
+    other_arguments: dict
+        Dictionary of other arguments necessary to evaluate function.
+        Not yet implemented.
+
+    Notes
+    -----
+    This function leverages Sympy's `lambdify` function to provide efficient
+    expression evaluation. It operates as follows:
+        1. Extract all Underworld variables functions from the expression. Note that
+           all variables functions must be leaf nodes of the corresponding expression
+           tree, as the variable function arguments must simply be the coordinate
+           vector `mesh.r`. This is a necessary requirement to avoid complication in the
+           domain decomposed parallel runtime situation, where a modified variable function
+           argument (such as `mesh.r - (10,0)`) might translate the variable function onto
+           a neighbouring subdomain. Handling this would result in great complication and
+           inefficiency, and we therefore disallow it.
+        2. Each variable function is evaluated at the user provided coordinates to generate
+           an array of evaluated results.
+        3. Replace all variable function instances within the expression with sympy
+           symbol placeholders.
+        4. Generate a Sympy lambdified expression. This expression takes as arguments the
+           user provided coordinates, and the Underworld variable function placeholders.
+        5. Evaluate the generated lambdified expresson using the coordinate array and
+           evaluated variable function result arrays.
+        6. Return results array for full expression evaluation.
+    """
+
+    varfns = set()
+    def unpack_var_fns(exp):
+
+        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
+            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
+
+        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+        isMatrix = isinstance(exp, sympy.Matrix)
+
+        if isUW:
+            varfns.add(exp)
+            if exp.args != exp.meshvar().mesh.r:
+                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
+                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
+        elif isMatrix:
+            for sub_exp in exp:
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                    varfns.add(sub_exp)
+        else:
+            # Recurse.
+            for arg in exp.args:
+                unpack_var_fns(arg)
+
+        return
+
+    unpack_var_fns(expr)
+
+    # Check the same mesh is used for all mesh variables
+    mesh = None
+    for varfn in varfns:
+
+        if mesh is None:
+            mesh = varfn.meshvar().mesh
+            #mesh = varfn.mesh
+        else:
+            if mesh != varfn.meshvar().mesh:
+                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
+
+    if mesh is not None:
+        print(f"Mesh for evaluations: {mesh.name}", flush=True)
+
+        in_or_not = mesh.points_in_domain(coords)
+
+    else:
+        in_or_not = np.full((coords.shape[0]), True, dtype=bool )
+
+    print(f"Interpolation for {np.count_nonzero(in_or_not == True)} points / {in_or_not.shape[0]}", flush=True)
+
+
+    evaluation_interior = petsc_evaluate( expr,
+                            coords[in_or_not],
+                            coord_sys,
+                            simplify=simplify,
+                            verbose=verbose, )
+
+    if np.count_nonzero(in_or_not == False) > 0:
+        evaluation_exterior = evalf( expr,
+                                coords[~in_or_not],
+                                coord_sys,
+                                simplify=simplify,
+                                verbose=verbose, )
+
+
+        if len(evaluation_interior.shape) == 1:
+            print(f"shape: {in_or_not.shape} / {evaluation_interior.shape}", flush=True)
+            evaluation = np.empty(shape=(in_or_not.shape[0],))
+
+        else:
+            print(f"shape: {in_or_not.shape} / {evaluation_interior.shape}", flush=True)
+            evaluation = np.empty(shape=(in_or_not.shape[0],evaluation_interior.shape[1] ))
+
+        evaluation[in_or_not] = evaluation_interior
+        evaluation[~in_or_not] = evaluation_exterior
+
+        print(f"Extrapolation for {np.count_nonzero(in_or_not == False)} points", flush=True)
+
+    else:
+        evaluation = evaluation_interior
+
+    return evaluation
+
+
+def petsc_evaluate(   expr,
                 np.ndarray coords=None,
                 coord_sys=None,
                 other_arguments=None,
@@ -247,32 +378,6 @@ def evaluate(   expr,
 
     if verbose and uw.mpi.rank==0:
         print(f"Expression to be evaluated: {expr}")
-
-    # 1. Extract UW variables.
-    # Let's first collect all the meshvariables present in the expression and check
-    # them for validity. This is applied recursively across the expression
-    # Recurse the expression tree.
-
-    # varfns = set()
-    # def get_var_fns(exp):
-
-    #     if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-    #         raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-
-    #     isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-    #     if isUW:
-    #         varfns.add(exp)
-    #         if exp.args != exp.meshvar().mesh.r:
-    #             raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
-    #                                f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-    #     else:
-    #         # Recurse.
-    #         for arg in exp.args:
-    #             get_var_fns(arg)
-
-    #     return
-
-    # get_var_fns(expr)
 
     varfns = set()
     def unpack_var_fns(exp):
