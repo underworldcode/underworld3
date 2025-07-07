@@ -808,7 +808,7 @@ class IndexSwarmVariable(SwarmVariable):
 ## be a PIC swarm
 
 
-class Swarm(Stateful, uw_object):
+class PICSwarm(Stateful, uw_object):
     """
     Particle swarm implementation with automatic mesh-particle interactions.
 
@@ -816,7 +816,7 @@ class Swarm(Stateful, uw_object):
     DMSWARM_PIC type. It provides automatic particle migration, mesh-particle connectivity,
     and streamlined particle operations for Lagrangian particle tracking and data storage.
 
-    Differences from UW_Swarm:
+    Differences from UW Swarm:
     - **Mesh Integration**: Built-in particle-in-cell (PIC) connectivity with automatic cell tracking
     - **Migration**: Uses the standard PETSc strategy for migration which depends on the DM type. This requires
       calculation of cell-relationships each time the coordinates are updated and particles that are not found will
@@ -1852,16 +1852,18 @@ class Swarm(Stateful, uw_object):
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.particle_coordinates.data)
 
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #         ).reshape(-1)
+                    # else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.particle_coordinates.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     mid_pt_coords = (
                         self.particle_coordinates.data[...]
@@ -1881,16 +1883,19 @@ class Swarm(Stateful, uw_object):
 
                     v_at_Vpts = np.zeros_like(self.data)
 
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #         ).reshape(-1)
+                    # else:
+                    #
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.particle_coordinates.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     # if (uw.mpi.rank == 0):
                     #     print("Re-launch from X0", flush=True)
@@ -1911,16 +1916,18 @@ class Swarm(Stateful, uw_object):
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.data
-                            ).reshape(-1)
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.data
+                    #         ).reshape(-1)
+                    # else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
 
@@ -2020,7 +2027,7 @@ class Swarm(Stateful, uw_object):
         import math
 
         with self.access():
-            vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
+            vel = uw.function.evaluate(V_fn, self.particle_coordinates.data, evalf=True)
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:
@@ -2047,7 +2054,7 @@ class Swarm(Stateful, uw_object):
             return None
 
 
-class NodalPointSwarm(Swarm):
+class NodalPointPICSwarm(PICSwarm):
     r"""Swarm with particles located at the coordinate points of a meshVariable
 
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
@@ -2174,11 +2181,11 @@ class NodalPointSwarm(Swarm):
 ##  - No automatic definition of coordinate fields (need to add by hand)
 
 
-class UW_Swarm(Stateful, uw_object):
+class Swarm(Stateful, uw_object):
     """
     A basic particle swarm implementation for Lagrangian particle tracking and data storage.
 
-    The `UW_Swarm` class provides a simplified particle management system that uses
+    The UW `Swarm` class provides a simplified particle management system that uses
     PETSc's DMSWARM_BASIC type. Unlike the standard `Swarm` class, this implementation
     does not rely on PETSc to determine ranks for particle migration but instead uses
     our own kdtree neighbour-domain computations.
@@ -2243,12 +2250,12 @@ class UW_Swarm(Stateful, uw_object):
 
     >>> import underworld3 as uw
     >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1))
-    >>> swarm = uw.swarm.UW_Swarm(mesh=mesh)
+    >>> swarm = uw.swarm.Swarm(mesh=mesh)
     >>> swarm.populate(fill_param=2)
 
     Create a streak swarm with recycling:
 
-    >>> streak_swarm = uw.swarm.UW_Swarm(mesh=mesh, recycle_rate=5)
+    >>> streak_swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
     >>> streak_swarm.populate(fill_param=1)
 
     Add custom particle data:
@@ -3208,7 +3215,7 @@ class UW_Swarm(Stateful, uw_object):
         corrector=False,
         restore_points_to_domain_func=None,
         evalf=False,
-        step_limit=True,
+        step_limit=False,
     ):
 
         dt_limit = self.estimate_dt(V_fn)
@@ -3218,7 +3225,7 @@ class UW_Swarm(Stateful, uw_object):
         else:
             substeps = 1
 
-        if uw.mpi.rank == 0 and self.verbose:
+        if True or uw.mpi.rank == 0 and self.verbose:
             print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
 
         # X0 holds the particle location at the start of advection
@@ -3287,16 +3294,18 @@ class UW_Swarm(Stateful, uw_object):
                     ## not needed but for the latter it is essential
                     ##
 
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #         ).reshape(-1)
+                    # else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.particle_coordinates.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     mid_pt_coords = (
                         self.particle_coordinates.data[...]
@@ -3316,16 +3325,18 @@ class UW_Swarm(Stateful, uw_object):
 
                     v_at_Vpts = np.zeros_like(self.data)
 
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.particle_coordinates.data
-                            ).reshape(-1)
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #         ).reshape(-1)
+                    # else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.particle_coordinates.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     # if (uw.mpi.rank == 0):
                     #     print("Re-launch from X0", flush=True)
@@ -3344,25 +3355,21 @@ class UW_Swarm(Stateful, uw_object):
             # forward Euler (1st order)
             else:
 
-                from time import time
-
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
-                    t0 = time()
-
-                    if evalf:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evalf(
-                                V_fn_matrix[d], self.data
-                            ).reshape(-1)
-                    else:
-                        for d in range(self.dim):
-                            v_at_Vpts[:, d] = uw.function.evaluate(
-                                V_fn_matrix[d], self.data
-                            ).reshape(-1)
-
-                    t1 = time()
+                    # if evalf:
+                    #     for d in range(self.dim):
+                    #         v_at_Vpts[:, d] = uw.function.evalf(
+                    #             V_fn_matrix[d], self.data
+                    #         ).reshape(-1)
+                    # else:
+                    for d in range(self.dim):
+                        v_at_Vpts[:, d] = uw.function.evaluate(
+                            V_fn_matrix[d],
+                            self.data,
+                            evalf=evalf,
+                        ).reshape(-1)
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
 
@@ -3372,12 +3379,6 @@ class UW_Swarm(Stateful, uw_object):
                         new_coords = restore_points_to_domain_func(new_coords)
 
                     self.data[...] = new_coords[...].copy()
-
-                    t2 = time()
-
-                    print(f"TIME: {t2-t1} / {t1-t0} ", flush=True)
-
-                print(f"{time()-t2} - migration", flush=True)
 
         ## End of substepping loop
 
@@ -3478,7 +3479,7 @@ class UW_Swarm(Stateful, uw_object):
         import math
 
         with self.access():
-            vel = uw.function.evalf(V_fn, self.particle_coordinates.data)
+            vel = uw.function.evaluate(V_fn, self.particle_coordinates.data, evalf=True)
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:
@@ -3505,7 +3506,7 @@ class UW_Swarm(Stateful, uw_object):
             return None
 
 
-class NodalPointUWSwarm(UW_Swarm):
+class NodalPointUWSwarm(Swarm):
     r"""BASIC_Swarm with particles located at the coordinate points of a meshVariable
 
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
