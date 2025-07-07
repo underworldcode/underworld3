@@ -3,6 +3,17 @@ import underworld3 as uw
 import numpy as np
 
 
+## Note we are missing the function rbf_interpolator_local_to_kdtree
+#
+# Should be used in this swarm proxy function instead of hand-writing the code:
+#
+#    def _rbf_reduce_to_meshVar(self, meshVar, verbose=False):
+#    """
+#    This method updates a mesh variable for the current
+#    swarm & particle variable state by reducing the swarm to
+#    the nearest point for each particle
+
+
 # inherit from the pykdtree
 class KDTree(_oKDTree):
     def rbf_interpolator_local(
@@ -89,3 +100,6 @@ class KDTree(_oKDTree):
             print(f"Mapping values  ... finished", flush=True)
 
         return vals
+
+
+## NB the rbf interpolator TO kdtree is missing (and we need that one that we introduced to do a better job of mapping values from swarms to nodes for proxy variables)
