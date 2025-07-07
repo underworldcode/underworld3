@@ -327,16 +327,18 @@ class Eulerian(uw_object):
                         self.psi_star[0].data[...] = self._psi_meshVar.data[...]
                     # print('copying data', flush=True)
                 except:
-                    if self.evalf:
-                        self.psi_star[0].data[...] = uw.function.evalf(
-                            self.psi_fn, self.psi_star[0].coords
-                        ).reshape(-1, max(self.psi_fn.shape))
-                        # print('evalf data', flush=True)
-                    else:
-                        self.psi_star[0].data[...] = uw.function.evaluate(
-                            self.psi_fn, self.psi_star[0].coords
-                        ).reshape(-1, max(self.psi_fn.shape))
-                        # print('evaluate data', flush=True)
+                    # if self.evalf:
+                    #     self.psi_star[0].data[...] = uw.function.evalf(
+                    #         self.psi_fn, self.psi_star[0].coords
+                    #     ).reshape(-1, max(self.psi_fn.shape))
+                    #     # print('evalf data', flush=True)
+                    # else:
+                    self.psi_star[0].data[...] = uw.function.evaluate(
+                        self.psi_fn,
+                        self.psi_star[0].coords,
+                        evalf=evalf,
+                    ).reshape(-1, max(self.psi_fn.shape))
+                    # print('evaluate data', flush=True)
 
         except:
             self._setup_projections()
@@ -674,8 +676,8 @@ class SemiLagrangian(uw_object):
                 order=1,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-                evalf=False,
-                step_limit=True,
+                evalf=evalf,
+                step_limit=False,
                 #! substepping: this seems to be too diffusive if left on.
                 #! Check the code carefully !
             )
@@ -686,30 +688,31 @@ class SemiLagrangian(uw_object):
                 # is required instead.
 
                 try:
-                    # Note, we should honour the evalf flag here too.
                     with self._workVar.mesh.access():
                         self.psi_star[0].data[...] = uw.function.evaluate(
-                            self.psi_fn, self.psi_star[0].coords
+                            self.psi_fn,
+                            self.psi_star[0].coords,
+                            evalf=evalf,
                         )
                 except:
                     self._psi_star_projection_solver.uw_function = self.psi_fn
                     self._psi_star_projection_solver.smoothing = 0.0
                     self._psi_star_projection_solver.solve(verbose=verbose)
 
-            if evalf:
-                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-                            self.psi_star[i].sym[d], self._nswarm_psi.data
-                        )
-            else:
-                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = (
-                            uw.function.evaluate(
-                                self.psi_star[i].sym[d], self._nswarm_psi.data
-                            )
-                        )
+            # if evalf:
+            #     with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+            #         for d in range(self.psi_star[i].shape[1]):
+            #             self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+            #                 self.psi_star[i].sym[d], self._nswarm_psi.data
+            #             )
+            # else:
+            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
+                        self.psi_star[i].sym[d],
+                        self._nswarm_psi.data,
+                        evalf=evalf,
+                    )
 
             if self.preserve_moments and self._workVar.num_components == 1:
 
@@ -792,9 +795,6 @@ class SemiLagrangian(uw_object):
 
                 self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
                 IL2 = np.sqrt(self.I.evaluate())
-
-                # if uw.mpi.rank == 0:
-                #     print(f"Pre adjustment: {Imean}, {IL2}", flush=True)
 
                 with self.mesh.access(self.psi_star[i]):
                     self.psi_star[i].data[...] += Imean0 - Imean
@@ -917,7 +917,7 @@ class Lagrangian(uw_object):
         super().__init__()
 
         # create a new swarm to manage here
-        dudt_swarm = uw.swarm.Swarm(mesh)
+        dudt_swarm = uw.swarm.UWSwarm(mesh)
 
         self.mesh = mesh
         self.swarm = dudt_swarm
@@ -1003,25 +1003,27 @@ class Lagrangian(uw_object):
 
         # Now update the swarm variable
 
-        if evalf:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evalf(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = updated_psi
+        # if evalf:
+        #     psi_star_0 = self.psi_star[0]
+        #     with self.swarm.access(psi_star_0):
+        #         for i in range(psi_star_0.shape[0]):
+        #             for j in range(psi_star_0.shape[1]):
+        #                 updated_psi = uw.function.evalf(
+        #                     self.psi_fn[i, j], self.swarm.data
+        #                 )
+        #                 psi_star_0[i, j].data[:] = updated_psi
 
-        else:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evaluate(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = updated_psi
+        # else:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                        evalf=evalf,
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
 
         # Now update the swarm locations
 
@@ -1207,28 +1209,31 @@ class Lagrangian_Swarm(uw_object):
         phi = 1 / self.step_averaging
 
         # Now update the swarm variable
-        if evalf:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evalf(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                        )
-        else:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evaluate(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                        )
+        # if evalf:
+        #     psi_star_0 = self.psi_star[0]
+        #     with self.swarm.access(psi_star_0):
+        #         for i in range(psi_star_0.shape[0]):
+        #             for j in range(psi_star_0.shape[1]):
+        #                 updated_psi = uw.function.evalf(
+        #                     self.psi_fn[i, j], self.swarm.data
+        #                 )
+        #                 psi_star_0[i, j].data[:] = (
+        #                     phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+        #                 )
+        # else:
+        #
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                        evalf=evalf,
+                    )
+                    psi_star_0[i, j].data[:] = (
+                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                    )
 
         return
 

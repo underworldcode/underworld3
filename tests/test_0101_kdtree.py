@@ -14,6 +14,7 @@ coords = np.zeros((1, 3))
 coords[0] = (0.5,) * 3
 test_single_data.append((100000, 3, coords))
 
+
 # Single coord test
 @pytest.mark.parametrize("n,dim,coords", test_single_data)
 def test_single_coord(n, dim, coords):
@@ -25,20 +26,20 @@ def test_single_coord(n, dim, coords):
 
     # Use brute force to find closest point
     repeatcoords = np.repeat(coords, n, 0)
-    diff         = pts - repeatcoords[:, 0:dim]
-    brute_dist   = np.sqrt( np.sum( np.multiply(diff, diff), 1) )
-    brute_id     = np.argmin(brute_dist)
+    diff = pts - repeatcoords[:, 0:dim]
+    brute_dist = np.sqrt(np.sum(np.multiply(diff, diff), 1))
+    brute_id = np.argmin(brute_dist)
 
     # Build our index
     index = KDTree(pts)
     # Use KDTree to find closest point to a coord
     kd_dist, kd_id = index.query(coords)
 
-    assert np.any( kd_id[0]>index.n ) == False, (
-            "Some point weren't found. Error" )
+    assert np.any(kd_id[0] > index.n) == False, "Some point weren't found. Error"
 
-    assert kd_id[0] == brute_id, (
-        "KDTree and brute force method did not find the same point." )
+    assert (
+        kd_id[0] == brute_id
+    ), "KDTree and brute force method did not find the same point."
 
     assert np.allclose(kd_dist[0], brute_dist[brute_id]), (
         "KDTree and Numpy did not find the same distance squared.\n"
@@ -62,7 +63,7 @@ def test_self_points(n, dim):
     # Use KDTree to find closest point to a coord
     (dist, kdpt) = index.query(pts)
 
-    assert np.any(kdpt>index.n) == False, "Some point weren't found. Error"
+    assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
     assert np.allclose(np.arange(n), kdpt), "Point indices weren't as expected."
     # Distance to self should be zero!
@@ -89,9 +90,9 @@ def test_mesh_verts(res, dim):
     coords = mesh.data.copy() + 0.5 * elsize * np.random.random(mesh.data.shape)
     (dist, kdpt) = index.query(coords)
 
-    assert np.any(kdpt>index.n) == False, "Some point weren't found. Error"
+    assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
 
-    #assert np.allclose(True, found), "All points should have been found."
+    # assert np.allclose(True, found), "All points should have been found."
     # `find_closest_point` should return index of pts.
     assert np.allclose(
         np.arange(mesh.data.shape[0]), kdpt
@@ -103,8 +104,8 @@ def test_mesh_verts(res, dim):
 
 
 # Mesh centroid test
-@pytest.mark.parametrize("res,dim,ppcell", [(16, 2, 4), (16, 3, 4)])
-def test_mesh_centroid(res, dim, ppcell):
+@pytest.mark.parametrize("res,dim,fill_param", [(16, 2, 4), (16, 3, 4)])
+def test_mesh_centroid(res, dim, fill_param):
     """
     Generate a mesh and create the kd index
     using the mesh centroids. Generate a swarm,
@@ -113,21 +114,24 @@ def test_mesh_centroid(res, dim, ppcell):
     owning cell.
     """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(res,) * dim)
-    centroids = np.zeros((res**dim, dim))
-    for index in range(res**dim):
-        centroids[index] = mesh.dm.computeCellGeometryFVM(index)[1]
-
-    index = KDTree(centroids)
-
-    # add and populate swarm
     swarm = uw.swarm.Swarm(mesh)
-    swarm.populate(fill_param=ppcell)
+    swarm.populate(fill_param=fill_param)
+
+    pts_per_cell = swarm.dm.getSize() // mesh._centroids.shape[0]
+
+    centroids = np.zeros((res**dim, dim))
+    cellid = np.zeros((res**dim * pts_per_cell), dtype=int)
+
+    for index in range(res**dim):
+        centroids[index] = mesh._centroids[index]
+        for i in range(pts_per_cell):
+            cellid[index * pts_per_cell + i] = index
+
+    index = uw.kdtree.KDTree(centroids)
 
     with swarm.access():
         dist, kdpt = index.query(swarm.data)
 
-        assert np.any(kdpt>index.n) == False, "Some point weren't found. Error"
-        # `find_closest_point` should return index of pts.
-        assert np.allclose(
-            swarm.particle_cellid.data[:, 0], kdpt
-        ), "Point indices weren't as expected."
+    assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
+    # `find_closest_point` should return index of pts.
+    assert np.allclose(cellid, kdpt), "Point indices weren't as expected."

@@ -1472,6 +1472,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
+
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
