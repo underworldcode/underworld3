@@ -21,20 +21,6 @@ from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
 
-# class UW_Scalar_Temple(SNES_Scalar):
-
-# class UW_Lagrangian_Helper:
-#     """Mixin style ... add some functions to manage swarm updates etc"""
-
-#     @property
-#     def phi_star(self):
-#         return "phi_star"
-
-#     @property
-#     def phi_star_star(self):
-#         return "phi_star_star"
-
-
 class SNES_Poisson(SNES_Scalar):
     r"""
     This class provides functionality for a discrete representation
@@ -1456,6 +1442,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         zero_init_guess: bool = True,
         timestep: float = None,
         _force_setup: bool = False,
+        _evalf=False,
         verbose=False,
     ):
         """
@@ -1485,19 +1472,20 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
-        self.DuDt.update_pre_solve(timestep, verbose=verbose)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose)
+
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
         super().solve(zero_init_guess, _force_setup)
 
-        self.DuDt.update_post_solve(timestep, verbose=verbose)
-        self.DFDt.update_post_solve(timestep, verbose=verbose)
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
 
         return
-    
+
 
 class SNES_Diffusion(SNES_Scalar):
     r"""
@@ -1510,7 +1498,7 @@ class SNES_Diffusion(SNES_Scalar):
             \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
     $$
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. 
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
 
     ## Properties
 
@@ -1543,7 +1531,7 @@ class SNES_Diffusion(SNES_Scalar):
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable,
         order: int = 1,
-        theta: float = 0.,
+        theta: float = 0.0,
         evalf: Optional[bool] = False,
         verbose=False,
         DuDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
@@ -1608,12 +1596,11 @@ class SNES_Diffusion(SNES_Scalar):
 
         if DFDt is None:
             self.Unknowns.DFDt = Symbolic_DDt(
-                sympy.Matrix(
-                    [[0] * self.mesh.dim] ),
-                    varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-                    theta=theta,
-                    bcs=None,
-                    order=order,
+                sympy.Matrix([[0] * self.mesh.dim]),
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                theta=theta,
+                bcs=None,
+                order=order,
             )
             ### solution unable to solve after n timesteps, due to the projection of flux term (???)
             # self.Unknowns.DFDt = Eulerian_DDt(
@@ -1640,7 +1627,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         f0 = uw.function.expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + sympy.simplify( self.DuDt.bdf() ) / self.delta_t,
+            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
         )
 
@@ -1672,7 +1659,6 @@ class SNES_Diffusion(SNES_Scalar):
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
-
     @property
     def delta_t(self):
         return self._delta_t
@@ -1696,9 +1682,7 @@ class SNES_Diffusion(SNES_Scalar):
         """
 
         if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
-            if uw.function.fn_is_constant_expr(
-                self.constitutive_model.diffusivity.sym
-            ):
+            if uw.function.fn_is_constant_expr(self.constitutive_model.diffusivity.sym):
                 max_diffusivity = uw.function.evaluate(
                     self.constitutive_model.diffusivity.sym,
                     np.zeros((1, self.mesh.dim)),
@@ -1728,7 +1712,6 @@ class SNES_Diffusion(SNES_Scalar):
 
         ## estimate dt of adv and diff components
         self.dt_diff = 0.0
-
 
         dt_diff = (min_dx**2) / diffusivity_glob
         self.dt_diff = dt_diff
@@ -1767,8 +1750,6 @@ class SNES_Diffusion(SNES_Scalar):
             self.DFDt.psi_fn = self.constitutive_model.flux.T
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
-
-        
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)

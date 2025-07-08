@@ -127,6 +127,7 @@ import underworld3.systems
 import underworld3.maths
 import underworld3.utilities
 import underworld3.kdtree
+import underworld3.ckdtree
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation
@@ -137,45 +138,54 @@ try:
     from ._uwid import uwid as _id
 except:
     import uuid as _uuid
+
     _id = str(_uuid.uuid4())
 
 ###########################################
 ####### For User telemetry metrics ########
 
-# setup metrics function *only* if we are rank==0. 
+# setup metrics function *only* if we are rank==0.
 # Metric can be disables by setting UW_NO_USAGE_METRICS env var.
 # TODO: confirm not other condition like tests?
-if (underworld3.mpi.rank == 0):
+if underworld3.mpi.rank == 0:
+
     def _sendData():
 
         import os
+
         # disable collection of data if requested
         if "UW_NO_USAGE_METRICS" not in os.environ:
             # get platform info
             import platform
-            sysinfo  =        platform.system()
+
+            sysinfo = platform.system()
             sysinfo += "__" + platform.machine()
             # check if docker
-            if (os.path.isfile("/.dockerinit")):
+            if os.path.isfile("/.dockerinit"):
                 sysinfo += "__docker"
 
-            event_dict = { "properties": {
-                               "version"  : underworld3.__version__,
-                               "platform" : sysinfo,
-                               "run_size" : underworld3.mpi.size,
-                               "distinct_id" : _id, 
-                            }
-                         }
+            event_dict = {
+                "properties": {
+                    "version": underworld3.__version__,
+                    "platform": sysinfo,
+                    "run_size": underworld3.mpi.size,
+                    "distinct_id": _id,
+                }
+            }
 
             # send info async
             import threading
-            thread = threading.Thread( target=underworld3.utilities._utils.postHog, args=("import_uw3", event_dict) )
+
+            thread = threading.Thread(
+                target=underworld3.utilities._utils.postHog,
+                args=("import_uw3", event_dict),
+            )
             thread.daemon = True
             thread.start()
 
     try:
         _sendData()
-    except: # continue quietly if something above failed
+    except:  # continue quietly if something above failed
         pass
 ####### END User telemetry metrics ########
 

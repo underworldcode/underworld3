@@ -2,35 +2,45 @@ from pykdtree.kdtree import KDTree as _oKDTree
 import underworld3 as uw
 import numpy as np
 
+
+## Note we are missing the function rbf_interpolator_local_to_kdtree
+#
+# Should be used in this swarm proxy function instead of hand-writing the code:
+#
+#    def _rbf_reduce_to_meshVar(self, meshVar, verbose=False):
+#    """
+#    This method updates a mesh variable for the current
+#    swarm & particle variable state by reducing the swarm to
+#    the nearest point for each particle
+
+
 # inherit from the pykdtree
-class KDTree( _oKDTree ):
-    def rbf_interpolator_local(self,
-        coords,
-        data,
-        nnn = 4,
-        p = 2,
-        verbose = False,
-    ):
-
-        return self.rbf_interpolator_local_from_kdtree(
-            coords, data, nnn, p, verbose,
-    )
-
- #   def find_closest_points( self, coords, nnn )
-
-    def rbf_interpolator_local_from_kdtree(
+class KDTree(_oKDTree):
+    def rbf_interpolator_local(
         self,
         coords,
         data,
-        nnn,
-        p,
-        verbose):
+        nnn=4,
+        p=2,
+        verbose=False,
+    ):
 
-        '''
+        return self.rbf_interpolator_local_from_kdtree(
+            coords,
+            data,
+            nnn,
+            p,
+            verbose,
+        )
+
+    #   def find_closest_points( self, coords, nnn )
+
+    def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
+        """
         Performs an inverse distance (squared) mapping of data to the target `coords`.
         User can controls the algorithm by altering the number of neighbours used, `nnn` or the
         power factor `p` of the mapping weighting.
-        
+
         Args:
         coords  : ndarray,
                 The target spatial coordinates to evaluate the data from.
@@ -44,12 +54,16 @@ class KDTree( _oKDTree ):
                 The power index to calculate weights, ie. pow(distance, -p)
         verbose : bool,
                 Print when mapping occurs
-        '''
+        """
 
         if coords.shape[1] != self.ndim:
-            raise RuntimeError(f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.ndim}).")
+            raise RuntimeError(
+                f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.ndim})."
+            )
         if data.shape[0] != self.n:
-            raise RuntimeError(f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))")
+            raise RuntimeError(
+                f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
+            )
 
         coords_contiguous = np.ascontiguousarray(coords)
         # query nnn points to the coords
@@ -58,7 +72,9 @@ class KDTree( _oKDTree ):
         distance_n, closest_n = self.query(coords_contiguous, k=nnn)
 
         if np.any(closest_n > self.n):
-            raise RuntimeError("Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found")
+            raise RuntimeError(
+                "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
+            )
 
         if verbose and uw.mpi.rank == 0:
             # For Debugging
@@ -68,19 +84,22 @@ class KDTree( _oKDTree ):
         if nnn == 1:
             # only use nearest neighbour raw data
             return data[closest_n]
-            
+
         # can decompose weighting vecotrs as IDW is a linear relationship
         # build normalise weight vectors and multiply that with known data
-        epsilon   = 1e-12
-        weights   = 1 / np.pow( epsilon+distance_n[:], p)
+        epsilon = 1e-12
+        weights = 1 / np.power(epsilon + distance_n[:], p)
         n_weights = (weights.T / np.sum(weights, axis=1)).T
-        kdata     = data[closest_n[:]]
-        
+        kdata = data[closest_n[:]]
+
         # magic with einstein summation power
-        vals = np.einsum('sdc,sd->sc', kdata, n_weights)
+        vals = np.einsum("sdc,sd->sc", kdata, n_weights)
         # print(valz)
 
         if verbose and uw.mpi.rank == 0:
             print(f"Mapping values  ... finished", flush=True)
-        
+
         return vals
+
+
+## NB the rbf interpolator TO kdtree is missing (and we need that one that we introduced to do a better job of mapping values from swarms to nodes for proxy variables)

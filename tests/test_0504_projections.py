@@ -45,7 +45,9 @@ def test_scalar_projection():
 
     # Set the values on the swarm variable
     with swarm.access(s_values):
-        s_values.data[:, 0] = uw.function.evalf(s_fn, swarm.data, coord_sys=mesh.N)
+        s_values.data[:, 0] = uw.function.evaluate(
+            s_fn, swarm.data, coord_sys=mesh.N, evalf=True
+        )
 
     # Prepare projection of swarm values onto the mesh nodes.
     scalar_projection = uw.systems.Projection(mesh, s_soln)
@@ -62,16 +64,20 @@ def test_vector_projection():
 
     # Set the values on the swarm variable
     with swarm.access(v_values):
-        v_values.data[:, 0] = uw.function.evalf(s_fn_x, swarm.data, coord_sys=mesh.N)
-        v_values.data[:, 1] = uw.function.evalf(s_fn_y, swarm.data, coord_sys=mesh.N)
+        v_values.data[:, 0] = uw.function.evaluate(
+            s_fn_x, swarm.data, coord_sys=mesh.N, evalf=True
+        )
+        v_values.data[:, 1] = uw.function.evaluate(
+            s_fn_y, swarm.data, coord_sys=mesh.N, evalf=True
+        )
 
     vector_projection = uw.systems.Vector_Projection(mesh, v_soln)
     vector_projection.uw_function = v_values.sym
     vector_projection.smoothing = 1.0e-3
 
-    vector_projection.add_dirichlet_bc((0.0,None), "Right")
-    vector_projection.add_dirichlet_bc((None,0.0), "Top")
-    vector_projection.add_dirichlet_bc((None,0.0), "Bottom")
+    vector_projection.add_dirichlet_bc((0.0, None), "Right")
+    vector_projection.add_dirichlet_bc((None, 0.0), "Top")
+    vector_projection.add_dirichlet_bc((None, 0.0), "Bottom")
 
     vector_projection.solve()
 
@@ -82,7 +88,9 @@ def test_gradient_recovery():
     fn = sympy.cos(4.0 * sympy.pi * x)
 
     with mesh.access(s_soln):
-        s_soln.data[:, 0] = uw.function.evalf(fn, s_soln.coords[:], coord_sys=mesh.N)
+        s_soln.data[:, 0] = uw.function.evaluate(
+            fn, s_soln.coords[:], coord_sys=mesh.N, evalf=True
+        )
 
     scalar_projection = uw.systems.Projection(mesh, gradient)
     scalar_projection.uw_function = s_soln.sym.diff(x)[0]
