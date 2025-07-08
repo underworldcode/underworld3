@@ -170,7 +170,8 @@ def evaluate(   expr,
                 other_arguments=None,
                 simplify=True,
                 verbose=False,
-                evalf=False):
+                evalf=False,
+                rbf=False,):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -248,7 +249,7 @@ def evaluate(   expr,
     # help us to evaluate the expression. The evalf flag will force rbf_evaluation and
     # does not need mesh information
 
-    if evalf==True:
+    if evalf==True or rbf==True:
         return rbf_evaluate( expr,
                             coords,
                                 coord_sys,
