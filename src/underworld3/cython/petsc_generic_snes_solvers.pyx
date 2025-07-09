@@ -394,7 +394,7 @@ class SolverBaseClass(uw_object):
     
     def get_dof_partition(self, 
                           section_type: str, 
-                          filename: str, 
+                          filename: Optional[str | None] = None, 
                           outputPath: Optional[str] = ""):
         """
         Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
@@ -403,7 +403,7 @@ class SolverBaseClass(uw_object):
         section_type:
             Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
         filename:
-            Output file name. The final output file will be <filename>.u.h5 or <filename>.p.h5.
+            Output file name. If None, will print out results; if set to a string, the final output file will be <filename>_<section_type>.u.h5.
         outputPath:
             Path of directory where data is saved. If left empty it will save the data in the current working directory.
         """
@@ -411,7 +411,7 @@ class SolverBaseClass(uw_object):
         self.validate_solver()  # mainly check if self.u is properly set 
 
         u_id = self.Unknowns.u.field_id
-        fname = f"{filename}_{section_type}.u.h5"
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
         self._get_dof_partition_by_field_id(section_type    = section_type, 
                                             field_id        = u_id, 
@@ -424,7 +424,7 @@ class SolverBaseClass(uw_object):
     def _get_dof_partition_by_field_id(self,
                                        section_type: str,
                                        field_id: int,  
-                                       filename: str, 
+                                       filename: Optional[str | None] = None, 
                                        outputPath: Optional[str] = ""):
         """
         Private version of get_dof_partition with field_id as an additional parameter. 
@@ -435,7 +435,7 @@ class SolverBaseClass(uw_object):
         field_id:
             The field id
         filename:
-            Output file name. Resulting h5 file has the following keys: field_id, rank, dof
+            Output file name. If None, will print out results; if set to a string, resulting h5 file has the following keys: field_id, rank, dof.
         outputPath:
             Path of directory where data is saved. If left empty it will save the data in the current working directory.
         """
@@ -491,10 +491,22 @@ class SolverBaseClass(uw_object):
             if section_type == "global":
                 gath_dof_data = np.vstack([gath_pos_dof_data, gath_neg_dof_data])
 
-            with h5py.File(f"{outputPath}/{filename}", "w") as f:
-                f.create_dataset("field_id", data = gath_dof_data[:, 0])
-                f.create_dataset("rank", data = gath_dof_data[:, 1])
-                f.create_dataset("dof", data = gath_dof_data[:, 2])
+            if filename is None: # print out
+                print(f"Section type: {section_type}")
+                print(f"| Field ID      | Rank           | # DOFs        |")
+                print(f"| ---------------------------------------------- |")
+                for i in range(gath_dof_data.shape[0]):
+                    print(
+                        f"| {gath_dof_data[i, 0]:<15}|{gath_dof_data[i, 1]:<15}|{gath_dof_data[i, 2]:<15}|"
+                    )
+                print(f"| ---------------------------------------------- |")
+                print("\n", flush = True)
+
+            else: # save
+                with h5py.File(f"{outputPath}/{filename}", "w") as f: 
+                    f.create_dataset("field_id", data = gath_dof_data[:, 0])
+                    f.create_dataset("rank", data = gath_dof_data[:, 1])
+                    f.create_dataset("dof", data = gath_dof_data[:, 2])
         
         return
 
@@ -2185,7 +2197,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     
     def get_dof_partition(self, 
                           section_type: str, 
-                          filename: str, 
+                          filename: Optional[str | None] = None, 
                           outputPath: Optional[str] = ""):
         """
         Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
@@ -2194,7 +2206,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         section_type:
             Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
         filename:
-            Output file name. The final output file will be <filename>.u.h5 or <filename>.p.h5.
+            Output file name. If None, will print out results; if set to a string, the output files will be <filename>_<section_type>.u.h5 and <filename>_<section_type>.p.h5.
         outputPath:
             Path of directory where data is saved. If left empty it will save the data in the current working directory.
         """
@@ -2204,7 +2216,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.validate_solver()
 
         u_id = self.Unknowns.u.field_id
-        fname = f"{filename}_{section_type}.u.h5"
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
         self._get_dof_partition_by_field_id(section_type    = section_type, 
                                             field_id        = u_id, 
@@ -2212,7 +2224,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                             outputPath      = outputPath)
         
         p_id = self.Unknowns.p.field_id
-        fname = f"{filename}_{section_type}.p.h5"
+        fname = None if filename is None else f"{filename}_{section_type}.p.h5"
 
         self._get_dof_partition_by_field_id(section_type    = section_type, 
                                             field_id        = p_id, 
