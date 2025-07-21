@@ -5,6 +5,7 @@ from .vector_calculus import (
 )
 
 from .functions import delta as delta_function
+from .functions import L2_norm as L2_norm
 
 # from .vector_calculus import (
 #     mesh_vector_calculus_spherical_lonlat as vector_calculus_spherical_lonlat,

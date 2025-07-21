@@ -10,47 +10,47 @@ import os
 import numpy
 import petsc4py
 
-# PETSc version check - 3.18 or higher
-from petsc4py import PETSc
-
-petscVer = PETSc.Sys().getVersion()
-print(f"Petsc version: {petscVer[0]}.{petscVer[1]}.{petscVer[2]} ", flush=True)
-
-if petscVer[0] != 3 or petscVer[1] < 18:
-    msg = (
-        f"Minimum compatible version of petsc is 3.18.0, detected version "
-        f"{petscVer[0]}.{petscVer[1]}.{petscVer[2]}"
-    )
-    raise RuntimeError(msg)
-
 def configure():
 
     INCLUDE_DIRS = []
     LIBRARY_DIRS = []
     LIBRARIES = []
 
+    PETSC_DIR = ""
+    PETSC_ARCH = ""
+
+    # try get PETSC_DIR from petsc pip installation
+    try:
+        import petsc
+        PETSC_DIR = petsc.get_petsc_dir()
+    except:
+        pass
+
     # PETSc
     import os
 
-    print(f"PETSC_INFO - {petsc4py.get_config()}")
-    PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
-    PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
-
-    print(f"PETSC_DIR: {PETSC_DIR}")
-    print(f"PETSC_ARCH: {PETSC_ARCH}")
+    if not os.path.exists(PETSC_DIR):
+        print(f"PETSC_INFO from petsc4py - {petsc4py.get_config()}")
+        PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
+        PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
 
     # It is preferable to use the petsc4py paths to the
     # petsc libraries for consistency but the pip installation
     # of PETSc sometimes points to the temporary setup up path
 
     if not os.path.exists(PETSC_DIR):
+        print(f"PETSC_DIR {PETSC_DIR} is bad - trying another ...")
+
         if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
-            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python3.1", "site-packages", "petsc") # symlink to latest python
+            import sys
+            py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python"+py_version, "site-packages", "petsc") # symlink to latest python
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
         else:
             PETSC_DIR = os.environ["PETSC_DIR"]
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
+    print(f"Using PETSc:")
     print(f"PETSC_DIR: {PETSC_DIR}")
     print(f"PETSC_ARCH: {PETSC_ARCH}")
 
@@ -63,12 +63,27 @@ def configure():
             join(PETSC_DIR, "include"),
         ]
         LIBRARY_DIRS += [join(PETSC_DIR, PETSC_ARCH, "lib")]
+        petscvars = join(PETSC_DIR,PETSC_ARCH,"lib","petsc","conf","petscvariables")
     else:
         if PETSC_ARCH:
             pass  # XXX should warn ...
         INCLUDE_DIRS += [join(PETSC_DIR, "include")]
         LIBRARY_DIRS += [join(PETSC_DIR, "lib")]
+        petscvars = join(PETSC_DIR,"lib","petsc","conf","petscvariables")
+
     LIBRARIES += ["petsc"]
+
+    # set CC compiler to be PETSc's compiler.
+    # This ought include mpi's details, ie mpicc --showme,
+    # needed to compile UW cython extensions
+    compiler = ""
+    with open(petscvars,"r") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("CC ="):
+                compiler = line.split("=",1)[1].strip()
+    #print(f"***\n The c compiler is: {compiler}\n*****")
+    os.environ["CC"] = compiler
 
     # PETSc for Python
     INCLUDE_DIRS += [petsc4py.get_include()]
@@ -109,15 +124,6 @@ extensions = [
         **conf,
     ),
     Extension(
-        "underworld3.kdtree",
-        sources=[
-            "src/underworld3/kdtree.pyx",
-        ],
-        extra_compile_args=extra_compile_args + ["-std=c++11"],
-        language="c++",
-        **conf,
-    ),
-    Extension(
         "underworld3.cython.petsc_types",
         sources=[
             "src/underworld3/cython/petsc_types.pyx",
@@ -140,6 +146,7 @@ extensions = [
             "src/underworld3/function/petsc_tools.c",
         ],
         extra_compile_args=extra_compile_args,
+        define_macros=[('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')],
         **conf,
     ),
     Extension(
@@ -153,9 +160,31 @@ extensions = [
     ),
 ]
 
+# util function to get version information from file with __version__=
+def get_version(filename):
+    try:
+        with open(filename, "r") as f:
+            for line in f:
+                if line.startswith("__version__"):
+                    # extract the version string and strip it
+                    version = line.split('"')[1].strip().strip('"').strip("'")
+                return version
+    except FileNotFoundError:
+        print( f"Cannot get version information from {filename}" )
+    except:
+        raise
+
+# Create uwid if it doesn't exist
+idfile = './src/underworld3/_uwid.py'
+if not os.path.isfile(idfile):
+    import uuid
+    with open(idfile, "w+") as f:
+        f.write("uwid = \'" + str(uuid.uuid4()) + "\'")
+        
 setup(
     name="underworld3",
     packages=find_packages(),
+    version=get_version('./src/underworld3/_version.py'),
     package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
     ext_modules=cythonize(
         extensions,

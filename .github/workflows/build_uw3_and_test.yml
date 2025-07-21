@@ -16,29 +16,22 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Conda environment with Micromamba
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
-          environment-file: ./.github/workflows/envs/build_uw_test.yml
+          environment-file: ./environment.yml
           cache-downloads: true
           cache-environment: true
 
-      # the following may be needed if conda-forge is out of date
-      # - name: Add compatible petsc4py
-      #   shell: bash -l {0}
-      #   run: |
-      #    export PETSC_DIR="/home/runner/micromamba-root/envs/uw3_test"
-      #    pip3 install petsc4py==3.18 --upgrade
-
-      # gmsh is such a pig to install properly
-      - name: Add gmsh package
-        shell: bash -l {0}
-        run: |
-          pip install gmsh
+          # # gmsh is such a pig to install properly
+          # - name: Add gmsh package
+          #   shell: bash -l {0}
+          #   run: |
+          #     pip install gmsh
 
       - name: Build UW3
         shell: bash -l {0}
@@ -47,26 +40,14 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
-          python3 setup.py develop
-          pip3 install -e .
-
+          ## TODO. Use compile.sh once it is in development
+          pip install -e . --no-build-isolation
+          ## ./compile.sh
+          
       # Test - split into short, low memory tests 0???_*
       #        and longer, solver-based tests 1???_*
 
       - name: Run pytest
         shell: bash -l {0}
         run: |
-          pytest tests/test_00??*py
-          pytest tests/test_0[1-9]??*py
-
-          # Poisson solver tests
-          pytest tests/test_100[0-9]*py
-
-          # Stokes solver tests
-          pytest tests/test_1010*py
-          pytest tests/test_1011*py
-          pytest tests/test_1050*py
-
-          # Advection/Diffusion solvers
-          pytest tests/test_1100*py
-          pytest tests/test_1110*py
+          ./test.sh

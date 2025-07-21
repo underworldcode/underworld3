@@ -2750,7 +2750,11 @@ def CubedSphere(
 def RegionalSphericalBox(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.547,
-    numElements: int = 5,
+    SWcorner=[-45,-45],
+    NEcorner=[+45,+45],
+    numElementsLon: int = 5,
+    numElementsLat: int = 5,
+    numElementsDepth: int = 5,
     degree: int = 1,
     qdegree: int = 2,
     simplex: bool = False,
@@ -2764,19 +2768,71 @@ def RegionalSphericalBox(
     class boundaries(Enum):
         Lower = 1
         Upper = 2
-        North = 3
-        South = 4
-        East = 5
-        West = 6
+        North = 4
+        South = 3
+        East = 6
+        West = 5
+
+    lt_min = np.radians(SWcorner[1])
+    lt_max = np.radians(NEcorner[1])
+    ln_min = np.radians(SWcorner[0])
+    ln_max = np.radians(NEcorner[0])
+
+    p2 = (  radiusOuter * np.cos(lt_max) * np.cos(ln_max),
+            radiusOuter * np.cos(lt_max) * np.sin(ln_max),
+            radiusOuter * np.sin(lt_max)
+    )
+
+    p3 = (  radiusOuter * np.cos(lt_max) * np.cos(ln_min),
+            radiusOuter * np.cos(lt_max) * np.sin(ln_min),
+            radiusOuter * np.sin(lt_max)
+        )
+
+    p4 = (  radiusOuter * np.cos(lt_min) * np.cos(ln_min),
+            radiusOuter * np.cos(lt_min) * np.sin(ln_min),
+            radiusOuter * np.sin(lt_min)
+    )
+
+    p5 = (  radiusOuter * np.cos(lt_min) * np.cos(ln_max),
+            radiusOuter * np.cos(lt_min) * np.sin(ln_max),
+            radiusOuter * np.sin(lt_min)
+    )
+
+    p6 = (  radiusInner * np.cos(lt_max) * np.cos(ln_max),
+            radiusInner * np.cos(lt_max) * np.sin(ln_max),
+            radiusInner * np.sin(lt_max)
+    )
+
+    p7 = (  radiusInner * np.cos(lt_max) * np.cos(ln_min),
+            radiusInner * np.cos(lt_max) * np.sin(ln_min),
+            radiusInner * np.sin(lt_max)
+        )
+
+    p8 = (  radiusInner * np.cos(lt_min) * np.cos(ln_min),
+            radiusInner * np.cos(lt_min) * np.sin(ln_min),
+            radiusInner * np.sin(lt_min)
+    )
+
+    p9 = (  radiusInner * np.cos(lt_min) * np.cos(ln_max),
+            radiusInner * np.cos(lt_min) * np.sin(ln_max),
+            radiusInner * np.sin(lt_min)
+    )
 
 
-    r1 = radiusInner / np.sqrt(3)
-    r2 = radiusOuter / np.sqrt(3)
+    # lat_south = np.radians(centralLatitude - latitudeExtent/2)
+    # lat_north = np.radians(centralLatitude + latitudeExtent/2)
+
+    # ss = min(longitudeExtent / 90, 1.99) * np.cos(lat_south)/np.cos(np.pi/4)
+    # sn = min(longitudeExtent / 90, 1.99) * np.cos(lat_north)/np.cos(np.pi/4)
+    # t = min(latitudeExtent / 90, 1.99)
+
+    # r1 = radiusInner / np.sqrt(3)
+    # r2 = radiusOuter / np.sqrt(3)
 
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
+        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElementsDepth}_plex{simplex}.msh"
     else:
         uw_filename = filename
 
@@ -2790,10 +2846,11 @@ def RegionalSphericalBox(
 
         center_point = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=1)
 
-        gmsh.model.geo.addPoint(r2, r2, -r2, tag=2)
-        gmsh.model.geo.addPoint(-r2, r2, -r2, tag=3)
-        gmsh.model.geo.addPoint(-r2, -r2, -r2, tag=4)
-        gmsh.model.geo.addPoint(r2, -r2, -r2, tag=5)
+
+        gmsh.model.geo.addPoint(p2[0], p2[1], p2[2], tag=2)
+        gmsh.model.geo.addPoint(p3[0], p3[1], p3[2], tag=3)
+        gmsh.model.geo.addPoint(p4[0], p4[1], p4[2], tag=4)
+        gmsh.model.geo.addPoint(p5[0], p5[1], p5[2], tag=5)
 
         gmsh.model.geo.addCircleArc(3, 1, 2, tag=1)
         gmsh.model.geo.addCircleArc(2, 1, 5, tag=2)
@@ -2803,10 +2860,10 @@ def RegionalSphericalBox(
         gmsh.model.geo.addCurveLoop([1, 2, 3, 4], tag=1)
         gmsh.model.geo.addSurfaceFilling([1], tag=1, sphereCenterTag=1)
 
-        gmsh.model.geo.addPoint(r1, r1, -r1, tag=6)
-        gmsh.model.geo.addPoint(-r1, r1, -r1, tag=7)
-        gmsh.model.geo.addPoint(-r1, -r1, -r1, tag=8)
-        gmsh.model.geo.addPoint(r1, -r1, -r1, tag=9)
+        gmsh.model.geo.addPoint(p6[0], p6[1], p6[2], tag=6)
+        gmsh.model.geo.addPoint(p7[0], p7[1], p7[2], tag=7)
+        gmsh.model.geo.addPoint(p8[0], p8[1], p8[2], tag=8)
+        gmsh.model.geo.addPoint(p9[0], p9[1], p9[2], tag=9)
 
         gmsh.model.geo.addCircleArc(7, 1, 6, tag=5)
         gmsh.model.geo.addCircleArc(6, 1, 9, tag=6)
@@ -2838,8 +2895,6 @@ def RegionalSphericalBox(
 
         gmsh.model.geo.synchronize()
 
-        # gmsh.model.geo.rotate([(3, 1)], 0.0, 0.0, 0.0, 1.0, 0.0, np.pi, 0.0)
-
         gmsh.model.addPhysicalGroup(2, [1], boundaries.Upper.value)
         gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
 
@@ -2848,23 +2903,46 @@ def RegionalSphericalBox(
 
         ## These probably have the wrong names ... check ordering
 
-        gmsh.model.addPhysicalGroup(2, [3], boundaries.North.value)
+        gmsh.model.addPhysicalGroup(2, [4], boundaries.North.value)
         gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
 
-        gmsh.model.addPhysicalGroup(2, [4], boundaries.West.value)
+        gmsh.model.addPhysicalGroup(2, [6], boundaries.West.value)
         gmsh.model.setPhysicalName(2, boundaries.West.value, "West")
 
-        gmsh.model.addPhysicalGroup(2, [5], boundaries.South.value)
+        gmsh.model.addPhysicalGroup(2, [3], boundaries.South.value)
         gmsh.model.setPhysicalName(2, boundaries.South.value, "South")
 
-        gmsh.model.addPhysicalGroup(2, [6], boundaries.East.value)
+        gmsh.model.addPhysicalGroup(2, [5], boundaries.East.value)
         gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
 
         gmsh.model.addPhysicalGroup(3, [1, 2], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
-        for _, line in gmsh.model.get_entities(1):
-            gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
+
+        ## We need to know which surface !!
+        # for _, line in gmsh.model.get_entities(1):
+        #     gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
+        #
+        #
+        #
+
+        gmsh.model.mesh.setTransfiniteCurve(1, numNodes=numElementsLon + 1)
+        gmsh.model.mesh.setTransfiniteCurve(2, numNodes=numElementsLat + 1)
+        gmsh.model.mesh.setTransfiniteCurve(3, numNodes=numElementsLon + 1)
+        gmsh.model.mesh.setTransfiniteCurve(4, numNodes=numElementsLat + 1)
+
+
+        gmsh.model.mesh.setTransfiniteCurve(5, numNodes=numElementsLon + 1)
+        gmsh.model.mesh.setTransfiniteCurve(6, numNodes=numElementsLat + 1)
+        gmsh.model.mesh.setTransfiniteCurve(7, numNodes=numElementsLon + 1)
+        gmsh.model.mesh.setTransfiniteCurve(8, numNodes=numElementsLat + 1)
+
+
+        gmsh.model.mesh.setTransfiniteCurve(9, numNodes=numElementsDepth + 1)
+        gmsh.model.mesh.setTransfiniteCurve(10, numNodes=numElementsDepth + 1)
+        gmsh.model.mesh.setTransfiniteCurve(11, numNodes=numElementsDepth + 1)
+        gmsh.model.mesh.setTransfiniteCurve(12, numNodes=numElementsDepth + 1)
+
 
         for _, surface in gmsh.model.get_entities(2):
             gmsh.model.mesh.setTransfiniteSurface(surface)
@@ -2881,6 +2959,9 @@ def RegionalSphericalBox(
         gmsh.model.mesh.generate(3)
         gmsh.write(uw_filename)
         gmsh.finalize()
+
+
+    ## This needs a side-boundary capture routine as well
 
     def sphere_return_coords_to_bounds(coords):
         Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
@@ -3898,7 +3979,7 @@ def SegmentedSphericalBall(
     new_mesh.boundary_normals = boundary_normals
 
     return new_mesh
-    
+
 
 @timing.routine_timer_decorator
 def BoxInternalBoundary(
@@ -3943,14 +4024,14 @@ def BoxInternalBoundary(
         Right = 13
         Left = 14
         Internal = 15
-    
+
     class boundary_normals_2D(Enum):
         Bottom = sympy.Matrix([0, 1])
         Top = sympy.Matrix([0, -1])
         Right = sympy.Matrix([-1, 0])
         Left = sympy.Matrix([1, 0])
         Internal = sympy.Matrix([0, -1])
-        
+
     class boundaries_3D(Enum):
         Bottom = 11
         Top = 12
@@ -3968,7 +4049,7 @@ def BoxInternalBoundary(
         Front = sympy.Matrix([0, -1, 0])
         Back = sympy.Matrix([0, 1, 0])
         Internal = sympy.Matrix([0, 0, 1])
-    
+
     dim = len(minCoords)
 
     if filename is None:
@@ -3981,50 +4062,50 @@ def BoxInternalBoundary(
             uw_filename = (f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh")
     else:
         uw_filename = filename
-         
-        
+
+
     if uw.mpi.rank == 0:
         import gmsh
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
-        gmsh.model.add("Box")     
-        
+        gmsh.model.add("Box")
+
         if dim == 2:
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
             yint = zintCoord
             boundaries = boundaries_2D
             boundary_normals = boundary_normals_2D
-    
+
             if not simplex:
-                cellSize = 0.0       
+                cellSize = 0.0
                 nx,ny = elementRes
                 ny_a,ny_b = zelementRes
-    
-            p1 = gmsh.model.geo.add_point(xmin, ymin, cellSize)
-            p2 = gmsh.model.geo.add_point(xmax, ymin, cellSize)
-            p3 = gmsh.model.geo.add_point(xmin, ymax, cellSize)
-            p4 = gmsh.model.geo.add_point(xmax, ymax, cellSize)
-            p5 = gmsh.model.geo.add_point(xmin, yint, cellSize)
-            p6 = gmsh.model.geo.add_point(xmax, yint, cellSize)
-        
+
+            p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, cellSize)
+            p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0, cellSize)
+            p3 = gmsh.model.geo.add_point(xmin, ymax, 0.0, cellSize)
+            p4 = gmsh.model.geo.add_point(xmax, ymax, 0.0, cellSize)
+            p5 = gmsh.model.geo.add_point(xmin, yint, 0.0, cellSize)
+            p6 = gmsh.model.geo.add_point(xmax, yint, 0.0, cellSize)
+
             l1 = gmsh.model.geo.add_line(p1, p2)
-            l2 = gmsh.model.geo.add_line(p3, p4) 
+            l2 = gmsh.model.geo.add_line(p3, p4)
             l3 = gmsh.model.geo.add_line(p1, p5)
             l4 = gmsh.model.geo.add_line(p5, p3)
             l5 = gmsh.model.geo.add_line(p2, p6)
-            l6 = gmsh.model.geo.add_line(p6, p4) 
+            l6 = gmsh.model.geo.add_line(p6, p4)
             l7 = gmsh.model.geo.add_line(p5, p6)
             l34 = gmsh.model.geo.add_line(p1, p3)
             l56 = gmsh.model.geo.add_line(p2, p4)
-        
+
             cl1 = gmsh.model.geo.add_curve_loop((l1, l5, -l7, -l3))
             cl2 = gmsh.model.geo.add_curve_loop((-l2, -l4, l7, l6))
             surface1 = gmsh.model.geo.add_plane_surface([cl1])
             surface2 = gmsh.model.geo.add_plane_surface([cl2])
-        
+
             gmsh.model.geo.synchronize()
-        
+
             # Add Physical groups for boundaries
             gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
             gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
@@ -4033,12 +4114,12 @@ def BoxInternalBoundary(
             gmsh.model.add_physical_group(1, [l3, l4], boundaries.Left.value)
             gmsh.model.set_physical_name(1, l34, boundaries.Left.name)
             gmsh.model.add_physical_group(1, [l5,l6], boundaries.Right.value)
-            gmsh.model.set_physical_name(1, l56, boundaries.Right.name)            
+            gmsh.model.set_physical_name(1, l56, boundaries.Right.name)
             gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
             gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
             gmsh.model.addPhysicalGroup(2, [surface1,surface2], 99999)
             gmsh.model.setPhysicalName(2, 99999, "Elements")
-    
+
             if not simplex:
                 gmsh.model.mesh.set_transfinite_curve(
                 tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
@@ -4054,30 +4135,30 @@ def BoxInternalBoundary(
                 tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(
                 tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                
+
                 gmsh.model.mesh.set_transfinite_surface(
                 tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6])
                 gmsh.model.mesh.set_recombine(2, surface1)
                 gmsh.model.mesh.set_transfinite_surface(
                 tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4])
                 gmsh.model.mesh.set_recombine(2, surface2)
-        
+
             gmsh.model.mesh.generate(dim)
             gmsh.write(uw_filename)
             gmsh.finalize()
-        
+
         if dim == 3:
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
             zint = zintCoord
             boundaries = boundaries_3D
             boundary_normals = boundary_normals_3D
-            
+
             if not simplex:
-                cellSize = 0.0   
+                cellSize = 0.0
                 nx, ny, nz = elementRes
                 nzt,nzb = zelementRes
-        
+
             p1t = gmsh.model.geo.add_point(xmin, ymin, zmax, cellSize)
             p2t = gmsh.model.geo.add_point(xmax, ymin, zmax, cellSize)
             p3t = gmsh.model.geo.add_point(xmin, ymax, zmax, cellSize)
@@ -4090,7 +4171,7 @@ def BoxInternalBoundary(
             p2i = gmsh.model.geo.add_point(xmax, ymin, zint, cellSize)
             p3i = gmsh.model.geo.add_point(xmin, ymax, zint, cellSize)
             p4i = gmsh.model.geo.add_point(xmax, ymax, zint, cellSize)
-        
+
             l1t = gmsh.model.geo.add_line(p1t, p2t)
             l2t = gmsh.model.geo.add_line(p2t, p4t)
             l3t = gmsh.model.geo.add_line(p4t, p3t)
@@ -4103,7 +4184,7 @@ def BoxInternalBoundary(
             l2i = gmsh.model.geo.add_line(p2i, p4i)
             l3i = gmsh.model.geo.add_line(p4i, p3i)
             l4i = gmsh.model.geo.add_line(p3i, p1i)
-        
+
             l5 = gmsh.model.geo.add_line(p1b, p1t)
             l6 = gmsh.model.geo.add_line(p2b, p2t)
             l7 = gmsh.model.geo.add_line(p3b, p3t)
@@ -4116,49 +4197,49 @@ def BoxInternalBoundary(
             l6b = gmsh.model.geo.add_line(p2b, p2i)
             l7b = gmsh.model.geo.add_line(p3b, p3i)
             l8b = gmsh.model.geo.add_line(p4b, p4i)
-        
+
             cl = gmsh.model.geo.add_curve_loop((l1b, l2b, l3b, l4b))
             bottom = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l1t, l2t, l3t, l4t))
             top = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l1i, l2i, l3i, l4i))
             internal = gmsh.model.geo.add_plane_surface([cl])
-        
+
             cl = gmsh.model.geo.add_curve_loop((l6, l2t, -l8, -l2b))
             right = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l6t, l2t, -l8t, -l2i))
             right_t = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l6b, l2i, -l8b, -l2b))
             right_b = gmsh.model.geo.add_plane_surface([cl])
-            
+
             cl = gmsh.model.geo.add_curve_loop((l5, -l4t, -l7, l4b))
             left = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l5t, -l4t, -l7t, l4i))
             left_t = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l5b, -l4i, -l7b, l4b))
             left_b = gmsh.model.geo.add_plane_surface([cl])
-            
+
             cl = gmsh.model.geo.add_curve_loop((l5, l1t, -l6, -l1b))
             front = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l5t, l1t, -l6t, -l1i))
             front_t = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l5b, l1i, -l6b, -l1b))
             front_b = gmsh.model.geo.add_plane_surface([cl])
-            
+
             cl = gmsh.model.geo.add_curve_loop((l8, l3t, -l7, -l3b))
             back = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l8t, l3t, -l7t, -l3i))
             back_t = gmsh.model.geo.add_plane_surface([cl])
             cl = gmsh.model.geo.add_curve_loop((l8b, l3i, -l7b, -l3b))
             back_b = gmsh.model.geo.add_plane_surface([cl])
-            
+
             sloop1 = gmsh.model.geo.add_surface_loop([front_t, right_t, back_t, top, left_t, internal])
             volume_t = gmsh.model.geo.add_volume([sloop1])
             sloop2 = gmsh.model.geo.add_surface_loop([front_b, right_b, back_b, internal, left_b, bottom])
             volume_b = gmsh.model.geo.add_volume([sloop2])
-        
+
             gmsh.model.geo.synchronize()
-        
+
             gmsh.model.add_physical_group(2, [bottom], boundaries.Bottom.value)
             gmsh.model.set_physical_name(2, bottom, boundaries.Bottom.name)
             gmsh.model.add_physical_group(2, [top], boundaries.Top.value)
@@ -4168,15 +4249,15 @@ def BoxInternalBoundary(
             gmsh.model.add_physical_group(2, [left_t, left_b], boundaries.Left.value)
             gmsh.model.set_physical_name(2, left, boundaries.Left.name)
             gmsh.model.add_physical_group(2, [right_t,right_b], boundaries.Right.value)
-            gmsh.model.set_physical_name(2, right, boundaries.Right.name)            
+            gmsh.model.set_physical_name(2, right, boundaries.Right.name)
             gmsh.model.add_physical_group(2, [front_t, front_b], boundaries.Front.value)
             gmsh.model.set_physical_name(2, front, boundaries.Front.name)
             gmsh.model.add_physical_group(2, [back_t,back_b], boundaries.Back.value)
-            gmsh.model.set_physical_name(2, back, boundaries.Back.name)   
-                
+            gmsh.model.set_physical_name(2, back, boundaries.Back.name)
+
             gmsh.model.addPhysicalGroup(3, [volume_t,volume_b], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
-    
+
             if not simplex:
                 gmsh.model.mesh.set_transfinite_curve(l1t, numNodes=nx + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l2t, numNodes=ny + 1, meshType="Progression", coef=1.0)
@@ -4190,7 +4271,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_transfinite_curve(l2b, numNodes=ny + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l3b, numNodes=nx + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l4b, numNodes=ny + 1, meshType="Progression", coef=1.0)
-            
+
                 gmsh.model.mesh.set_transfinite_curve(l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
@@ -4199,7 +4280,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_transfinite_curve(l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
                 gmsh.model.mesh.set_transfinite_curve(l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-            
+
                 gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b])
                 gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t])
                 gmsh.model.mesh.set_transfinite_surface(tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i])
@@ -4222,22 +4303,22 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(2, back_b)
                 gmsh.model.mesh.set_recombine(2, right_b)
                 gmsh.model.mesh.set_recombine(2, left_b)
-            
+
                 gmsh.model.mesh.set_transfinite_volume(volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t])
                 gmsh.model.mesh.set_transfinite_volume(volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i])
                 gmsh.model.mesh.set_recombine(3, volume_t)
                 gmsh.model.mesh.set_recombine(3, volume_b)
-                    
+
             gmsh.model.mesh.generate(dim)
             gmsh.write(uw_filename)
             gmsh.finalize()
-    
+
     def box_return_coords_to_bounds(coords):
         x00s = coords[:, 0] < minCoords[0]
         x01s = coords[:, 0] > maxCoords[0]
         x10s = coords[:, 1] < minCoords[1]
         x11s = coords[:, 1] > maxCoords[1]
-        
+
         coords[x00s, :] = minCoords[0]
         coords[x01s, :] = maxCoords[0]
         coords[x10s, :] = minCoords[1]
@@ -4248,9 +4329,9 @@ def BoxInternalBoundary(
             x21s = coords[:, 1] > maxCoords[2]
             coords[x20s, :] = minCoords[2]
             coords[x21s, :] = maxCoords[2]
-    
+
         return coords
-    
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,
@@ -4265,5 +4346,5 @@ def BoxInternalBoundary(
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
         verbose=verbose,)
-    uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets") 
+    uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets")
     return new_mesh

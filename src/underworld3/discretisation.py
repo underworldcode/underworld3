@@ -24,15 +24,17 @@ from sympy.vector import CoordSys3D
 ## types to ones that are supplied by the users / the meshing module
 ## https://stackoverflow.com/questions/46073413/python-enum-combination
 
+
 def extend_enum(inherited):
-   def wrapper(final):
-     joined = {}
-     inherited.append(final)
-     for i in inherited:
-        for j in i:
-           joined[j.name] = j.value
-     return Enum(final.__name__, joined)
-   return wrapper
+    def wrapper(final):
+        joined = {}
+        inherited.append(final)
+        for i in inherited:
+            for j in i:
+                joined[j.name] = j.value
+        return Enum(final.__name__, joined)
+
+    return wrapper
 
 
 @timing.routine_timer_decorator
@@ -89,6 +91,20 @@ def _from_gmsh(
         viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0)
         viewer.destroy()
+
+        # ## Now add some metadata to the mesh (not sure how to do this with the Viewer)
+
+        # import h5py, json
+
+        # f = h5py.File('filename + ".h5",'r+')
+
+        # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
+        # string_repr = json.dumps(boundaries_dict)
+
+        # g = f.create_group("metadata")
+        # g.attrs["boundaries"] = string_repr
+
+        # f.close()
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -187,6 +203,7 @@ class Mesh(Stateful, uw_object):
                     useRegions=useRegions,
                     useMultipleTags=useMultipleTags,
                 )
+
             elif ext.lower() == ".h5":
                 if verbose and uw.mpi.rank == 0:
                     print(
@@ -196,6 +213,34 @@ class Mesh(Stateful, uw_object):
                 self.sf0, self.dm = _from_plexh5(
                     plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
                 )
+
+                ## We can check if there is boundary metadata in the h5 file and we
+                ## should use it if it is present.
+
+                import h5py, json
+
+                f = h5py.File(plex_or_meshfile, "r")
+
+                # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
+                # string_repr = json.dumps(boundaries_dict)
+
+                try:
+                    json_str = f["metadata"].attrs["boundaries"]
+                    bdr_dict = json.loads(json_str)
+                    boundaries = Enum("Boundaries", bdr_dict)
+                except KeyError:
+                    pass
+
+                try:
+                    json_str = f["metadata"].attrs["coordinate_system_type"]
+                    coord_type_dict = json.loads(json_str)
+                    coordinate_system_type = uw.discretisation.CoordinateSystemType(
+                        coord_type_dict["value"]
+                    )
+                except KeyError:
+                    pass
+
+                f.close()
 
             else:
                 raise RuntimeError(
@@ -209,23 +254,24 @@ class Mesh(Stateful, uw_object):
         ## the new ones.
 
         if boundaries is None:
+
             class replacement_boundaries(Enum):
                 Null_Boundary = 666
                 All_Boundaries = 1001
+
             boundaries = replacement_boundaries
         else:
+
             @extend_enum([boundaries])
             class replacement_boundaries(Enum):
                 Null_Boundary = 666
                 All_Boundaries = 1001
-            boundaries = replacement_boundaries
 
+            boundaries = replacement_boundaries
 
         self.filename = filename
         self.boundaries = boundaries
         self.boundary_normals = boundary_normals
-
-
 
         # options.delValue("dm_plex_gmsh_mark_vertices")
         # options.delValue("dm_plex_gmsh_multiple_tags")
@@ -242,7 +288,9 @@ class Mesh(Stateful, uw_object):
         self.dm.createLabel("Null_Boundary")
         all_edges_label = self.dm.getLabel("Null_Boundary")
         if all_edges_label and all_edges_IS_dm:
-           all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
+            all_edges_label.setStratumIS(
+                boundaries.Null_Boundary.value, all_edges_IS_dm
+            )
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:
@@ -263,8 +311,6 @@ class Mesh(Stateful, uw_object):
                     # Load this up on the stacked BC label
                     if label_is:
                         stacked_bc_label.setStratumIS(b.value, label_is)
-
-
 
             uw.mpi.barrier()
 
@@ -343,6 +389,9 @@ class Mesh(Stateful, uw_object):
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
+        #
+
+        self.CoordinateSystemType = coordinate_system_type
 
         from sympy.vector import CoordSys3D
 
@@ -459,94 +508,206 @@ class Mesh(Stateful, uw_object):
         """
         return self.dm.getCoordinateDim()
 
-    def view(self):
+    def view(self, level=0):
+        '''
+        Displays mesh information at different levels.
+        
+        Parameters
+        ----------
+        level : int (0 default) 
+            The display level. 
+            0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)
+        '''
 
         import numpy as np
+        if level==0:
+            if uw.mpi.rank == 0:
+                print(f"\n")
+                print(f"Mesh # {self.instance}: {self.name}\n")
 
-        if uw.mpi.rank == 0:
-            print(f"\n")
-            print(f"Mesh # {self.instance}: {self.name}\n")
+                uw.visualisation.plot_mesh(self)
 
-            if len(self.vars) > 0:
-                print(f"| Variable Name       | component | degree |     type        |")
-                print(f"| ---------------------------------------------------------- |")
-                for vname in self.vars.keys():
-                    v = self.vars[vname]
+                #Total number of cells
+                nstart, nend=self.dm.getHeightStratum(0)
+                num_cells=nend-nstart
+                print(f"Number of cells: {num_cells}\n")
+
+                if len(self.vars) > 0:
+                    print(f"| Variable Name       | component | degree |     type        |")
+                    print(f"| ---------------------------------------------------------- |")
+                    for vname in self.vars.keys():
+                        v = self.vars[vname]
+                        print(
+                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        )
+
+                    print(f"| ---------------------------------------------------------- |")
+                    print("\n", flush=True)
+                else:
+                    print(f"No variables are defined on the mesh\n", flush=True)
+
+            ## Boundary information
+
+            if uw.mpi.rank == 0:
+                if len(self.boundaries) > 0:
                     print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        f"| Boundary Name            | ID    |",
+                        flush=True,
+                    )
+                    print(
+                        f"| -------------------------------- |",
+                        flush=True,
+                    )
+                else:
+                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+
+            for bd in self.boundaries:
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
+
+                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+                if uw.mpi.rank == 0:
+                    print(
+                        f"| {bd.name:<20}     | {bd.value:<5} |",
+                        flush=True,
                     )
 
-                print(f"| ---------------------------------------------------------- |")
-                print("\n", flush=True)
-            else:
-                print(f"No variables are defined on the mesh\n", flush=True)
-
-        ## Boundary information
-
-        if uw.mpi.rank == 0:
-            if len(self.boundaries) > 0:
-                print(
-                    f"| Boundary Name            | ID    | Min Size | Max Size |",
-                    flush=True,
-                )
-                print(
-                    f"| ------------------------------------------------------ |",
-                    flush=True,
-                )
-            else:
-                print(f"No boundary labels are defined on the mesh\n", flush=True)
-
-        for bd in self.boundaries:
-            l = self.dm.getLabel(bd.name)
-            if l:
-                i = l.getStratumSize(bd.value)
-            else:
-                i = 0
+            # ## PETSc marked boundaries:
+            # l = self.dm.getLabel("All_Boundaries")
+            # if l:
+            #     i = l.getStratumSize(1001)
+            # else:
+            #     i = 0
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
             if uw.mpi.rank == 0:
                 print(
-                    f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                    f"| {'All_Boundaries':<20}     | 1001  |",
                     flush=True,
                 )
 
-        # ## PETSc marked boundaries:
-        # l = self.dm.getLabel("All_Boundaries")
-        # if l:
-        #     i = l.getStratumSize(1001)
-        # else:
-        #     i = 0
+            ## UW_Boundaries:
+            l = self.dm.getLabel("UW_Boundaries")
+            i = 0
+            if l:
+                for bd in self.boundaries:
+                    i += l.getStratumSize(bd.value)
 
-        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-        if uw.mpi.rank == 0:
-            print(
-                f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
-                flush=True,
-            )
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'UW_Boundaries':<20}     | --    |",
+                    flush=True,
+                )
 
-        ## UW_Boundaries:
-        l = self.dm.getLabel("UW_Boundaries")
-        i = 0
-        if l:
+            if uw.mpi.rank == 0:
+                print(f"| -------------------------------- |")
+                print("\n", flush=True)
+
+            ## Information on the mesh DM
+            # self.dm.view()
+            print(f"Use view(1) to view detailed mesh information.\n")
+
+        elif level==1:
+            if uw.mpi.rank == 0:
+                print(f"\n")
+                print(f"Mesh # {self.instance}: {self.name}\n")
+                uw.visualisation.plot_mesh(self)
+
+                #Total number of cells
+                nstart, nend=self.dm.getHeightStratum(0)
+                num_cells=nend-nstart
+                print(f"Number of cells: {num_cells}\n")
+
+                if len(self.vars) > 0:
+                    print(f"| Variable Name       | component | degree |     type        |")
+                    print(f"| ---------------------------------------------------------- |")
+                    for vname in self.vars.keys():
+                        v = self.vars[vname]
+                        print(
+                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                        )
+
+                    print(f"| ---------------------------------------------------------- |")
+                    print("\n", flush=True)
+                else:
+                    print(f"No variables are defined on the mesh\n", flush=True)
+
+            ## Boundary information
+
+            if uw.mpi.rank == 0:
+                if len(self.boundaries) > 0:
+                    print(
+                        f"| Boundary Name            | ID    | Min Size | Max Size |",
+                        flush=True,
+                    )
+                    print(
+                        f"| ------------------------------------------------------ |",
+                        flush=True,
+                    )
+                else:
+                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+
             for bd in self.boundaries:
-                i += l.getStratumSize(bd.value)
+                l = self.dm.getLabel(bd.name)
+                if l:
+                    i = l.getStratumSize(bd.value)
+                else:
+                    i = 0
 
-        ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-        if uw.mpi.rank == 0:
-            print(
-                f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
-                flush=True,
-            )
+                if uw.mpi.rank == 0:
+                    print(
+                        f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
+                        flush=True,
+                    )
 
-        if uw.mpi.rank == 0:
-            print(f"| ------------------------------------------------------ |")
-            print("\n", flush=True)
+            # ## PETSc marked boundaries:
+            # l = self.dm.getLabel("All_Boundaries")
+            # if l:
+            #     i = l.getStratumSize(1001)
+            # else:
+            #     i = 0
 
-        ## Information on the mesh DM
-        self.dm.view()
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
+                )
+
+            ## UW_Boundaries:
+            l = self.dm.getLabel("UW_Boundaries")
+            i = 0
+            if l:
+                for bd in self.boundaries:
+                    i += l.getStratumSize(bd.value)
+
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+
+            if uw.mpi.rank == 0:
+                print(
+                    f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
+                    flush=True,
+                )
+
+            if uw.mpi.rank == 0:
+                print(f"| ------------------------------------------------------ |")
+                print("\n", flush=True)
+
+            ## Information on the mesh DM
+            self.dm.view()
+
+        else:
+            print(f"\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.")
 
     def view_parallel(self):
         """
@@ -750,7 +911,6 @@ class Mesh(Stateful, uw_object):
                     subvec = a_global.getSubVector(subiset)
                     subdm.localToGlobal(lvec, subvec, addv=False)
                     a_global.restoreSubVector(subiset, subvec)
-
 
             for iset in isets:
                 iset.destroy()
@@ -1119,10 +1279,10 @@ class Mesh(Stateful, uw_object):
             mesh_file = filename + ".mesh.0.h5"
             path = Path(mesh_file)
             if not path.is_file():
-                self.save(mesh_file)
+                self.write(mesh_file)
 
         else:
-            self.save(filename + f".mesh.{index:05}.h5")
+            self.write(filename + f".mesh.{index:05}.h5")
 
         # Checkpoint file
 
@@ -1182,9 +1342,38 @@ class Mesh(Stateful, uw_object):
             # viewer.setTimestep(index)
 
         viewer(self.dm)
-
-        # Not sure if the files are correctly written if we do not explicitly destroy the viewer
         viewer.destroy()
+
+        uw.mpi.barrier()
+
+        ## Add boundary metadata to the file
+
+        import h5py, json
+        import time
+
+        # time.sleep(1)
+
+        # Sequential (no distributed information needs to be saved)
+
+        if uw.mpi.rank == 0:
+
+            f = h5py.File(filename, "a")
+            g = f.create_group("metadata")
+
+            boundaries_dict = {i.name: i.value for i in self.boundaries}
+            string_repr = json.dumps(boundaries_dict)
+            g.attrs["boundaries"] = string_repr
+
+            coordinates_type_dict = {
+                "name": self.CoordinateSystemType.name,
+                "value": self.CoordinateSystemType.value,
+            }
+            string_repr = json.dumps(coordinates_type_dict)
+            g.attrs["coordinate_system_type"] = string_repr
+
+            f.close()
+
+        uw.mpi.barrier()
 
     def vtk(self, filename: str):
         """
@@ -1332,7 +1521,6 @@ class Mesh(Stateful, uw_object):
 
         self._indexCoords = PIC_coords.copy()
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._index.build_index()
         self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
 
         tempSwarm.restoreField("DMSwarmPIC_coor")
@@ -1348,7 +1536,7 @@ class Mesh(Stateful, uw_object):
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
         be exactly the owning cell, but if the mesh is deformed, this
-        is not guaranteed. Note, the nearest point does may not be all
+        is not guaranteed. Note, the nearest point may not be all
         that close by - use get_closest_local_cells to filter out points
         that are (probably) not within any local cell.
 
@@ -1366,20 +1554,18 @@ class Mesh(Stateful, uw_object):
             coordinates. This will be a 1-dimensional array of
             shape (n_coords).
         """
+        import numpy as np
 
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            closest_points, dist, found = self._index.find_closest_point(coords)
+            #closest_points, dist, found = self._index.find_closest_point(coords)
+            dist, closest_points = self._index.query(coords, k=1)
+            if np.any(closest_points > self._index.n):
+                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
         else:
             ### returns an empty array if no coords are on a proc
             closest_points, dist, found = False, False, numpy.array([None])
-
-        if found.any() != None:
-            if not numpy.allclose(found, True):
-                raise RuntimeError(
-                    "An error was encountered attempting to find the closest cells to the provided coordinates."
-                )
 
         return self._indexMap[closest_points]
 
@@ -1407,22 +1593,25 @@ class Mesh(Stateful, uw_object):
 
 
         """
+        import numpy as np
 
         # Create index if required
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            closest_points, dist, found = self._index.find_closest_point(coords)
+            dist, closest_points = self._index.query(coords, k=1)
+            if np.any(closest_points > self._index.n):
+                raise RuntimeError("An error was encountered attempting to find the closest cells to the provided coordinates.") 
         else:
             return -1
 
         # This is tuned a little bit so that points on a single CPU are never lost
 
         cells = self._indexMap[closest_points]
-        invalid = (
-            dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
-        )  # 0.25 * self._radii[cells] ** 2
-        cells[invalid] = -1
+        #invalid = (
+        #    dist > 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
+        #)  # 0.25 * self._radii[cells] ** 2
+        #cells[invalid] = -1
 
         return cells
 
@@ -1449,7 +1638,8 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            _, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
+            #_, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k=1)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
@@ -2025,7 +2215,7 @@ class _MeshVariable(Stateful, uw_object):
     # that is stable when used for EXTRAPOLATION but
     # not accurate.
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
@@ -2044,8 +2234,7 @@ class _MeshVariable(Stateful, uw_object):
             print("Building K-D tree", flush=True)
 
         mesh_kdt = uw.kdtree.KDTree(self.coords)
-        mesh_kdt.build_index()
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
         del mesh_kdt
 
         return values
@@ -2217,15 +2406,14 @@ class _MeshVariable(Stateful, uw_object):
 
             return X, D
 
-        def map_to_vertex_values(X, D, nnn=4, verbose=False):
+        def map_to_vertex_values(X, D, nnn=4, p=2, verbose=False):
             # Map from "swarm" of points to nodal points
             # This is a permutation if we building on the checkpointed
             # mesh file
 
             mesh_kdt = uw.kdtree.KDTree(X)
-            mesh_kdt.build_index()
 
-            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, verbose)
+            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, p, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
             mesh = mesh_variable.mesh
@@ -2705,40 +2893,55 @@ def checkpoint_xdmf(
 """
 
     ## The mesh Var attributes
+    
+    def get_cell_field_size(h5_filename, mesh_var):
+        with h5py.File(h5_filename, 'r') as f:
+            size = f[f'cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}'].shape[0]
+        return size
 
     attributes = ""
     for var in meshVars:
-        var_filename = filename + f"mesh.{var.clean_name}.{index:05}.h5"
+        var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+
         if var.num_components == 1:
             variable_type = "Scalar"
         else:
             variable_type = "Vector"
-        # We should add a tensor type here ...
+
+        # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
+        if not getattr(var, "continuous") or getattr(var, "degree")==0:
+            center = "Cell"
+            numItems = get_cell_field_size(var_filename, var)
+            field_group = "cell_fields"
+        else:
+            center = "Node"
+            numItems = numVertices
+            field_group = "vertex_fields"
 
         var_attribute = f"""
         <Attribute
            Name="{var.clean_name}"
            Type="{variable_type}"
-           Center="Node">
+           Center="{center}">
           <DataItem ItemType="HyperSlab"
-        	    Dimensions="1 {numVertices} {var.num_components}"
-        	    Type="HyperSlab">
+                Dimensions="1 {numItems} {var.num_components}"
+                Type="HyperSlab">
             <DataItem
                Dimensions="3 3"
                Format="XML">
               0 0 0
               1 1 1
-              1 {numVertices} {var.num_components}
+              1 {numItems} {var.num_components}
             </DataItem>
             <DataItem
                DataType="Float" Precision="8"
-               Dimensions="1 {numVertices} {var.num_components}"
+               Dimensions="1 {numItems} {var.num_components}"
                Format="HDF">
-              &{var.clean_name+"_Data"};:/vertex_fields/{var.clean_name+"_P"+str(var.degree)}
+              &{var.clean_name+"_Data"};:/{field_group}/{var.clean_name+"_"+var.clean_name}
             </DataItem>
           </DataItem>
         </Attribute>
-    """
+        """
         attributes += var_attribute
 
     for var in swarmVars:

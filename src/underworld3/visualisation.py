@@ -4,6 +4,7 @@ import os
 
 def initialise(jupyter_backend):
 
+
     import pyvista as pv
 
     pv.global_theme.background = "white"
@@ -557,7 +558,7 @@ def plot_vector(
         )
     else:
         pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, sympy.sqrt(scalar.sym.dot(scalar.sym))
+            pvmesh, scalar.sym
         )
 
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())

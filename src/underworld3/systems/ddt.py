@@ -18,6 +18,436 @@ from petsc4py import PETSc
 # class Eulerian(uw_object):
 # etc etc...
 
+class Symbolic(uw_object):
+    r"""
+    Symbolic History Manager:
+
+    This class manages the update of a variable ψ across timesteps.
+    The history operator stores ψ over several timesteps (given by 'order')
+    so that it can compute backward differentiation (BDF) or Adams–Moulton expressions.
+
+    The history operator is defined as follows:
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+
+
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        psi_fn: sympy.Basic,  # a sympy expression for ψ; can be scalar or matrix
+        theta: Optional[float] = 0.5,
+        varsymbol: Optional[str] = r"\psi",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order: int = 1,
+        smoothing: float = 0.0,
+    ):
+        super().__init__()
+        self.theta = theta
+        self.bcs = bcs
+        self.verbose = verbose
+        self.smoothing = smoothing
+        self.order = order
+
+        # Ensure psi_fn is a sympy Matrix.
+        if not isinstance(psi_fn, sympy.Matrix):
+            try:
+                psi_fn = sympy.Matrix(psi_fn)
+            except Exception:
+                psi_fn = sympy.Matrix([[psi_fn]])
+        self._psi_fn = psi_fn  # stored with its native shape
+        self._shape = psi_fn.shape  # capture the shape
+        
+        # Set the display symbol for psi_fn and for the history variable.
+        self._psi_fn_symbol = varsymbol              # e.g. "\psi"
+        self._psi_star_symbol = varsymbol + r"^\ast"    # e.g. "\psi^\ast"
+        
+        # Create the history list: each element is a Matrix of shape _shape.
+        self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
+        self.initiate_history_fn()
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        if not isinstance(new_fn, sympy.Matrix):
+            try:
+                new_fn = sympy.Matrix(new_fn)
+            except Exception:
+                new_fn = sympy.Matrix([[new_fn]])
+        # Optionally, one could check for matching shape; here we update both.
+        self._psi_fn = new_fn
+        self._shape = new_fn.shape
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        # Display the primary variable
+        display(Latex(rf"$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$"))
+        # Display the history variable using the different symbol.
+        history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
+        display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
+
+    def update_history_fn(self):
+        # Update the first history element with a copy of the current ψ.
+        self.psi_star[0] = self.psi_fn.copy()
+
+    def initiate_history_fn(self):
+        self.update_history_fn()
+        # Propagate the initial history to all history steps.
+        for i in range(1, self.order):
+            self.psi_star[i] = self.psi_star[0].copy()
+        return
+
+    def update(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # Default: no action.
+        return
+
+    def update_post_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        if verbose:
+            print(f"Updating history for ψ = {self.psi_fn}", flush=True)
+
+            
+        # Shift history: copy each element down the chain.
+        for i in range(self.order - 1, 0, -1):
+            self.psi_star[i] = self.psi_star[i - 1].copy()
+        self.update_history_fn()
+        return
+
+    def bdf(self, order: Optional[int] = None):
+        r"""Compute the backward differentiation approximation of the time-derivative of ψ.
+           For order 1: bdf ≡ ψ - psi_star[0]
+        """
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+        
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0]
+            elif order == 2:
+                bdf0 = (3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2)
+            elif order == 3:
+                bdf0 = (11 * self.psi_fn / 6 - 3 * self.psi_star[0] + (3 * self.psi_star[1]) / 2 - self.psi_star[2] / 3)
+        return bdf0
+
+    def adams_moulton_flux(self, order: Optional[int] = None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+        
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0]
+            elif order == 2:
+                am = (5 * self.psi_fn + 8 * self.psi_star[0] - self.psi_star[1]) / 12
+            elif order == 3:
+                am = (9 * self.psi_fn + 19 * self.psi_star[0] - 5 * self.psi_star[1] + self.psi_star[2]) / 24
+        return am
+
+class Eulerian(uw_object):
+    r"""Eulerian  (mesh based) History Manager:
+    This manages the update of a variable, $\psi$ on the mesh across timesteps.
+    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
+    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
+    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn: Union[
+            uw.discretisation.MeshVariable, sympy.Basic
+        ],  # sympy function or mesh variable
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        evalf: Optional[bool] = False,
+        theta: Optional[float] = 0.5,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        order=1,
+        smoothing=0.0,
+    ):
+        super().__init__()
+
+        self.mesh = mesh
+        self.theta = theta
+        self.bcs = bcs
+        self.verbose = verbose
+        self.degree = degree
+        self.vtype = vtype
+        self.continuous = continuous
+        self.smoothing = smoothing
+        self.evalf = evalf
+
+        # meshVariables are required for:
+        #
+        # u(t) - evaluation of u_fn at the current time
+        # u*(t) - u_* evaluated from
+
+        # psi is evaluated/stored at `order` timesteps. We can't
+        # be sure if psi is a meshVariable or a function to be evaluated
+        # psi_star is reaching back through each evaluation and has to be a
+        # meshVariable (storage)
+
+        if isinstance(psi_fn, uw.discretisation._MeshVariable):
+            self._psi_fn = psi_fn.sym ### get symbolic form of the meshvariable
+            self._psi_meshVar = psi_fn
+        else:
+            self._psi_fn = psi_fn ### already in symbolic form
+            self._psi_meshVar = None
+
+        self.order = order
+
+        psi_star = []
+        self.psi_star = psi_star
+
+
+        for i in range(order):
+            self.psi_star.append(
+                uw.discretisation.MeshVariable(
+                    f"psi_star_Eulerian_{self.instance_number}_{i}",
+                    self.mesh,
+                    vtype=vtype,
+                    degree=degree,
+                    continuous=continuous,
+                    varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                )
+            )
+
+        # print('initiating history fn', flush=True)
+        ### Initiate first history value in chain
+        self.initiate_history_fn()
+    
+
+        return
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn
+        # self._psi_star_projection_solver.uw_function = self.psi_fn
+        return
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
+        # display(
+        #     Latex(
+        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
+        #         + sympy.sympify(self.dt_physical)._repr_latex_()
+        #     )
+        # )
+        display(Latex(rf"$\quad$History steps = {self.order}"))
+
+
+    def _setup_projections(self):        
+        ### using this to store terms that can't be evaluated (e.g. derivatives)
+        # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
+        if self.vtype == uw.VarType.SCALAR:
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Projection(
+                self.mesh, self.psi_star[0], verbose=False
+            )
+        elif self.vtype == uw.VarType.VECTOR:
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self.psi_star[0], verbose=False
+                )
+            )
+        elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
+            self._WorkVar = uw.discretisation.MeshVariable(
+                f"W_star_Eulerian_{self.instance_number}",
+                self.mesh,
+                vtype=uw.VarType.SCALAR,
+                degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=r"W^{*}",
+            )
+            self._psi_star_projection_solver = (
+                uw.systems.solvers.SNES_Tensor_Projection(
+                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+                )
+            )
+
+        self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.bcs = self.bcs
+        self._psi_star_projection_solver.smoothing = self.smoothing
+    
+    def update_history_fn(self):
+        ### update first value in history chain
+        ### avoids projecting if function can be evaluated
+        try:
+            with self.mesh.access(self.psi_star[0]):
+                try:
+                    with self.mesh.access(self._psi_meshVar):
+                        self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+                    # print('copying data', flush=True)
+                except:
+                    if self.evalf:
+                        self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                        # print('evalf data', flush=True)
+                    else:
+                        self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+                        # print('evaluate data', flush=True)
+    
+        except:
+            self._setup_projections()
+            self._psi_star_projection_solver.solve()
+            # print('projecting data', flush=True)
+
+    def initiate_history_fn(self):
+        self.update_history_fn()
+
+        ### set up all history terms to the initial values
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[0].data[...]
+
+        return
+    
+    def update(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        self.update_pre_solve(evalf, verbose)
+        return
+
+    def update_pre_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        return
+
+    def update_post_solve(
+        self,
+        evalf: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        # if average_over_dt:
+        #     phi = min(1.0, dt / self.dt_physical)
+        # else:
+        #     phi = 1.0
+
+        if verbose and uw.mpi.rank == 0:
+            print(f"Update {self.psi_fn}", flush=True)
+
+
+        ### copy values down the chain
+        for i in range(self.order - 1, 0, -1):
+            with self.mesh.access(self.psi_star[i]):
+                self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
+        
+        ### update the history fn
+        self.update_history_fn()
+        # ### update the first value in the chain
+        # if self.evaluateable:
+        #     with self.mesh.access(self.psi_star[0]):
+        #         try:
+        #             with self.mesh.access(self._psi_meshVar):
+        #                 self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+        #         except:
+        #             if self.evalf:
+        #                 self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+        #             else:
+        #                 self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
+        # else:
+        #     self._psi_star_projection_solver.uw_function = self.psi_fn
+        #     self._psi_star_projection_solver.solve()
+
+        return
+
+    def bdf(self, order=None):
+        r"""Backwards differentiation form for calculating DuDt
+        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                bdf0 = self.psi_fn - self.psi_star[0].sym
+
+            elif order == 2:
+                bdf0 = (
+                    3 * self.psi_fn / 2
+                    - 2 * self.psi_star[0].sym
+                    + self.psi_star[1].sym / 2
+                )
+
+            elif order == 3:
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0].sym
+                    + 3 * self.psi_star[1].sym / 2
+                    - self.psi_star[2].sym / 3
+                )
+
+        return bdf0
+
+    def adams_moulton_flux(self, order=None):
+        if order is None:
+            order = self.order
+        else:
+            order = max(1, min(self.order, order))
+
+        with sympy.core.evaluate(False):
+            if order == 1:
+                am = (self.psi_fn + self.psi_star[0].sym) / 2
+                # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
+
+            elif order == 2:
+                am = (
+                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
+                ) / 12
+
+            elif order == 3:
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0].sym
+                    - 5 * self.psi_star[1].sym
+                    + self.psi_star[2].sym
+                ) / 24
+
+        return am
+
 
 class SemiLagrangian(uw_object):
     r"""Nodal-Swarm  Lagrangian History Manager:

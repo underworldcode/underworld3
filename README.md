@@ -10,7 +10,6 @@ All `Underworld3` source code is released under the LGPL-3 open source licence. 
 
 [![Build and test UW3](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=main)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
 
-
 ## Documentation
 
 Start with the online [Quick Start Guide](https://underworldcode.github.io/underworld3/development/_quickstart/index.html) for a brief overview of the code.

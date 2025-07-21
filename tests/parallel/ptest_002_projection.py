@@ -1,3 +1,7 @@
+# TODO: Currently error with extreame memory usage only on arm64-macos.
+# with errors like:
+# ERROR: SCOTCH_dgraphMapInit: internal error
+
 import underworld3 as uw
 import numpy as np
 import sympy

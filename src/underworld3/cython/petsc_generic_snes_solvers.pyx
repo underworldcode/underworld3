@@ -10,8 +10,13 @@ import underworld3
 import underworld3 as uw
 from   underworld3.utilities._jitextension import getext
 import underworld3.timing as timing
+
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._api_tools import class_or_instance_method
+
+from underworld3.function import expression as public_expression
+expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
 
 include "petsc_extras.pxi"
 
@@ -132,7 +137,9 @@ class SolverBaseClass(uw_object):
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(Markdown(fr"### Boundary Conditions"))
+
+        display(Markdown(fr"This solver is formulated as {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
         return
 
@@ -384,7 +391,124 @@ class SolverBaseClass(uw_object):
             print(f"{name}.constitutive_model = uw.constitutive_models...")
 
         return
+    
+    def get_dof_partition(self, 
+                          section_type: str, 
+                          filename: Optional[str | None] = None, 
+                          outputPath: Optional[str] = ""):
+        """
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        filename:
+            Output file name. If None, will print out results; if set to a string, the final output file will be <filename>_<section_type>.u.h5.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
 
+        self.validate_solver()  # mainly check if self.u is properly set 
+
+        u_id = self.Unknowns.u.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
+
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = u_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        return
+
+
+    def _get_dof_partition_by_field_id(self,
+                                       section_type: str,
+                                       field_id: int,  
+                                       filename: Optional[str | None] = None, 
+                                       outputPath: Optional[str] = ""):
+        """
+        Private version of get_dof_partition with field_id as an additional parameter. 
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        field_id:
+            The field id
+        filename:
+            Output file name. If None, will print out results; if set to a string, resulting h5 file has the following keys: field_id, rank, dof.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
+
+        import os
+        import h5py
+        import numpy as np
+
+        # check if section type is valid
+        if section_type not in ['local', 'global']:
+            raise("'section_type' unknown. Value must be either 'local' or 'global'")
+        
+        # check if path exists
+        if os.path.exists(os.path.abspath(outputPath)):  # easier to debug abs
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(outputPath)} does not exist")
+
+        # check if we have write access
+        if os.access(os.path.abspath(outputPath), os.W_OK):
+            pass
+        else:
+            raise RuntimeError(f"No write access to {os.path.abspath(outputPath)}")
+
+        
+        # get all points in the DAG of this partition
+        if section_type == "local":
+            section = self.mesh.dm.getLocalSection()
+        elif section_type == "global":
+            section = self.mesh.dm.getGlobalSection()
+          
+        # NOTE: negative DOFs mean that these are ghost ones and owned by a different process
+        
+        ptStart, ptEnd = section.getChart() # will give all DOFs including ghosts
+
+        fdofs = [section.getFieldDof(pt, field_id) for pt in range(ptStart, ptEnd)]
+        fdofs = np.array(fdofs)
+        pos_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs > 0].sum()])
+        
+        if section_type == "global":
+            neg_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs < 0].sum()])
+        
+        comm = uw.mpi.comm
+
+        # Gather the arrays on rank 0
+        gath_pos_dof_data = comm.gather(pos_dof_data, root = 0)
+        if section_type == "global":
+            gath_neg_dof_data = comm.gather(neg_dof_data, root = 0)
+
+        # pack data and save to a dataframe for formatted opening
+        if uw.mpi.rank == 0:
+            gath_dof_data = np.vstack(gath_pos_dof_data)
+            if section_type == "global":
+                gath_dof_data = np.vstack([gath_pos_dof_data, gath_neg_dof_data])
+
+            if filename is None: # print out
+                print(f"Section type: {section_type}")
+                print(f"| Field ID      | Rank           | # DOFs        |")
+                print(f"| ---------------------------------------------- |")
+                for i in range(gath_dof_data.shape[0]):
+                    print(
+                        f"| {gath_dof_data[i, 0]:<15}|{gath_dof_data[i, 1]:<15}|{gath_dof_data[i, 2]:<15}|"
+                    )
+                print(f"| ---------------------------------------------- |")
+                print("\n", flush = True)
+
+            else: # save
+                with h5py.File(f"{outputPath}/{filename}", "w") as f: 
+                    f.create_dataset("field_id", data = gath_dof_data[:, 0])
+                    f.create_dataset("rank", data = gath_dof_data[:, 1])
+                    f.create_dataset("dof", data = gath_dof_data[:, 2])
+        
+        return
 
 ## Specific to dimensionality
 
@@ -544,10 +668,11 @@ class SNES_Scalar(SolverBaseClass):
 
         # Should del these when finished
 
-
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, "private_{}_".format(self.petsc_options_prefix), PETSc.COMM_SELF,)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+        self.petsc_fe_u.setName("_scalar_unknown_")
+
         self.is_setup = False
 
         if self.verbose:
@@ -657,6 +782,7 @@ class SNES_Scalar(SolverBaseClass):
                 print(f"SNES_Scalar ({self.name}): Pointwise functions need to be built", flush=True)
 
 
+
         mesh = self.mesh
         N = mesh.N
         dim = mesh.dim
@@ -670,8 +796,8 @@ class SNES_Scalar(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
-        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -928,7 +1054,7 @@ class SNES_Scalar(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Poisson system solver**"),
+            Markdown(f"### Poisson system solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -944,7 +1070,20 @@ class SNES_Scalar(SolverBaseClass):
                 expr._object_viewer(description=False)
 
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
+
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 
 
@@ -1121,6 +1260,7 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
+        self.petsc_fe_u.setName("_vector_unknown_")
 
         self.dm.createDS()
 
@@ -1255,8 +1395,8 @@ class SNES_Vector(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
-        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
+        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
 
 
         self._u_f0 = f0
@@ -1598,7 +1738,7 @@ class SNES_Vector(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Vector poisson solver**"),
+            Markdown(f"### Vector poisson solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -1612,7 +1752,20 @@ class SNES_Vector(SolverBaseClass):
             for expr in exprs:
                 expr._object_viewer(description=False)
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
+
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+             bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                 bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 ### =================================
 
@@ -1742,7 +1895,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{p_name}_ksp_rtol"]  = self._tolerance
         self.petsc_options[f"fieldsplit_{p_name}_pc_type"] = "gasm"
-        self.petsc_options[f"fieldsplit_{p_name}_pc_gasm_type"] = "basic"
+        # self.petsc_options[f"fieldsplit_{p_name}_pc_gasm_type"] = "basic"
 
         ## may be more robust but usually slower
         # self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
@@ -1907,8 +2060,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             pass
 
-
-
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
 
@@ -1988,7 +2139,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"**Saddle point system solver**"),
+            Markdown(f"### Saddle point system solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
             Markdown(f"Constraint: "),
@@ -2005,8 +2156,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             for expr in exprs:
                 expr._object_viewer(description=False)
 
+        display(
+            Markdown(fr"#### Boundary Conditions"),)
 
-        display(Markdown(fr"This solver is formulated in {self.mesh.dim} dimensions"))
+        bc_table = "| Type   | Boundary | Expression | \n"
+        bc_table += "|:------------------------ | -------- | ---------- | \n"
+
+        for bc in self.essential_bcs:
+            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
+        for bc in self.natural_bcs:
+                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
+
+        display(Markdown(bc_table))
+
+        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
         return
 
@@ -2031,9 +2194,45 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise RuntimeError("Constitutive Model is required")
 
         return
+    
+    def get_dof_partition(self, 
+                          section_type: str, 
+                          filename: Optional[str | None] = None, 
+                          outputPath: Optional[str] = ""):
+        """
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        filename:
+            Output file name. If None, will print out results; if set to a string, the output files will be <filename>_<section_type>.u.h5 and <filename>_<section_type>.p.h5.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
+        # NOTE: supposed to inherit get_dof_partition from SolverBaseClass 
+        # NOTE: _get_dof_partition_by_field_id is defined in SolverBaseClass
 
+        self.validate_solver()
 
+        u_id = self.Unknowns.u.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = u_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        p_id = self.Unknowns.p.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.p.h5"
+
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = p_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        return
+    
     @timing.routine_timer_decorator
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
@@ -2065,9 +2264,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
-        F0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False))
-        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False))
-        PF0  = sympy.Array(uw.function.expressions.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
+        F0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False))
+        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False))
+        PF0  = sympy.Array(uw.function.expression.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)
@@ -2237,7 +2436,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                        primary_field_list=prim_field_list,
                                        verbose=verbose,
                                        debug=debug,
-                                       debug_name=debug_name)
+                                       debug_name=debug_name,
+                                       cache=False)
 
 
         self.is_setup = False
@@ -2651,46 +2851,76 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-        cdef Vec clvec
-        cdef DM csdm
+        cdef DM dm = self.dm
+        cdef Vec clvec = self.dm.getLocalVec()
+        self.dm.globalToLocal(gvec, clvec)
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
 
         if verbose and uw.mpi.rank == 0:
-                print(f"SNES post-solve - bcs", flush=True)
+                 print(f"SNES Compute Boundary FEM Successfull", flush=True)
 
-        # Copy solution back into user facing variables
+        # get index set of pressure and velocity to separate solution from localvec
+        # get local section
+        local_section = self.dm.getLocalSection()
 
+        # Get the index sets for velocity and pressure fields
+        # Field numbers (adjust based on your setup)
+        velocity_field_num = 0
+        pressure_field_num = 1
+
+        # Function to get index set for a field
+        def get_local_field_is(section, field, unconstrained=False):
+            """
+            This function returns the index set of unconstrained points if True, or all points if False.
+            """
+            pStart, pEnd = section.getChart()
+            indices = []
+            for p in range(pStart, pEnd):
+                dof = section.getFieldDof(p, field)
+                if dof > 0:
+                    offset = section.getFieldOffset(p, field)
+                    if not unconstrained and self.Unknowns.p.continuous:
+                        indices.append(offset)
+                    else:
+                        cind = section.getFieldConstraintIndices(p, field)
+                        constrained = set(cind) if cind is not None else set()
+                        for i in range(dof):
+                            if i not in constrained:
+                                index = offset + i
+                                indices.append(index)
+            is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            return is_field
+
+        # Get index sets for pressure (both constrained and unconstrained points)
+        # we need indexset of pressure field to separate the solution from localvec.
+        # so we don't care whether a point is constrained by bc or not
+        pressure_is = get_local_field_is(local_section, pressure_field_num)
+
+        # Get the total number of entries in the local vector
+        size = self.dm.getLocalVec().getLocalSize()
+
+        # Create a list of all indices
+        all_indices = set(range(size))
+
+        # Get indices of the pressure field
+        pressure_indices = set(pressure_is.getIndices())
+
+        # Compute the complement for the velocity field
+        velocity_indices = sorted(list(all_indices - pressure_indices))
+
+        # Create the index set for velocity
+        velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+
+        # Copy solution back into pressure and velocity variables
         with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-            # print(f"p: {self.Unknowns.p.name}, v: {self.Unknowns.u.name}")
-
-            for name,var in self.fields.items():
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} to user variables", flush=True)
-
-                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-
-                sdm   = self._subdict[name][1]                     # Get subdm corresponding to field.
-                lvec = sdm.getLocalVec()                           # Get a local vector to push data into.
-                sdm.globalToLocal(sgvec,lvec)                      # Do global to local into lvec
-                sdm.localToGlobal(lvec, sgvec)
-                gvec.restoreSubVector(self._subdict[name][0], sgvec)
-
-                # Put in boundaries values.
-                # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-                # derived from the sub-dm (as opposed to the var.vec local vector), else
-                # failures can occur.
-
-                clvec = lvec
-                csdm = sdm
-
-                # print(f"{uw.mpi.rank}: Copy bcs for {name} to user variables", flush=True)
-                ierr = DMPlexSNESComputeBoundaryFEM(csdm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-
-                # Now copy into the user vec.
-                var.vec.array[:] = lvec.array[:]
-
-                sdm.restoreLocalVec(lvec)
-                # print(f"{uw.mpi.rank}: Copy field {name} / {var.name} ... done", flush=True)
+             for name, var in self.fields.items():
+                 if name=='velocity':
+                     var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+                 elif name=='pressure':
+                     var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
 
 
+        self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
 
         converged = self.snes.getConvergedReason()

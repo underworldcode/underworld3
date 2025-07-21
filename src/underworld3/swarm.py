@@ -327,19 +327,19 @@ class SwarmVariable(Stateful, uw_object):
         # 1 - Average particles to nodes with distance weighted average
 
         kd = uw.kdtree.KDTree(meshVar.coords)
-        kd.build_index()
 
         with self.swarm.access():
-            n, d, b = kd.find_closest_point(self.swarm.data)
+            #n, d, b = kd.find_closest_point(self.swarm.data)
+            d, n    = kd.query(self.swarm.data, k=1)
 
             node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
             w = np.zeros(meshVar.coords.shape[0])
 
             if not self._nn_proxy:
                 for i in range(self.data.shape[0]):
-                    if b[i]:
-                        node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
-                        w[n[i]] += 1.0 / (1.0e-24 + d[i])
+                    #if b[i]:
+                    node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
+                    w[n[i]] += 1.0 / (1.0e-24 + d[i])
 
                 node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(
                     -1, 1
@@ -359,7 +359,7 @@ class SwarmVariable(Stateful, uw_object):
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
-        # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
+        # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
 
         import numpy as np
@@ -389,9 +389,9 @@ class SwarmVariable(Stateful, uw_object):
                 D = self.data.copy()
                 kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data[:, :])
 
-            kdt.build_index()
+            #kdt.build_index()
 
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, verbose)
+            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
 
             del kdt
 
@@ -580,8 +580,19 @@ class IndexSwarmVariable(SwarmVariable):
         indices=1,
         proxy_degree=1,
         proxy_continuous=True,
+        update_type=0,
+        npoints=5,
+        radius=0.5,
+        npoints_bc=2,
+        ind_bc=None,
     ):
         self.indices = indices
+        self.nnn = npoints
+        self.radius_s = radius**2
+        self.update_type = update_type
+        if self.update_type == 1:
+            self.nnn_bc = npoints_bc 
+            self.ind_bc = ind_bc
 
         # These are the things we require of the generic swarm variable type
         super().__init__(
@@ -691,48 +702,92 @@ class IndexSwarmVariable(SwarmVariable):
             2) for each index in the set, we create a mask mesh variable by mapping 1.0 wherever the
                index matches and 0.0 where it does not.
 
-        NOTE: If no material is identified with a given nodal value, the default is to material zero
+        NOTE: If no material is identified with a given nodal value, the default is to impose 
+        a near-neighbour hunt for a valid material and set that one
 
         ## ToDo: This should be revisited to match the updated master copy of _update
 
+        update_type 0: assign the particles to the nearest mesh_levelset nodes, and calculate the value on nodes from them.
+        update_type 1: calculate the material property value on mesh_levelset nodes from the nearest N particles directly.
+
         """
+        if self.update_type == 0:
+            kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
+            
+            with self.swarm.access():
+                #n_indices, n_distance = kd.find_closest_n_points(self.nnn,self.swarm.particle_coordinates.data)
+                n_distance, n_indices = kd.query(self.swarm.particle_coordinates.data, k=self.nnn)
+                kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+                #n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
+                d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1)
+        
+            for ii in range(self.indices):
+                meshVar = self._meshLevelSetVars[ii]
+            
+                with self.swarm.mesh.access(meshVar), self.swarm.access():
+                    node_values = np.zeros((meshVar.data.shape[0],))
+                    w = np.zeros((meshVar.data.shape[0],))
+                    
+                    for i in range(self.data.shape[0]):
+                        tem = np.isclose(n_distance[i,:],n_distance[i,0])
+                        dist = n_distance[i,tem]
+                        indices = n_indices[i,tem]
+                        tem = dist<self.radius_s 
+                        dist = dist[tem]
+                        indices = indices[tem]
+                        for j,ind in enumerate(indices):
+                            node_values[ind] += (np.isclose(self.data[i], ii) /(1.0e-16 + dist[j]))[0]
+                            w[ind] +=  1.0 / (1.0e-16 + dist[j])
+                
+                    node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
+                    meshVar.data[:,0] = node_values[...]
 
-        kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
-        kd.build_index()
+                    # if there is no material found, 
+                    # impose a near-neighbour hunt for a valid material and set that one 
+                    ind_w0 = np.where(w == 0.0)[0]
+                    if len(ind_w0) > 0:
+                        ind_ = np.where(self.data[n[ind_w0]]==ii)[0]
+                        if len(ind_) > 0:
+                            meshVar.data[ind_w0[ind_]] = 1.0
+        elif self.update_type == 1:
+            with self.swarm.access():
+                kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+                #n_indices, n_distance = kd.find_closest_n_points(self.nnn,self._meshLevelSetVars[0].coords)
+                n_distance, n_indices = kd.query(self._meshLevelSetVars[0].coords,k=self.nnn)
+                
+            for ii in range(self.indices):
+                meshVar = self._meshLevelSetVars[ii]
+                with self.swarm.mesh.access(meshVar), self.swarm.access():
+                    node_values = np.zeros((meshVar.data.shape[0],))
+                    w = np.zeros((meshVar.data.shape[0],))
+                    for i in range(meshVar.data.shape[0]):
+                        if i not in self.ind_bc:
+                           ind =  np.where(n_distance[i,:]<self.radius_s)
+                           a =  1.0 / (n_distance[i,ind]+1.0e-16)
+                           w[i] = np.sum(a)
+                           b = np.isclose(self.data[n_indices[i,ind]], ii)
+                           node_values[i] = np.sum(np.dot(a,b))
+                           if ind[0].size ==0:
+                                w[i] = 0
+                        else:
+                           ind = np.where(n_distance[i,:self.nnn_bc]<self.radius_s)
+                           a =  1.0 / (n_distance[i,:self.nnn_bc][ind]+1.0e-16)
+                           w[i] = np.sum(a)
+                           b = np.isclose(self.data[n_indices[i,:self.nnn_bc][ind]], ii)
+                           node_values[i] = np.sum(np.dot(a,b))
+                           if ind[0].size ==0:
+                                 w[i] = 0
+                
+                    node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
+                    meshVar.data[:,0] = node_values[...]
 
-        for ii in range(self.indices):
-            meshVar = self._meshLevelSetVars[ii]
-
-            # 1 - Average particles to nodes with distance weighted average
-            with self.swarm.mesh.access(meshVar), self.swarm.access():
-                n, d, b = kd.find_closest_point(self.swarm.data)
-
-                node_values = np.zeros((meshVar.data.shape[0],))
-                w = np.zeros((meshVar.data.shape[0],))
-
-                for i in range(self.data.shape[0]):
-                    if b[i]:
-                        node_values[n[i]] += np.isclose(self.data[i], ii) / (
-                            1.0e-16 + d[i]
-                        )
-                        w[n[i]] += 1.0 / (1.0e-16 + d[i])
-
-                node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
-
-            # 2 - set NN vals on mesh var where w == 0.0
-
-            with self.swarm.mesh.access(meshVar), self.swarm.access():
-                meshVar.data[...] = node_values[...].reshape(-1, 1)
-
-                # Need to document this assumption, if there is no material found,
-                # assume the default material (0). An alternative would be to impose
-                # a near-neighbour hunt for a valid material and set that one.
-
-                if ii == 0:
-                    meshVar.data[np.where(w == 0.0)] = 1.0
-                else:
-                    meshVar.data[np.where(w == 0.0)] = 0.0
-
+                    # if there is no material found, 
+                    # impose a near-neighbour hunt for a valid material and set that one 
+                    ind_w0 = np.where(w == 0.0)[0]
+                    if len(ind_w0) > 0:
+                        ind_ = np.where(self.data[n_indices[ind_w0]]==ii)[0]
+                        if len(ind_) > 0:
+                            meshVar.data[ind_w0[ind_]] = 1.0
         return
 
 
@@ -953,9 +1008,14 @@ class Swarm(Stateful, uw_object):
         newp_coords0 = self.mesh._get_coords_for_basis(fill_param, continuous=False)
         newp_cells0 = self.mesh.get_closest_local_cells(newp_coords0)
 
-        valid = newp_cells0 != -1
-        newp_coords = newp_coords0[valid]
-        newp_cells = newp_cells0[valid]
+        if np.any(newp_cells0 > self.mesh._centroids.shape[0]):
+            raise RuntimeError("Some new coordinates can't find a owning cell - Error")
+
+        #valid = newp_cells0 != -1
+        #newp_coords = newp_coords0[valid]
+        #newp_cells = newp_cells0[valid]
+        newp_coords = newp_coords0
+        newp_cells = newp_cells0
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(newp_coords.shape[0] + 1)
@@ -1620,7 +1680,8 @@ class Swarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
+            #self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords,k=1)[0]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator

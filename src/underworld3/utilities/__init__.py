@@ -16,7 +16,8 @@ _append_petsc_path()
 
 from .uw_petsc_gen_xdmf import Xdmf, generateXdmf, generate_uw_Xdmf
 from .uw_swarmIO import swarm_h5, swarm_xdmf
-from ._utils import CaptureStdout, h5_scan, mem_footprint, gather_data, auditor
+from ._utils import CaptureStdout, h5_scan, mem_footprint, gather_data, auditor, postHog
 
 from .read_medit_ascii import read_medit_ascii, print_medit_mesh_info
 from .create_dmplex_from_medit import create_dmplex_from_medit
+from .geometry_tools import *

@@ -268,27 +268,30 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     ## some of these. So let's add them now
 
     cell = mesh1.get_closest_local_cells(global_unallocated_coords)
-    found1 = np.where(cell >= 0)[0]
-    not_found1 = np.where(cell == -1)[0]
+    # found1 = np.where(cell >= 0)[0]
+    # not_found1 = np.where(cell == -1)[0]s
+    cell_arr = np.atleast_1d(cell)              
+    found1 = np.where(cell_arr >= 0)[0]
+    not_found1 = np.where(cell_arr == -1)[0]
 
     n_found1 = found1.shape[0]
     n_not_found1 = not_found1.shape[0]
 
-    psize = swarm1.dm.getLocalSize()
-    adds = n_found1 + 1
-
-    swarm1.dm.addNPoints(adds)
-
-    cellid = swarm1.dm.getField("DMSwarm_cellid")
-    coords = swarm1.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
-
-    coords[psize + 1 :, :] = global_unallocated_coords[found1, :]
-
     if n_found1 > 0:
+        psize = swarm1.dm.getLocalSize()        
+        adds = n_found1     # swarm is not blank, so only need to use N for addNPoints
+
+        swarm1.dm.addNPoints(adds)
+
+        cellid = swarm1.dm.getField("DMSwarm_cellid")
+        coords = swarm1.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm1.dim))
+
+        coords[psize + 1 :, :] = global_unallocated_coords[found1, :]
+
         cellid[psize + 1 :] = cell[found1]  ## gathered points
 
-    swarm1.dm.restoreField("DMSwarm_cellid")
-    swarm1.dm.restoreField("DMSwarmPIC_coor")
+        swarm1.dm.restoreField("DMSwarm_cellid")
+        swarm1.dm.restoreField("DMSwarmPIC_coor")
 
     # print(
     #     f"{uw.mpi.rank}/i: {swarm1.dm.getLocalSize()} / {swarm1.dm.getSize()} cf {swarm0.dm.getSize()}",

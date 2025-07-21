@@ -9,6 +9,10 @@ import underworld3
 from underworld3 import VarType
 import sympy
 
+expression = lambda *x, **X: underworld3.function.expressions.UWexpression(
+    *x, _unique_name_generation=True, **X
+)
+
 
 class CoordinateSystemType(Enum):
     """
@@ -85,6 +89,26 @@ class CoordinateSystem:
 
         self._R = self._N.copy()
 
+        # We need this to define zeros in the coordinate transforms
+        # (since they need to indicate they are coordinate functions even
+        # if they are independent of all coordinates)
+
+        if self.mesh.cdim == 3:
+            self.independent_of_N = expression(
+                r"0(x,y,z)",
+                underworld3.maths.functions.vanishing
+                * self._N[0]
+                * self._N[1]
+                * self._N[2],
+                "independent of N0, N1, N2",
+            )
+        else:
+            self.independent_of_N = expression(
+                r"0(x,y,z)",
+                underworld3.maths.functions.vanishing * self._N[0] * self._N[1],
+                "independent of N0, N1",
+            )
+
         ## Change specific coordinates systems as required
 
         if system == CoordinateSystemType.CYLINDRICAL2D and self.mesh.dim == 2:
@@ -99,11 +123,9 @@ class CoordinateSystem:
             self._x = self._X
 
             x, y = self.N
-            r = underworld3.function.expression(
-                R"r", sympy.sqrt(x**2 + y**2), "Radial Coordinate"
-            )
+            r = expression(R"r", sympy.sqrt(x**2 + y**2), "Radial Coordinate")
 
-            t = underworld3.function.expression(
+            t = expression(
                 R"\theta",
                 sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True)),
                 "Angular coordinate",
@@ -196,9 +218,9 @@ class CoordinateSystem:
             th = self.R[1]
             self._xRotN_sym = sympy.Matrix(
                 [
-                    [+sympy.cos(th), sympy.sin(th), 0],
-                    [-sympy.sin(th), sympy.cos(th), 0],
-                    [0, 0, 1],
+                    [+sympy.cos(th), sympy.sin(th), self.independent_of_N],
+                    [-sympy.sin(th), sympy.cos(th), self.independent_of_N],
+                    [self.independent_of_N, self.independent_of_N, 1],
                 ]
             )
 
@@ -215,19 +237,19 @@ class CoordinateSystem:
 
             x, y, z = self.X
 
-            r = underworld3.function.expression(
+            r = expression(
                 R"r",
                 sympy.sqrt(x**2 + y**2 + z**2),
                 "Radial coordinate",
             )
 
-            th = underworld3.function.expression(
+            th = expression(
                 R"\theta",
                 sympy.acos(z / r),
                 "co-latitude",
             )
 
-            ph = underworld3.function.expression(
+            ph = expression(
                 R"\phi",
                 sympy.atan2(y, x),
                 "longitude",
@@ -252,7 +274,7 @@ class CoordinateSystem:
                     [
                         -sympy.sin(r2),
                         +sympy.cos(r2),
-                        0,
+                        self.independent_of_N,
                     ],
                 ]
             )
@@ -275,7 +297,7 @@ class CoordinateSystem:
                     [
                         -y / rz,
                         +x / rz,
-                        0,
+                        self.independent_of_N,
                     ],
                 ]
             )
@@ -321,7 +343,7 @@ class CoordinateSystem:
                     [
                         -sympy.sin(r2),
                         +sympy.cos(r2),
-                        0,
+                        self.independent_of_N,
                     ],
                 ]
             )
@@ -362,7 +384,7 @@ class CoordinateSystem:
                     [
                         -sympy.sin(rl1) * sympy.cos(rl2),
                         +sympy.cos(rl1) * sympy.cos(rl2),
-                        0,
+                        self.independent_of_N,
                     ],
                     [
                         -sympy.cos(rl1) * sympy.sin(rl2),
@@ -385,6 +407,7 @@ class CoordinateSystem:
             self._rRotN = sympy.eye(self.mesh.dim)
 
         # For all meshes
+        #
 
         return
 
