@@ -200,6 +200,96 @@ a, b, c - triangle points (numpy 1x3 arrays)</p>
 <p>returns:
 numpy array of distances from each of the points to the nearest point within the triangle (0 if in the plane, within the triangle)</p></div>
 </dd>
+<dt id="underworld3.utilities.geometry_tools.points_in_simplex2D"><code class="name flex">
+<span>def <span class="ident">points_in_simplex2D</span></span>(<span>p, a, b, c)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def points_in_simplex2D(p, a, b, c):
+    &#34;&#34;&#34;
+    p - numpy array of points in 3D
+    a, b, c - triangle points (numpy 1x2 arrays)
+
+    returns:
+        numpy array of truth values for each of the points in p (is this point in the triangle)
+    &#34;&#34;&#34;
+
+    v0 = (c - a).reshape(1, 2)
+    v1 = (b - a).reshape(1, 2)
+    v2 = (p - a).reshape(-1, 2)
+
+    # Compute dot products
+    def dot(v1, v2):
+        d = v1[:, 0] * v2[:, 0] + v1[:, 1] * v2[:, 1]
+        return d
+
+    dot00 = dot(v0, v0)
+    dot01 = dot(v0, v1)
+    dot02 = dot(v0, v2)
+    dot11 = dot(v1, v1)
+    dot12 = dot(v1, v2)
+
+    # Compute barycentric coordinates
+    invDenom = 1 / (dot00 * dot11 - dot01 * dot01)
+    u = (dot11 * dot02 - dot01 * dot12) * invDenom
+    v = (dot00 * dot12 - dot01 * dot02) * invDenom
+    w = 1 - u - v
+
+    return np.logical_and((u &gt;= 0), np.logical_and((v &gt;= 0), (w &gt;= 0)))</code></pre>
+</details>
+<div class="desc"><p>p - numpy array of points in 3D
+a, b, c - triangle points (numpy 1x2 arrays)</p>
+<p>returns:
+numpy array of truth values for each of the points in p (is this point in the triangle)</p></div>
+</dd>
+<dt id="underworld3.utilities.geometry_tools.points_in_simplex3D"><code class="name flex">
+<span>def <span class="ident">points_in_simplex3D</span></span>(<span>p, a, b, c, d)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def points_in_simplex3D(p, a, b, c, d):
+
+    vap = (p - a).reshape(-1, 3)
+    vbp = (p - b).reshape(-1, 3)
+
+    vab = (b - a).reshape(-1, 3)
+    vac = (c - a).reshape(-1, 3)
+    vad = (d - a).reshape(-1, 3)
+
+    vbc = (c - b).reshape(-1, 3)
+    vbd = (d - b).reshape(-1, 3)
+
+    # ScTP computes the scalar triple product a.(bxc):
+
+    def ScTP(a, b, c):
+        c0 = b[:, 1] * c[:, 2] - b[:, 2] * c[:, 1]
+        c1 = b[:, 2] * c[:, 0] - b[:, 0] * c[:, 2]
+        c2 = b[:, 0] * c[:, 1] - b[:, 1] * c[:, 0]
+        return a[:, 0] * c0 + a[:, 1] * c1 + a[:, 2] * c2
+
+    va6 = ScTP(vbp, vbd, vbc)
+    vb6 = ScTP(vap, vac, vad)
+    vc6 = ScTP(vap, vad, vab)
+    vd6 = ScTP(vap, vab, vac)
+    v6 = 1 / ScTP(vab, vac, vad)
+
+    u = va6 * v6
+    v = vb6 * v6
+    w = vc6 * v6
+    t = vd6 * v6
+
+    return np.logical_and(
+        np.logical_and((u &gt;= 0), (t &gt;= 0)), np.logical_and((v &gt;= 0), (w &gt;= 0))
+    )</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
 </dl>
 </section>
 <section>
@@ -219,6 +309,8 @@ numpy array of distances from each of the points to the nearest point within the
 <ul class="">
 <li><code><a title="underworld3.utilities.geometry_tools.distance_pointcloud_linesegment" href="#underworld3.utilities.geometry_tools.distance_pointcloud_linesegment">distance_pointcloud_linesegment</a></code></li>
 <li><code><a title="underworld3.utilities.geometry_tools.distance_pointcloud_triangle" href="#underworld3.utilities.geometry_tools.distance_pointcloud_triangle">distance_pointcloud_triangle</a></code></li>
+<li><code><a title="underworld3.utilities.geometry_tools.points_in_simplex2D" href="#underworld3.utilities.geometry_tools.points_in_simplex2D">points_in_simplex2D</a></code></li>
+<li><code><a title="underworld3.utilities.geometry_tools.points_in_simplex3D" href="#underworld3.utilities.geometry_tools.points_in_simplex3D">points_in_simplex3D</a></code></li>
 </ul>
 </li>
 </ul>

@@ -126,7 +126,6 @@ A list containing the two clipped mesh parts.</p></div>
 </summary>
 <pre><code class="python">def initialise(jupyter_backend):
 
-
     import pyvista as pv
 
     pv.global_theme.background = &#34;white&#34;
@@ -212,14 +211,14 @@ This is redundant if the meshVariable degree is 1 (the original mesh exactly
 represents the data)</p></div>
 </dd>
 <dt id="underworld3.visualisation.mesh_to_pv_mesh"><code class="name flex">
-<span>def <span class="ident">mesh_to_pv_mesh</span></span>(<span>mesh, jupyter_backend=None)</span>
+<span>def <span class="ident">mesh_to_pv_mesh</span></span>(<span>mesh0, jupyter_backend=None)</span>
 </code></dt>
 <dd>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def mesh_to_pv_mesh(mesh, jupyter_backend=None):
+<pre><code class="python">def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
     &#34;&#34;&#34;Initialise pyvista engine from existing mesh&#34;&#34;&#34;
 
     # # Required in notebooks
@@ -232,18 +231,57 @@ represents the data)</p></div>
     import shutil
     import tempfile
     import pyvista as pv
+    import numpy as np
 
-    with tempfile.TemporaryDirectory() as tmp:
-        if type(mesh) == str:  # reading msh file directly
-            vtk_filename = os.path.join(tmp, &#34;tmpMsh.msh&#34;)
-            shutil.copyfile(mesh, vtk_filename)
-        else:  # reading mesh by creating vtk
-            vtk_filename = os.path.join(tmp, &#34;tmpMsh.vtk&#34;)
-            mesh.vtk(vtk_filename)
+    # with tempfile.TemporaryDirectory() as tmp:
+    #     if type(mesh) == str:  # reading msh file directly
+    #         vtk_filename = os.path.join(tmp, &#34;tmpMsh.msh&#34;)
+    #         shutil.copyfile(mesh, vtk_filename)
+    #     else:  # reading mesh by creating vtk
+    #         vtk_filename = os.path.join(tmp, &#34;tmpMsh.vtk&#34;)
+    #         mesh.vtk(vtk_filename)
 
-        pvmesh = pv.read(vtk_filename)
+    #     pvmesh = pv.read(vtk_filename)
 
-    return pvmesh</code></pre>
+    # return pvmesh
+
+    ## Alternative - not via file / create an unstructured grid in pyvista
+
+    from petsc4py import PETSc
+
+    match (mesh0.dm.isSimplex(), mesh0.dim):
+        case (True, 2):
+            vtk_cell_type = pv.cell.CellType.TRIANGLE
+        case (True, 3):
+            vtk_cell_type = pv.cell.CellType.TETRA
+        case (False, 2):
+            vtk_cell_type = pv.cell.CellType.QUAD
+        case (False, 3):
+            vtk_cell_type = pv.cell.CellType.HEXAHEDRON
+
+    cStart, cEnd = mesh0.dm.getHeightStratum(0)
+    fStart, fEnd = mesh0.dm.getHeightStratum(1)
+    pStart, pEnd = mesh0.dm.getDepthStratum(0)
+
+    cell_num_points = mesh0.element.entities[mesh0.dim]
+    face_num_points = mesh0.element.face_entities[mesh0.dim]
+
+    cell_points_list = []
+    for cell_id in range(cStart, cEnd):
+        cell_points = mesh0.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+        cell_points_list.append(cell_points - pStart)
+
+    cells_array = np.array(cell_points_list, dtype=int)
+    cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
+    cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
+
+    cells_array = np.hstack((cells_size, cells_array), dtype=int)
+
+    pv_mesh = pv.UnstructuredGrid(
+        cells_array, cells_type, coords_to_pv_coords(mesh0.data)
+    )
+
+    return pv_mesh</code></pre>
 </details>
 <div class="desc"><p>Initialise pyvista engine from existing mesh</p></div>
 </dd>
@@ -265,7 +303,6 @@ represents the data)</p></div>
     save_png=False,
     dir_fname=&#34;&#34;,
 ):
-
     &#34;&#34;&#34;
     Plot a mesh with optional clipping, edge display, and saving functionality.
 
@@ -388,7 +425,6 @@ and optionally saves a screenshot.</p></div>
     save_png=False,
     dir_fname=&#34;&#34;,
 ):
-
     &#34;&#34;&#34;
     Plot a scalar quantity from a mesh with options for clipping, colormap, and saving.
 
@@ -573,7 +609,6 @@ window and optionally saves a screenshot.</p></div>
     scalar=None,
     scalar_name=&#34;&#34;,
 ):
-
     &#34;&#34;&#34;
     Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.
 
@@ -667,9 +702,7 @@ window and optionally saves a screenshot.</p></div>
             pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
         )
     else:
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, scalar.sym
-        )
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
 
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
 
@@ -809,7 +842,6 @@ window and optionally saves a screenshot.</p></div>
     output_path=&#34;&#34;,
     fname=&#34;&#34;,
 ):
-
     &#34;&#34;&#34;
     Save a colorbar separately from a plot with customizable appearance and format.
 
@@ -974,7 +1006,7 @@ This function does not return any value. It saves the colorbar as a separate ima
             dim = 3
 
     coords = pv_mesh.points[:, 0:dim]
-    scalar_values = uw.function.evalf(uw_fn, coords)
+    scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     return scalar_values</code></pre>
 </details>
@@ -1034,7 +1066,7 @@ object</p></div>
     coords = pv_mesh.points[:, 0:dim]
     vector_values = np.zeros_like(pv_mesh.points)
 
-    vector_values[:, 0:dim] = uw.function.evalf(uw_fn, coords)
+    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     return vector_values</code></pre>
 </details>

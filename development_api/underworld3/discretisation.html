@@ -543,7 +543,7 @@ True: index into the local coordinate array</p>
 <dl>
 <dt id="underworld3.discretisation.Mesh"><code class="flex name class">
 <span>class <span class="ident">Mesh</span></span>
-<span>(</span><span>plex_or_meshfile,<br>degree=1,<br>simplex=True,<br>coordinate_system_type=None,<br>qdegree=2,<br>markVertices=None,<br>useRegions=None,<br>useMultipleTags=None,<br>filename=None,<br>refinement=None,<br>refinement_callback=None,<br>return_coords_to_bounds=None,<br>boundaries=None,<br>boundary_normals=None,<br>name=None,<br>verbose=False,<br>*args,<br>**kwargs)</span>
+<span>(</span><span>plex_or_meshfile,<br>degree=1,<br>simplex=True,<br>coordinate_system_type=None,<br>qdegree=2,<br>markVertices=None,<br>useRegions=None,<br>useMultipleTags=None,<br>filename=None,<br>refinement=None,<br>refinement_callback=None,<br>coarsening=None,<br>coarsening_callback=None,<br>return_coords_to_bounds=None,<br>boundaries=None,<br>boundary_normals=None,<br>name=None,<br>verbose=False,<br>*args,<br>**kwargs)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -571,6 +571,8 @@ True: index into the local coordinate array</p>
         filename=None,
         refinement=None,
         refinement_callback=None,
+        coarsening=None,
+        coarsening_callback=None,
         return_coords_to_bounds=None,
         boundaries=None,
         boundary_normals=None,
@@ -585,11 +587,22 @@ True: index into the local coordinate array</p>
         comm = PETSc.COMM_WORLD
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
+            isDistributed = plex_or_meshfile.isDistributed()
             if verbose and uw.mpi.rank == 0:
-                print(f&#34;Constructing UW mesh from DMPlex object&#34;, flush=True)
+                print(
+                    f&#34;Constructing UW mesh from DMPlex object (distributed == {isDistributed})&#34;,
+                    flush=True,
+                )
+            if verbose:
+                plex_or_meshfile.view()
+
             name = &#34;plexmesh&#34;
             self.dm = plex_or_meshfile
             self.sf0 = None  # Should we build one ?
+
+            # Don&#39;t set from options — don&#39;t want to redistribute the dm
+            # or change any settings as this should be left to the user
+
         else:
             comm = kwargs.get(&#34;comm&#34;, PETSc.COMM_WORLD)
             name = plex_or_meshfile
@@ -648,6 +661,11 @@ True: index into the local coordinate array</p>
 
                 f.close()
 
+                # This needs to be done when reading a dm from a checkpoint
+                # or building from an imported mesh format
+
+                self.dm.setFromOptions()
+
             else:
                 raise RuntimeError(
                     &#34;Mesh file %s has unknown format &#39;%s&#39;.&#34;
@@ -682,7 +700,10 @@ True: index into the local coordinate array</p>
         # options.delValue(&#34;dm_plex_gmsh_mark_vertices&#34;)
         # options.delValue(&#34;dm_plex_gmsh_multiple_tags&#34;)
         # options.delValue(&#34;dm_plex_gmsh_use_regions&#34;)
-        self.dm.setFromOptions()
+        #
+
+        # Only for newly created dm (from mesh files)
+        # self.dm.setFromOptions()
 
         # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, &#34;UW_Boundaries&#34;)
 
@@ -721,8 +742,11 @@ True: index into the local coordinate array</p>
             uw.mpi.barrier()
 
         ## ---
+        ## Note - coarsening callback is tricky because the coarse meshes do not have the labels
+        ##
 
         self.refinement_callback = refinement_callback
+        self.coarsening_callback = coarsening_callback
         self.name = name
         self.sf1 = None
         self.return_coords_to_bounds = return_coords_to_bounds
@@ -732,6 +756,10 @@ True: index into the local coordinate array</p>
         if verbose and uw.mpi.rank == 0:
             print(
                 f&#34;Mesh refinement levels: {refinement}&#34;,
+                flush=True,
+            )
+            print(
+                f&#34;Mesh coarsening levels: {coarsening}&#34;,
                 flush=True,
             )
 
@@ -765,12 +793,38 @@ True: index into the local coordinate array</p>
             self.dm_h = self.dm_hierarchy[-1]
             self.dm_h.setName(&#34;uw_hierarchical_dm&#34;)
 
+            # Is this needed here, after the above calls ?
             if callable(refinement_callback):
                 for dm in self.dm_hierarchy:
                     refinement_callback(dm)
 
             # Single level equivalent dm (needed for aux vars ?? Check this - LM)
             self.dm = self.dm_h.clone()
+
+        elif not coarsening is None and coarsening &gt; 0:
+
+            # Does this have any effect on a coarsening strategy ?
+            self.dm.setRefinementUniform()
+
+            if not self.dm.isDistributed():
+                self.dm.distribute()
+
+            self.dm_hierarchy = [self.dm]
+            for i in range(coarsening):
+                dm_coarsened = self.dm_hierarchy[i].coarsen()
+                self.dm_hierarchy[i].setCoarseDM(dm_coarsened)
+                self.dm_hierarchy.append(dm_coarsened)
+
+            # Coarsest mesh should be first in the hierarchy to be consistent
+            # with the way we manage refinements
+            self.dm_hierarchy.reverse()
+
+            self.dm_h = self.dm_hierarchy[-1]
+            self.dm_h.setName(&#34;uw_hierarchical_dm&#34;)
+
+            # Single level equivalent dm (needed for aux vars ?? Check this - LM)
+            self.dm = self.dm_h.clone()
+            # self.dm_hierarchy[0].view()
 
         else:
             if not self.dm.isDistributed():
@@ -860,6 +914,30 @@ True: index into the local coordinate array</p>
         self.degree = degree
         self.qdegree = qdegree
 
+        # Populate the element information for this mesh. This is intended to be
+        # human readable because the mesh is quite simple: either quads / tris in 2D
+        # tetrahedra / hexahedra in 3D
+
+        from dataclasses import dataclass
+
+        @dataclass
+        class ElementInfo:
+            type: str
+            entities: tuple
+            face_entities: tuple
+
+        if self.dm.isSimplex():
+            if self.dim == 2:
+                self._element = ElementInfo(&#34;triangle&#34;, (1, 3, 3), (0, 1, 2))
+            else:
+                self._element = ElementInfo(&#34;tetrahedron&#34;, (1, 4, 6, 4), (0, 1, 3, 3))
+        else:
+            if self.dim == 2:
+                self._element = ElementInfo(&#34;quadrilateral&#34;, (1, 4, 4), (0, 1, 2))
+            else:
+                self._element = ElementInfo(&#34;hexahedron&#34;, (1, 6, 12, 8), (0, 1, 4, 4))
+
+        # Navigation / coordinates etc
         self.nuke_coords_and_rebuild()
 
         if verbose and uw.mpi.rank == 0:
@@ -914,40 +992,56 @@ True: index into the local coordinate array</p>
         &#34;&#34;&#34;
         return self.dm.getCoordinateDim()
 
+    @property
+    def element(self) -&gt; dict:
+        &#34;&#34;&#34;
+        The element information of the mesh (no mixed meshes in uw3) so this
+        applies to every cell of the `mesh dmplex object`
+        &#34;&#34;&#34;
+
+        return self._element
+
     def view(self, level=0):
-        &#39;&#39;&#39;
+        &#34;&#34;&#34;
         Displays mesh information at different levels.
-        
+
         Parameters
         ----------
-        level : int (0 default) 
-            The display level. 
+        level : int (0 default)
+            The display level.
             0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)
-        &#39;&#39;&#39;
+        &#34;&#34;&#34;
 
         import numpy as np
-        if level==0:
+
+        if level == 0:
             if uw.mpi.rank == 0:
                 print(f&#34;\n&#34;)
                 print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
 
                 uw.visualisation.plot_mesh(self)
 
-                #Total number of cells
-                nstart, nend=self.dm.getHeightStratum(0)
-                num_cells=nend-nstart
+                # Total number of cells
+                nstart, nend = self.dm.getHeightStratum(0)
+                num_cells = nend - nstart
                 print(f&#34;Number of cells: {num_cells}\n&#34;)
 
                 if len(self.vars) &gt; 0:
-                    print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
-                    print(f&#34;| ---------------------------------------------------------- |&#34;)
+                    print(
+                        f&#34;| Variable Name       | component | degree |     type        |&#34;
+                    )
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
                     for vname in self.vars.keys():
                         v = self.vars[vname]
                         print(
                             f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
                         )
 
-                    print(f&#34;| ---------------------------------------------------------- |&#34;)
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
                     print(&#34;\n&#34;, flush=True)
                 else:
                     print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
@@ -982,13 +1076,6 @@ True: index into the local coordinate array</p>
                         flush=True,
                     )
 
-            # ## PETSc marked boundaries:
-            # l = self.dm.getLabel(&#34;All_Boundaries&#34;)
-            # if l:
-            #     i = l.getStratumSize(1001)
-            # else:
-            #     i = 0
-
             ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
 
             if uw.mpi.rank == 0:
@@ -1020,27 +1107,33 @@ True: index into the local coordinate array</p>
             # self.dm.view()
             print(f&#34;Use view(1) to view detailed mesh information.\n&#34;)
 
-        elif level==1:
+        elif level == 1:
             if uw.mpi.rank == 0:
                 print(f&#34;\n&#34;)
                 print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
                 uw.visualisation.plot_mesh(self)
 
-                #Total number of cells
-                nstart, nend=self.dm.getHeightStratum(0)
-                num_cells=nend-nstart
+                # Total number of cells
+                nstart, nend = self.dm.getHeightStratum(0)
+                num_cells = nend - nstart
                 print(f&#34;Number of cells: {num_cells}\n&#34;)
 
                 if len(self.vars) &gt; 0:
-                    print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
-                    print(f&#34;| ---------------------------------------------------------- |&#34;)
+                    print(
+                        f&#34;| Variable Name       | component | degree |     type        |&#34;
+                    )
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
                     for vname in self.vars.keys():
                         v = self.vars[vname]
                         print(
                             f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
                         )
 
-                    print(f&#34;| ---------------------------------------------------------- |&#34;)
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
                     print(&#34;\n&#34;, flush=True)
                 else:
                     print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
@@ -1113,7 +1206,9 @@ True: index into the local coordinate array</p>
             self.dm.view()
 
         else:
-            print(f&#34;\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.&#34;)
+            print(
+                f&#34;\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.&#34;
+            )
 
     def view_parallel(self):
         &#34;&#34;&#34;
@@ -1169,44 +1264,6 @@ True: index into the local coordinate array</p>
 
         ## Information on the mesh DM
         # self.dm.view()
-
-    # This only works for local - we can&#39;t access global information&#39;
-    # and so this is not a suitable function for use during advection
-    #
-    # def _return_coords_to_bounds(self, coords, meshVar=None):
-    #     &#34;&#34;&#34;
-    #     Restore the provided coordinates to the interior of the domain.
-    #     The default behaviour is to find the nearest node in the kdtree to each
-    #     coordinate and use that value. If a meshVar is provided, we can use the nearest node
-    #     for that discretisation instead.
-
-    #     This can be over-ridden for specific meshes
-    #     (e.g. periodic) where a more appropriate choice is available.
-    #     &#34;&#34;&#34;
-
-    #     import numpy as np
-
-    #     if meshVar is None:
-    #         target_coords = self.data
-    #     else:
-    #         target_coords = meshVar.coords
-
-    #     ## Find which coords are invalid
-
-    #     invalid = self.get_closest_local_cells(coords) == -1
-
-    #     if np.count_nonzero(invalid) == 0:
-    #         return coords
-
-    #     print(f&#34;{uw.mpi.rank}: Number of invalid coords {np.count_nonzero(invalid)}&#34;)
-
-    #     kdt = uw.kdtree.KDTree(target_coords)
-    #     idx , _ , _ = kdt.find_closest_point(coords[invalid])
-
-    #     valid_coords = coords.copy()
-    #     valid_coords[invalid] = target_coords[idx]
-
-    #     return valid_coords
 
     def clone_dm_hierarchy(self):
         &#34;&#34;&#34;
@@ -1601,7 +1658,7 @@ True: index into the local coordinate array</p>
                 save_location = (
                     output_base_name + f&#34;.proxy.{svar.clean_name}.{index:05}.h5&#34;
                 )
-                svar.write(save_location)
+                svar.write_proxy(save_location)
 
         if uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -1889,7 +1946,113 @@ True: index into the local coordinate array</p>
 
         return arrcopy
 
+    def _build_kd_tree_index_DS(self):
+
+        if hasattr(self, &#34;_index&#34;) and self._index is not None:
+            return
+
+        # Build this from the PETScDS rather than the SWARM
+
+        centroids = self._get_coords_for_basis(0, False)
+        index_coords = self._get_coords_for_basis(2, False)
+
+        points_per_cell = index_coords.shape[0] // centroids.shape[0]
+
+        cell_id = numpy.empty(index_coords.shape[0])
+        for i in range(cell_id.shape[0]):
+            cell_id[i] = i // points_per_cell
+
+        self._indexCoords = index_coords
+        self._index = uw.kdtree.KDTree(self._indexCoords)
+        # self._index.build_index()
+        self._indexMap = numpy.array(cell_id, dtype=numpy.int64)
+
+        return
+
     def _build_kd_tree_index(self):
+
+        if hasattr(self, &#34;_index&#34;) and self._index is not None:
+            return
+
+        dim = self.dim
+        # def mesh_face_skeleton_kdtree(mesh):
+
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        fStart, fEnd = self.dm.getHeightStratum(1)
+        pStart, pEnd = self.dm.getDepthStratum(0)
+        cell_num_faces = self.element.entities[1]
+        cell_num_points = self.element.entities[self.dim]
+        face_num_points = self.element.face_entities[self.dim]
+
+        control_points_list = []
+        control_points_cell_list = []
+
+        for cell, cell_id in enumerate(range(cStart, cEnd)):
+
+            cell_faces = self.dm.getCone(cell_id)
+            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_point_coords = self.data[points - pStart]
+            cell_centroid = cell_point_coords.mean(axis=0)
+
+            # for face in range(cell_num_faces):
+
+            #     points = self.dm.getTransitiveClosure(cell_faces[face])[0][
+            #         -face_num_points:
+            #     ]
+            #     point_coords = self.data[points - pStart]
+
+            #     face_centroid = point_coords.mean(axis=0)
+            #     cell_centroid = cell_point_coords.mean(axis=0)
+
+            #     # 2D case
+            #     if self.dim == 2:
+            #         vector = point_coords[1] - point_coords[0]
+            #         normal = numpy.array((-vector[1], vector[0]))
+
+            #     # 3D simplex case (probably also OK for hexes)
+            #     else:
+            #         normal = numpy.cross(
+            #             (point_coords[1] - point_coords[0]),
+            #             (point_coords[2] - point_coords[0]),
+            #         )
+
+            #     inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
+            #     normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+
+            #     inside_control_point = -1e-3 * normal + face_centroid
+
+            #     control_points_list.append(inside_control_point)
+            #     control_points_cell_list.append(cell_id)
+            #     control_points_list.append(cell_centroid)
+            #     control_points_cell_list.append(cell_id)
+
+            # Add points near the cell vertices
+
+            for i in range(cell_point_coords.shape[0]):
+                control_points_list.append(
+                    0.99 * cell_point_coords[i] + 0.01 * cell_centroid
+                )
+                control_points_cell_list.append(cell_id)
+
+            # Add centroid
+            control_points_list.append(cell_centroid)
+            control_points_cell_list.append(cell_id)
+
+        self._indexCoords = numpy.array(control_points_list)
+        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
+        # self._index.build_index()
+        self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
+
+        # We don&#39;t need an indexMap for this one because there is only one point per cell
+        # and the returned kdtree value IS the index.
+        # Note: self._centroids is not yet defined:
+
+        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
+        # self._centroid_index.build_index()
+
+        return
+
+    def _build_kd_tree_index_PIC(self):
 
         if hasattr(self, &#34;_index&#34;) and self._index is not None:
             return
@@ -1914,7 +2077,7 @@ True: index into the local coordinate array</p>
         # 3^dim or 4^dim pop is used. This number may need to be considered
         # more carefully, or possibly should be coded to be set dynamically.
 
-        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 4)
+        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 3)
 
         # We can&#39;t use our own populate function since this needs THIS kd_tree to exist
         # We will need to use a standard layout instead
@@ -1928,13 +2091,259 @@ True: index into the local coordinate array</p>
         self._indexCoords = PIC_coords.copy()
         self._index = uw.kdtree.KDTree(self._indexCoords)
         self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
+        # self._index.build_index()
+
+        # We don&#39;t need an indexMap for this one because there is only one point per cell
+        # and the returned kdtree value IS the index.
+        # Note: self._centroids is not yet defined:
+
+        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
+        # self._centroid_index.build_index()
 
         tempSwarm.restoreField(&#34;DMSwarmPIC_coor&#34;)
-        tempSwarm.restoreField(&#34;DMSwarm_cellid&#34;)
+        tempSwarm.restoreField(&#34;DMSwarm_cellid&#34;)  #
 
         tempSwarm.destroy()
 
         return
+
+    # Note - need to add this to the mesh rebuilding triggers
+    def _mark_faces_inside_and_out(self):
+        &#34;&#34;&#34;
+        Create a collection of control point pairs that are slightly inside
+        and slightly outside each mesh face (mirrors to each other). This
+        allows a fast lookup of whether we on the inside or outside of the plane
+        defined by a face (i.e. same side or other side as the cell centroid). If we are inside
+        for all faces in a convex polyhedron, then we are inside the cell
+        &#34;&#34;&#34;
+
+        if (
+            hasattr(self, &#34;faces_inner_control_points&#34;)
+            and self.faces_inner_control_points is not None
+            and hasattr(self, &#34;faces_outer_control_points&#34;)
+            and self.faces_outer_control_points is not None
+        ):
+            return
+
+        dim = self.dim
+        # def mesh_face_skeleton_kdtree(mesh):
+
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        fStart, fEnd = self.dm.getHeightStratum(1)
+        pStart, pEnd = self.dm.getDepthStratum(0)
+        num_local_cells = self.dm.getHeightStratum(0)[1]
+        cell_num_faces = self.element.entities[1]
+        cell_num_points = self.element.entities[self.dim]
+        face_num_points = self.element.face_entities[self.dim]
+
+        # All elements in our mesh are a single type
+
+        mesh_cell_outer_control_points = numpy.ndarray(
+            shape=(cell_num_faces, num_local_cells, self.dim)
+        )
+        mesh_cell_inner_control_points = numpy.ndarray(
+            shape=(cell_num_faces, num_local_cells, self.dim)
+        )
+
+        for cell, cell_id in enumerate(range(cStart, cEnd)):
+            cell_faces = self.dm.getCone(cell_id)
+            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_point_coords = self.data[points - pStart]
+
+            for face in range(cell_num_faces):
+
+                points = self.dm.getTransitiveClosure(cell_faces[face])[0][
+                    -face_num_points:
+                ]
+                point_coords = self.data[points - pStart]
+
+                face_centroid = point_coords.mean(axis=0)
+                cell_centroid = cell_point_coords.mean(axis=0)
+
+                # 2D case
+                if self.dim == 2:
+                    vector = point_coords[1] - point_coords[0]
+                    normal = numpy.array((-vector[1], vector[0]))
+
+                # 3D simplex case (probably also OK for hexes)
+                else:
+                    normal = numpy.cross(
+                        (point_coords[1] - point_coords[0]),
+                        (point_coords[2] - point_coords[0]),
+                    )
+
+                inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
+                normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+
+                outside_control_point = 1e-3 * normal + face_centroid
+                inside_control_point = -1e-3 * normal + face_centroid
+
+                mesh_cell_outer_control_points[face, cell, :] = outside_control_point
+                mesh_cell_inner_control_points[face, cell, :] = inside_control_point
+
+        self.faces_inner_control_points = mesh_cell_inner_control_points
+        self.faces_outer_control_points = mesh_cell_outer_control_points
+
+        return
+
+    def test_if_points_in_cells(self, points, cells):
+        &#34;&#34;&#34;
+        Determine if the given points lie in the suggested cells.
+        Uses a mesh skeletonization array to determine whether the point is
+        with the convex polygon / polyhedron defined by a cell.
+
+        Exact if applied to a linear mesh, approximate otherwise.
+        &#34;&#34;&#34;
+
+        self._mark_faces_inside_and_out()
+
+        assert points.shape[0] == cells.shape[0]
+
+        mesh = self
+
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        num_cell_faces = self.dm.getConeSize(cStart)
+
+        inside = numpy.ones_like(cells, dtype=bool)
+        insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
+
+        for f in range(num_cell_faces):
+            control_points_o = self.faces_outer_control_points[f, cells]
+            control_points_i = self.faces_inner_control_points[f, cells]
+            inside = ((control_points_o - points) ** 2).sum(axis=1) - (
+                (control_points_i - points) ** 2
+            ).sum(axis=1) &gt; 0
+            insiders[:, f] = inside[:]
+
+        return numpy.all(insiders, axis=1)
+
+    def _mark_local_boundary_faces_inside_and_out(self):
+        &#34;&#34;&#34;
+        Create a collection of control point pairs that are slightly inside
+        and slightly outside each boundary-defining face (mirrors to each other). This
+        allows a fast lookup of whether we on the inside or outside of the domain.
+        We cannot ensure convexity, so this is approximate when close to the boundary
+        &#34;&#34;&#34;
+
+        if (
+            hasattr(self, &#34;boundary_face_control_points_kdtree&#34;)
+            and self.boundary_face_control_points_kdtree is not None
+            and hasattr(self, &#34;boundary_face_control_points_sign&#34;)
+            and self.boundary_face_control_points_sign is not None
+        ):
+            return
+
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        fStart, fEnd = self.dm.getHeightStratum(1)
+        pStart, pEnd = self.dm.getDepthStratum(0)
+        cell_num_faces = self.element.entities[1]
+        cell_num_points = self.element.entities[self.dim]
+        face_num_points = self.element.face_entities[self.dim]
+
+        boundary_faces = []
+        for face in range(fStart, fEnd):
+            if self.dm.getJoin(face).shape[0] == 1:
+                boundary_faces.append(face)
+
+        boundary_faces = numpy.array(boundary_faces)
+
+        control_points_list = []
+        control_point_sign_list = []
+
+        for face in boundary_faces:
+            cell = self.dm.getJoin(face)[0]
+            points = self.dm.getTransitiveClosure(face)[0][-face_num_points:]
+            point_coords = self.data[points - pStart]
+            face_centroid = point_coords.mean(axis=0)
+            cell_centroid = self._centroids[cell - cStart]
+
+            # 2D case
+            if self.dim == 2:
+                vector = point_coords[1] - point_coords[0]
+                normal = numpy.array((-vector[1], vector[0]))
+
+            else:
+                # 3D simplex case (probably also OK for hexes)
+                normal = numpy.cross(
+                    (point_coords[1] - point_coords[0]),
+                    (point_coords[2] - point_coords[0]),
+                )
+
+            inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
+            normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+
+            # Control points near centroid
+
+            outside_control_point = 1e-8 * normal + face_centroid
+            control_points_list.append(outside_control_point)
+            control_point_sign_list.append(-1)
+
+            inside_control_point = -1e-8 * normal + face_centroid
+            control_points_list.append(inside_control_point)
+            control_point_sign_list.append(1)
+
+            # Control points closer to face nodes
+
+            for pt in range(0, face_num_points):
+
+                outside_control_point = (
+                    1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                )
+                control_points_list.append(outside_control_point)
+                control_point_sign_list.append(-1)
+
+                inside_control_point = (
+                    -1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                )
+                control_points_list.append(inside_control_point)
+                control_point_sign_list.append(1)
+
+        control_point_kdtree = uw.kdtree.KDTree(numpy.array(control_points_list))
+        control_point_sign = numpy.array(control_point_sign_list)
+
+        self.boundary_face_control_points_kdtree = control_point_kdtree
+        self.boundary_face_control_points_sign = control_point_sign
+
+        return
+
+    def points_in_domain(self, points, strict_validation=True):
+        &#34;&#34;&#34;
+        Determine if the given points lie in this domain.
+        Uses a mesh-boundary skeletonization array to determine whether the point is
+        inside the boundary or outside. If close to the boundary, it checks if points
+        are in a cell.
+
+        &#34;&#34;&#34;
+
+        self._mark_local_boundary_faces_inside_and_out()
+
+        max_radius = self.get_max_radius()
+
+        if points.shape[0] == 0:
+            return False
+
+        dist2, closest_control_points_ext = (
+            self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
+        )
+        in_or_not = (
+            self.boundary_face_control_points_sign[closest_control_points_ext] &gt; 0
+        )
+
+        ## This choice of distance needs some more thought
+
+        near_boundary = numpy.where(dist2 &lt; max_radius**2)[0]
+        near_boundary_points = points[near_boundary]
+
+        in_or_not[near_boundary] = (
+            self.get_closest_local_cells(near_boundary_points) != -1
+        )
+
+        if strict_validation:
+            chosen_ones = numpy.where(in_or_not == True)[0]
+            chosen_points = points[chosen_ones]
+            in_or_not[chosen_ones] = self.get_closest_local_cells(chosen_points) != -1
+
+        return in_or_not
 
     @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -&gt; numpy.ndarray:
@@ -1965,10 +2374,11 @@ True: index into the local coordinate array</p>
         self._build_kd_tree_index()
 
         if len(coords) &gt; 0:
-            #closest_points, dist, found = self._index.find_closest_point(coords)
             dist, closest_points = self._index.query(coords, k=1)
             if np.any(closest_points &gt; self._index.n):
-                raise RuntimeError(&#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;) 
+                raise RuntimeError(
+                    &#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;
+                )
         else:
             ### returns an empty array if no coords are on a proc
             closest_points, dist, found = False, False, numpy.array([None])
@@ -2001,23 +2411,51 @@ True: index into the local coordinate array</p>
         &#34;&#34;&#34;
         import numpy as np
 
+        import numpy as np
+
         # Create index if required
         self._build_kd_tree_index()
 
         if len(coords) &gt; 0:
             dist, closest_points = self._index.query(coords, k=1)
             if np.any(closest_points &gt; self._index.n):
-                raise RuntimeError(&#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;) 
+                raise RuntimeError(
+                    &#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;
+                )
         else:
-            return -1
+            return np.zeros((0,))
 
-        # This is tuned a little bit so that points on a single CPU are never lost
+        # We need to filter points that lie outside the mesh but
+        # still are allocated a nearby element by this distance-only check.
 
         cells = self._indexMap[closest_points]
-        #invalid = (
-        #    dist &gt; 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
-        #)  # 0.25 * self._radii[cells] ** 2
-        #cells[invalid] = -1
+        cStart, cEnd = self.dm.getHeightStratum(0)
+
+        inside = self.test_if_points_in_cells(coords, cells)
+        cells[~inside] = -1
+        lost_points = np.where(inside == False)[0]
+
+        # Part 2 - try to find the lost points by walking nearby cells
+
+        num_local_cells = self._centroid_index.data_pts.shape[0]
+        num_testable_neighbours = min(num_local_cells, 50)
+
+        dist2, closest_centroids = self._centroid_index.query(
+            coords[lost_points], k=num_testable_neighbours, sqr_dists=True
+        )
+
+        # This number is close to the point-point coordination value in 3D unstructured
+        # grids (by inspection)
+
+        for i in range(0, num_testable_neighbours):
+
+            inside = self.test_if_points_in_cells(
+                coords[lost_points], closest_centroids[:, i]
+            )
+            cells[lost_points[inside]] = closest_centroids[inside, i]
+
+            if np.count_nonzero(cells == -1) == 0:
+                break
 
         return cells
 
@@ -2025,7 +2463,6 @@ True: index into the local coordinate array</p>
         &#34;&#34;&#34;
         Obtain the (local) mesh radii and centroids using
         This routine is called when the mesh is built / rebuilt
-
         &#34;&#34;&#34;
 
         centroids = self._get_coords_for_basis(0, False)
@@ -2044,8 +2481,7 @@ True: index into the local coordinate array</p>
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            #_, distsq, _ = centroids_kd_tree.find_closest_point(cell_coords)
-            distsq, _ = centroids_kd_tree.query(cell_coords, k=1)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
@@ -2074,6 +2510,14 @@ True: index into the local coordinate array</p>
         centroids = self._get_coords_for_basis(0, False)
 
         return centroids
+
+    def _get_domain_centroids(self):
+
+        import numpy as np
+
+        domain_centroid = self._centroids.mean(axis=0)
+        all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.dim)
+        return all_centroids
 
     def get_min_radius_old(self) -&gt; float:
         &#34;&#34;&#34;
@@ -2125,13 +2569,6 @@ True: index into the local coordinate array</p>
         )
 
         return all_max_radii.max()
-
-    # def get_boundary_subdm(self) -&gt; PETSc.DM:
-    #     &#34;&#34;&#34;
-    #     This method returns the boundary subdm that wraps DMPlexCreateSubmesh
-    #     &#34;&#34;&#34;
-    #     from underworld3.petsc_discretisation import petsc_create_surface_submesh
-    #     return petsc_create_surface_submesh(self, &#34;Boundary&#34;, 666, )
 
     # This should be deprecated in favour of using integrals
     def stats(self, uw_function, uw_meshVariable, basis=None):
@@ -2346,6 +2783,24 @@ def dim(self) -&gt; int:
     return self.dm.getDimension()</code></pre>
 </details>
 <div class="desc"><p>The mesh dimensionality.</p></div>
+</dd>
+<dt id="underworld3.discretisation.Mesh.element"><code class="name">prop <span class="ident">element</span> : dict</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def element(self) -&gt; dict:
+    &#34;&#34;&#34;
+    The element information of the mesh (no mixed meshes in uw3) so this
+    applies to every cell of the `mesh dmplex object`
+    &#34;&#34;&#34;
+
+    return self._element</code></pre>
+</details>
+<div class="desc"><p>The element information of the mesh (no mixed meshes in uw3) so this
+applies to every cell of the <code>mesh dmplex object</code></p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.lvec"><code class="name">prop <span class="ident">lvec</span> : petsc4py.PETSc.Vec</code></dt>
 <dd>
@@ -2699,10 +3154,11 @@ def get_closest_cells(self, coords: numpy.ndarray) -&gt; numpy.ndarray:
     self._build_kd_tree_index()
 
     if len(coords) &gt; 0:
-        #closest_points, dist, found = self._index.find_closest_point(coords)
         dist, closest_points = self._index.query(coords, k=1)
         if np.any(closest_points &gt; self._index.n):
-            raise RuntimeError(&#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;) 
+            raise RuntimeError(
+                &#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;
+            )
     else:
         ### returns an empty array if no coords are on a proc
         closest_points, dist, found = False, False, numpy.array([None])
@@ -2760,23 +3216,51 @@ shape (n_coords).</p></div>
     &#34;&#34;&#34;
     import numpy as np
 
+    import numpy as np
+
     # Create index if required
     self._build_kd_tree_index()
 
     if len(coords) &gt; 0:
         dist, closest_points = self._index.query(coords, k=1)
         if np.any(closest_points &gt; self._index.n):
-            raise RuntimeError(&#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;) 
+            raise RuntimeError(
+                &#34;An error was encountered attempting to find the closest cells to the provided coordinates.&#34;
+            )
     else:
-        return -1
+        return np.zeros((0,))
 
-    # This is tuned a little bit so that points on a single CPU are never lost
+    # We need to filter points that lie outside the mesh but
+    # still are allocated a nearby element by this distance-only check.
 
     cells = self._indexMap[closest_points]
-    #invalid = (
-    #    dist &gt; 0.1 * self._radii[cells] ** 2  # 2.5 * self._search_lengths[cells]
-    #)  # 0.25 * self._radii[cells] ** 2
-    #cells[invalid] = -1
+    cStart, cEnd = self.dm.getHeightStratum(0)
+
+    inside = self.test_if_points_in_cells(coords, cells)
+    cells[~inside] = -1
+    lost_points = np.where(inside == False)[0]
+
+    # Part 2 - try to find the lost points by walking nearby cells
+
+    num_local_cells = self._centroid_index.data_pts.shape[0]
+    num_testable_neighbours = min(num_local_cells, 50)
+
+    dist2, closest_centroids = self._centroid_index.query(
+        coords[lost_points], k=num_testable_neighbours, sqr_dists=True
+    )
+
+    # This number is close to the point-point coordination value in 3D unstructured
+    # grids (by inspection)
+
+    for i in range(0, num_testable_neighbours):
+
+        inside = self.test_if_points_in_cells(
+            coords[lost_points], closest_centroids[:, i]
+        )
+        cells[lost_points[inside]] = closest_centroids[inside, i]
+
+        if np.count_nonzero(cells == -1) == 0:
+            break
 
     return cells</code></pre>
 </details>
@@ -3057,6 +3541,58 @@ An index which might correspond to the timestep or output number (for example).
 outputPath :
 Path to save the data. If left empty it will save the data in the current working directory.</p></div>
 </dd>
+<dt id="underworld3.discretisation.Mesh.points_in_domain"><code class="name flex">
+<span>def <span class="ident">points_in_domain</span></span>(<span>self, points, strict_validation=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def points_in_domain(self, points, strict_validation=True):
+    &#34;&#34;&#34;
+    Determine if the given points lie in this domain.
+    Uses a mesh-boundary skeletonization array to determine whether the point is
+    inside the boundary or outside. If close to the boundary, it checks if points
+    are in a cell.
+
+    &#34;&#34;&#34;
+
+    self._mark_local_boundary_faces_inside_and_out()
+
+    max_radius = self.get_max_radius()
+
+    if points.shape[0] == 0:
+        return False
+
+    dist2, closest_control_points_ext = (
+        self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
+    )
+    in_or_not = (
+        self.boundary_face_control_points_sign[closest_control_points_ext] &gt; 0
+    )
+
+    ## This choice of distance needs some more thought
+
+    near_boundary = numpy.where(dist2 &lt; max_radius**2)[0]
+    near_boundary_points = points[near_boundary]
+
+    in_or_not[near_boundary] = (
+        self.get_closest_local_cells(near_boundary_points) != -1
+    )
+
+    if strict_validation:
+        chosen_ones = numpy.where(in_or_not == True)[0]
+        chosen_points = points[chosen_ones]
+        in_or_not[chosen_ones] = self.get_closest_local_cells(chosen_points) != -1
+
+    return in_or_not</code></pre>
+</details>
+<div class="desc"><p>Determine if the given points lie in this domain.
+Uses a mesh-boundary skeletonization array to determine whether the point is
+inside the boundary or outside. If close to the boundary, it checks if points
+are in a cell.</p></div>
+</dd>
 <dt id="underworld3.discretisation.Mesh.stats"><code class="name flex">
 <span>def <span class="ident">stats</span></span>(<span>self, uw_function, uw_meshVariable, basis=None)</span>
 </code></dt>
@@ -3114,6 +3650,50 @@ Path to save the data. If left empty it will save the data in the current workin
 - L2 norm
 - rms</p>
 <p>NOTE: this currently assumes scalar variables !</p></div>
+</dd>
+<dt id="underworld3.discretisation.Mesh.test_if_points_in_cells"><code class="name flex">
+<span>def <span class="ident">test_if_points_in_cells</span></span>(<span>self, points, cells)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def test_if_points_in_cells(self, points, cells):
+    &#34;&#34;&#34;
+    Determine if the given points lie in the suggested cells.
+    Uses a mesh skeletonization array to determine whether the point is
+    with the convex polygon / polyhedron defined by a cell.
+
+    Exact if applied to a linear mesh, approximate otherwise.
+    &#34;&#34;&#34;
+
+    self._mark_faces_inside_and_out()
+
+    assert points.shape[0] == cells.shape[0]
+
+    mesh = self
+
+    cStart, cEnd = self.dm.getHeightStratum(0)
+    num_cell_faces = self.dm.getConeSize(cStart)
+
+    inside = numpy.ones_like(cells, dtype=bool)
+    insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
+
+    for f in range(num_cell_faces):
+        control_points_o = self.faces_outer_control_points[f, cells]
+        control_points_i = self.faces_inner_control_points[f, cells]
+        inside = ((control_points_o - points) ** 2).sum(axis=1) - (
+            (control_points_i - points) ** 2
+        ).sum(axis=1) &gt; 0
+        insiders[:, f] = inside[:]
+
+    return numpy.all(insiders, axis=1)</code></pre>
+</details>
+<div class="desc"><p>Determine if the given points lie in the suggested cells.
+Uses a mesh skeletonization array to determine whether the point is
+with the convex polygon / polyhedron defined by a cell.</p>
+<p>Exact if applied to a linear mesh, approximate otherwise.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.update_lvec"><code class="name flex">
 <span>def <span class="ident">update_lvec</span></span>(<span>self)</span>
@@ -3173,39 +3753,46 @@ If the local vector is already up to date, this method will do nothing.</p></div
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">def view(self, level=0):
-    &#39;&#39;&#39;
+    &#34;&#34;&#34;
     Displays mesh information at different levels.
-    
+
     Parameters
     ----------
-    level : int (0 default) 
-        The display level. 
+    level : int (0 default)
+        The display level.
         0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)
-    &#39;&#39;&#39;
+    &#34;&#34;&#34;
 
     import numpy as np
-    if level==0:
+
+    if level == 0:
         if uw.mpi.rank == 0:
             print(f&#34;\n&#34;)
             print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
 
             uw.visualisation.plot_mesh(self)
 
-            #Total number of cells
-            nstart, nend=self.dm.getHeightStratum(0)
-            num_cells=nend-nstart
+            # Total number of cells
+            nstart, nend = self.dm.getHeightStratum(0)
+            num_cells = nend - nstart
             print(f&#34;Number of cells: {num_cells}\n&#34;)
 
             if len(self.vars) &gt; 0:
-                print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
-                print(f&#34;| ---------------------------------------------------------- |&#34;)
+                print(
+                    f&#34;| Variable Name       | component | degree |     type        |&#34;
+                )
+                print(
+                    f&#34;| ---------------------------------------------------------- |&#34;
+                )
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
                         f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
                     )
 
-                print(f&#34;| ---------------------------------------------------------- |&#34;)
+                print(
+                    f&#34;| ---------------------------------------------------------- |&#34;
+                )
                 print(&#34;\n&#34;, flush=True)
             else:
                 print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
@@ -3240,13 +3827,6 @@ If the local vector is already up to date, this method will do nothing.</p></div
                     flush=True,
                 )
 
-        # ## PETSc marked boundaries:
-        # l = self.dm.getLabel(&#34;All_Boundaries&#34;)
-        # if l:
-        #     i = l.getStratumSize(1001)
-        # else:
-        #     i = 0
-
         ii = uw.utilities.gather_data(np.array([i]), dtype=&#34;int&#34;)
 
         if uw.mpi.rank == 0:
@@ -3278,27 +3858,33 @@ If the local vector is already up to date, this method will do nothing.</p></div
         # self.dm.view()
         print(f&#34;Use view(1) to view detailed mesh information.\n&#34;)
 
-    elif level==1:
+    elif level == 1:
         if uw.mpi.rank == 0:
             print(f&#34;\n&#34;)
             print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
             uw.visualisation.plot_mesh(self)
 
-            #Total number of cells
-            nstart, nend=self.dm.getHeightStratum(0)
-            num_cells=nend-nstart
+            # Total number of cells
+            nstart, nend = self.dm.getHeightStratum(0)
+            num_cells = nend - nstart
             print(f&#34;Number of cells: {num_cells}\n&#34;)
 
             if len(self.vars) &gt; 0:
-                print(f&#34;| Variable Name       | component | degree |     type        |&#34;)
-                print(f&#34;| ---------------------------------------------------------- |&#34;)
+                print(
+                    f&#34;| Variable Name       | component | degree |     type        |&#34;
+                )
+                print(
+                    f&#34;| ---------------------------------------------------------- |&#34;
+                )
                 for vname in self.vars.keys():
                     v = self.vars[vname]
                     print(
                         f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
                     )
 
-                print(f&#34;| ---------------------------------------------------------- |&#34;)
+                print(
+                    f&#34;| ---------------------------------------------------------- |&#34;
+                )
                 print(&#34;\n&#34;, flush=True)
             else:
                 print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
@@ -3371,12 +3957,14 @@ If the local vector is already up to date, this method will do nothing.</p></div
         self.dm.view()
 
     else:
-        print(f&#34;\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.&#34;)</code></pre>
+        print(
+            f&#34;\n Please use view() or view(0) for default view and view(1) for a detailed view of the mesh.&#34;
+        )</code></pre>
 </details>
 <div class="desc"><p>Displays mesh information at different levels.</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
-<dt><strong><code>level</code></strong> :&ensp;<code>int (0 default) </code></dt>
+<dt><strong><code>level</code></strong> :&ensp;<code>int (0 default)</code></dt>
 <dd>The display level.
 0, for basic mesh information (variables and boundaries), while level=1 displays detailed mesh information (including PETSc information)</dd>
 </dl></div>
@@ -3685,7 +4273,7 @@ def write_timestep(
             save_location = (
                 output_base_name + f&#34;.proxy.{svar.clean_name}.{index:05}.h5&#34;
             )
-            svar.write(save_location)
+            svar.write_proxy(save_location)
 
     if uw.mpi.rank == 0:
         checkpoint_xdmf(
@@ -3743,6 +4331,7 @@ Vertex values (on the mesh points) are stored for all variables regardless of th
 <li><code><a title="underworld3.discretisation.Mesh.data" href="#underworld3.discretisation.Mesh.data">data</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.deform_mesh" href="#underworld3.discretisation.Mesh.deform_mesh">deform_mesh</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.dim" href="#underworld3.discretisation.Mesh.dim">dim</a></code></li>
+<li><code><a title="underworld3.discretisation.Mesh.element" href="#underworld3.discretisation.Mesh.element">element</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.generate_xdmf" href="#underworld3.discretisation.Mesh.generate_xdmf">generate_xdmf</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.get_closest_cells" href="#underworld3.discretisation.Mesh.get_closest_cells">get_closest_cells</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.get_closest_local_cells" href="#underworld3.discretisation.Mesh.get_closest_local_cells">get_closest_local_cells</a></code></li>
@@ -3754,9 +4343,11 @@ Vertex values (on the mesh points) are stored for all variables regardless of th
 <li><code><a title="underworld3.discretisation.Mesh.mesh_instances" href="#underworld3.discretisation.Mesh.mesh_instances">mesh_instances</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.nuke_coords_and_rebuild" href="#underworld3.discretisation.Mesh.nuke_coords_and_rebuild">nuke_coords_and_rebuild</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.petsc_save_checkpoint" href="#underworld3.discretisation.Mesh.petsc_save_checkpoint">petsc_save_checkpoint</a></code></li>
+<li><code><a title="underworld3.discretisation.Mesh.points_in_domain" href="#underworld3.discretisation.Mesh.points_in_domain">points_in_domain</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.r" href="#underworld3.discretisation.Mesh.r">r</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.rvec" href="#underworld3.discretisation.Mesh.rvec">rvec</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.stats" href="#underworld3.discretisation.Mesh.stats">stats</a></code></li>
+<li><code><a title="underworld3.discretisation.Mesh.test_if_points_in_cells" href="#underworld3.discretisation.Mesh.test_if_points_in_cells">test_if_points_in_cells</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.update_lvec" href="#underworld3.discretisation.Mesh.update_lvec">update_lvec</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.vars" href="#underworld3.discretisation.Mesh.vars">vars</a></code></li>
 <li><code><a title="underworld3.discretisation.Mesh.view" href="#underworld3.discretisation.Mesh.view">view</a></code></li>

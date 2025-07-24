@@ -50,7 +50,7 @@ el.replaceWith(d);
 <dl>
 <dt id="underworld3.systems.ddt.Eulerian"><code class="flex name class">
 <span>class <span class="ident">Eulerian</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: <function MeshVariable at 0x7f82987e1940> | sympy.core.basic.Basic,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>evalf: bool | None = False,<br>theta: float | None = 0.5,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: <function MeshVariable at 0x7f0756dd5bc0> | sympy.core.basic.Basic,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>evalf: bool | None = False,<br>theta: float | None = 0.5,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -106,17 +106,16 @@ el.replaceWith(d);
         # meshVariable (storage)
 
         if isinstance(psi_fn, uw.discretisation._MeshVariable):
-            self._psi_fn = psi_fn.sym ### get symbolic form of the meshvariable
+            self._psi_fn = psi_fn.sym  ### get symbolic form of the meshvariable
             self._psi_meshVar = psi_fn
         else:
-            self._psi_fn = psi_fn ### already in symbolic form
+            self._psi_fn = psi_fn  ### already in symbolic form
             self._psi_meshVar = None
 
         self.order = order
 
         psi_star = []
         self.psi_star = psi_star
-
 
         for i in range(order):
             self.psi_star.append(
@@ -133,7 +132,6 @@ el.replaceWith(d);
         # print(&#39;initiating history fn&#39;, flush=True)
         ### Initiate first history value in chain
         self.initiate_history_fn()
-    
 
         return
 
@@ -162,8 +160,7 @@ el.replaceWith(d);
         # )
         display(Latex(rf&#34;$\quad$History steps = {self.order}&#34;))
 
-
-    def _setup_projections(self):        
+    def _setup_projections(self):
         ### using this to store terms that can&#39;t be evaluated (e.g. derivatives)
         # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
         if self.vtype == uw.VarType.SCALAR:
@@ -194,7 +191,7 @@ el.replaceWith(d);
         self._psi_star_projection_solver.uw_function = self.psi_fn
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
-    
+
     def update_history_fn(self):
         ### update first value in history chain
         ### avoids projecting if function can be evaluated
@@ -205,13 +202,19 @@ el.replaceWith(d);
                         self.psi_star[0].data[...] = self._psi_meshVar.data[...]
                     # print(&#39;copying data&#39;, flush=True)
                 except:
-                    if self.evalf:
-                        self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-                        # print(&#39;evalf data&#39;, flush=True)
-                    else:
-                        self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-                        # print(&#39;evaluate data&#39;, flush=True)
-    
+                    # if self.evalf:
+                    #     self.psi_star[0].data[...] = uw.function.evalf(
+                    #         self.psi_fn, self.psi_star[0].coords
+                    #     ).reshape(-1, max(self.psi_fn.shape))
+                    #     # print(&#39;evalf data&#39;, flush=True)
+                    # else:
+                    self.psi_star[0].data[...] = uw.function.evaluate(
+                        self.psi_fn,
+                        self.psi_star[0].coords,
+                        evalf=evalf,
+                    ).reshape(-1, max(self.psi_fn.shape))
+                    # print(&#39;evaluate data&#39;, flush=True)
+
         except:
             self._setup_projections()
             self._psi_star_projection_solver.solve()
@@ -226,7 +229,7 @@ el.replaceWith(d);
                 self.psi_star[i].data[...] = self.psi_star[0].data[...]
 
         return
-    
+
     def update(
         self,
         evalf: Optional[bool] = False,
@@ -255,12 +258,11 @@ el.replaceWith(d);
         if verbose and uw.mpi.rank == 0:
             print(f&#34;Update {self.psi_fn}&#34;, flush=True)
 
-
         ### copy values down the chain
         for i in range(self.order - 1, 0, -1):
             with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
-        
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
         ### update the history fn
         self.update_history_fn()
         # ### update the first value in the chain
@@ -496,12 +498,18 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
                     self.psi_star[0].data[...] = self._psi_meshVar.data[...]
                 # print(&#39;copying data&#39;, flush=True)
             except:
-                if self.evalf:
-                    self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-                    # print(&#39;evalf data&#39;, flush=True)
-                else:
-                    self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-                    # print(&#39;evaluate data&#39;, flush=True)
+                # if self.evalf:
+                #     self.psi_star[0].data[...] = uw.function.evalf(
+                #         self.psi_fn, self.psi_star[0].coords
+                #     ).reshape(-1, max(self.psi_fn.shape))
+                #     # print(&#39;evalf data&#39;, flush=True)
+                # else:
+                self.psi_star[0].data[...] = uw.function.evaluate(
+                    self.psi_fn,
+                    self.psi_star[0].coords,
+                    evalf=evalf,
+                ).reshape(-1, max(self.psi_fn.shape))
+                # print(&#39;evaluate data&#39;, flush=True)
 
     except:
         self._setup_projections()
@@ -531,12 +539,11 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
     if verbose and uw.mpi.rank == 0:
         print(f&#34;Update {self.psi_fn}&#34;, flush=True)
 
-
     ### copy values down the chain
     for i in range(self.order - 1, 0, -1):
         with self.mesh.access(self.psi_star[i]):
-            self.psi_star[i].data[...] = self.psi_star[i-1].data[...]
-    
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
     ### update the history fn
     self.update_history_fn()
     # ### update the first value in the chain
@@ -619,7 +626,7 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
         super().__init__()
 
         # create a new swarm to manage here
-        dudt_swarm = uw.swarm.Swarm(mesh)
+        dudt_swarm = uw.swarm.UWSwarm(mesh)
 
         self.mesh = mesh
         self.swarm = dudt_swarm
@@ -705,25 +712,27 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
         # Now update the swarm variable
 
-        if evalf:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evalf(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = updated_psi
+        # if evalf:
+        #     psi_star_0 = self.psi_star[0]
+        #     with self.swarm.access(psi_star_0):
+        #         for i in range(psi_star_0.shape[0]):
+        #             for j in range(psi_star_0.shape[1]):
+        #                 updated_psi = uw.function.evalf(
+        #                     self.psi_fn[i, j], self.swarm.data
+        #                 )
+        #                 psi_star_0[i, j].data[:] = updated_psi
 
-        else:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evaluate(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = updated_psi
+        # else:
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                        evalf=evalf,
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
 
         # Now update the swarm locations
 
@@ -931,25 +940,27 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
     # Now update the swarm variable
 
-    if evalf:
-        psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evalf(
-                        self.psi_fn[i, j], self.swarm.data
-                    )
-                    psi_star_0[i, j].data[:] = updated_psi
+    # if evalf:
+    #     psi_star_0 = self.psi_star[0]
+    #     with self.swarm.access(psi_star_0):
+    #         for i in range(psi_star_0.shape[0]):
+    #             for j in range(psi_star_0.shape[1]):
+    #                 updated_psi = uw.function.evalf(
+    #                     self.psi_fn[i, j], self.swarm.data
+    #                 )
+    #                 psi_star_0[i, j].data[:] = updated_psi
 
-    else:
-        psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
-                        self.psi_fn[i, j], self.swarm.data
-                    )
-                    psi_star_0[i, j].data[:] = updated_psi
+    # else:
+    psi_star_0 = self.psi_star[0]
+    with self.swarm.access(psi_star_0):
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                updated_psi = uw.function.evaluate(
+                    self.psi_fn[i, j],
+                    self.swarm.data,
+                    evalf=evalf,
+                )
+                psi_star_0[i, j].data[:] = updated_psi
 
     # Now update the swarm locations
 
@@ -1108,28 +1119,31 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
         phi = 1 / self.step_averaging
 
         # Now update the swarm variable
-        if evalf:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evalf(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                        )
-        else:
-            psi_star_0 = self.psi_star[0]
-            with self.swarm.access(psi_star_0):
-                for i in range(psi_star_0.shape[0]):
-                    for j in range(psi_star_0.shape[1]):
-                        updated_psi = uw.function.evaluate(
-                            self.psi_fn[i, j], self.swarm.data
-                        )
-                        psi_star_0[i, j].data[:] = (
-                            phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                        )
+        # if evalf:
+        #     psi_star_0 = self.psi_star[0]
+        #     with self.swarm.access(psi_star_0):
+        #         for i in range(psi_star_0.shape[0]):
+        #             for j in range(psi_star_0.shape[1]):
+        #                 updated_psi = uw.function.evalf(
+        #                     self.psi_fn[i, j], self.swarm.data
+        #                 )
+        #                 psi_star_0[i, j].data[:] = (
+        #                     phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+        #                 )
+        # else:
+        #
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                        evalf=evalf,
+                    )
+                    psi_star_0[i, j].data[:] = (
+                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                    )
 
         return
 
@@ -1339,28 +1353,31 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
     phi = 1 / self.step_averaging
 
     # Now update the swarm variable
-    if evalf:
-        psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evalf(
-                        self.psi_fn[i, j], self.swarm.data
-                    )
-                    psi_star_0[i, j].data[:] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                    )
-    else:
-        psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
-                        self.psi_fn[i, j], self.swarm.data
-                    )
-                    psi_star_0[i, j].data[:] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                    )
+    # if evalf:
+    #     psi_star_0 = self.psi_star[0]
+    #     with self.swarm.access(psi_star_0):
+    #         for i in range(psi_star_0.shape[0]):
+    #             for j in range(psi_star_0.shape[1]):
+    #                 updated_psi = uw.function.evalf(
+    #                     self.psi_fn[i, j], self.swarm.data
+    #                 )
+    #                 psi_star_0[i, j].data[:] = (
+    #                     phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+    #                 )
+    # else:
+    #
+    psi_star_0 = self.psi_star[0]
+    with self.swarm.access(psi_star_0):
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                updated_psi = uw.function.evaluate(
+                    self.psi_fn[i, j],
+                    self.swarm.data,
+                    evalf=evalf,
+                )
+                psi_star_0[i, j].data[:] = (
+                    phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
+                )
 
     return</code></pre>
 </details>
@@ -1485,7 +1502,7 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
         )
 
         # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
+        nswarm = uw.swarm.NodalPointUWSwarm(self._workVar, verbose)
         self._nswarm_psi = nswarm
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
@@ -1607,8 +1624,8 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
                 order=1,
                 corrector=False,
                 restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-                evalf=False,
-                step_limit=True,
+                evalf=evalf,
+                step_limit=False,
                 #! substepping: this seems to be too diffusive if left on.
                 #! Check the code carefully !
             )
@@ -1619,30 +1636,31 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
                 # is required instead.
 
                 try:
-                    # Note, we should honour the evalf flag here too.
                     with self._workVar.mesh.access():
                         self.psi_star[0].data[...] = uw.function.evaluate(
-                            self.psi_fn, self.psi_star[0].coords
+                            self.psi_fn,
+                            self.psi_star[0].coords,
+                            evalf=evalf,
                         )
                 except:
                     self._psi_star_projection_solver.uw_function = self.psi_fn
                     self._psi_star_projection_solver.smoothing = 0.0
                     self._psi_star_projection_solver.solve(verbose=verbose)
 
-            if evalf:
-                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-                            self.psi_star[i].sym[d], self._nswarm_psi.data
-                        )
-            else:
-                with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                    for d in range(self.psi_star[i].shape[1]):
-                        self._nswarm_psi.swarmVariable.data[
-                            :, d
-                        ] = uw.function.evaluate(
-                            self.psi_star[i].sym[d], self._nswarm_psi.data
-                        )
+            # if evalf:
+            #     with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+            #         for d in range(self.psi_star[i].shape[1]):
+            #             self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+            #                 self.psi_star[i].sym[d], self._nswarm_psi.data
+            #             )
+            # else:
+            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+                for d in range(self.psi_star[i].shape[1]):
+                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
+                        self.psi_star[i].sym[d],
+                        self._nswarm_psi.data,
+                        evalf=evalf,
+                    )
 
             if self.preserve_moments and self._workVar.num_components == 1:
 
@@ -1695,9 +1713,9 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
                 orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
 
                 with self.mesh.access(self._workVar):
-                    self._workVar.data[
-                        orig_index, :
-                    ] = self._nswarm_psi.swarmVariable.data[:, :]
+                    self._workVar.data[orig_index, :] = (
+                        self._nswarm_psi.swarmVariable.data[:, :]
+                    )
 
             # Project / Copy from advected swarm to semi-Lagrangian variables.
 
@@ -1725,9 +1743,6 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
                 self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
                 IL2 = np.sqrt(self.I.evaluate())
-
-                # if uw.mpi.rank == 0:
-                #     print(f&#34;Pre adjustment: {Imean}, {IL2}&#34;, flush=True)
 
                 with self.mesh.access(self.psi_star[i]):
                     self.psi_star[i].data[...] += Imean0 - Imean
@@ -2003,8 +2018,8 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
             order=1,
             corrector=False,
             restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-            evalf=False,
-            step_limit=True,
+            evalf=evalf,
+            step_limit=False,
             #! substepping: this seems to be too diffusive if left on.
             #! Check the code carefully !
         )
@@ -2015,30 +2030,31 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
             # is required instead.
 
             try:
-                # Note, we should honour the evalf flag here too.
                 with self._workVar.mesh.access():
                     self.psi_star[0].data[...] = uw.function.evaluate(
-                        self.psi_fn, self.psi_star[0].coords
+                        self.psi_fn,
+                        self.psi_star[0].coords,
+                        evalf=evalf,
                     )
             except:
                 self._psi_star_projection_solver.uw_function = self.psi_fn
                 self._psi_star_projection_solver.smoothing = 0.0
                 self._psi_star_projection_solver.solve(verbose=verbose)
 
-        if evalf:
-            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-                        self.psi_star[i].sym[d], self._nswarm_psi.data
-                    )
-        else:
-            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[
-                        :, d
-                    ] = uw.function.evaluate(
-                        self.psi_star[i].sym[d], self._nswarm_psi.data
-                    )
+        # if evalf:
+        #     with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+        #         for d in range(self.psi_star[i].shape[1]):
+        #             self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
+        #                 self.psi_star[i].sym[d], self._nswarm_psi.data
+        #             )
+        # else:
+        with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
+            for d in range(self.psi_star[i].shape[1]):
+                self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
+                    self.psi_star[i].sym[d],
+                    self._nswarm_psi.data,
+                    evalf=evalf,
+                )
 
         if self.preserve_moments and self._workVar.num_components == 1:
 
@@ -2091,9 +2107,9 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
             orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
 
             with self.mesh.access(self._workVar):
-                self._workVar.data[
-                    orig_index, :
-                ] = self._nswarm_psi.swarmVariable.data[:, :]
+                self._workVar.data[orig_index, :] = (
+                    self._nswarm_psi.swarmVariable.data[:, :]
+                )
 
         # Project / Copy from advected swarm to semi-Lagrangian variables.
 
@@ -2121,9 +2137,6 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
             self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
             IL2 = np.sqrt(self.I.evaluate())
-
-            # if uw.mpi.rank == 0:
-            #     print(f&#34;Pre adjustment: {Imean}, {IL2}&#34;, flush=True)
 
             with self.mesh.access(self.psi_star[i]):
                 self.psi_star[i].data[...] += Imean0 - Imean
@@ -2202,11 +2215,11 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
                 psi_fn = sympy.Matrix([[psi_fn]])
         self._psi_fn = psi_fn  # stored with its native shape
         self._shape = psi_fn.shape  # capture the shape
-        
+
         # Set the display symbol for psi_fn and for the history variable.
-        self._psi_fn_symbol = varsymbol              # e.g. &#34;\psi&#34;
-        self._psi_star_symbol = varsymbol + r&#34;^\ast&#34;    # e.g. &#34;\psi^\ast&#34;
-        
+        self._psi_fn_symbol = varsymbol  # e.g. &#34;\psi&#34;
+        self._psi_star_symbol = varsymbol + r&#34;^\ast&#34;  # e.g. &#34;\psi^\ast&#34;
+
         # Create the history list: each element is a Matrix of shape _shape.
         self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
         self.initiate_history_fn()
@@ -2230,11 +2243,14 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
     def _object_viewer(self):
         from IPython.display import Latex, display
+
         # Display the primary variable
         display(Latex(rf&#34;$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$&#34;))
         # Display the history variable using the different symbol.
         history_latex = &#34;, &#34;.join([sympy.latex(elem) for elem in self.psi_star])
-        display(Latex(rf&#34;$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$&#34;))
+        display(
+            Latex(rf&#34;$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$&#34;)
+        )
 
     def update_history_fn(self):
         # Update the first history element with a copy of the current ψ.
@@ -2271,7 +2287,6 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
         if verbose:
             print(f&#34;Updating history for ψ = {self.psi_fn}&#34;, flush=True)
 
-            
         # Shift history: copy each element down the chain.
         for i in range(self.order - 1, 0, -1):
             self.psi_star[i] = self.psi_star[i - 1].copy()
@@ -2280,20 +2295,25 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
     def bdf(self, order: Optional[int] = None):
         r&#34;&#34;&#34;Compute the backward differentiation approximation of the time-derivative of ψ.
-           For order 1: bdf ≡ ψ - psi_star[0]
+        For order 1: bdf ≡ ψ - psi_star[0]
         &#34;&#34;&#34;
         if order is None:
             order = self.order
         else:
             order = max(1, min(self.order, order))
-        
+
         with sympy.core.evaluate(False):
             if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0]
             elif order == 2:
-                bdf0 = (3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2)
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2
             elif order == 3:
-                bdf0 = (11 * self.psi_fn / 6 - 3 * self.psi_star[0] + (3 * self.psi_star[1]) / 2 - self.psi_star[2] / 3)
+                bdf0 = (
+                    11 * self.psi_fn / 6
+                    - 3 * self.psi_star[0]
+                    + (3 * self.psi_star[1]) / 2
+                    - self.psi_star[2] / 3
+                )
         return bdf0
 
     def adams_moulton_flux(self, order: Optional[int] = None):
@@ -2301,14 +2321,19 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
             order = self.order
         else:
             order = max(1, min(self.order, order))
-        
+
         with sympy.core.evaluate(False):
             if order == 1:
                 am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0]
             elif order == 2:
                 am = (5 * self.psi_fn + 8 * self.psi_star[0] - self.psi_star[1]) / 12
             elif order == 3:
-                am = (9 * self.psi_fn + 19 * self.psi_star[0] - 5 * self.psi_star[1] + self.psi_star[2]) / 24
+                am = (
+                    9 * self.psi_fn
+                    + 19 * self.psi_star[0]
+                    - 5 * self.psi_star[1]
+                    + self.psi_star[2]
+                ) / 24
         return am</code></pre>
 </details>
 <div class="desc"><p>Symbolic History Manager:</p>
@@ -2353,14 +2378,19 @@ def psi_fn(self):
         order = self.order
     else:
         order = max(1, min(self.order, order))
-    
+
     with sympy.core.evaluate(False):
         if order == 1:
             am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0]
         elif order == 2:
             am = (5 * self.psi_fn + 8 * self.psi_star[0] - self.psi_star[1]) / 12
         elif order == 3:
-            am = (9 * self.psi_fn + 19 * self.psi_star[0] - 5 * self.psi_star[1] + self.psi_star[2]) / 24
+            am = (
+                9 * self.psi_fn
+                + 19 * self.psi_star[0]
+                - 5 * self.psi_star[1]
+                + self.psi_star[2]
+            ) / 24
     return am</code></pre>
 </details>
 <div class="desc"></div>
@@ -2375,20 +2405,25 @@ def psi_fn(self):
 </summary>
 <pre><code class="python">def bdf(self, order: Optional[int] = None):
     r&#34;&#34;&#34;Compute the backward differentiation approximation of the time-derivative of ψ.
-       For order 1: bdf ≡ ψ - psi_star[0]
+    For order 1: bdf ≡ ψ - psi_star[0]
     &#34;&#34;&#34;
     if order is None:
         order = self.order
     else:
         order = max(1, min(self.order, order))
-    
+
     with sympy.core.evaluate(False):
         if order == 1:
             bdf0 = self.psi_fn - self.psi_star[0]
         elif order == 2:
-            bdf0 = (3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2)
+            bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2
         elif order == 3:
-            bdf0 = (11 * self.psi_fn / 6 - 3 * self.psi_star[0] + (3 * self.psi_star[1]) / 2 - self.psi_star[2] / 3)
+            bdf0 = (
+                11 * self.psi_fn / 6
+                - 3 * self.psi_star[0]
+                + (3 * self.psi_star[1]) / 2
+                - self.psi_star[2] / 3
+            )
     return bdf0</code></pre>
 </details>
 <div class="desc"><p>Compute the backward differentiation approximation of the time-derivative of ψ.
@@ -2459,7 +2494,6 @@ For order 1: bdf ≡ ψ - psi_star[0]</p></div>
     if verbose:
         print(f&#34;Updating history for ψ = {self.psi_fn}&#34;, flush=True)
 
-        
     # Shift history: copy each element down the chain.
     for i in range(self.order - 1, 0, -1):
         self.psi_star[i] = self.psi_star[i - 1].copy()
