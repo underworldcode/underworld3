@@ -1,13 +1,12 @@
 name: Image Build and Push
 
 on:
-  workflow_run: # dependency on build_uw3_and_test.yml
-    workflows: ["test_uw3"]
-    types: [completed]
+  push: 
+    branches:
+      - development
 
 jobs:
   push-to-dockerhub:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
