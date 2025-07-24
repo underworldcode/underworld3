@@ -1557,7 +1557,7 @@ def Annulus(
         inside = Rsq < radiusInner**2
 
         coords[outside, :] *= 0.99 * radiusOuter / (Rsq[outside] ** 0.5).reshape(-1, 1)
-        coords[inside, :]  *= 1.01 * radiusInner / (Rsq[inside] ** 0.5).reshape(-1, 1)
+        coords[inside, :] *= 1.01 * radiusInner / (Rsq[inside] ** 0.5).reshape(-1, 1)
 
         return coords
 
@@ -2338,7 +2338,6 @@ def DiscInternalBoundaries(
         Upper = 3
         Centre = 10
 
-
     if cellSize_Lower is None:
         cellSize_Lower = cellSize
 
@@ -2548,7 +2547,6 @@ def CubedSphere(
         Lower = 1
         Upper = 2
 
-
     r1 = radiusInner / np.sqrt(3)
     r2 = radiusOuter / np.sqrt(3)
 
@@ -2750,8 +2748,8 @@ def CubedSphere(
 def RegionalSphericalBox(
     radiusOuter: float = 1.0,
     radiusInner: float = 0.547,
-    SWcorner=[-45,-45],
-    NEcorner=[+45,+45],
+    SWcorner=[-45, -45],
+    NEcorner=[+45, +45],
     numElementsLon: int = 5,
     numElementsLat: int = 5,
     numElementsDepth: int = 5,
@@ -2760,6 +2758,7 @@ def RegionalSphericalBox(
     simplex: bool = False,
     filename=None,
     refinement=None,
+    coarsening=None,
     gmsh_verbosity=0,
     verbose=False,
 ):
@@ -2778,46 +2777,53 @@ def RegionalSphericalBox(
     ln_min = np.radians(SWcorner[0])
     ln_max = np.radians(NEcorner[0])
 
-    p2 = (  radiusOuter * np.cos(lt_max) * np.cos(ln_max),
-            radiusOuter * np.cos(lt_max) * np.sin(ln_max),
-            radiusOuter * np.sin(lt_max)
+    p2 = (
+        radiusOuter * np.cos(lt_max) * np.cos(ln_max),
+        radiusOuter * np.cos(lt_max) * np.sin(ln_max),
+        radiusOuter * np.sin(lt_max),
     )
 
-    p3 = (  radiusOuter * np.cos(lt_max) * np.cos(ln_min),
-            radiusOuter * np.cos(lt_max) * np.sin(ln_min),
-            radiusOuter * np.sin(lt_max)
-        )
-
-    p4 = (  radiusOuter * np.cos(lt_min) * np.cos(ln_min),
-            radiusOuter * np.cos(lt_min) * np.sin(ln_min),
-            radiusOuter * np.sin(lt_min)
+    p3 = (
+        radiusOuter * np.cos(lt_max) * np.cos(ln_min),
+        radiusOuter * np.cos(lt_max) * np.sin(ln_min),
+        radiusOuter * np.sin(lt_max),
     )
 
-    p5 = (  radiusOuter * np.cos(lt_min) * np.cos(ln_max),
-            radiusOuter * np.cos(lt_min) * np.sin(ln_max),
-            radiusOuter * np.sin(lt_min)
+    p4 = (
+        radiusOuter * np.cos(lt_min) * np.cos(ln_min),
+        radiusOuter * np.cos(lt_min) * np.sin(ln_min),
+        radiusOuter * np.sin(lt_min),
     )
 
-    p6 = (  radiusInner * np.cos(lt_max) * np.cos(ln_max),
-            radiusInner * np.cos(lt_max) * np.sin(ln_max),
-            radiusInner * np.sin(lt_max)
+    p5 = (
+        radiusOuter * np.cos(lt_min) * np.cos(ln_max),
+        radiusOuter * np.cos(lt_min) * np.sin(ln_max),
+        radiusOuter * np.sin(lt_min),
     )
 
-    p7 = (  radiusInner * np.cos(lt_max) * np.cos(ln_min),
-            radiusInner * np.cos(lt_max) * np.sin(ln_min),
-            radiusInner * np.sin(lt_max)
-        )
-
-    p8 = (  radiusInner * np.cos(lt_min) * np.cos(ln_min),
-            radiusInner * np.cos(lt_min) * np.sin(ln_min),
-            radiusInner * np.sin(lt_min)
+    p6 = (
+        radiusInner * np.cos(lt_max) * np.cos(ln_max),
+        radiusInner * np.cos(lt_max) * np.sin(ln_max),
+        radiusInner * np.sin(lt_max),
     )
 
-    p9 = (  radiusInner * np.cos(lt_min) * np.cos(ln_max),
-            radiusInner * np.cos(lt_min) * np.sin(ln_max),
-            radiusInner * np.sin(lt_min)
+    p7 = (
+        radiusInner * np.cos(lt_max) * np.cos(ln_min),
+        radiusInner * np.cos(lt_max) * np.sin(ln_min),
+        radiusInner * np.sin(lt_max),
     )
 
+    p8 = (
+        radiusInner * np.cos(lt_min) * np.cos(ln_min),
+        radiusInner * np.cos(lt_min) * np.sin(ln_min),
+        radiusInner * np.sin(lt_min),
+    )
+
+    p9 = (
+        radiusInner * np.cos(lt_min) * np.cos(ln_max),
+        radiusInner * np.cos(lt_min) * np.sin(ln_max),
+        radiusInner * np.sin(lt_min),
+    )
 
     # lat_south = np.radians(centralLatitude - latitudeExtent/2)
     # lat_north = np.radians(centralLatitude + latitudeExtent/2)
@@ -2845,7 +2851,6 @@ def RegionalSphericalBox(
         gmsh.model.add("Cubed Sphere")
 
         center_point = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=1)
-
 
         gmsh.model.geo.addPoint(p2[0], p2[1], p2[2], tag=2)
         gmsh.model.geo.addPoint(p3[0], p3[1], p3[2], tag=3)
@@ -2918,7 +2923,6 @@ def RegionalSphericalBox(
         gmsh.model.addPhysicalGroup(3, [1, 2], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
-
         ## We need to know which surface !!
         # for _, line in gmsh.model.get_entities(1):
         #     gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
@@ -2931,18 +2935,15 @@ def RegionalSphericalBox(
         gmsh.model.mesh.setTransfiniteCurve(3, numNodes=numElementsLon + 1)
         gmsh.model.mesh.setTransfiniteCurve(4, numNodes=numElementsLat + 1)
 
-
         gmsh.model.mesh.setTransfiniteCurve(5, numNodes=numElementsLon + 1)
         gmsh.model.mesh.setTransfiniteCurve(6, numNodes=numElementsLat + 1)
         gmsh.model.mesh.setTransfiniteCurve(7, numNodes=numElementsLon + 1)
         gmsh.model.mesh.setTransfiniteCurve(8, numNodes=numElementsLat + 1)
 
-
         gmsh.model.mesh.setTransfiniteCurve(9, numNodes=numElementsDepth + 1)
         gmsh.model.mesh.setTransfiniteCurve(10, numNodes=numElementsDepth + 1)
         gmsh.model.mesh.setTransfiniteCurve(11, numNodes=numElementsDepth + 1)
         gmsh.model.mesh.setTransfiniteCurve(12, numNodes=numElementsDepth + 1)
-
 
         for _, surface in gmsh.model.get_entities(2):
             gmsh.model.mesh.setTransfiniteSurface(surface)
@@ -2959,7 +2960,6 @@ def RegionalSphericalBox(
         gmsh.model.mesh.generate(3)
         gmsh.write(uw_filename)
         gmsh.finalize()
-
 
     ## This needs a side-boundary capture routine as well
 
@@ -3021,6 +3021,8 @@ def RegionalSphericalBox(
         boundary_normals=None,
         refinement=refinement,
         refinement_callback=spherical_mesh_refinement_callback,
+        coarsening=coarsening,
+        coarsening_callback=spherical_mesh_refinement_callback,
         coordinate_system_type=CoordinateSystemType.SPHERICAL,
         return_coords_to_bounds=sphere_return_coords_to_bounds,
         verbose=verbose,
@@ -3232,7 +3234,6 @@ def SegmentedSphericalShell(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-
 
     meshRes = cellSize
     num_segments = numSegments
@@ -3637,7 +3638,6 @@ def SegmentedSphericalBall(
         Centre = 1
         Slices = 40
         Null_Boundary = 666
-
 
     meshRes = cellSize
     num_segments = numSegments
@@ -4057,15 +4057,15 @@ def BoxInternalBoundary(
             os.makedirs(".meshes", exist_ok=True)
         if not simplex:
             # structuredQuadBoxIB
-            uw_filename = (f".meshes/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh")
+            uw_filename = f".meshes/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh"
         else:
-            uw_filename = (f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh")
+            uw_filename = f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
-
     if uw.mpi.rank == 0:
         import gmsh
+
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("Box")
@@ -4079,8 +4079,8 @@ def BoxInternalBoundary(
 
             if not simplex:
                 cellSize = 0.0
-                nx,ny = elementRes
-                ny_a,ny_b = zelementRes
+                nx, ny = elementRes
+                ny_a, ny_b = zelementRes
 
             p1 = gmsh.model.geo.add_point(xmin, ymin, 0.0, cellSize)
             p2 = gmsh.model.geo.add_point(xmax, ymin, 0.0, cellSize)
@@ -4107,40 +4107,55 @@ def BoxInternalBoundary(
             gmsh.model.geo.synchronize()
 
             # Add Physical groups for boundaries
-            gmsh.model.add_physical_group(1, [l1,], boundaries.Bottom.value)
+            gmsh.model.add_physical_group(
+                1,
+                [
+                    l1,
+                ],
+                boundaries.Bottom.value,
+            )
             gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
             gmsh.model.add_physical_group(1, [l2], boundaries.Top.value)
             gmsh.model.set_physical_name(1, l2, boundaries.Top.name)
             gmsh.model.add_physical_group(1, [l3, l4], boundaries.Left.value)
             gmsh.model.set_physical_name(1, l34, boundaries.Left.name)
-            gmsh.model.add_physical_group(1, [l5,l6], boundaries.Right.value)
+            gmsh.model.add_physical_group(1, [l5, l6], boundaries.Right.value)
             gmsh.model.set_physical_name(1, l56, boundaries.Right.name)
             gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
             gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
-            gmsh.model.addPhysicalGroup(2, [surface1,surface2], 99999)
+            gmsh.model.addPhysicalGroup(2, [surface1, surface2], 99999)
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
             if not simplex:
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                    tag=l1, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l2, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                    tag=l2, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l3, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                    tag=l3, numNodes=ny_b + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l4, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                    tag=l4, numNodes=ny_a + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l5, numNodes=ny_b + 1, meshType="Progression", coef=1.0)
+                    tag=l5, numNodes=ny_b + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0)
+                    tag=l6, numNodes=ny_a + 1, meshType="Progression", coef=1.0
+                )
                 gmsh.model.mesh.set_transfinite_curve(
-                tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0)
+                    tag=l7, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
 
                 gmsh.model.mesh.set_transfinite_surface(
-                tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6])
+                    tag=surface1, arrangement="Left", cornerTags=[p1, p2, p5, p6]
+                )
                 gmsh.model.mesh.set_recombine(2, surface1)
                 gmsh.model.mesh.set_transfinite_surface(
-                tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4])
+                    tag=surface2, arrangement="Left", cornerTags=[p5, p6, p3, p4]
+                )
                 gmsh.model.mesh.set_recombine(2, surface2)
 
             gmsh.model.mesh.generate(dim)
@@ -4157,7 +4172,7 @@ def BoxInternalBoundary(
             if not simplex:
                 cellSize = 0.0
                 nx, ny, nz = elementRes
-                nzt,nzb = zelementRes
+                nzt, nzb = zelementRes
 
             p1t = gmsh.model.geo.add_point(xmin, ymin, zmax, cellSize)
             p2t = gmsh.model.geo.add_point(xmax, ymin, zmax, cellSize)
@@ -4233,9 +4248,13 @@ def BoxInternalBoundary(
             cl = gmsh.model.geo.add_curve_loop((l8b, l3i, -l7b, -l3b))
             back_b = gmsh.model.geo.add_plane_surface([cl])
 
-            sloop1 = gmsh.model.geo.add_surface_loop([front_t, right_t, back_t, top, left_t, internal])
+            sloop1 = gmsh.model.geo.add_surface_loop(
+                [front_t, right_t, back_t, top, left_t, internal]
+            )
             volume_t = gmsh.model.geo.add_volume([sloop1])
-            sloop2 = gmsh.model.geo.add_surface_loop([front_b, right_b, back_b, internal, left_b, bottom])
+            sloop2 = gmsh.model.geo.add_surface_loop(
+                [front_b, right_b, back_b, internal, left_b, bottom]
+            )
             volume_b = gmsh.model.geo.add_volume([sloop2])
 
             gmsh.model.geo.synchronize()
@@ -4248,50 +4267,112 @@ def BoxInternalBoundary(
             gmsh.model.set_physical_name(2, internal, boundaries.Internal.name)
             gmsh.model.add_physical_group(2, [left_t, left_b], boundaries.Left.value)
             gmsh.model.set_physical_name(2, left, boundaries.Left.name)
-            gmsh.model.add_physical_group(2, [right_t,right_b], boundaries.Right.value)
+            gmsh.model.add_physical_group(2, [right_t, right_b], boundaries.Right.value)
             gmsh.model.set_physical_name(2, right, boundaries.Right.name)
             gmsh.model.add_physical_group(2, [front_t, front_b], boundaries.Front.value)
             gmsh.model.set_physical_name(2, front, boundaries.Front.name)
-            gmsh.model.add_physical_group(2, [back_t,back_b], boundaries.Back.value)
+            gmsh.model.add_physical_group(2, [back_t, back_b], boundaries.Back.value)
             gmsh.model.set_physical_name(2, back, boundaries.Back.name)
 
-            gmsh.model.addPhysicalGroup(3, [volume_t,volume_b], 99999)
+            gmsh.model.addPhysicalGroup(3, [volume_t, volume_b], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
 
             if not simplex:
-                gmsh.model.mesh.set_transfinite_curve(l1t, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l2t, numNodes=ny + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l3t, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l4t, numNodes=ny + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l1i, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l2i, numNodes=ny + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l3i, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l4i, numNodes=ny + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l1b, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l2b, numNodes=ny + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l3b, numNodes=nx + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l4b, numNodes=ny + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                    l1t, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l2t, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l3t, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l4t, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l1i, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l2i, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l3i, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l4i, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l1b, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l2b, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l3b, numNodes=nx + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l4b, numNodes=ny + 1, meshType="Progression", coef=1.0
+                )
 
-                gmsh.model.mesh.set_transfinite_curve(l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l8t, numNodes=nzt + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l5b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
-                gmsh.model.mesh.set_transfinite_curve(l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0)
+                gmsh.model.mesh.set_transfinite_curve(
+                    l5t, numNodes=nzt + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l6t, numNodes=nzt + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l7t, numNodes=nzt + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l8t, numNodes=nzt + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l5b, numNodes=nzb + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l6b, numNodes=nzb + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l7b, numNodes=nzb + 1, meshType="Progression", coef=1.0
+                )
+                gmsh.model.mesh.set_transfinite_curve(
+                    l8b, numNodes=nzb + 1, meshType="Progression", coef=1.0
+                )
 
-                gmsh.model.mesh.set_transfinite_surface(tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b])
-                gmsh.model.mesh.set_transfinite_surface(tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t])
-                gmsh.model.mesh.set_transfinite_surface(tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i])
-                gmsh.model.mesh.set_transfinite_surface(tag=front_t, arrangement="Left", cornerTags=[p1i, p2i, p2t, p1t])
-                gmsh.model.mesh.set_transfinite_surface(tag=back_t, arrangement="Left", cornerTags=[p3i, p4i, p4t, p3t])
-                gmsh.model.mesh.set_transfinite_surface(tag=right_t, arrangement="Left", cornerTags=[p2i, p4i, p4t, p2t])
-                gmsh.model.mesh.set_transfinite_surface(tag=left_t, arrangement="Left", cornerTags=[p1i, p3i, p3t, p1t])
-                gmsh.model.mesh.set_transfinite_surface(tag=front_b, arrangement="Left", cornerTags=[p1b, p2b, p2i, p1i])
-                gmsh.model.mesh.set_transfinite_surface(tag=back_b, arrangement="Left", cornerTags=[p3b, p4b, p4i, p3i])
-                gmsh.model.mesh.set_transfinite_surface(tag=right_b, arrangement="Left", cornerTags=[p2b, p4b, p4i, p2i])
-                gmsh.model.mesh.set_transfinite_surface(tag=left_b, arrangement="Left", cornerTags=[p1b, p3b, p3i, p1i])
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=bottom, arrangement="Left", cornerTags=[p1b, p2b, p4b, p3b]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=top, arrangement="Left", cornerTags=[p1t, p2t, p4t, p3t]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=internal, arrangement="Left", cornerTags=[p1i, p2i, p4i, p3i]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=front_t, arrangement="Left", cornerTags=[p1i, p2i, p2t, p1t]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=back_t, arrangement="Left", cornerTags=[p3i, p4i, p4t, p3t]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=right_t, arrangement="Left", cornerTags=[p2i, p4i, p4t, p2t]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=left_t, arrangement="Left", cornerTags=[p1i, p3i, p3t, p1t]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=front_b, arrangement="Left", cornerTags=[p1b, p2b, p2i, p1i]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=back_b, arrangement="Left", cornerTags=[p3b, p4b, p4i, p3i]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=right_b, arrangement="Left", cornerTags=[p2b, p4b, p4i, p2i]
+                )
+                gmsh.model.mesh.set_transfinite_surface(
+                    tag=left_b, arrangement="Left", cornerTags=[p1b, p3b, p3i, p1i]
+                )
                 gmsh.model.mesh.set_recombine(2, bottom)
                 gmsh.model.mesh.set_recombine(2, top)
                 gmsh.model.mesh.set_recombine(2, internal)
@@ -4304,8 +4385,12 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(2, right_b)
                 gmsh.model.mesh.set_recombine(2, left_b)
 
-                gmsh.model.mesh.set_transfinite_volume(volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t])
-                gmsh.model.mesh.set_transfinite_volume(volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i])
+                gmsh.model.mesh.set_transfinite_volume(
+                    volume_t, cornerTags=[p1i, p2i, p4i, p3i, p1t, p2t, p4t, p3t]
+                )
+                gmsh.model.mesh.set_transfinite_volume(
+                    volume_b, cornerTags=[p1b, p2b, p4b, p3b, p1i, p2i, p4i, p3i]
+                )
                 gmsh.model.mesh.set_recombine(3, volume_t)
                 gmsh.model.mesh.set_recombine(3, volume_b)
 
@@ -4324,7 +4409,7 @@ def BoxInternalBoundary(
         coords[x10s, :] = minCoords[1]
         coords[x11s, :] = maxCoords[1]
 
-        if dim ==3:
+        if dim == 3:
             x20s = coords[:, 1] < minCoords[2]
             x21s = coords[:, 1] > maxCoords[2]
             coords[x20s, :] = minCoords[2]
@@ -4342,9 +4427,10 @@ def BoxInternalBoundary(
         useMultipleTags=True,
         useRegions=False,
         markVertices=True,
-        refinement=0.,
+        refinement=0.0,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
-        verbose=verbose,)
+        verbose=verbose,
+    )
     uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets")
     return new_mesh
