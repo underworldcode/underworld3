@@ -168,7 +168,8 @@ def get_version(filename):
                 if line.startswith("__version__"):
                     # extract the version string and strip it
                     version = line.split('"')[1].strip().strip('"').strip("'")
-                return version
+                    break
+            return version
     except FileNotFoundError:
         print( f"Cannot get version information from {filename}" )
     except:
