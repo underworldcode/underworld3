@@ -26,8 +26,9 @@ $PYTEST tests/test_100[0-9]*py || status=1
 $PYTEST tests/test_1010*py tests/test_1011*py tests/test_1050*py || status=1
 
 # Diffusion / Advection tests
-# $PYTEST tests/test_1100*py || status=1
-# $PYTEST tests/test_1110*py # Annulus version || status=1
+
+$PYTEST tests/test_1100*py || status=1
+$PYTEST tests/test_1110*py # Annulus version || status=1
 #
 if [ $status -ne 0 ]; then
   echo "Some test failed."

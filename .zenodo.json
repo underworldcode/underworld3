@@ -11,6 +11,16 @@
             "orcid": "0000-0003-4515-9296"
         },
         {
+            "name": "Matt Knepley",
+            "orcid": "0000-0002-2292-0735",
+            "affiliation": "Computer Science and Engineering, University at Buffalo",
+        },
+        {
+            "name": "Romain Beucher",
+            "affiliation": "Research School of Earth Sciences, The Australian National University",
+            "orcid": "0000-0003-3891-5444"
+        },
+        {
             "name": "Thyagarajulu Gollapalli",
             "orcid": "0000-0001-9394-4104",
             "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
@@ -19,11 +29,6 @@
             "name": "Juan Carlos Graciosa",
             "orcid": "0000-0003-0817-354X",
             "affiliation": "Research School of Earth Sciences, The Australian National University",
-        },
-        {
-            "name": "Matt Knepley",
-            "orcid": "0000-0002-2292-0735"
-            "affiliation": "Computer Science and Engineering, University at Buffalo",
         },
         {
             "name": "Ben Knight",
