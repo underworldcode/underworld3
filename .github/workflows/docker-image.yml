@@ -11,8 +11,9 @@ on:
     branches: [development]
 
 jobs:
-  build:
+  push-to-dockerhub:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout repository
