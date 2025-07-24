@@ -1,14 +1,14 @@
-name: Image Build and Push to DockerHub
+name: "Image Build and Push to DockerHub"
 
 # gh action to build and push container of uw3 to dockerhub
 # only runs on the 'development' branch for now. 
 # In future: run on 'main'/release, or any PR for testing.
 
 on:
-  workflow_run:
-    workflow:[test_uw3]
+  workflow_run: # dependency on build_uw3_and_test.yml
+    workflow: [test_uw3]
     types: [completed]
-    branches:[development]
+    branches: [development]
 
 jobs:
   build:
