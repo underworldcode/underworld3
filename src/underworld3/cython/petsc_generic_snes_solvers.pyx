@@ -391,7 +391,124 @@ class SolverBaseClass(uw_object):
             print(f"{name}.constitutive_model = uw.constitutive_models...")
 
         return
+    
+    def get_dof_partition(self, 
+                          section_type: str, 
+                          filename: Optional[str | None] = None, 
+                          outputPath: Optional[str] = ""):
+        """
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        filename:
+            Output file name. If None, will print out results; if set to a string, the final output file will be <filename>_<section_type>.u.h5.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
 
+        self.validate_solver()  # mainly check if self.u is properly set 
+
+        u_id = self.Unknowns.u.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
+
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = u_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        return
+
+
+    def _get_dof_partition_by_field_id(self,
+                                       section_type: str,
+                                       field_id: int,  
+                                       filename: Optional[str | None] = None, 
+                                       outputPath: Optional[str] = ""):
+        """
+        Private version of get_dof_partition with field_id as an additional parameter. 
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        field_id:
+            The field id
+        filename:
+            Output file name. If None, will print out results; if set to a string, resulting h5 file has the following keys: field_id, rank, dof.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
+
+        import os
+        import h5py
+        import numpy as np
+
+        # check if section type is valid
+        if section_type not in ['local', 'global']:
+            raise("'section_type' unknown. Value must be either 'local' or 'global'")
+        
+        # check if path exists
+        if os.path.exists(os.path.abspath(outputPath)):  # easier to debug abs
+            pass
+        else:
+            raise RuntimeError(f"{os.path.abspath(outputPath)} does not exist")
+
+        # check if we have write access
+        if os.access(os.path.abspath(outputPath), os.W_OK):
+            pass
+        else:
+            raise RuntimeError(f"No write access to {os.path.abspath(outputPath)}")
+
+        
+        # get all points in the DAG of this partition
+        if section_type == "local":
+            section = self.mesh.dm.getLocalSection()
+        elif section_type == "global":
+            section = self.mesh.dm.getGlobalSection()
+          
+        # NOTE: negative DOFs mean that these are ghost ones and owned by a different process
+        
+        ptStart, ptEnd = section.getChart() # will give all DOFs including ghosts
+
+        fdofs = [section.getFieldDof(pt, field_id) for pt in range(ptStart, ptEnd)]
+        fdofs = np.array(fdofs)
+        pos_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs > 0].sum()])
+        
+        if section_type == "global":
+            neg_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs < 0].sum()])
+        
+        comm = uw.mpi.comm
+
+        # Gather the arrays on rank 0
+        gath_pos_dof_data = comm.gather(pos_dof_data, root = 0)
+        if section_type == "global":
+            gath_neg_dof_data = comm.gather(neg_dof_data, root = 0)
+
+        # pack data and save to a dataframe for formatted opening
+        if uw.mpi.rank == 0:
+            gath_dof_data = np.vstack(gath_pos_dof_data)
+            if section_type == "global":
+                gath_dof_data = np.vstack([gath_pos_dof_data, gath_neg_dof_data])
+
+            if filename is None: # print out
+                print(f"Section type: {section_type}")
+                print(f"| Field ID      | Rank           | # DOFs        |")
+                print(f"| ---------------------------------------------- |")
+                for i in range(gath_dof_data.shape[0]):
+                    print(
+                        f"| {gath_dof_data[i, 0]:<15}|{gath_dof_data[i, 1]:<15}|{gath_dof_data[i, 2]:<15}|"
+                    )
+                print(f"| ---------------------------------------------- |")
+                print("\n", flush = True)
+
+            else: # save
+                with h5py.File(f"{outputPath}/{filename}", "w") as f: 
+                    f.create_dataset("field_id", data = gath_dof_data[:, 0])
+                    f.create_dataset("rank", data = gath_dof_data[:, 1])
+                    f.create_dataset("dof", data = gath_dof_data[:, 2])
+        
+        return
 
 ## Specific to dimensionality
 
@@ -2077,9 +2194,45 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise RuntimeError("Constitutive Model is required")
 
         return
+    
+    def get_dof_partition(self, 
+                          section_type: str, 
+                          filename: Optional[str | None] = None, 
+                          outputPath: Optional[str] = ""):
+        """
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Parameters
+        ----------
+        section_type:
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+        filename:
+            Output file name. If None, will print out results; if set to a string, the output files will be <filename>_<section_type>.u.h5 and <filename>_<section_type>.p.h5.
+        outputPath:
+            Path of directory where data is saved. If left empty it will save the data in the current working directory.
+        """
+        # NOTE: supposed to inherit get_dof_partition from SolverBaseClass 
+        # NOTE: _get_dof_partition_by_field_id is defined in SolverBaseClass
 
+        self.validate_solver()
 
+        u_id = self.Unknowns.u.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = u_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        p_id = self.Unknowns.p.field_id
+        fname = None if filename is None else f"{filename}_{section_type}.p.h5"
+
+        self._get_dof_partition_by_field_id(section_type    = section_type, 
+                                            field_id        = p_id, 
+                                            filename        = fname,
+                                            outputPath      = outputPath)
+        
+        return
+    
     @timing.routine_timer_decorator
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy

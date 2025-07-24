@@ -41,3 +41,22 @@ def test_create_swarmvariable(setup_data):
     elements = swarm.mesh._centroids.shape[0]
     var.save("var.h5")
     assert shape == (elements * 6, 2)
+
+def test_addNPoints(setup_data):
+    
+    from underworld3 import swarm
+
+    swarm2 = setup_data
+    var = swarm.SwarmVariable(name = "test", swarm = swarm2, size = 1)
+    swarm2.dm.finalizeFieldRegister()
+
+    swarm2.dm.addNPoints(10) # since swarm is initially empty, will add (10 - 1) points
+    with swarm2.access():
+        npts = swarm2.data.shape[0]
+    assert npts == 9
+
+    swarm2.dm.addNPoints(1) # already has particles, so will add 1 point
+    with swarm2.access():
+        npts = swarm2.data.shape[0]
+    assert npts == 10
+
