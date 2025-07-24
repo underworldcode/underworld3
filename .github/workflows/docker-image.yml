@@ -4,7 +4,6 @@ on:
   workflow_run: # dependency on build_uw3_and_test.yml
     workflows: ["test_uw3"]
     types: [completed]
-    branches: [development]
 
 jobs:
   push-to-dockerhub:
