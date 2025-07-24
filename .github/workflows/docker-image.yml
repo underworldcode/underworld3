@@ -1,32 +1,39 @@
-name: Docker Image CI
+name: Image Build and Push to DockerHub
+
+# gh action to build and push container of uw3 to dockerhub
+# only runs on the 'development' branch for now. 
+# In future: run on 'main'/release, or any PR for testing.
 
 on:
-  push:
-    branches: ["development"]
+  workflow_run:
+    workflow:[test_uw3]
+    types: [completed]
+    branches:[development]
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Exact branch name
         run: echo "BRANCH=${GITHUB_REF##*/}" >> $GITHUB_ENV
 
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PWORD }}
+          username: ${{ secrets.XXX_USERNAME }}
+          password: ${{ secrets.XXX_PWORD }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4.1.1
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           file: ./Dockerfile
           platforms: linux/amd64
           # see https://github.com/docker/build-push-action/issues/276 for syntax help
-          tags: julesg/underworld3:${{ env.BRANCH }}
+          tags: underworldcode/underworld3:${{ env.BRANCH }}
           #-$(date +%s)
