@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7-labs
+
 ### how to build docker image
 
 # (1) run from the underworld3 top directory
@@ -24,7 +26,7 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
 # install UW3
 WORKDIR /tmp
-COPY --exclude=.git \
+COPY --exclude=**/.git \
      --chown=$MAMBA_USER:$MAMBA_USER \
      . /tmp/underworld3
 WORKDIR /tmp/underworld3
