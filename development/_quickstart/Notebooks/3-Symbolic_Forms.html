@@ -306,92 +306,95 @@ window.Quarto = {
 
 <p>Underworld is deeply integrated with <code>sympy</code> <a href="www.sympy.org">(www.sympy.org)</a> so that any mesh variable can also be used in a sympy expression. We already saw <code>sympy</code> expressions for the coordinates and coordinate directions.</p>
 <p>In the examples below, we use a simple 2D, Cartesian mesh because it is much simpler to see the various changes.</p>
-<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="23">
+<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>PostHog telemetry failed: HTTPSConnectionPool(host='eu.i.posthog.com', port=443): Max retries exceeded with url: /capture/ (Caused by NameResolutionError("&lt;urllib3.connection.HTTPSConnection object at 0x341d15d90&gt;: Failed to resolve 'eu.i.posthog.com' ([Errno 8] nodename nor servname provided, or not known)"))</code></pre>
+</div>
 </div>
 <div id="51deb47c-0d19-4962-92a9-cda8ce60ee66" class="cell" data-execution_count="3">
-<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.UnstructuredSimplexBox(</span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    minCoords <span class="op">=</span> (<span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>),</span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    maxCoords <span class="op">=</span> (<span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>),</span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    cellSize <span class="op">=</span> <span class="fl">0.05</span>,</span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    regular<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>x,y <span class="op">=</span> mesh.CoordinateSystem.X</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.UnstructuredSimplexBox(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    minCoords <span class="op">=</span> (<span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>),</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    maxCoords <span class="op">=</span> (<span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>),</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    cellSize <span class="op">=</span> <span class="fl">0.05</span>,</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    regular<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>x,y <span class="op">=</span> mesh.CoordinateSystem.X</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>As before, we add discrete variables</p>
 <div id="82e5784c-7aa9-458f-bcb7-3a28cd73383b" class="cell" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variable example / test</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> uw.discretisation.MeshVariable(</span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"S"</span>,</span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.SCALAR,</span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">cal{S}"</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>t <span class="op">=</span> uw.discretisation.MeshVariable(</span>
-<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"T"</span>,</span>
-<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.SCALAR,</span>
-<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">cal{T}"</span></span>
-<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>v <span class="op">=</span> uw.discretisation.MeshVariable(</span>
-<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"V1"</span>,</span>
-<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
-<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    degree<span class="op">=</span><span class="dv">2</span>,</span>
-<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.VECTOR,</span>
-<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="dv">\m</span><span class="vs">athbf{v}"</span>,</span>
-<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variable example / test</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"S"</span>,</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.SCALAR,</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">cal{S}"</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>t <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"T"</span>,</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.SCALAR,</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">cal{T}"</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>v <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"V1"</span>,</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>    degree<span class="op">=</span><span class="dv">2</span>,</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.VECTOR,</span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="dv">\m</span><span class="vs">athbf{v}"</span>,</span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <section id="symbolic-forms-derivatives" class="level2">
 <h2 class="anchored" data-anchor-id="symbolic-forms-derivatives">Symbolic forms, derivatives</h2>
 <p>Variables can be part of complicated <code>sympy</code> expressions. It is important to note that all symbols are matrices and <code>sympy</code> can be fussy when it comes to operations with other matrices (scalars are not entirely equivalent to <span class="math inline">\(1 \times 1\)</span> matrices).</p>
 <div id="9dfe76ec-abd0-479e-88b8-a5ee580f4093" class="cell" data-scrolled="true" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>s.sym[<span class="dv">0</span>]<span class="op">+</span>t.sym[<span class="dv">0</span>] <span class="op">+</span> v.sym[<span class="dv">0</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>s.sym[<span class="dv">0</span>]<span class="op">+</span>t.sym[<span class="dv">0</span>] <span class="op">+</span> v.sym[<span class="dv">0</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="5">
-<p><span class="math inline">\(\displaystyle {\cal{S}}(\mathbf{x}) + {\cal{T}}(\mathbf{x}) + {\mathbf{v}}_{ 0 }(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{T}} }(\mathbf{x}) + { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0 }(\mathbf{x})\)</span></p>
 </div>
 </div>
 <p>Derivatives can be handled explicitly, but the mesh also provides vector operators and these are generally better because they are automatically consistent with the underlying coordinate system for the mesh.</p>
 <p>For compound expressions of variables, use <code>mesh.vector.curl(expression)</code> but for individual variables, <code>variable.curl()</code> is an equivalent shorthand.</p>
 <div id="697e53f8-74f4-4af7-98c3-9492f281245b" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># grad by hand</span></span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>s.sym[<span class="dv">0</span>].diff(x) <span class="op">+</span> s.sym[<span class="dv">0</span>].diff(y)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># grad by hand</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>s.sym[<span class="dv">0</span>].diff(x) <span class="op">+</span> s.sym[<span class="dv">0</span>].diff(y)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="6">
-<p><span class="math inline">\(\displaystyle {\cal{S}}_{,0}(\mathbf{x}) + {\cal{S}}_{,1}(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle { \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x})\)</span></p>
 </div>
 </div>
 <div id="33012b7b-c7aa-4982-a9ce-6b08dd854106" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># grad</span></span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>s.gradient()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># grad</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>s.gradient()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="7">
-<p><span class="math inline">\(\displaystyle \left[\begin{matrix}{\cal{S}}_{,0}(\mathbf{x}) &amp; {\cal{S}}_{,1}(\mathbf{x})\end{matrix}\right]\)</span></p>
+<p><span class="math inline">\(\displaystyle \left[\begin{matrix}{ \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) &amp; { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x})\end{matrix}\right]\)</span></p>
 </div>
 </div>
 <div id="425ea513-2ee3-4bd9-ae7b-77eda5dfa854" class="cell" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>v.curl()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>v.curl()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="8">
-<p><span class="math inline">\(\displaystyle - {\mathbf{v}}_{ 0,1}(\mathbf{x}) + {\mathbf{v}}_{ 1,0}(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle - { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0,1}(\mathbf{x}) + { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1,0}(\mathbf{x})\)</span></p>
 </div>
 </div>
 <div id="92b7b74e-34c6-4def-bc05-09ae8baf786d" class="cell" data-execution_count="9">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># curl</span></span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>mesh.vector.curl(s.sym <span class="op">*</span> v.sym)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># curl</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>mesh.vector.curl(s.sym <span class="op">*</span> v.sym)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="9">
-<p><span class="math inline">\(\displaystyle - {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 0,1}(\mathbf{x}) + {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 1,0}(\mathbf{x}) + {\cal{S}}_{,0}(\mathbf{x}) {\mathbf{v}}_{ 1 }(\mathbf{x}) - {\cal{S}}_{,1}(\mathbf{x}) {\mathbf{v}}_{ 0 }(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle - { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0,1}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1,0}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1 }(\mathbf{x}) - { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0 }(\mathbf{x})\)</span></p>
 </div>
 </div>
 <div id="19baf35f-596a-43d3-8cf8-c4bb22ecdbaf" class="cell" data-execution_count="10">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># v dot grad (scalar)... </span></span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>v.sym.dot(mesh.vector.gradient(s.sym))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># v dot grad (scalar)... </span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>v.sym.dot(mesh.vector.gradient(s.sym))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown" data-execution_count="10">
-<p><span class="math inline">\(\displaystyle {\cal{S}}_{,0}(\mathbf{x}) {\mathbf{v}}_{ 0 }(\mathbf{x}) + {\cal{S}}_{,1}(\mathbf{x}) {\mathbf{v}}_{ 1 }(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle { \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0 }(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1 }(\mathbf{x})\)</span></p>
 </div>
 </div>
 <section id="underworld-expressions" class="level3">
@@ -399,37 +402,45 @@ window.Quarto = {
 <p>We often want to define symbols that represent complicated expressions which do not want to expand when we probe the mathematical formulation.</p>
 <p>An example might be a constitutive model that has a number of conditional expressions, or a concept such as a timestep which we want to refer to as <span class="math inline">\(\delta t\)</span> regardless of its current numerical value.</p>
 <p>Underworld <code>expressions</code> are objects that have a sympy symbolic representation that is only expanded at the time numerical evaluations are required. How about the example above in expression form:</p>
-<div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>    curl_sv <span class="op">=</span> uw.function.expression(</span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="ch">\n</span><span class="vs">abla </span><span class="ch">\t</span><span class="vs">imes </span><span class="er">\</span><span class="vs">left</span><span class="kw">(</span><span class="er">\</span><span class="vs">cal{S} </span><span class="dv">\m</span><span class="vs">athbf{v}</span><span class="ch">\r</span><span class="vs">ight</span><span class="kw">)</span><span class="vs">"</span>,</span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>                    mesh.vector.curl(s.sym <span class="op">*</span> v.sym),</span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>                    <span class="ss">f"Curl of </span><span class="sc">{</span>v<span class="sc">.</span>symbol<span class="sc">}</span><span class="ss">"</span></span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>                ) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<p>creates an expression object which displays as <span class="math inline">\(\nabla \times \left(\cal{S} \mathbf{v}\right)\)</span> but which also has <code>curl_sv.sym</code> which is the full expression.</p>
-<div id="a848e6d9-f4c4-4e46-9bed-11ce6b2a90e0" class="cell" data-execution_count="11">
-<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>curl_sv <span class="op">=</span> uw.function.expression(</span>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>    curl_sv <span class="op">=</span> uw.function.expression(</span>
 <span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="ch">\n</span><span class="vs">abla </span><span class="ch">\t</span><span class="vs">imes </span><span class="er">\</span><span class="vs">left</span><span class="kw">(</span><span class="er">\</span><span class="vs">cal{S} </span><span class="dv">\m</span><span class="vs">athbf{v}</span><span class="ch">\r</span><span class="vs">ight</span><span class="kw">)</span><span class="vs">"</span>,</span>
 <span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>                    mesh.vector.curl(s.sym <span class="op">*</span> v.sym),</span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">rf"Curl of </span><span class="sc">{</span>v<span class="sc">.</span>symbol<span class="sc">}</span><span class="vs">"</span></span>
-<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>                ) </span>
-<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>curl_sv.view()</span>
-<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>display(curl_sv.sym) </span>
-<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>curl_sv <span class="op">+</span> <span class="dv">1</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>                    <span class="ss">f"Curl of </span><span class="sc">{</span>v<span class="sc">.</span>symbol<span class="sc">}</span><span class="ss">"</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>                ) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>creates an expression object which displays as <span class="math inline">\(\nabla \times \left(\cal{S} \mathbf{v}\right)\)</span> but which also has <code>curl_sv.sym</code> which is the full expression.</p>
+<p><strong>Note:</strong> like <code>MeshVariables</code> expressions have unique names and are persistent objects. They are containers for expressions (in the way <code>MeshVariables</code> are containers for numerical information. This means that we can write an expression and change what it represents while it remains part of another expression.</p>
+<div id="a848e6d9-f4c4-4e46-9bed-11ce6b2a90e0" class="cell" data-execution_count="21">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>curl_sv <span class="op">=</span> uw.function.expression(</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="ch">\n</span><span class="vs">abla </span><span class="ch">\t</span><span class="vs">imes </span><span class="er">\</span><span class="vs">left</span><span class="kw">(</span><span class="er">\</span><span class="vs">cal{S} </span><span class="dv">\m</span><span class="vs">athbf{v}</span><span class="ch">\r</span><span class="vs">ight</span><span class="kw">)</span><span class="vs">"</span>,</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>                    mesh.vector.curl(s.sym <span class="op">*</span> v.sym),</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"Curl of S </span><span class="op">*</span><span class="vs"> V </span><span class="dv">...</span><span class="vs">"</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>                ) </span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>curl_sv.view()</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>display(curl_sv.sym) </span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>curl_sv <span class="op">+</span> <span class="dv">1</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>Class</strong>: &lt;class ‘underworld3.function.expressions.UWexpression’&gt;</p>
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<p><span class="math inline">\(\quad\)</span><span class="math inline">\(\displaystyle { \nabla \times \left(\cal{S} \mathbf{v}\right) \hspace{ 0.0pt } }\)</span><span class="math inline">\(=\)</span><span class="math inline">\(\displaystyle - {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 0,1}(\mathbf{x}) + {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 1,0}(\mathbf{x}) + {\cal{S}}_{,0}(\mathbf{x}) {\mathbf{v}}_{ 1 }(\mathbf{x}) - {\cal{S}}_{,1}(\mathbf{x}) {\mathbf{v}}_{ 0 }(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\quad\)</span><span class="math inline">\(\\displaystyle \nabla \times \left(\cal{S} \mathbf{v}\right)\)</span><span class="math inline">\(=\)</span><span class="math inline">\(\displaystyle - { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0,1}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1,0}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1 }(\mathbf{x}) - { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0 }(\mathbf{x})\)</span></p>
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<p><span class="math inline">\(\quad\)</span><strong>Description:</strong> Curl of {}</p>
+<p><span class="math inline">\(\quad\)</span><strong>Description:</strong> Curl of S * V …</p>
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<p><span class="math inline">\(\displaystyle - {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 0,1}(\mathbf{x}) + {\cal{S}}(\mathbf{x}) {\mathbf{v}}_{ 1,0}(\mathbf{x}) + {\cal{S}}_{,0}(\mathbf{x}) {\mathbf{v}}_{ 1 }(\mathbf{x}) - {\cal{S}}_{,1}(\mathbf{x}) {\mathbf{v}}_{ 0 }(\mathbf{x})\)</span></p>
+<p><span class="math inline">\(\displaystyle - { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0,1}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1,0}(\mathbf{x}) + { \hspace{ 0.02pt } {\cal{S}} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 1 }(\mathbf{x}) - { \hspace{ 0.02pt } {\cal{S}} }_{,1}(\mathbf{x}) { \hspace{ 0.02pt } {\mathbf{v}} }_{ 0 }(\mathbf{x})\)</span></p>
 </div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="11">
-<p><span class="math inline">\(\displaystyle { \nabla \times \left(\cal{S} \mathbf{v}\right) \hspace{ 0.0pt } } + 1\)</span></p>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="21">
+<p><span class="math inline">\(\displaystyle \nabla \times \left(\cal{S} \mathbf{v}\right) + 1\)</span></p>
+</div>
+</div>
+<div id="3fc9a3ac-fb5b-4d6d-960c-b08d01a4ef55" class="cell" data-execution_count="22">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># If you run the cell above multiple times, the object id should not change</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="bu">id</span>(curl_sv)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="22">
+<pre><code>14076564912</code></pre>
 </div>
 </div>
 </section>
@@ -437,20 +448,74 @@ window.Quarto = {
 <h3 class="anchored" data-anchor-id="underworld-sub-expressions">Underworld Sub-expressions</h3>
 <p>The viscosity for a material with a yield stress might look like this:</p>
 <p><span class="math display">\[
-\eta_\textrm{eff} = \displaystyle \min\left({  {\eta} }, \frac{\max\left({ {\tau_{y}} }, {  {\tau_{y, \mathrm{min}}} }\right)}{2 {  \dot\varepsilon_{II} }}\right)
+\eta_\textrm{eff} = \displaystyle \min\left({  {\eta_0} }, \frac{\max\left({ {\tau_{y}} }, {  {\tau_{y, \mathrm{min}}} }\right)}{2 {  \dot\varepsilon_{II} }}\right)
 \]</span></p>
 <p>where <span class="math inline">\(\tau_y\)</span> is a scalar yield stress, and <span class="math inline">\(\dot\varepsilon_{II}\)</span> is the second invariant of the strain-rate tensor. Each of these would be a nested Underworld <code>expression</code>.</p>
 <p>To expand the expression and see inside, we can use</p>
-<div class="sourceCode" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>    expression.unwrap(keep_constants<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>    expression.unwrap(keep_constants<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>which reaches down the hierarchy and recursively replaces any expression with its expanded sympy representation. If a symbol represents a constant value (float, int, or sympy number), then it is only replaced if <code>keep_constants</code> is set to <code>False</code>.</p>
-<p>Symbolic forms can be evaluated at points in the (meshed domain) using <code>uw.function.evaluate</code>. Pure sympy functions can be used to set values in the data container of a <code>meshVariable</code> object</p>
-<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-scrolled="true" data-execution_count="12">
-<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(s, t):</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    s.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(sympy.cos(<span class="dv">3</span> <span class="op">*</span> sympy.pi <span class="op">*</span> x)<span class="op">**</span><span class="dv">2</span> , s.coords)</span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    t.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(sympy.sin(<span class="dv">3</span> <span class="op">*</span> sympy.pi <span class="op">*</span> y)<span class="op">**</span><span class="dv">2</span> , t.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="b6b219c7-4a80-4904-9f74-0f4f495bd7c0" class="cell" data-execution_count="45">
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>viscosity <span class="op">=</span> uw.function.expression(</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="er">\</span><span class="vs">eta_0"</span>,</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>                    sympy.sympify(<span class="dv">1</span>),</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">rf"viscosity"</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>                ) </span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>tau_yield <span class="op">=</span> uw.function.expression(</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="ch">\t</span><span class="vs">au_y"</span>,</span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>                    sympy.sympify(<span class="dv">10</span>),</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">rf"yield stress"</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>                ) </span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>edot_II <span class="op">=</span> uw.function.expression(</span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="dv">\d</span><span class="vs">ot{</span><span class="ch">\v</span><span class="vs">arepsilon}_{II}"</span>,</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>                    sympy.Symbol(<span class="st">'epsilon'</span>),</span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">rf"strain rate invariant"</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>                ) </span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>viscosity_eff <span class="op">=</span> uw.function.expression(</span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">r"</span><span class="er">\</span><span class="vs">eta_</span><span class="dv">\m</span><span class="vs">athrm{eff}"</span>,</span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>                    sympy.Min(viscosity, tau_yield <span class="op">/</span> (<span class="dv">2</span> <span class="op">*</span> edot_II)),</span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>                    <span class="vs">rf"Curl of </span><span class="sc">{</span>v<span class="sc">.</span>symbol<span class="sc">}</span><span class="vs">"</span></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>                )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>/Users/lmoresi/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/function/expressions.py:176: UserWarning: EXPRESSIONS \eta_0: Each expression should have a unique name - new expression was not generated
+  warnings.warn(
+/Users/lmoresi/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/function/expressions.py:176: UserWarning: EXPRESSIONS \tau_y: Each expression should have a unique name - new expression was not generated
+  warnings.warn(
+/Users/lmoresi/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/function/expressions.py:176: UserWarning: EXPRESSIONS \dot{\varepsilon}_{II}: Each expression should have a unique name - new expression was not generated
+  warnings.warn(
+/Users/lmoresi/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/function/expressions.py:176: UserWarning: EXPRESSIONS \eta_\mathrm{eff}: Each expression should have a unique name - new expression was not generated
+  warnings.warn(</code></pre>
 </div>
-<div id="2dfdd219-12a9-4049-b913-57795bd0cead" class="cell" data-execution_count="13">
-<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>s.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="77d0d45a-782a-4802-84fa-48998601fc21" class="cell" data-execution_count="47">
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>viscosity_eff.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="47">
+<p><span class="math inline">\(\displaystyle \min\left(\eta_{0}, \frac{\tau_{y}}{2 \dot{\varepsilon}_{II}}\right)\)</span></p>
+</div>
+</div>
+<div id="2cca46fa-905a-4e4d-9113-96e5b73e35bc" class="cell" data-execution_count="48">
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>viscosity_eff.unwrap(keep_constants<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="48">
+<p><span class="math inline">\(\displaystyle \min\left(\eta_{0}, \frac{\tau_{y}}{2 \epsilon}\right)\)</span></p>
+</div>
+</div>
+<div id="c7876609-338a-4831-a02e-8563d6066198" class="cell" data-execution_count="49">
+<div class="sourceCode cell-code" id="cb20"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a>viscosity_eff.unwrap(keep_constants<span class="op">=</span><span class="va">False</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="49">
+<p><span class="math inline">\(\displaystyle \min\left(1, \frac{5}{\epsilon}\right)\)</span></p>
+</div>
+</div>
+<p>Symbolic forms can be evaluated at points in the (meshed domain) using <code>uw.function.evaluate</code>. Pure sympy functions can be used to set values in the data container of a <code>meshVariable</code> object</p>
+<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-scrolled="true" data-execution_count="50">
+<div class="sourceCode cell-code" id="cb21"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(s, t):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    s.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(sympy.cos(<span class="dv">3</span> <span class="op">*</span> sympy.pi <span class="op">*</span> x)<span class="op">**</span><span class="dv">2</span> , s.coords)</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    t.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(sympy.sin(<span class="dv">3</span> <span class="op">*</span> sympy.pi <span class="op">*</span> y)<span class="op">**</span><span class="dv">2</span> , t.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="2dfdd219-12a9-4049-b913-57795bd0cead" class="cell" data-execution_count="51">
+<div class="sourceCode cell-code" id="cb22"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>s.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>Class</strong>: &lt;class ‘underworld3.discretisation._MeshVariable’&gt;</p>
 </div>
@@ -459,7 +524,7 @@ window.Quarto = {
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <blockquote class="blockquote">
-<p>symbol: <span class="math inline">\({\cal{S}}\)</span></p>
+<p>symbol: <span class="math inline">\({ \hspace{ 0.02pt } {\cal{S}} }\)</span></p>
 </blockquote>
 <blockquote class="blockquote">
 <p>shape: <span class="math inline">\((1, 1)\)</span></p>
@@ -495,42 +560,42 @@ window.Quarto = {
        [0.79389263]])</code></pre>
 </div>
 </div>
-<div id="3f4d24d4-ab30-4c0d-90a8-5293b69a0062" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="14">
-<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Visualise it / them</span></span>
-<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"s"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym[<span class="dv">0</span>])</span>
-<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"t"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t.sym[<span class="dv">0</span>])</span>
-<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"sxt"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym[<span class="dv">0</span>]<span class="op">*</span>t.sym[<span class="dv">0</span>])</span>
-<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>pvmesh.warp_by_scalar(scalars<span class="op">=</span><span class="st">"sxt"</span>, factor<span class="op">=</span><span class="fl">0.3</span>, normal<span class="op">=</span>(<span class="dv">0</span>,<span class="dv">0</span>,<span class="dv">1</span>), inplace<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a><span class="co"># pvmesh.plot(show_edges=True, show_scalar_bar=False)</span></span>
-<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
-<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh, </span>
-<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>            show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>            edge_color<span class="op">=</span><span class="st">"#4455FF"</span>,</span>
-<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>            cmap<span class="op">=</span><span class="st">"Greys"</span>,</span>
-<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>            scalars<span class="op">=</span><span class="st">"sxt"</span>, </span>
-<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>            show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a><span class="co"># Save and show the mesh</span></span>
-<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>pl.camera_position <span class="op">=</span> <span class="st">'yz'</span></span>
-<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>pl.camera.azimuth <span class="op">=</span> <span class="dv">45</span></span>
-<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>pl.camera.elevation <span class="op">=</span> <span class="dv">45</span></span>
-<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/sine_squared.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="3f4d24d4-ab30-4c0d-90a8-5293b69a0062" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="52">
+<div class="sourceCode cell-code" id="cb24"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Visualise it / them</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"s"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym[<span class="dv">0</span>])</span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"t"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t.sym[<span class="dv">0</span>])</span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"sxt"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym[<span class="dv">0</span>]<span class="op">*</span>t.sym[<span class="dv">0</span>])</span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a>pvmesh.warp_by_scalar(scalars<span class="op">=</span><span class="st">"sxt"</span>, factor<span class="op">=</span><span class="fl">0.3</span>, normal<span class="op">=</span>(<span class="dv">0</span>,<span class="dv">0</span>,<span class="dv">1</span>), inplace<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a><span class="co"># pvmesh.plot(show_edges=True, show_scalar_bar=False)</span></span>
+<span id="cb24-14"><a href="#cb24-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
+<span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh, </span>
+<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a>            show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb24-19"><a href="#cb24-19" aria-hidden="true" tabindex="-1"></a>            edge_color<span class="op">=</span><span class="st">"#4455FF"</span>,</span>
+<span id="cb24-20"><a href="#cb24-20" aria-hidden="true" tabindex="-1"></a>            cmap<span class="op">=</span><span class="st">"Greys"</span>,</span>
+<span id="cb24-21"><a href="#cb24-21" aria-hidden="true" tabindex="-1"></a>            scalars<span class="op">=</span><span class="st">"sxt"</span>, </span>
+<span id="cb24-22"><a href="#cb24-22" aria-hidden="true" tabindex="-1"></a>            show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb24-23"><a href="#cb24-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-24"><a href="#cb24-24" aria-hidden="true" tabindex="-1"></a><span class="co"># Save and show the mesh</span></span>
+<span id="cb24-25"><a href="#cb24-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-26"><a href="#cb24-26" aria-hidden="true" tabindex="-1"></a>pl.camera_position <span class="op">=</span> <span class="st">'yz'</span></span>
+<span id="cb24-27"><a href="#cb24-27" aria-hidden="true" tabindex="-1"></a>pl.camera.azimuth <span class="op">=</span> <span class="dv">45</span></span>
+<span id="cb24-28"><a href="#cb24-28" aria-hidden="true" tabindex="-1"></a>pl.camera.elevation <span class="op">=</span> <span class="dv">45</span></span>
+<span id="cb24-29"><a href="#cb24-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-30"><a href="#cb24-30" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/sine_squared.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="0fc6a340-854a-4f66-aa89-a3fcf9d00cb9" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="15">
-<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/sine_squared.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="15">
+<div id="0fc6a340-854a-4f66-aa89-a3fcf9d00cb9" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="53">
+<div class="sourceCode cell-code" id="cb25"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/sine_squared.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="53">
 
         <iframe width="600" height="400" src="html5/sine_squared.html" frameborder="0" allowfullscreen=""></iframe>
         
@@ -542,44 +607,44 @@ window.Quarto = {
 <p>Generally speaking, we use expressions as placeholders for parameters or functions that we know will be needed when it comes to solve a problem, but we can’t be sure that we can specify them at the time we set up the solver.</p>
 <p>In the code for our solvers, for example, we set up a template with <code>expressions</code> that describe where the parameters of the problem will be and we expect you to fill the details in when we create a new solver-object. These template expressions are protected so that assignment just changes the value that the expression holds, it does not change the symbol or the description (though you can do this if you want).</p>
 <p>This is a rather contrived example:</p>
-<div id="337024af-77a1-42c0-80f9-2cfd9636720a" class="cell" data-execution_count="16">
-<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>R <span class="op">=</span> uw.function.expression(<span class="vs">r"r</span><span class="er">\</span><span class="vs">left</span><span class="kw">(</span><span class="vs"> </span><span class="dv">\m</span><span class="vs">athbf{x} </span><span class="ch">\r</span><span class="vs">ight</span><span class="kw">)</span><span class="vs">"</span>,</span>
-<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>                           sympy.sqrt(x<span class="op">**</span><span class="dv">2</span><span class="op">+</span>y<span class="op">**</span><span class="dv">2</span>), </span>
-<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>                           <span class="st">"distance from origin"</span>)</span>
-<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>R1 <span class="op">=</span> R <span class="op">+</span> <span class="dv">1</span></span>
-<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>S <span class="op">=</span> sympy.sqrt(x<span class="op">**</span><span class="dv">2</span><span class="op">+</span>y<span class="op">**</span><span class="dv">2</span>)</span>
-<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>S1 <span class="op">=</span> S <span class="op">+</span> <span class="dv">1</span></span>
-<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>               </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="337024af-77a1-42c0-80f9-2cfd9636720a" class="cell" data-execution_count="54">
+<div class="sourceCode cell-code" id="cb26"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>R <span class="op">=</span> uw.function.expression(<span class="vs">r"r</span><span class="er">\</span><span class="vs">left</span><span class="kw">(</span><span class="vs"> </span><span class="dv">\m</span><span class="vs">athbf{x} </span><span class="ch">\r</span><span class="vs">ight</span><span class="kw">)</span><span class="vs">"</span>,</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>                           sympy.sqrt(x<span class="op">**</span><span class="dv">2</span><span class="op">+</span>y<span class="op">**</span><span class="dv">2</span>), </span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>                           <span class="st">"distance from origin"</span>)</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>R1 <span class="op">=</span> R <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>S <span class="op">=</span> sympy.sqrt(x<span class="op">**</span><span class="dv">2</span><span class="op">+</span>y<span class="op">**</span><span class="dv">2</span>)</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>S1 <span class="op">=</span> S <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>               </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="02f4cf6f-5292-4812-bbe5-853e3a13a9c5" class="cell" data-execution_count="17">
-<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>R2 <span class="op">=</span> R.sym <span class="op">+</span> <span class="dv">1</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="02f4cf6f-5292-4812-bbe5-853e3a13a9c5" class="cell" data-execution_count="55">
+<div class="sourceCode cell-code" id="cb27"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a>R2 <span class="op">=</span> R.sym <span class="op">+</span> <span class="dv">1</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="af968f62-84ad-44af-8d54-2c6e0f445b0c" class="cell" data-execution_count="18">
-<div class="sourceCode cell-code" id="cb20"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a>S1</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="18">
+<div id="af968f62-84ad-44af-8d54-2c6e0f445b0c" class="cell" data-execution_count="56">
+<div class="sourceCode cell-code" id="cb28"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a>S1</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="56">
 <p><span class="math inline">\(\displaystyle \sqrt{\mathrm{x}^{2} + \mathrm{y}^{2}} + 1\)</span></p>
 </div>
 </div>
-<div id="db06eb63-a227-4a64-8319-e51cbe7b287f" class="cell" data-execution_count="19">
-<div class="sourceCode cell-code" id="cb21"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>R.sym <span class="op">=</span> S <span class="op">=</span> sympy.sqrt((x<span class="op">-</span><span class="dv">1</span>)<span class="op">**</span><span class="dv">2</span> <span class="op">+</span> (y<span class="op">-</span><span class="dv">1</span>)<span class="op">**</span><span class="dv">2</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="db06eb63-a227-4a64-8319-e51cbe7b287f" class="cell" data-execution_count="57">
+<div class="sourceCode cell-code" id="cb29"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>R.sym <span class="op">=</span> S <span class="op">=</span> sympy.sqrt((x<span class="op">-</span><span class="dv">1</span>)<span class="op">**</span><span class="dv">2</span> <span class="op">+</span> (y<span class="op">-</span><span class="dv">1</span>)<span class="op">**</span><span class="dv">2</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="322474f2-369c-4983-9a11-8117f3ca5ade" class="cell" data-execution_count="20">
-<div class="sourceCode cell-code" id="cb22"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(R1) <span class="co"># Lazy evaluation </span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="20">
+<div id="322474f2-369c-4983-9a11-8117f3ca5ade" class="cell" data-execution_count="58">
+<div class="sourceCode cell-code" id="cb30"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(R1) <span class="co"># Lazy evaluation </span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="58">
 <p><span class="math inline">\(\displaystyle \sqrt{\left(\mathrm{x} - 1\right)^{2} + \left(\mathrm{y} - 1\right)^{2}} + 1\)</span></p>
 </div>
 </div>
-<div id="d1da3f83-8ee6-4f74-959e-d3e90b26d861" class="cell" data-execution_count="21">
-<div class="sourceCode cell-code" id="cb23"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(S1)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="21">
+<div id="d1da3f83-8ee6-4f74-959e-d3e90b26d861" class="cell" data-execution_count="59">
+<div class="sourceCode cell-code" id="cb31"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(S1)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="59">
 <p><span class="math inline">\(\displaystyle \sqrt{\mathrm{x}^{2} + \mathrm{y}^{2}} + 1\)</span></p>
 </div>
 </div>
-<div id="15544f5d-dcc1-4fb3-8f00-c0f4a171155e" class="cell" data-execution_count="22">
-<div class="sourceCode cell-code" id="cb24"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(R2)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="22">
+<div id="15544f5d-dcc1-4fb3-8f00-c0f4a171155e" class="cell" data-execution_count="60">
+<div class="sourceCode cell-code" id="cb32"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a>uw.function.expressions.unwrap(R2)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="60">
 <p><span class="math inline">\(\displaystyle \sqrt{\mathrm{x}^{2} + \mathrm{y}^{2}} + 1\)</span></p>
 </div>
 </div>
@@ -589,18 +654,18 @@ window.Quarto = {
 <section id="exercise-3.1" class="level2">
 <h2 class="anchored" data-anchor-id="exercise-3.1">Exercise 3.1</h2>
 <p>Have a look at the visco-plastic constitutive model (template) for Stokes equation</p>
-<div class="sourceCode" id="cb25"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>stokes_solver <span class="op">=</span> uw.systems.solvers.SNES_Stokes(mesh)</span>
-<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscoPlasticFlowModel</span>
-<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model.Parameters.yield_stress <span class="op">=</span> <span class="dv">100</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb33"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a>stokes_solver <span class="op">=</span> uw.systems.solvers.SNES_Stokes(mesh)</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscoPlasticFlowModel</span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>stokes_solver.constitutive_model.Parameters.yield_stress <span class="op">=</span> <span class="dv">100</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>You can examine this expression in more detail using the <code>view</code> method of the <code>stokes_solver.constitutive_model</code>, and you can expand the expression to see how it reduces when sympy needs to evaluate this expression at one or more locations in the domain.</p>
 <section id="exercise-3.2" class="level3">
 <h3 class="anchored" data-anchor-id="exercise-3.2">Exercise 3.2</h3>
 <p>Assignment to an expression object <strong>replaces the sympy value</strong> but does not change the rest of the object. This is the concept of lazy evaluation which we introduced earlier.</p>
 <p>Validate this using the constititutive model above. Try changing the yield stress or the shear viscosity and see how the expression for the apparent viscosity changes.</p>
 <p>e.g.&nbsp;</p>
-<div class="sourceCode" id="cb26"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>    stokes_solver.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.exp(<span class="op">-</span><span class="dv">10</span> <span class="op">*</span> t.sym[<span class="dv">0</span>])</span>
-<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>    display(stokes_solver.constitutive_model.viscosity)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb34"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a>    stokes_solver.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.exp(<span class="op">-</span><span class="dv">10</span> <span class="op">*</span> t.sym[<span class="dv">0</span>])</span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>    display(stokes_solver.constitutive_model.viscosity)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>Actually, that won’t look different, will it ? You need to expand out the expressions a bit to see it. Try using <code>stokes_solver.constitutive_model.viscosity.unwrap()</code>. This function makes substitutions of all (underworld) sub-expressions in any <code>sympy</code> expression.</p>
 <p>You can pass <code>keep_constants=False</code> if you want to expand all the numerical values as well. An expression is considered to be a constant if it contains no sub-expressions, MeshVariables, or mesh-coordinates. We usually do not want to have long floating point numbers all over the place when we check an expression except if it’s the values that we want to check.</p>
 <p>Try it !</p>

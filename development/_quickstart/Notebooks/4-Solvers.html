@@ -107,6 +107,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" integrity="sha512-c3Nl8+7g4LMSTdrm621y7kf9v3SDPnhxLNhcjFJbKECVnmZHTdo+IRO05sNLTH/D3vA6u1X32ehoLC7WFVdheg==" crossorigin="anonymous"></script>
 
 <script type="application/javascript">define('jquery', [],function() {return window.jQuery;})</script>
+<script src="https://unpkg.com/@jupyter-widgets/html-manager@*/dist/embed-amd.js" crossorigin="anonymous"></script>
 
   <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
@@ -300,7 +301,7 @@ window.Quarto = {
 
 
 <p>In this example, we solve a steady, non-linear, scalar diffusion equation and show how to recover the fluxes.</p>
-<div id="042970c2-ab87-4483-b68c-3fe6b8e633a2" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="12">
+<div id="042970c2-ab87-4483-b68c-3fe6b8e633a2" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -317,45 +318,42 @@ window.Quarto = {
 <pre><code>
 
 Mesh # 0: .meshes/uw_simplexbox_minC(0.0, 0.0)_maxC(1.0, 1.0)_csize0.08333333333333333_regFalse.msh
+</code></pre>
+</div>
+<div class="cell-output cell-output-display">
+<script type="application/vnd.jupyter.widget-view+json">
+{"model_id":"c866e7da718a4677a808db30bc5c1ac1","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
+</script>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Number of cells: 346
 
 No variables are defined on the mesh
 
-| Boundary Name            | ID    | Min Size | Max Size |
-| ------------------------------------------------------ |
-| Bottom                   | 11    | 23       | 23       |
-| Top                      | 12    | 23       | 23       |
-| Right                    | 13    | 23       | 23       |
-| Left                     | 14    | 23       | 23       |
-| All_Boundaries           | 1001  | 48       | 48       |
-| UW_Boundaries            | --    | 92       | 92       |
-| ------------------------------------------------------ |
+| Boundary Name            | ID    |
+| -------------------------------- |
+| Bottom                   | 11    |
+| Top                      | 12    |
+| Right                    | 13    |
+| Left                     | 14    |
+| Null_Boundary            | 666   |
+| All_Boundaries           | 1001  |
+| All_Boundaries           | 1001  |
+| UW_Boundaries            | --    |
+| -------------------------------- |
 
 
-DM Object: uw_.meshes/uw_simplexbox_minC(0.0, 0.0)_maxC(1.0, 1.0)_csize0.08333333333333333_regFalse.msh 1 MPI process
-  type: plex
-uw_.meshes/uw_simplexbox_minC(0.0, 0.0)_maxC(1.0, 1.0)_csize0.08333333333333333_regFalse.msh in 2 dimensions:
-  Number of 0-cells per rank: 198
-  Number of 1-cells per rank: 543
-  Number of 2-cells per rank: 346
-Labels:
-  depth: 3 strata with value/size (0 (198), 1 (543), 2 (346))
-  All_Boundaries: 1 strata with value/size (1001 (48))
-  Bottom: 1 strata with value/size (11 (23))
-  Elements: 1 strata with value/size (99999 (496))
-  Left: 1 strata with value/size (14 (23))
-  Right: 1 strata with value/size (13 (23))
-  Top: 1 strata with value/size (12 (23))
-  celltype: 3 strata with value/size (0 (198), 1 (543), 3 (346))
-  UW_Boundaries: 4 strata with value/size (11 (23), 12 (23), 13 (23), 14 (23))</code></pre>
+Use view(1) to view detailed mesh information.
+</code></pre>
 </div>
 </div>
 <div id="d2ac5182-8b9f-4852-8e2e-4b0a16808ad0" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variables</span></span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>t_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"T"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">3</span>)</span>
-<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>dTdY <span class="op">=</span> uw.discretisation.MeshVariable(</span>
-<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="vs">r"dTdY"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">2</span>,</span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">partial T/</span><span class="er">\</span><span class="vs">partial y"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variables</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>t_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"T"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">3</span>)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>dTdY <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="vs">r"dTdY"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">2</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="er">\</span><span class="vs">partial T/</span><span class="er">\</span><span class="vs">partial y"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <section id="the-poisson-solver" class="level3">
 <h3 class="anchored">The Poisson Solver</h3>
@@ -363,13 +361,13 @@ Labels:
 <p>We will use the <code>Poisson</code> solver for the diffusion equation, and we will use a <code>Projection</code> solver to compute the vertical gradient term.</p>
 <p>The solver classes themselves are documented, so we can figure out what is needed before we define anything:</p>
 <div id="4dc10f34-02b3-48cc-9d5c-ecae856d4046" class="cell" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>uw.systems.Poisson.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>uw.systems.Poisson.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p>This class provides functionality for a discrete representation of the Poisson equation</p>
 <p><span class="math display">\[
 \nabla \cdot
         \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-        \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+        \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
 \]</span></p>
 <p>The term <span class="math inline">\(\mathbf{F}\)</span> relates the flux to gradients in the unknown <span class="math inline">\(u\)</span></p>
 <section id="properties" class="level2">
@@ -383,14 +381,14 @@ Labels:
 </div>
 </div>
 <div id="6795df8b-707e-471e-b935-19a15c58d749" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>uw.systems.Projection.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>uw.systems.Projection.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p>Solves <span class="math inline">\(u = \tilde{f}\)</span> where <span class="math inline">\(\tilde{f}\)</span> is a function that can be evaluated within an element and <span class="math inline">\(u\)</span> is a <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a continuous representation of a function that is not well defined at the mesh nodes. For example, functions of the spatial derivatives of one or more <code>meshVariable</code> (e.g.&nbsp;components of fluxes) can be mapped to continuous variables with a projection. More broadly it is a projection from one basis to another and its limitations should be evaluated within that context.</p>
 <p>The projection implemented by creating a solver for this problem</p>
 <p><span class="math display">\[
-\nabla \cdot
+-\nabla \cdot
         \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
-        \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{f}}} = 0
+        \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
 \]</span></p>
 <p>Where the term <span class="math inline">\(\mathbf{F}\)</span> provides a smoothing regularization. <span class="math inline">\(\alpha\)</span> can be zero.</p>
 </div>
@@ -401,16 +399,16 @@ Labels:
 <p>Most of the solvers require a constitutive model to be provided and its parameters populated. This is to allow flexibility in defining / redefining solvers during a model calculation.</p>
 <p>We need a diffusion model. We can look at the documentation first.</p>
 <div id="96e571d8-68d6-4ebd-8233-f0fa2bebfe27" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>uw.constitutive_models.DiffusionModel.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>uw.constitutive_models.DiffusionModel.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<div class="sourceCode" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> DiffusionModel(Constitutive_Model)</span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>...</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="sourceCode" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>diffusion_model <span class="op">=</span> DiffusionModel(dim)</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>diffusion_model.material_properties <span class="op">=</span> diffusion_model.Parameters(diffusivity<span class="op">=</span>diffusivity_fn)</span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>scalar_solver.constititutive_model <span class="op">=</span> diffusion_model</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> DiffusionModel(Constitutive_Model)</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>...</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>diffusion_model <span class="op">=</span> DiffusionModel(dim)</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>diffusion_model.material_properties <span class="op">=</span> diffusion_model.Parameters(diffusivity<span class="op">=</span>diffusivity_fn)</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>scalar_solver.constititutive_model <span class="op">=</span> diffusion_model</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p><span class="math display">\[q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}\]</span></p>
 <p>where <span class="math inline">\(\kappa\)</span> is a diffusivity, a scalar constant, <code>sympy</code> function, <code>underworld</code> mesh variable or any valid combination of those types. Access the constitutive model using:</p>
-<div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>flux <span class="op">=</span> diffusion_model.flux(gradient_matrix)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>flux <span class="op">=</span> diffusion_model.flux(gradient_matrix)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <hr>
 </div>
 </div>
@@ -423,97 +421,97 @@ Labels:
 \]</span></p>
 <p>and apply a zero source term, non-zero boundary conditions on the top and bottom surfaces. The names of the boundaries of the mesh can be found by looking at <code>mesh.view()</code> above.</p>
 <div id="5fa9112a-7900-44ee-9c2e-1e887792bf13" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The steady-state diffusion</span></span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>poisson <span class="op">=</span> uw.systems.Poisson(mesh, u_Field<span class="op">=</span>t_soln)</span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model <span class="op">=</span> uw.constitutive_models.DiffusionModel</span>
-<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Non-linear diffusivity</span></span>
-<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>delT <span class="op">=</span> mesh.vector.gradient(t_soln.sym)</span>
-<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>k <span class="op">=</span>  <span class="dv">1</span> <span class="op">-</span> (delT.dot(delT)) </span>
-<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>abs_r2 <span class="op">=</span> x<span class="op">**</span><span class="dv">2</span> <span class="op">+</span> y<span class="op">**</span><span class="dv">2</span></span>
-<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>poisson.f <span class="op">=</span> <span class="op">-</span>abs_r2</span>
-<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Essential boundary conditions</span></span>
-<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>poisson.add_essential_bc([<span class="dv">0</span>], <span class="st">"Bottom"</span>)</span>
-<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>poisson.add_essential_bc([<span class="dv">1</span>], <span class="st">"Top"</span>  )</span>
-<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Create Projection solver for gradient terms </span></span>
-<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>gradient <span class="op">=</span> uw.systems.Projection(mesh, dTdY)</span>
-<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a>gradient.uw_function <span class="op">=</span> t_soln.sym.diff(y)</span>
-<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>gradient.smoothing <span class="op">=</span> <span class="fl">1.0e-6</span></span>
-<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a><span class="co"># Linear model - starting guess</span></span>
-<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model.Parameters.diffusivity <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a>poisson.solve(zero_init_guess<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a><span class="co"># Solve time</span></span>
-<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model.Parameters.diffusivity <span class="op">=</span> k</span>
-<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a>poisson.solve(zero_init_guess<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a><span class="co"># Solve the gradient</span></span>
-<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a>gradient.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The steady-state diffusion</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>poisson <span class="op">=</span> uw.systems.Poisson(mesh, u_Field<span class="op">=</span>t_soln)</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model <span class="op">=</span> uw.constitutive_models.DiffusionModel</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Non-linear diffusivity</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>delT <span class="op">=</span> mesh.vector.gradient(t_soln.sym)</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>k <span class="op">=</span>  <span class="dv">1</span> <span class="op">-</span> (delT.dot(delT)) </span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>abs_r2 <span class="op">=</span> x<span class="op">**</span><span class="dv">2</span> <span class="op">+</span> y<span class="op">**</span><span class="dv">2</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>poisson.f <span class="op">=</span> <span class="op">-</span>abs_r2</span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Essential boundary conditions</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>poisson.add_essential_bc([<span class="dv">0</span>], <span class="st">"Bottom"</span>)</span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>poisson.add_essential_bc([<span class="dv">1</span>], <span class="st">"Top"</span>  )</span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Create Projection solver for gradient terms </span></span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>gradient <span class="op">=</span> uw.systems.Projection(mesh, dTdY)</span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>gradient.uw_function <span class="op">=</span> t_soln.sym.diff(y)</span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a>gradient.smoothing <span class="op">=</span> <span class="fl">1.0e-6</span></span>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a><span class="co"># Linear model - starting guess</span></span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model.Parameters.diffusivity <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a>poisson.solve(zero_init_guess<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a><span class="co"># Solve time</span></span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>poisson.constitutive_model.Parameters.diffusivity <span class="op">=</span> k</span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>poisson.solve(zero_init_guess<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a><span class="co"># Solve the gradient</span></span>
+<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>gradient.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <section id="non-linear-problems-jacobian" class="level4">
 <h4 class="anchored" data-anchor-id="non-linear-problems-jacobian">Non-linear problems, Jacobian</h4>
 <p>This is a non-linear problem and has a non-zero Jacobian (<span class="math inline">\(\partial F / \partial \nabla T )\)</span>. It’s a little bit hidden, but is available if you feel like checking:</p>
 <div id="b27c04cd-7192-446b-86e5-3f5a1867045a" class="cell" data-execution_count="9">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>display(poisson._G3)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>display(poisson._G3)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<p><span class="math inline">\(\displaystyle \left[\begin{matrix}- 3 {T}_{,0}^{ 2 }(\mathbf{x}) - {T}_{,1}^{ 2 }(\mathbf{x}) + 1 &amp; - 2 {T}_{,0}(\mathbf{x}) {T}_{,1}(\mathbf{x})\\- 2 {T}_{,0}(\mathbf{x}) {T}_{,1}(\mathbf{x}) &amp; - {T}_{,0}^{ 2 }(\mathbf{x}) - 3 {T}_{,1}^{ 2 }(\mathbf{x}) + 1\end{matrix}\right]\)</span></p>
+<p><span class="math inline">\(\displaystyle \left[\begin{matrix}- 3 { \hspace{ 0.02pt } {T} }_{,0}^{ 2 }(\mathbf{x}) - { \hspace{ 0.02pt } {T} }_{,1}^{ 2 }(\mathbf{x}) + 1 &amp; - 2 { \hspace{ 0.02pt } {T} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {T} }_{,1}(\mathbf{x})\\- 2 { \hspace{ 0.02pt } {T} }_{,0}(\mathbf{x}) { \hspace{ 0.02pt } {T} }_{,1}(\mathbf{x}) &amp; - { \hspace{ 0.02pt } {T} }_{,0}^{ 2 }(\mathbf{x}) - 3 { \hspace{ 0.02pt } {T} }_{,1}^{ 2 }(\mathbf{x}) + 1\end{matrix}\right]\)</span></p>
 </div>
 </div>
 <div id="6dccf566-8505-4a6e-94a7-f2869b73e3ff" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="10">
-<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mpi4py <span class="im">import</span> MPI</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> MPI.COMM_WORLD.size <span class="op">==</span> <span class="dv">1</span>:</span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"T"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)</span>
-<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"dTdY"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, dTdY.sym)</span>
-<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">1000</span>, <span class="dv">500</span>), shape<span class="op">=</span>(<span class="dv">1</span>, <span class="dv">2</span>))</span>
-<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>    pl.subplot(<span class="dv">0</span>, <span class="dv">0</span>)</span>
-<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
-<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Black"</span>,</span>
-<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"T"</span>,</span>
-<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a>    pl.subplot(<span class="dv">0</span>, <span class="dv">1</span>)</span>
-<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-29"><a href="#cb13-29" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb13-30"><a href="#cb13-30" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb13-31"><a href="#cb13-31" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
-<span id="cb13-32"><a href="#cb13-32" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Black"</span>,</span>
-<span id="cb13-33"><a href="#cb13-33" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb13-34"><a href="#cb13-34" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"dTdY"</span>,</span>
-<span id="cb13-35"><a href="#cb13-35" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb13-36"><a href="#cb13-36" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb13-37"><a href="#cb13-37" aria-hidden="true" tabindex="-1"></a>        scalar_bar_args<span class="op">=</span><span class="bu">dict</span>(vertical<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb13-38"><a href="#cb13-38" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-39"><a href="#cb13-39" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb13-40"><a href="#cb13-40" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-41"><a href="#cb13-41" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/temperature_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mpi4py <span class="im">import</span> MPI</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> MPI.COMM_WORLD.size <span class="op">==</span> <span class="dv">1</span>:</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"T"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)</span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"dTdY"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, dTdY.sym)</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">1000</span>, <span class="dv">500</span>), shape<span class="op">=</span>(<span class="dv">1</span>, <span class="dv">2</span>))</span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    pl.subplot(<span class="dv">0</span>, <span class="dv">0</span>)</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Black"</span>,</span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"T"</span>,</span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-27"><a href="#cb14-27" aria-hidden="true" tabindex="-1"></a>    pl.subplot(<span class="dv">0</span>, <span class="dv">1</span>)</span>
+<span id="cb14-28"><a href="#cb14-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-29"><a href="#cb14-29" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb14-30"><a href="#cb14-30" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb14-31"><a href="#cb14-31" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
+<span id="cb14-32"><a href="#cb14-32" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Black"</span>,</span>
+<span id="cb14-33"><a href="#cb14-33" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb14-34"><a href="#cb14-34" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"dTdY"</span>,</span>
+<span id="cb14-35"><a href="#cb14-35" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb14-36"><a href="#cb14-36" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb14-37"><a href="#cb14-37" aria-hidden="true" tabindex="-1"></a>        scalar_bar_args<span class="op">=</span><span class="bu">dict</span>(vertical<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb14-38"><a href="#cb14-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-39"><a href="#cb14-39" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb14-40"><a href="#cb14-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-41"><a href="#cb14-41" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/temperature_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div id="4bf2b002-3efd-4f02-907b-c68430f282af" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="11">
-<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/temperature_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/temperature_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="11">
 
         <iframe width="600" height="300" src="html5/temperature_plot.html" frameborder="0" allowfullscreen=""></iframe>
