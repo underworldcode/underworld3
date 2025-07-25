@@ -3225,7 +3225,7 @@ class Swarm(Stateful, uw_object):
         else:
             substeps = 1
 
-        if True or uw.mpi.rank == 0 and self.verbose:
+        if uw.mpi.rank == 0 and self.verbose:
             print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
 
         # X0 holds the particle location at the start of advection
@@ -3578,7 +3578,7 @@ class NodalPointUWSwarm(Swarm):
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
 
-        shift = 0.01
+        shift = 0.001
         coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")
