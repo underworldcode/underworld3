@@ -10,9 +10,14 @@ All `Underworld3` source code is released under the LGPL-3 open source licence. 
 
 ## Status
 
-[![main Branch](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=main)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
+main branch
 
-[![development Branch](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=development)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
+[![test_uw3](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=main)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
+
+
+development branch
+
+[![test_uw3](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml/badge.svg?branch=development)](https://github.com/underworldcode/underworld3/actions/workflows/build_uw3_and_test.yml)
 
 ## Documentation
 
