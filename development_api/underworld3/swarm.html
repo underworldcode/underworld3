@@ -425,7 +425,7 @@ def sym_1d(self):
 </dd>
 <dt id="underworld3.swarm.NodalPointPICSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointPICSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f0756dd5bc0>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f72a7ba1bc0>, verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -622,7 +622,7 @@ def advection(
 </dd>
 <dt id="underworld3.swarm.NodalPointUWSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointUWSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f0756dd5bc0>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f72a7ba1bc0>, verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -701,7 +701,7 @@ def advection(
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
 
-        shift = 0.01
+        shift = 0.001
         coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
 
         nswarm.dm.restoreField(&#34;DMSwarmPIC_coor&#34;)
@@ -4466,7 +4466,7 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
         else:
             substeps = 1
 
-        if True or uw.mpi.rank == 0 and self.verbose:
+        if uw.mpi.rank == 0 and self.verbose:
             print(f&#34;Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} &#34;)
 
         # X0 holds the particle location at the start of advection
@@ -5295,7 +5295,7 @@ def advection(
     else:
         substeps = 1
 
-    if True or uw.mpi.rank == 0 and self.verbose:
+    if uw.mpi.rank == 0 and self.verbose:
         print(f&#34;Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} &#34;)
 
     # X0 holds the particle location at the start of advection

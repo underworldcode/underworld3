@@ -211,14 +211,14 @@ This is redundant if the meshVariable degree is 1 (the original mesh exactly
 represents the data)</p></div>
 </dd>
 <dt id="underworld3.visualisation.mesh_to_pv_mesh"><code class="name flex">
-<span>def <span class="ident">mesh_to_pv_mesh</span></span>(<span>mesh0, jupyter_backend=None)</span>
+<span>def <span class="ident">mesh_to_pv_mesh</span></span>(<span>mesh, jupyter_backend=None)</span>
 </code></dt>
 <dd>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
+<pre><code class="python">def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     &#34;&#34;&#34;Initialise pyvista engine from existing mesh&#34;&#34;&#34;
 
     # # Required in notebooks
@@ -249,7 +249,7 @@ represents the data)</p></div>
 
     from petsc4py import PETSc
 
-    match (mesh0.dm.isSimplex(), mesh0.dim):
+    match (mesh.dm.isSimplex(), mesh.dim):
         case (True, 2):
             vtk_cell_type = pv.cell.CellType.TRIANGLE
         case (True, 3):
@@ -259,16 +259,16 @@ represents the data)</p></div>
         case (False, 3):
             vtk_cell_type = pv.cell.CellType.HEXAHEDRON
 
-    cStart, cEnd = mesh0.dm.getHeightStratum(0)
-    fStart, fEnd = mesh0.dm.getHeightStratum(1)
-    pStart, pEnd = mesh0.dm.getDepthStratum(0)
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    fStart, fEnd = mesh.dm.getHeightStratum(1)
+    pStart, pEnd = mesh.dm.getDepthStratum(0)
 
-    cell_num_points = mesh0.element.entities[mesh0.dim]
-    face_num_points = mesh0.element.face_entities[mesh0.dim]
+    cell_num_points = mesh.element.entities[mesh.dim]
+    face_num_points = mesh.element.face_entities[mesh.dim]
 
     cell_points_list = []
     for cell_id in range(cStart, cEnd):
-        cell_points = mesh0.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+        cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
         cell_points_list.append(cell_points - pStart)
 
     cells_array = np.array(cell_points_list, dtype=int)
@@ -278,7 +278,7 @@ represents the data)</p></div>
     cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
     pv_mesh = pv.UnstructuredGrid(
-        cells_array, cells_type, coords_to_pv_coords(mesh0.data)
+        cells_array, cells_type, coords_to_pv_coords(mesh.data)
     )
 
     return pv_mesh</code></pre>
