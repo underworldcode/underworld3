@@ -688,7 +688,7 @@ class SemiLagrangian(uw_object):
                 # is required instead.
 
                 try:
-                    with self._workVar.mesh.access():
+                    with self.mesh.access(self.psi_star[0]):
                         self.psi_star[0].data[...] = uw.function.evaluate(
                             self.psi_fn,
                             self.psi_star[0].coords,

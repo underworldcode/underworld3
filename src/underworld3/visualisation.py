@@ -26,7 +26,7 @@ def initialise(jupyter_backend):
     return
 
 
-def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
+def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     """Initialise pyvista engine from existing mesh"""
 
     # # Required in notebooks
@@ -57,7 +57,7 @@ def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
 
     from petsc4py import PETSc
 
-    match (mesh0.dm.isSimplex(), mesh0.dim):
+    match (mesh.dm.isSimplex(), mesh.dim):
         case (True, 2):
             vtk_cell_type = pv.cell.CellType.TRIANGLE
         case (True, 3):
@@ -67,16 +67,16 @@ def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
         case (False, 3):
             vtk_cell_type = pv.cell.CellType.HEXAHEDRON
 
-    cStart, cEnd = mesh0.dm.getHeightStratum(0)
-    fStart, fEnd = mesh0.dm.getHeightStratum(1)
-    pStart, pEnd = mesh0.dm.getDepthStratum(0)
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    fStart, fEnd = mesh.dm.getHeightStratum(1)
+    pStart, pEnd = mesh.dm.getDepthStratum(0)
 
-    cell_num_points = mesh0.element.entities[mesh0.dim]
-    face_num_points = mesh0.element.face_entities[mesh0.dim]
+    cell_num_points = mesh.element.entities[mesh.dim]
+    face_num_points = mesh.element.face_entities[mesh.dim]
 
     cell_points_list = []
     for cell_id in range(cStart, cEnd):
-        cell_points = mesh0.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+        cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
         cell_points_list.append(cell_points - pStart)
 
     cells_array = np.array(cell_points_list, dtype=int)
@@ -86,7 +86,7 @@ def mesh_to_pv_mesh(mesh0, jupyter_backend=None):
     cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
     pv_mesh = pv.UnstructuredGrid(
-        cells_array, cells_type, coords_to_pv_coords(mesh0.data)
+        cells_array, cells_type, coords_to_pv_coords(mesh.data)
     )
 
     return pv_mesh
