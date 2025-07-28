@@ -336,7 +336,7 @@ class Eulerian(uw_object):
                     self.psi_star[0].data[...] = uw.function.evaluate(
                         self.psi_fn,
                         self.psi_star[0].coords,
-                        evalf=evalf,
+                        evalf=self.evalf,
                     ).reshape(-1, max(self.psi_fn.shape))
                     # print('evaluate data', flush=True)
 
