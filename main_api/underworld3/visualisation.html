@@ -1,0 +1,1114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.visualisation API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.visualisation</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.visualisation.clip_mesh"><code class="name flex">
+<span>def <span class="ident">clip_mesh</span></span>(<span>pvmesh, clip_angle)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def clip_mesh(pvmesh, clip_angle):
+    &#34;&#34;&#34;
+    Clip the given mesh using planes at the specified angle.
+
+    Parameters:
+    -----------
+    pvmesh : object
+        The PyVista mesh object to be clipped.
+
+    clip_angle : float
+        The angle (in degrees) at which to clip the mesh.
+
+    Returns:
+    --------
+    list
+        A list containing the two clipped mesh parts.
+    &#34;&#34;&#34;
+    import numpy as np
+
+    # Calculate normals for clipping planes
+    clip1_normal = (np.cos(np.deg2rad(clip_angle)), np.cos(np.deg2rad(clip_angle)), 0.0)
+    clip2_normal = (
+        np.cos(np.deg2rad(clip_angle)),
+        -np.cos(np.deg2rad(clip_angle)),
+        0.0,
+    )
+
+    # Perform clipping
+    clip1 = pvmesh.clip(
+        origin=(0.0, 0.0, 0.0), normal=clip1_normal, invert=False, crinkle=False
+    )
+    clip2 = pvmesh.clip(
+        origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False
+    )
+
+    return [clip1, clip2]</code></pre>
+</details>
+<div class="desc"><p>Clip the given mesh using planes at the specified angle.</p>
+<h2 id="parameters">Parameters:</h2>
+<p>pvmesh : object
+The PyVista mesh object to be clipped.</p>
+<p>clip_angle : float
+The angle (in degrees) at which to clip the mesh.</p>
+<h2 id="returns">Returns:</h2>
+<p>list
+A list containing the two clipped mesh parts.</p></div>
+</dd>
+<dt id="underworld3.visualisation.coords_to_pv_coords"><code class="name flex">
+<span>def <span class="ident">coords_to_pv_coords</span></span>(<span>coords)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def coords_to_pv_coords(coords):
+    &#34;&#34;&#34;For a given set of coords, return a pyvista coordinate vector&#34;&#34;&#34;
+
+    return _vector_to_pv_vector(coords)</code></pre>
+</details>
+<div class="desc"><p>For a given set of coords, return a pyvista coordinate vector</p></div>
+</dd>
+<dt id="underworld3.visualisation.initialise"><code class="name flex">
+<span>def <span class="ident">initialise</span></span>(<span>jupyter_backend)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def initialise(jupyter_backend):
+
+    import pyvista as pv
+
+    pv.global_theme.background = &#34;white&#34;
+    pv.global_theme.anti_aliasing = &#34;msaa&#34;
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera[&#34;viewup&#34;] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera[&#34;position&#34;] = [0.0, 0.0, 5.0]
+
+    try:
+        if jupyter_backend is not None:
+            pv.global_theme.jupyter_backend = jupyter_backend
+        elif &#34;BINDER_LAUNCH_HOST&#34; in os.environ or &#34;BINDER_REPO_URL&#34; in os.environ:
+            pv.global_theme.jupyter_backend = &#34;client&#34;
+        else:
+            pv.global_theme.jupyter_backend = &#34;trame&#34;
+
+    except RuntimeError:
+        pv.global_theme.jupyter_backend = &#34;panel&#34;
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.visualisation.meshVariable_to_pv_cloud"><code class="name flex">
+<span>def <span class="ident">meshVariable_to_pv_cloud</span></span>(<span>meshVar)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def meshVariable_to_pv_cloud(meshVar):
+    &#34;&#34;&#34;meshVariable point locations to pyvista PolyData object&#34;&#34;&#34;
+
+    import numpy as np
+    import pyvista as pv
+
+    points = np.zeros((meshVar.coords.shape[0], 3))
+    points[:, 0] = meshVar.coords[:, 0]
+    points[:, 1] = meshVar.coords[:, 1]
+
+    if meshVar.mesh.dim == 2:
+        points[:, 2] = 0.0
+    else:
+        points[:, 2] = meshVar.coords[:, 2]
+
+    point_cloud = pv.PolyData(points)
+
+    return point_cloud</code></pre>
+</details>
+<div class="desc"><p>meshVariable point locations to pyvista PolyData object</p></div>
+</dd>
+<dt id="underworld3.visualisation.meshVariable_to_pv_mesh_object"><code class="name flex">
+<span>def <span class="ident">meshVariable_to_pv_mesh_object</span></span>(<span>meshVar, alpha=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
+    &#34;&#34;&#34;Convert meshvariable to delaunay triangulated pyvista mesh object.
+    This is redundant if the meshVariable degree is 1 (the original mesh exactly
+    represents the data)&#34;&#34;&#34;
+
+    mesh = meshVar.mesh
+    dim = mesh.dim
+
+    if alpha is None:
+        alpha = mesh.get_max_radius()
+
+    point_cloud = meshVariable_to_pv_cloud(meshVar)
+
+    if dim == 2:
+        pv_mesh = point_cloud.delaunay_2d(alpha=alpha)
+    else:
+        pv_mesh = point_cloud.delaunay_3d(alpha=alpha)
+
+    return pv_mesh</code></pre>
+</details>
+<div class="desc"><p>Convert meshvariable to delaunay triangulated pyvista mesh object.
+This is redundant if the meshVariable degree is 1 (the original mesh exactly
+represents the data)</p></div>
+</dd>
+<dt id="underworld3.visualisation.mesh_to_pv_mesh"><code class="name flex">
+<span>def <span class="ident">mesh_to_pv_mesh</span></span>(<span>mesh, jupyter_backend=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def mesh_to_pv_mesh(mesh, jupyter_backend=None):
+    &#34;&#34;&#34;Initialise pyvista engine from existing mesh&#34;&#34;&#34;
+
+    # # Required in notebooks
+    # import nest_asyncio
+    # nest_asyncio.apply()
+
+    initialise(jupyter_backend)
+
+    import os
+    import shutil
+    import tempfile
+    import pyvista as pv
+    import numpy as np
+
+    # with tempfile.TemporaryDirectory() as tmp:
+    #     if type(mesh) == str:  # reading msh file directly
+    #         vtk_filename = os.path.join(tmp, &#34;tmpMsh.msh&#34;)
+    #         shutil.copyfile(mesh, vtk_filename)
+    #     else:  # reading mesh by creating vtk
+    #         vtk_filename = os.path.join(tmp, &#34;tmpMsh.vtk&#34;)
+    #         mesh.vtk(vtk_filename)
+
+    #     pvmesh = pv.read(vtk_filename)
+
+    # return pvmesh
+
+    ## Alternative - not via file / create an unstructured grid in pyvista
+
+    from petsc4py import PETSc
+
+    match (mesh.dm.isSimplex(), mesh.dim):
+        case (True, 2):
+            vtk_cell_type = pv.cell.CellType.TRIANGLE
+        case (True, 3):
+            vtk_cell_type = pv.cell.CellType.TETRA
+        case (False, 2):
+            vtk_cell_type = pv.cell.CellType.QUAD
+        case (False, 3):
+            vtk_cell_type = pv.cell.CellType.HEXAHEDRON
+
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    fStart, fEnd = mesh.dm.getHeightStratum(1)
+    pStart, pEnd = mesh.dm.getDepthStratum(0)
+
+    cell_num_points = mesh.element.entities[mesh.dim]
+    face_num_points = mesh.element.face_entities[mesh.dim]
+
+    cell_points_list = []
+    for cell_id in range(cStart, cEnd):
+        cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+        cell_points_list.append(cell_points - pStart)
+
+    cells_array = np.array(cell_points_list, dtype=int)
+    cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
+    cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
+
+    cells_array = np.hstack((cells_size, cells_array), dtype=int)
+
+    pv_mesh = pv.UnstructuredGrid(
+        cells_array, cells_type, coords_to_pv_coords(mesh.data)
+    )
+
+    return pv_mesh</code></pre>
+</details>
+<div class="desc"><p>Initialise pyvista engine from existing mesh</p></div>
+</dd>
+<dt id="underworld3.visualisation.plot_mesh"><code class="name flex">
+<span>def <span class="ident">plot_mesh</span></span>(<span>mesh,<br>title='',<br>clip_angle=0.0,<br>cpos='xy',<br>window_size=(750, 750),<br>show_edges=True,<br>save_png=False,<br>dir_fname='')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def plot_mesh(
+    mesh,
+    title=&#34;&#34;,
+    clip_angle=0.0,
+    cpos=&#34;xy&#34;,
+    window_size=(750, 750),
+    show_edges=True,
+    save_png=False,
+    dir_fname=&#34;&#34;,
+):
+    &#34;&#34;&#34;
+    Plot a mesh with optional clipping, edge display, and saving functionality.
+
+    Parameters:
+    -----------
+    mesh : object
+        The mesh object to be plotted. This should be in a format that can be converted
+        into a PyVista mesh using `vis.mesh_to_pv_mesh()`.
+
+    title : str, optional
+        The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.
+
+    clip_angle : float, optional
+        The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+        Clipping is performed using planes at the specified angle. Default is 0.0.
+
+    cpos : str or list, optional
+        The camera position for viewing the mesh. It can be a string such as &#39;xy&#39;, &#39;xz&#39;, &#39;yz&#39;, or
+        a list specifying the exact camera position. Default is &#39;xy&#39;.
+
+    window_size : tuple of int, optional
+        The size of the rendering window in pixels as (width, height). Default is (750, 750).
+
+    show_edges : bool, optional
+        Whether to display the edges of the mesh in the plot. If `True`, edges will be shown.
+        Default is `True`.
+
+    save_png : bool, optional
+        Whether to save the plot as a PNG file. If `True`, the plot will be saved to the specified
+        directory and filename. Default is `False`.
+
+    dir_fname : str, optional
+        The directory and filename for saving the PNG image if `save_png` is `True`.
+        If left empty, no file is saved. Default is an empty string.
+
+    Returns:
+    --------
+    None
+        This function does not return any value. It displays the mesh plot in a PyVista window
+        and optionally saves a screenshot.
+    &#34;&#34;&#34;
+    import pyvista as pv
+
+    pvmesh = mesh_to_pv_mesh(mesh)
+
+    pl = pv.Plotter(window_size=window_size)
+    if clip_angle != 0.0:
+        clipped_meshes = clip_mesh(pvmesh, clip_angle)
+        for clipped_mesh in clipped_meshes:
+            pl.add_mesh(clipped_mesh, edge_color=&#34;k&#34;, show_edges=True, opacity=1.0)
+    else:
+        pl.add_mesh(
+            pvmesh,
+            edge_color=&#34;k&#34;,
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+        )
+
+    if len(title) != 0:
+        pl.add_text(title, font_size=18, position=(950, 2100))
+
+    pl.show(cpos=cpos)
+
+    if save_png:
+        pl.camera.zoom(1.4)
+        pl.screenshot(dir_fname, scale=3.5)
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Plot a mesh with optional clipping, edge display, and saving functionality.</p>
+<h2 id="parameters">Parameters:</h2>
+<p>mesh : object
+The mesh object to be plotted. This should be in a format that can be converted
+into a PyVista mesh using <code>vis.mesh_to_pv_mesh()</code>.</p>
+<p>title : str, optional
+The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.</p>
+<p>clip_angle : float, optional
+The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+Clipping is performed using planes at the specified angle. Default is 0.0.</p>
+<p>cpos : str or list, optional
+The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
+a list specifying the exact camera position. Default is 'xy'.</p>
+<p>window_size : tuple of int, optional
+The size of the rendering window in pixels as (width, height). Default is (750, 750).</p>
+<p>show_edges : bool, optional
+Whether to display the edges of the mesh in the plot. If <code>True</code>, edges will be shown.
+Default is <code>True</code>.</p>
+<p>save_png : bool, optional
+Whether to save the plot as a PNG file. If <code>True</code>, the plot will be saved to the specified
+directory and filename. Default is <code>False</code>.</p>
+<p>dir_fname : str, optional
+The directory and filename for saving the PNG image if <code>save_png</code> is <code>True</code>.
+If left empty, no file is saved. Default is an empty string.</p>
+<h2 id="returns">Returns:</h2>
+<p>None
+This function does not return any value. It displays the mesh plot in a PyVista window
+and optionally saves a screenshot.</p></div>
+</dd>
+<dt id="underworld3.visualisation.plot_scalar"><code class="name flex">
+<span>def <span class="ident">plot_scalar</span></span>(<span>mesh,<br>scalar,<br>scalar_name='',<br>cmap='',<br>clim='',<br>window_size=(750, 750),<br>title='',<br>fmt='%10.7f',<br>clip_angle=0.0,<br>cpos='xy',<br>show_edges=False,<br>save_png=False,<br>dir_fname='')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def plot_scalar(
+    mesh,
+    scalar,
+    scalar_name=&#34;&#34;,
+    cmap=&#34;&#34;,
+    clim=&#34;&#34;,
+    window_size=(750, 750),
+    title=&#34;&#34;,
+    fmt=&#34;%10.7f&#34;,
+    clip_angle=0.0,
+    cpos=&#34;xy&#34;,
+    show_edges=False,
+    save_png=False,
+    dir_fname=&#34;&#34;,
+):
+    &#34;&#34;&#34;
+    Plot a scalar quantity from a mesh with options for clipping, colormap, and saving.
+
+    Parameters:
+    -----------
+    mesh : object
+        The mesh object to be plotted. This should be in a format that can be converted
+        into a PyVista mesh using `vis.mesh_to_pv_mesh()`.
+
+    scalar : mesh variable name or sympy expression
+        The scalar values associated with the mesh points. These values will be visualized
+        on the mesh.
+
+    scalar_name : str, optional
+        The name of the scalar field to be used when adding it to the mesh. This name will
+        also be used as the label for the scalar bar. Default is an empty string.
+
+    cmap : str, optional
+        The colormap to be used for visualizing the scalar values. This can be any colormap
+        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+
+    clim : tuple of float, optional
+        The scalar range to be used for coloring the mesh (e.g., `(min_value, max_value)`). If not
+        provided, the range of the scalar values is used. Default is an empty string, which uses
+        the full range of the scalar values.
+
+    window_size : tuple of int, optional
+        The size of the rendering window in pixels as (width, height). Default is (750, 750).
+
+    title : str, optional
+        The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.
+
+    fmt : str, optional
+        The format string for scalar values. This is typically used when displaying values on the scalar bar.
+        Default is &#39;%10.7f&#39;.
+
+    clip_angle : float, optional
+        The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+        Clipping is performed using planes at the specified angle. Default is 0.0.
+
+    cpos : str or list, optional
+        The camera position for viewing the mesh. It can be a string such as &#39;xy&#39;, &#39;xz&#39;, &#39;yz&#39;, or
+        a list specifying the exact camera position. Default is &#39;xy&#39;.
+
+    show_edges : bool, optional
+        Whether to display the edges of the mesh in the plot. If `True`, edges will be shown.
+        Default is `False`.
+
+    save_png : bool, optional
+        Whether to save the plot as a PNG file. If `True`, the plot will be saved to the specified
+        directory and filename. Default is `False`.
+
+    dir_fname : str, optional
+        The directory and filename for saving the PNG image if `save_png` is `True`.
+        If left empty, no file is saved. Default is an empty string.
+
+    Returns:
+    --------
+    None
+        This function does not return any value. It displays the scalar field on the mesh in a PyVista
+        window and optionally saves a screenshot.
+    &#34;&#34;&#34;
+
+    import sympy
+    import numpy as np
+    import pyvista as pv
+
+    pvmesh = mesh_to_pv_mesh(mesh)
+    pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
+
+    print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
+
+    pl = pv.Plotter(window_size=window_size)
+    if clip_angle != 0.0:
+        clipped_meshes = clip_mesh(pvmesh, clip_angle)
+        for clipped_mesh in clipped_meshes:
+            pl.add_mesh(
+                clipped_mesh,
+                cmap=cmap,
+                edge_color=&#34;k&#34;,
+                scalars=scalar_name,
+                show_edges=show_edges,
+                use_transparency=False,
+                show_scalar_bar=False,
+                opacity=1.0,
+                clim=clim,
+            )
+    else:
+        pl.add_mesh(
+            pvmesh,
+            cmap=cmap,
+            edge_color=&#34;k&#34;,
+            scalars=scalar_name,
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+            clim=clim,
+            show_scalar_bar=False,
+        )
+
+    pl.show(cpos=cpos)
+
+    if len(title) != 0:
+        pl.add_text(title, font_size=18, position=(950, 2100))
+
+    if save_png:
+        pl.camera.zoom(1.4)
+        pl.screenshot(dir_fname, scale=3.5)
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Plot a scalar quantity from a mesh with options for clipping, colormap, and saving.</p>
+<h2 id="parameters">Parameters:</h2>
+<p>mesh : object
+The mesh object to be plotted. This should be in a format that can be converted
+into a PyVista mesh using <code>vis.mesh_to_pv_mesh()</code>.</p>
+<p>scalar : mesh variable name or sympy expression
+The scalar values associated with the mesh points. These values will be visualized
+on the mesh.</p>
+<p>scalar_name : str, optional
+The name of the scalar field to be used when adding it to the mesh. This name will
+also be used as the label for the scalar bar. Default is an empty string.</p>
+<p>cmap : str, optional
+The colormap to be used for visualizing the scalar values. This can be any colormap
+recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.</p>
+<p>clim : tuple of float, optional
+The scalar range to be used for coloring the mesh (e.g., <code>(min_value, max_value)</code>). If not
+provided, the range of the scalar values is used. Default is an empty string, which uses
+the full range of the scalar values.</p>
+<p>window_size : tuple of int, optional
+The size of the rendering window in pixels as (width, height). Default is (750, 750).</p>
+<p>title : str, optional
+The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.</p>
+<p>fmt : str, optional
+The format string for scalar values. This is typically used when displaying values on the scalar bar.
+Default is '%10.7f'.</p>
+<p>clip_angle : float, optional
+The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+Clipping is performed using planes at the specified angle. Default is 0.0.</p>
+<p>cpos : str or list, optional
+The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
+a list specifying the exact camera position. Default is 'xy'.</p>
+<p>show_edges : bool, optional
+Whether to display the edges of the mesh in the plot. If <code>True</code>, edges will be shown.
+Default is <code>False</code>.</p>
+<p>save_png : bool, optional
+Whether to save the plot as a PNG file. If <code>True</code>, the plot will be saved to the specified
+directory and filename. Default is <code>False</code>.</p>
+<p>dir_fname : str, optional
+The directory and filename for saving the PNG image if <code>save_png</code> is <code>True</code>.
+If left empty, no file is saved. Default is an empty string.</p>
+<h2 id="returns">Returns:</h2>
+<p>None
+This function does not return any value. It displays the scalar field on the mesh in a PyVista
+window and optionally saves a screenshot.</p></div>
+</dd>
+<dt id="underworld3.visualisation.plot_vector"><code class="name flex">
+<span>def <span class="ident">plot_vector</span></span>(<span>mesh,<br>vector,<br>vector_name='',<br>cmap='',<br>clim='',<br>vmag='',<br>vfreq='',<br>save_png=False,<br>dir_fname='',<br>title='',<br>fmt='%10.7f',<br>clip_angle=0.0,<br>show_arrows=False,<br>cpos='xy',<br>show_edges=False,<br>window_size=(750, 750),<br>scalar=None,<br>scalar_name='')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def plot_vector(
+    mesh,
+    vector,
+    vector_name=&#34;&#34;,
+    cmap=&#34;&#34;,
+    clim=&#34;&#34;,
+    vmag=&#34;&#34;,
+    vfreq=&#34;&#34;,
+    save_png=False,
+    dir_fname=&#34;&#34;,
+    title=&#34;&#34;,
+    fmt=&#34;%10.7f&#34;,
+    clip_angle=0.0,
+    show_arrows=False,
+    cpos=&#34;xy&#34;,
+    show_edges=False,
+    window_size=(750, 750),
+    scalar=None,
+    scalar_name=&#34;&#34;,
+):
+    &#34;&#34;&#34;
+    Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.
+
+    Parameters:
+    -----------
+    mesh : object
+        The mesh object to be plotted. This should be in a format that can be converted
+        into a PyVista mesh using `vis.mesh_to_pv_mesh()`.
+
+    vector : mesh variable name or sympy expression
+        The symbolic representation of the vector field associated with the mesh points.
+        This vector field will be visualized on the mesh.
+
+    vector_name : str, optional
+        The name of the vector field to be used when adding it to the mesh. This name will
+        also be used as the label for the vector magnitude in the scalar bar. Default is an empty string.
+
+    cmap : str, optional
+        The colormap to be used for visualizing the vector magnitudes. This can be any colormap
+        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+
+    clim : tuple of float, optional
+        The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., `(min_value, max_value)`).
+        If not provided, the range of the vector magnitudes is used. Default is an empty string.
+
+    vmag : float or str, optional
+        The scaling factor for the arrow magnitudes when plotting vectors as arrows.
+        Default is an empty string, which uses the default scaling.
+
+    vfreq : int, optional
+        The frequency of arrows to display when `show_arrows` is `True`. For example, if set to 10, every 10th vector
+        will be plotted as an arrow. Default is an empty string, which uses the default frequency.
+
+    save_png : bool, optional
+        Whether to save the plot as a PNG file. If `True`, the plot will be saved to the specified
+        directory and filename. Default is `False`.
+
+    dir_fname : str, optional
+        The directory and filename for saving the PNG image if `save_png` is `True`.
+        If left empty, no file is saved. Default is an empty string.
+
+    title : str, optional
+        The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.
+
+    fmt : str, optional
+        The format string for scalar values, typically used in the scalar bar. Default is &#39;%10.7f&#39;.
+
+    clip_angle : float, optional
+        The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+        Clipping is performed using planes at the specified angle. Default is 0.0.
+
+    show_arrows : bool, optional
+        Whether to display arrows representing the vector field on the mesh. If `True`, arrows will be shown.
+        Default is `False`.
+
+    cpos : str or list, optional
+        The camera position for viewing the mesh. It can be a string such as &#39;xy&#39;, &#39;xz&#39;, &#39;yz&#39;, or
+        a list specifying the exact camera position. Default is &#39;xy&#39;.
+
+    show_edges : bool, optional
+        Whether to display the edges of the mesh in the plot. If `True`, edges will be shown.
+        Default is `False`.
+
+    window_size : tuple of int, optional
+        The size of the rendering window in pixels as (width, height). Default is (750, 750).
+
+    scalar : mesh variable name or sympy expression, optional
+        An optional scalar field associated with the mesh points. If provided, this scalar field
+        will be used for coloring the mesh instead of the vector magnitude. Default is `None`.
+
+    scalar_name : str, optional
+        The name of the scalar field to be used when adding it to the mesh. This name will
+        be used as the label for the scalar bar if `scalar` is provided. Default is an empty string.
+
+    Returns:
+    --------
+    None
+        This function does not return any value. It displays the vector field on the mesh in a PyVista
+        window and optionally saves a screenshot.
+    &#34;&#34;&#34;
+
+    import sympy
+    import numpy as np
+    import pyvista as pv
+
+    pvmesh = mesh_to_pv_mesh(mesh)
+    pvmesh.point_data[vector_name] = vector_fn_to_pv_points(pvmesh, vector.sym)
+    if scalar is None:
+        scalar_name = vector_name + &#34;_mag&#34;
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
+            pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
+        )
+    else:
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
+
+    print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
+
+    velocity_points = meshVariable_to_pv_cloud(vector)
+    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(
+        velocity_points, vector.sym
+    )
+
+    pl = pv.Plotter(window_size=window_size)
+    if clip_angle != 0.0:
+        clipped_meshes = clip_mesh(pvmesh, clip_angle)
+        for clipped_mesh in clipped_meshes:
+            pl.add_mesh(
+                clipped_mesh,
+                cmap=cmap,
+                edge_color=&#34;k&#34;,
+                scalars=scalar_name,
+                show_edges=show_edges,
+                use_transparency=False,
+                show_scalar_bar=False,
+                opacity=1.0,
+                clim=clim,
+            )
+    else:
+        pl.add_mesh(
+            pvmesh,
+            cmap=cmap,
+            edge_color=&#34;k&#34;,
+            scalars=scalar_name,
+            show_edges=show_edges,
+            use_transparency=False,
+            opacity=1.0,
+            clim=clim,
+            show_scalar_bar=False,
+        )
+
+    # pl.add_scalar_bar(vector_name, vertical=False, title_font_size=25, label_font_size=20, fmt=fmt,
+    #                   position_x=0.225, position_y=0.01,)
+
+    if show_arrows:
+        pl.add_arrows(
+            velocity_points.points[::vfreq],
+            velocity_points.point_data[vector_name][::vfreq],
+            mag=vmag,
+            color=&#34;k&#34;,
+        )
+
+    pl.show(cpos=cpos)
+
+    if len(title) != 0:
+        pl.add_text(title, font_size=18, position=(950, 1075))
+
+    if save_png:
+        pl.camera.zoom(1.4)
+        pl.screenshot(dir_fname, scale=3.5)
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.</p>
+<h2 id="parameters">Parameters:</h2>
+<p>mesh : object
+The mesh object to be plotted. This should be in a format that can be converted
+into a PyVista mesh using <code>vis.mesh_to_pv_mesh()</code>.</p>
+<p>vector : mesh variable name or sympy expression
+The symbolic representation of the vector field associated with the mesh points.
+This vector field will be visualized on the mesh.</p>
+<p>vector_name : str, optional
+The name of the vector field to be used when adding it to the mesh. This name will
+also be used as the label for the vector magnitude in the scalar bar. Default is an empty string.</p>
+<p>cmap : str, optional
+The colormap to be used for visualizing the vector magnitudes. This can be any colormap
+recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.</p>
+<p>clim : tuple of float, optional
+The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., <code>(min_value, max_value)</code>).
+If not provided, the range of the vector magnitudes is used. Default is an empty string.</p>
+<p>vmag : float or str, optional
+The scaling factor for the arrow magnitudes when plotting vectors as arrows.
+Default is an empty string, which uses the default scaling.</p>
+<p>vfreq : int, optional
+The frequency of arrows to display when <code>show_arrows</code> is <code>True</code>. For example, if set to 10, every 10th vector
+will be plotted as an arrow. Default is an empty string, which uses the default frequency.</p>
+<p>save_png : bool, optional
+Whether to save the plot as a PNG file. If <code>True</code>, the plot will be saved to the specified
+directory and filename. Default is <code>False</code>.</p>
+<p>dir_fname : str, optional
+The directory and filename for saving the PNG image if <code>save_png</code> is <code>True</code>.
+If left empty, no file is saved. Default is an empty string.</p>
+<p>title : str, optional
+The title text to be displayed on the plot. Default is an empty string, meaning no title is shown.</p>
+<p>fmt : str, optional
+The format string for scalar values, typically used in the scalar bar. Default is '%10.7f'.</p>
+<p>clip_angle : float, optional
+The angle (in degrees) at which to clip the mesh. If set to 0.0, no clipping is applied.
+Clipping is performed using planes at the specified angle. Default is 0.0.</p>
+<p>show_arrows : bool, optional
+Whether to display arrows representing the vector field on the mesh. If <code>True</code>, arrows will be shown.
+Default is <code>False</code>.</p>
+<p>cpos : str or list, optional
+The camera position for viewing the mesh. It can be a string such as 'xy', 'xz', 'yz', or
+a list specifying the exact camera position. Default is 'xy'.</p>
+<p>show_edges : bool, optional
+Whether to display the edges of the mesh in the plot. If <code>True</code>, edges will be shown.
+Default is <code>False</code>.</p>
+<p>window_size : tuple of int, optional
+The size of the rendering window in pixels as (width, height). Default is (750, 750).</p>
+<p>scalar : mesh variable name or sympy expression, optional
+An optional scalar field associated with the mesh points. If provided, this scalar field
+will be used for coloring the mesh instead of the vector magnitude. Default is <code>None</code>.</p>
+<p>scalar_name : str, optional
+The name of the scalar field to be used when adding it to the mesh. This name will
+be used as the label for the scalar bar if <code>scalar</code> is provided. Default is an empty string.</p>
+<h2 id="returns">Returns:</h2>
+<p>None
+This function does not return any value. It displays the vector field on the mesh in a PyVista
+window and optionally saves a screenshot.</p></div>
+</dd>
+<dt id="underworld3.visualisation.save_colorbar"><code class="name flex">
+<span>def <span class="ident">save_colorbar</span></span>(<span>colormap='',<br>cb_bounds=None,<br>vmin=None,<br>vmax=None,<br>figsize_cb=(6, 1),<br>primary_fs=18,<br>cb_orient='vertical',<br>cb_axis_label='',<br>cb_label_xpos=0.5,<br>cb_label_ypos=0.5,<br>fformat='png',<br>output_path='',<br>fname='')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def save_colorbar(
+    colormap=&#34;&#34;,
+    cb_bounds=None,
+    vmin=None,
+    vmax=None,
+    figsize_cb=(6, 1),
+    primary_fs=18,
+    cb_orient=&#34;vertical&#34;,
+    cb_axis_label=&#34;&#34;,
+    cb_label_xpos=0.5,
+    cb_label_ypos=0.5,
+    fformat=&#34;png&#34;,
+    output_path=&#34;&#34;,
+    fname=&#34;&#34;,
+):
+    &#34;&#34;&#34;
+    Save a colorbar separately from a plot with customizable appearance and format.
+
+    Parameters:
+    -----------
+    colormap : str, optional
+        The name of the colormap to be used for the colorbar. This should be a valid Matplotlib colormap name.
+        Default is an empty string, which uses the default colormap.
+
+    cb_bounds : list or array-like, optional
+        The bounds to be used for the colorbar. If provided, the colorbar will be generated with these bounds.
+        Default is None, which means bounds are not explicitly set.
+
+    vmin : float, optional
+        The minimum value for the colorbar. This is used to define the lower limit of the colormap.
+        Default is None.
+
+    vmax : float, optional
+        The maximum value for the colorbar. This is used to define the upper limit of the colormap.
+        Default is None.
+
+    figsize_cb : tuple of float, optional
+        The size of the figure for the colorbar in inches as (width, height). Default is (6, 1).
+
+    primary_fs : int, optional
+        The primary font size for the colorbar labels and title. Default is 18.
+
+    cb_orient : str, optional
+        The orientation of the colorbar, either &#39;vertical&#39; or &#39;horizontal&#39;. Default is &#39;vertical&#39;.
+
+    cb_axis_label : str, optional
+        The label for the colorbar axis. This text will be displayed alongside the colorbar.
+        Default is an empty string.
+
+    cb_label_xpos : float, optional
+        The x-position for the colorbar label. This adjusts the horizontal positioning of the label.
+        Default is 0.5.
+
+    cb_label_ypos : float, optional
+        The y-position for the colorbar label. This adjusts the vertical positioning of the label.
+        Default is 0.5.
+
+    fformat : str, optional
+        The format for saving the colorbar image. Supported formats are &#39;png&#39; and &#39;pdf&#39;.
+        Default is &#39;png&#39;.
+
+    output_path : str, optional
+        The directory path where the colorbar image will be saved. Default is an empty string.
+
+    fname : str, optional
+        The filename to use when saving the colorbar image. This should not include the file extension.
+        Default is an empty string.
+
+    Returns:
+    --------
+    None
+        This function does not return any value. It saves the colorbar as a separate image file in the specified format.
+    &#34;&#34;&#34;
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=figsize_cb)
+    plt.rc(&#34;font&#34;, size=primary_fs)  # Set font size
+    if cb_bounds is not None:
+        bounds_np = np.array([cb_bounds])
+        img = plt.imshow(bounds_np, cmap=colormap)
+    else:
+        v_min_max_np = np.array([[vmin, vmax]])
+        img = plt.imshow(v_min_max_np, cmap=colormap)
+
+    plt.gca().set_visible(False)
+
+    if cb_orient == &#34;vertical&#34;:
+        cax = plt.axes([0.1, 0.2, 0.06, 1.15])
+        cb = plt.colorbar(orientation=&#34;vertical&#34;, cax=cax)
+        cb.ax.set_title(
+            cb_axis_label,
+            fontsize=primary_fs,
+            x=cb_label_xpos,
+            y=cb_label_ypos,
+            rotation=90,
+        )
+        plt.savefig(
+            f&#34;{output_path}{fname}_cbvert.{fformat}&#34;, dpi=150, bbox_inches=&#34;tight&#34;
+        )
+
+    elif cb_orient == &#34;horizontal&#34;:
+        cax = plt.axes([0.1, 0.2, 1.15, 0.06])
+        cb = plt.colorbar(orientation=&#34;horizontal&#34;, cax=cax)
+        cb.ax.set_title(
+            cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos
+        )
+        plt.savefig(
+            f&#34;{output_path}{fname}_cbhorz.{fformat}&#34;, dpi=150, bbox_inches=&#34;tight&#34;
+        )
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Save a colorbar separately from a plot with customizable appearance and format.</p>
+<h2 id="parameters">Parameters:</h2>
+<p>colormap : str, optional
+The name of the colormap to be used for the colorbar. This should be a valid Matplotlib colormap name.
+Default is an empty string, which uses the default colormap.</p>
+<p>cb_bounds : list or array-like, optional
+The bounds to be used for the colorbar. If provided, the colorbar will be generated with these bounds.
+Default is None, which means bounds are not explicitly set.</p>
+<p>vmin : float, optional
+The minimum value for the colorbar. This is used to define the lower limit of the colormap.
+Default is None.</p>
+<p>vmax : float, optional
+The maximum value for the colorbar. This is used to define the upper limit of the colormap.
+Default is None.</p>
+<p>figsize_cb : tuple of float, optional
+The size of the figure for the colorbar in inches as (width, height). Default is (6, 1).</p>
+<p>primary_fs : int, optional
+The primary font size for the colorbar labels and title. Default is 18.</p>
+<p>cb_orient : str, optional
+The orientation of the colorbar, either 'vertical' or 'horizontal'. Default is 'vertical'.</p>
+<p>cb_axis_label : str, optional
+The label for the colorbar axis. This text will be displayed alongside the colorbar.
+Default is an empty string.</p>
+<p>cb_label_xpos : float, optional
+The x-position for the colorbar label. This adjusts the horizontal positioning of the label.
+Default is 0.5.</p>
+<p>cb_label_ypos : float, optional
+The y-position for the colorbar label. This adjusts the vertical positioning of the label.
+Default is 0.5.</p>
+<p>fformat : str, optional
+The format for saving the colorbar image. Supported formats are 'png' and 'pdf'.
+Default is 'png'.</p>
+<p>output_path : str, optional
+The directory path where the colorbar image will be saved. Default is an empty string.</p>
+<p>fname : str, optional
+The filename to use when saving the colorbar image. This should not include the file extension.
+Default is an empty string.</p>
+<h2 id="returns">Returns:</h2>
+<p>None
+This function does not return any value. It saves the colorbar as a separate image file in the specified format.</p></div>
+</dd>
+<dt id="underworld3.visualisation.scalar_fn_to_pv_points"><code class="name flex">
+<span>def <span class="ident">scalar_fn_to_pv_points</span></span>(<span>pv_mesh, uw_fn, dim=None, simplify=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
+    &#34;&#34;&#34;evaluate uw scalar function at mesh/cloud points&#34;&#34;&#34;
+
+    import underworld3 as uw
+    import sympy
+
+    if simplify:
+        uw_fn = sympy.simplify(uw_fn)
+
+    if dim is None:
+        if pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() &lt; 1.0e-6:
+            dim = 2
+        else:
+            dim = 3
+
+    coords = pv_mesh.points[:, 0:dim]
+    scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
+
+    return scalar_values</code></pre>
+</details>
+<div class="desc"><p>evaluate uw scalar function at mesh/cloud points</p></div>
+</dd>
+<dt id="underworld3.visualisation.swarm_to_pv_cloud"><code class="name flex">
+<span>def <span class="ident">swarm_to_pv_cloud</span></span>(<span>swarm)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def swarm_to_pv_cloud(swarm):
+    &#34;&#34;&#34;swarm points to pyvista PolyData  object&#34;&#34;&#34;
+
+    import numpy as np
+    import pyvista as pv
+
+    with swarm.access():
+        points = np.zeros((swarm.data.shape[0], 3))
+        points[:, 0] = swarm.data[:, 0]
+        points[:, 1] = swarm.data[:, 1]
+        if swarm.mesh.dim == 2:
+            points[:, 2] = 0.0
+        else:
+            points[:, 2] = swarm.data[:, 2]
+
+    point_cloud = pv.PolyData(points)
+
+    return point_cloud</code></pre>
+</details>
+<div class="desc"><p>swarm points to pyvista PolyData
+object</p></div>
+</dd>
+<dt id="underworld3.visualisation.vector_fn_to_pv_points"><code class="name flex">
+<span>def <span class="ident">vector_fn_to_pv_points</span></span>(<span>pv_mesh, uw_fn, dim=None, simplify=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
+    &#34;&#34;&#34;evaluate uw vector function at mesh/cloud points&#34;&#34;&#34;
+
+    import numpy as np
+    import underworld3 as uw
+    import sympy
+
+    if simplify:
+        uw_fn = sympy.simplify(uw_fn)
+    dim = uw_fn.shape[1]
+    if dim != 2 and dim != 3:
+        print(f&#34;UW vector function should have dimension 2 or 3&#34;)
+
+    coords = pv_mesh.points[:, 0:dim]
+    vector_values = np.zeros_like(pv_mesh.points)
+
+    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True)
+
+    return vector_values</code></pre>
+</details>
+<div class="desc"><p>evaluate uw vector function at mesh/cloud points</p></div>
+</dd>
+</dl>
+</section>
+<section>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3" href="index.html">underworld3</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.visualisation.clip_mesh" href="#underworld3.visualisation.clip_mesh">clip_mesh</a></code></li>
+<li><code><a title="underworld3.visualisation.coords_to_pv_coords" href="#underworld3.visualisation.coords_to_pv_coords">coords_to_pv_coords</a></code></li>
+<li><code><a title="underworld3.visualisation.initialise" href="#underworld3.visualisation.initialise">initialise</a></code></li>
+<li><code><a title="underworld3.visualisation.meshVariable_to_pv_cloud" href="#underworld3.visualisation.meshVariable_to_pv_cloud">meshVariable_to_pv_cloud</a></code></li>
+<li><code><a title="underworld3.visualisation.meshVariable_to_pv_mesh_object" href="#underworld3.visualisation.meshVariable_to_pv_mesh_object">meshVariable_to_pv_mesh_object</a></code></li>
+<li><code><a title="underworld3.visualisation.mesh_to_pv_mesh" href="#underworld3.visualisation.mesh_to_pv_mesh">mesh_to_pv_mesh</a></code></li>
+<li><code><a title="underworld3.visualisation.plot_mesh" href="#underworld3.visualisation.plot_mesh">plot_mesh</a></code></li>
+<li><code><a title="underworld3.visualisation.plot_scalar" href="#underworld3.visualisation.plot_scalar">plot_scalar</a></code></li>
+<li><code><a title="underworld3.visualisation.plot_vector" href="#underworld3.visualisation.plot_vector">plot_vector</a></code></li>
+<li><code><a title="underworld3.visualisation.save_colorbar" href="#underworld3.visualisation.save_colorbar">save_colorbar</a></code></li>
+<li><code><a title="underworld3.visualisation.scalar_fn_to_pv_points" href="#underworld3.visualisation.scalar_fn_to_pv_points">scalar_fn_to_pv_points</a></code></li>
+<li><code><a title="underworld3.visualisation.swarm_to_pv_cloud" href="#underworld3.visualisation.swarm_to_pv_cloud">swarm_to_pv_cloud</a></code></li>
+<li><code><a title="underworld3.visualisation.vector_fn_to_pv_points" href="#underworld3.visualisation.vector_fn_to_pv_points">vector_fn_to_pv_points</a></code></li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>

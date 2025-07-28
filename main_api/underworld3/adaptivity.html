@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.adaptivity API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.adaptivity</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.adaptivity.mesh2mesh_meshVariable"><code class="name flex">
+<span>def <span class="ident">mesh2mesh_meshVariable</span></span>(<span>meshVar0, meshVar1, verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
+    &#34;&#34;&#34;Map a meshVar on mesh0 to a meshVar on mesh1 using
+    an intermediary (temporary) swarm&#34;&#34;&#34;
+
+    mesh0 = meshVar0.mesh
+    mesh1 = meshVar1.mesh
+
+    # 1 Create a temporary swarm with a variable that matches meshVar0
+
+    tmp_swarm = uw.swarm.Swarm(mesh0)
+    var_name = rf&#34;{meshVar0.clean_name}&#34;
+    var_cpts = meshVar0.num_components
+
+    tmp_varS = uw.swarm.SwarmVariable(
+        var_name, tmp_swarm, size = (1,var_cpts), vtype=uw.VarType.MATRIX, _proxy=False
+    )
+
+    # Maybe 3+ if var is higher order ??
+    tmp_swarm.populate(fill_param=3)
+
+
+    # Set data on the swarmVar
+
+    # print(f&#34;Map data to swarm (rbf) - points = {tmp_swarm.dm.getSize()}&#34;, flush=True)
+
+    with tmp_swarm.access(tmp_varS):
+        tmp_varS.data[...] = meshVar0.rbf_interpolate(
+            tmp_swarm.particle_coordinates.data
+        )
+
+    # print(f&#34;Distribute swarm&#34;, flush=True)
+
+    # Now ship this out to the other mesh via the tmp swarm
+    tmp_swarm1 = mesh2mesh_swarm(
+        mesh0, mesh1, tmp_swarm, [tmp_varS], proxy=False, verbose=verbose
+    )
+
+    if hasattr(tmp_swarm1, &#34;_meshVar&#34;):
+        raise RuntimeError(&#34;Swarm should not have a proxy on it !&#34;)
+
+    tmp_swarm1.vars[var_name]._rbf_to_meshVar(meshVar1)
+
+    del tmp_swarm, tmp_swarm1
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Map a meshVar on mesh0 to a meshVar on mesh1 using
+an intermediary (temporary) swarm</p></div>
+</dd>
+<dt id="underworld3.adaptivity.mesh2mesh_swarm"><code class="name flex">
+<span>def <span class="ident">mesh2mesh_swarm</span></span>(<span>mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=False):
+    &#34;&#34;&#34;Warning [NSFW] - this uses EXPLICIT message passing calls to handle the
+    situation where a swarm cell_dm cannot find particles after mesh redistribution.
+    This occurs when particles are moved accross non-neighbouring processes or if the
+    mesh neighbours are redistricted. This should be fixed at the DMSwarm / DMPlex level
+    so this code is just a placeholder. Or maybe it&#39;s just user error !
+
+    Notes 1: This copies a swarm from one mesh to another allowing for completely incommensurate
+    partitionings. Warning: this is not always a 1-&gt;1 mapping. There may be some duplication and
+    particles may go missing along curved boundaries where the meshes do not necessarily overlap.
+    The same is true in the shadow spaces.
+
+    Note 2: The swarm is &#34;adapted&#34; to the original mesh and will need
+    to be repopulated on the new one, or data can be mapped to a purpose-built swarm.
+
+    Note 3: We pass the data around as floats for the time being. Be careful when converting back.
+
+    Note 4: set proxy=True to automatically generate proxy variables on mesh1 but consider skipping
+    if the returned swarm is ephemeral
+    &#34;&#34;&#34;
+
+    with swarm0.access():
+        swarm_data = swarm0.particle_coordinates.data.copy()
+        for swarmVar in swarmVarList:
+            swarm_data = np.hstack(
+                (swarm_data, np.ascontiguousarray(swarmVar.data.astype(float)))
+            )
+
+    s_coords0 = np.ascontiguousarray(swarm_data[:, 0 : mesh0.dim])
+
+    cell = mesh1.get_closest_local_cells(s_coords0)
+    found = np.where(cell &gt;= 0)[0]
+    not_found = np.where(cell == -1)[0]
+
+    n_found = found.shape[0]
+    n_not_found = not_found.shape[0]
+
+    # print(
+    #     f&#34;{uw.mpi.rank} - A/local found: {n_found} v. not found: {n_not_found}&#34;,
+    #     flush=False,
+    # )
+
+    # Let&#39;s sync the number of missing points by rank
+
+    mpi_size = uw.mpi.size
+
+    missing_points = np.zeros((mpi_size))
+    comm = uw.mpi.comm
+    root = 0
+
+    local_array = n_not_found
+    # print(f&#34;rank: {uw.mpi.rank}, local_array size: {n_not_found}&#34;)
+
+    sendbuf = swarm_data[not_found]
+    global_sizes = np.empty(mpi_size, dtype=int)
+    local_size = np.array([sendbuf.shape[0]], dtype=int)
+
+    comm.Allgather(local_size, global_sizes)
+
+    global_size = global_sizes.sum()
+    # print(
+    #     f&#34;{uw.mpi.rank} Sizes are: {global_sizes} Buffer size: {global_size}&#34;,
+    #     flush=True,
+    # )
+
+    uw.mpi.barrier()
+
+    recvbuf = np.empty((global_size, sendbuf.shape[1]), dtype=float)
+
+    comm.Allgatherv(sendbuf=sendbuf, recvbuf=(recvbuf, global_sizes * sendbuf.shape[1]))
+
+    global_unallocated_coords = recvbuf[:, 0 : mesh0.dim].copy()
+    global_unallocated_data = recvbuf.copy()
+
+    ## ====================================
+    ## Now we have all the information here
+    ## and we can hand it out to the new swarm
+    ## =====================================
+
+    # if swarm0.recycle_rate &gt; 0:
+    #     if swarm0.vars[&#34;DMSwarm_Xorig&#34;] not in swarmVarList:
+    #         swarmVarList.append(swarm0.vars[&#34;DMSwarm_Xorig&#34;])
+
+    swarm1 = uw.swarm.Swarm(mesh=mesh1, recycle_rate=swarm0.recycle_rate)
+
+    for swarmVar in swarmVarList:
+        uw.swarm.SwarmVariable(
+            swarmVar.name,
+            swarm1,
+            size=swarmVar.shape,
+            vtype=swarmVar.vtype,
+            dtype=swarmVar.dtype,
+            proxy_degree=swarmVar._proxy_degree,
+            proxy_continuous=swarmVar._proxy_continuous,
+            _proxy=proxy,
+            _register=True,
+            rebuild_on_cycle=swarmVar._rebuild_on_cycle,
+        )
+
+    swarm1.dm.finalizeFieldRegister()
+
+    # First we add the found points (there are n_found of those)
+
+    found_coords = s_coords0[found]
+    adds = n_found + 1
+
+    swarm1.dm.addNPoints(adds)
+
+    ## Update cells etc, but don&#39;t migrate as
+    ## we don&#39;t want to distrupt the data layout
+
+    cellid = swarm1.dm.getField(&#34;DMSwarm_cellid&#34;)
+    coords = swarm1.dm.getField(&#34;DMSwarmPIC_coor&#34;).reshape((-1, swarm1.dim))
+
+    coords[...] = found_coords[...]
+    if n_found &gt; 0:
+        cellid[:] = mesh1.get_closest_cells(coords)  ## found points
+
+    swarm1.dm.restoreField(&#34;DMSwarmPIC_coor&#34;)
+    swarm1.dm.restoreField(&#34;DMSwarm_cellid&#34;)
+
+    # Add in the data fields for the found points
+
+    offset = swarm1.dim
+    for swarmVar in swarmVarList:
+        varField = swarm1.dm.getField(swarmVar.clean_name)
+        varCpts = swarmVar.num_components
+        varData = swarm_data[:, offset : offset + varCpts]
+        fieldData = varField.reshape(-1, varCpts)
+
+        if n_found &gt; 0:
+            fieldData[:, :] = swarm_data[found, offset : offset + varCpts].astype(
+                swarmVar.dtype
+            )
+
+        swarm1.dm.restoreField(swarmVar.clean_name)
+        offset += varCpts
+
+    uw.mpi.barrier()
+
+    ## Now deal with all the points we caught
+    ## from the broadcast. Again, we only own
+    ## some of these. So let&#39;s add them now
+
+    cell = mesh1.get_closest_local_cells(global_unallocated_coords)
+    # found1 = np.where(cell &gt;= 0)[0]
+    # not_found1 = np.where(cell == -1)[0]s
+    cell_arr = np.atleast_1d(cell)              
+    found1 = np.where(cell_arr &gt;= 0)[0]
+    not_found1 = np.where(cell_arr == -1)[0]
+
+    n_found1 = found1.shape[0]
+    n_not_found1 = not_found1.shape[0]
+
+    if n_found1 &gt; 0:
+        psize = swarm1.dm.getLocalSize()        
+        adds = n_found1     # swarm is not blank, so only need to use N for addNPoints
+
+        swarm1.dm.addNPoints(adds)
+
+        cellid = swarm1.dm.getField(&#34;DMSwarm_cellid&#34;)
+        coords = swarm1.dm.getField(&#34;DMSwarmPIC_coor&#34;).reshape((-1, swarm1.dim))
+
+        coords[psize + 1 :, :] = global_unallocated_coords[found1, :]
+
+        cellid[psize + 1 :] = cell[found1]  ## gathered points
+
+        swarm1.dm.restoreField(&#34;DMSwarm_cellid&#34;)
+        swarm1.dm.restoreField(&#34;DMSwarmPIC_coor&#34;)
+
+    # print(
+    #     f&#34;{uw.mpi.rank}/i: {swarm1.dm.getLocalSize()} / {swarm1.dm.getSize()} cf {swarm0.dm.getSize()}&#34;,
+    #     flush=True,
+    # )
+
+    uw.mpi.barrier()
+    ## Now the variables from the broadcast
+
+    offset = swarm1.dim
+    for swarmVar in swarmVarList:
+        varField = swarm1.dm.getField(swarmVar.clean_name)
+        varCpts = swarmVar.num_components
+        varData = global_unallocated_data[:, offset : offset + varCpts]
+        fieldData = varField.reshape(-1, varCpts)
+
+        if n_found1 &gt; 0:
+            fieldData[psize + 1 :, :] = global_unallocated_data[
+                found1, offset : offset + varCpts
+            ]
+
+        swarm1.dm.restoreField(swarmVar.clean_name)
+        offset += varCpts
+
+    ## Update proxy variables if present
+    for swarm1Var in swarm1.vars.values():
+        swarm1Var._update()
+
+    # print(
+    #     f&#34;{uw.mpi.rank}-1: Swarm Size (Local) {swarm0.dm.getLocalSize()}; (Global) {swarm1.dm.getSize()}&#34;
+    # )
+    uw.mpi.barrier()
+    swarm1.dm.migrate(remove_sent_points=True)
+
+    # print(
+    #     f&#34;{uw.mpi.rank}-2: Swarm Size (Local) {swarm0.dm.getLocalSize()}; (Global) {swarm1.dm.getSize()}&#34;
+    # )
+
+    if verbose:
+        size0 = swarm0.dm.getSize()
+        size1 = swarm1.dm.getSize()
+
+        print(&#34;---------&#34;, flush=True)
+
+        if uw.mpi.rank == 0:
+            print(f&#34;Swarm0: {size0}; Swarm1: {size1}&#34;, flush=True)
+            print(&#34;---------&#34;, flush=True)
+
+        uw.mpi.barrier()
+
+        print(
+            f&#34;{uw.mpi.rank} - Local data size {swarm_data.shape}\n&#34;
+            f&#34;{uw.mpi.rank} - Exchanged data size {recvbuf.shape}\n&#34;
+            f&#34;{uw.mpi.rank} - Local data found: {n_found} v. not found: {n_not_found}\n&#34;
+            f&#34;{uw.mpi.rank} - Exchanged data : {n_found1} v. not found: {n_not_found1}&#34;,
+            flush=True,
+        )
+
+        print(f&#34;{uw.mpi.rank} - Variables defined on the new swarm:&#34;)
+        for swarmVar in swarmVarList:
+            print(
+                f&#34;{uw.mpi.rank} -    {swarmVar.clean_name} ({swarmVar.dtype} * {swarmVar.num_components})&#34;
+            )
+
+        print(&#34;---------&#34;, flush=True)
+
+        uw.mpi.barrier()
+
+    return swarm1</code></pre>
+</details>
+<div class="desc"><p>Warning [NSFW] - this uses EXPLICIT message passing calls to handle the
+situation where a swarm cell_dm cannot find particles after mesh redistribution.
+This occurs when particles are moved accross non-neighbouring processes or if the
+mesh neighbours are redistricted. This should be fixed at the DMSwarm / DMPlex level
+so this code is just a placeholder. Or maybe it's just user error !</p>
+<p>Notes 1: This copies a swarm from one mesh to another allowing for completely incommensurate
+partitionings. Warning: this is not always a 1-&gt;1 mapping. There may be some duplication and
+particles may go missing along curved boundaries where the meshes do not necessarily overlap.
+The same is true in the shadow spaces.</p>
+<p>Note 2: The swarm is "adapted" to the original mesh and will need
+to be repopulated on the new one, or data can be mapped to a purpose-built swarm.</p>
+<p>Note 3: We pass the data around as floats for the time being. Be careful when converting back.</p>
+<p>Note 4: set proxy=True to automatically generate proxy variables on mesh1 but consider skipping
+if the returned swarm is ephemeral</p></div>
+</dd>
+<dt id="underworld3.adaptivity.mesh_adapt_meshVar"><code class="name flex">
+<span>def <span class="ident">mesh_adapt_meshVar</span></span>(<span>mesh, meshVarH, metricVar, verbose=False, redistribute=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
+    # Create / use a field on the old mesh to hold the metric
+    # Perhaps that should be a user-definition
+
+    boundaries = mesh.boundaries
+
+    # The metric
+    field_id = metricVar.field_id
+    hvec = meshVarH._lvec
+    metric_vec = mesh.dm.metricCreateIsotropic(hvec, field_id)
+
+    if verbose:
+        print(f&#34;{uw.mpi.rank} dm adaptation ... begin&#34;, flush=True)
+
+    _dm_stack_bcs(mesh.dm, boundaries, &#34;CombinedBoundaries&#34;)
+    dm_a = mesh.dm.adaptMetric(metric_vec, bdLabel=&#34;CombinedBoundaries&#34;)
+
+    icoord_vec = dm_a.getCoordinates()
+
+    _dm_unstack_bcs(dm_a, boundaries, &#34;CombinedBoundaries&#34;)
+
+    if verbose:
+        print(f&#34;{uw.mpi.rank} dm adaptation ... complete&#34;, flush=True)
+
+    meshA = uw.meshing.Mesh(
+        dm_a,
+        simplex=mesh.dm.isSimplex,
+        coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
+        qdegree=mesh.qdegree,
+        refinement=None,
+        refinement_callback=mesh.refinement_callback,
+        boundaries=mesh.boundaries,
+        distribute=redistribute,
+    )
+
+    if verbose:
+        print(f&#34;{uw.mpi.rank} mesh adaptation / distribution ... complete&#34;, flush=True)
+
+    return icoord_vec, meshA</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</section>
+<section>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3" href="index.html">underworld3</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.adaptivity.mesh2mesh_meshVariable" href="#underworld3.adaptivity.mesh2mesh_meshVariable">mesh2mesh_meshVariable</a></code></li>
+<li><code><a title="underworld3.adaptivity.mesh2mesh_swarm" href="#underworld3.adaptivity.mesh2mesh_swarm">mesh2mesh_swarm</a></code></li>
+<li><code><a title="underworld3.adaptivity.mesh_adapt_meshVar" href="#underworld3.adaptivity.mesh_adapt_meshVar">mesh_adapt_meshVar</a></code></li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>

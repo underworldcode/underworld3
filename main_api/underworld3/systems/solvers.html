@@ -1,0 +1,4837 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.systems.solvers API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.systems.solvers</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.systems.solvers.expression"><code class="name flex">
+<span>def <span class="ident">expression</span></span>(<span>*x, **X)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</section>
+<section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion"><code class="flex name class">
+<span>class <span class="ident">SNES_AdvectionDiffusion</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0>,<br>V_fn: <function MeshVariable at 0x7f5e720a9bc0> | sympy.core.basic.Basic,<br>order: int = 1,<br>restore_points_func: Callable = None,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_AdvectionDiffusion(SNES_Scalar):
+    r&#34;&#34;&#34;
+    This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
+    which is described in Spiegelman &amp; Katz, (2006).
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+    $$
+
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+
+    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
+    the points which later arrive at the nodal points of the mesh. This is achieved using a &#34;hidden&#34;
+    swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
+
+    ## Properties
+
+      - The unknown is $u$.
+
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it&#39;s not. Currently it is a MeshVariable** this is the desired behaviour though.
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
+        It is usually a constant or a function of position / time and may also be non-linear
+        or anisotropic.
+
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+        `meshVariable` or `swarmVariable` types.
+
+
+
+    &#34;&#34;&#34;
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r&#34;$\quad\mathrm{u} = $ &#34; + self.u.sym._repr_latex_()))
+        display(Latex(r&#34;$\quad\mathbf{v} = $ &#34; + self._V_fn._repr_latex_()))
+        display(Latex(r&#34;$\quad\Delta t = $ &#34; + self.delta_t._repr_latex_()))
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable,
+        V_fn: Union[
+            uw.discretisation.MeshVariable, sympy.Basic
+        ],  # Should be a sympy function
+        order: int = 1,
+        restore_points_func: Callable = None,
+        verbose=False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        ## Parent class will set up default values etc
+        super().__init__(
+            mesh,
+            u_Field,
+            u_Field.degree,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        if isinstance(V_fn, uw.discretisation._MeshVariable):
+            self._V_fn = V_fn.sym
+        else:
+            self._V_fn = V_fn
+
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
+
+        # These are unique to the advection solver
+        self._delta_t = expression(R&#34;\Delta t&#34;, 0, &#34;Physically motivated timestep&#34;)
+        self.is_setup = False
+
+        self.restore_points_to_domain_func = restore_points_func
+        ### Setup the history terms ... This version should not build anything
+        ### by default - it&#39;s the template / skeleton
+
+        ## NB - Smoothing is generally required for stability. 0.0001 is effective
+        ## at the various resolutions tested.
+
+        if DuDt is None:
+            self.Unknowns.DuDt = SemiLagrangian_DDt(
+                self.mesh,
+                u_Field.sym,
+                self._V_fn,
+                vtype=uw.VarType.SCALAR,
+                degree=u_Field.degree,
+                continuous=u_Field.continuous,
+                varsymbol=u_Field.symbol,
+                verbose=verbose,
+                bcs=self.essential_bcs,
+                order=1,
+                smoothing=0.0,
+            )
+
+        else:
+            # validation
+            if order is None:
+                order = DuDt.order
+
+            else:
+                if DuDt.order &lt; order:
+                    raise RuntimeError(
+                        f&#34;DuDt supplied is order {DuDt.order} but order requested is {order}&#34;
+                    )
+
+            self.Unknowns.DuDt = DuDt
+
+        self.Unknowns.DFDt = SemiLagrangian_DDt(
+            self.mesh,
+            sympy.Matrix(
+                [[0] * self.mesh.dim]
+            ),  # Actual function is not defined at this point
+            self._V_fn,
+            vtype=uw.VarType.VECTOR,
+            degree=u_Field.degree,
+            continuous=True,
+            # The default is now to match the above and avoid
+            # any use of projection.
+            # swarm_degree=u_Field.degree - 1,
+            # swarm_continuous=False,
+            varsymbol=rf&#34;{{F[ {self.u.symbol} ] }}&#34;,
+            verbose=verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0,
+        )
+
+        return
+
+    @property
+    def F0(self):
+
+        f0 = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            -self.f + self.DuDt.bdf(0) / self.delta_t,
+            &#34;Poisson pointwise force term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0
+
+        return f0
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self.DFDt.adams_moulton_flux(),
+            &#34;Poisson pointwise flux term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    def adv_diff_slcn_problem_description(self):
+        # f0 residual term
+        self._f0 = self.F0.sym
+
+        # f1 residual term
+        self._f1 = self.F1.sym
+
+        return
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def V_fn(self):
+        return self._V_fn
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t.sym = value
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r&#34;&#34;&#34;
+        Calculates an appropriate timestep for the given
+        mesh and diffusivity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+        &#34;&#34;&#34;
+
+        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
+            if uw.function.fn_is_constant_expr(
+                self.constitutive_model.Parameters.diffusivity
+            ):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.Parameters.diffusivity,
+                    np.zeros((1, self.mesh.dim)),
+                )
+
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
+        else:
+            k = self.constitutive_model.Parameters.diffusivity
+            max_diffusivity = k
+
+        ### required modules
+        from mpi4py import MPI
+
+        ## get global max dif value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ### get the velocity values
+        vel = uw.function.evaluate(
+            self.V_fn,
+            self.mesh._centroids,
+            self.mesh.N,
+        )
+
+        ### get global velocity from velocity field
+        max_magvel = np.linalg.norm(vel, axis=1).max()
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        ## get radius
+        min_dx = self.mesh.get_min_radius()
+
+        ## estimate dt of adv and diff components
+
+        self.dt_adv = 0.0
+        self.dt_diff = 0.0
+
+        if max_magvel_glob == 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
+            dt_estimate = dt_diff
+        elif diffusivity_glob == 0.0:
+            dt_adv = min_dx / max_magvel_glob
+            self.dt_adv = dt_adv
+            dt_estimate = dt_adv
+        else:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
+            dt_adv = min_dx / max_magvel_glob
+            self.dt_adv = dt_adv
+
+            dt_estimate = min(dt_diff, dt_adv)
+
+        return dt_estimate
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        _evalf=False,
+        verbose=False,
+    ):
+        &#34;&#34;&#34;
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        &#34;&#34;&#34;
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Update History / Flux History terms
+        # SemiLagrange and Lagrange may have different sequencing.
+
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+
+        super().solve(zero_init_guess, _force_setup)
+
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return</code></pre>
+</details>
+<div class="desc"><p>This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
+which is described in Spiegelman &amp; Katz, (2006).</p>
+<p><span><span class="MathJax_Preview">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p>The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.</p>
+<p>The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
+the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
+swarm variable which is advected backwards from the nodal points automatically during the <code>solve</code> phase.</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknown is $u$.</p>
+</li>
+<li>
+<p>The velocity field is $\mathbf{v}$ and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be
+calculated in situ (e.g. <code>V_Field = v_solution.sym</code>) <strong>NOTE: no it's not. Currently it is a MeshVariable</strong> this is the desired behaviour though.</p>
+</li>
+<li>
+<p>The diffusivity tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of <code>sympy</code> functions of position and
+<code>meshVariable</code> or <code>swarmVariable</code> types.</p>
+</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0 = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        -self.f + self.DuDt.bdf(0) / self.delta_t,
+        &#34;Poisson pointwise force term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0
+
+    return f0</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        self.DFDt.adams_moulton_flux(),
+        &#34;Poisson pointwise flux term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.V_fn"><code class="name">prop <span class="ident">V_fn</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def V_fn(self):
+    return self._V_fn</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.delta_t"><code class="name">prop <span class="ident">delta_t</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def delta_t(self):
+    return self._delta_t</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.f"><code class="name">prop <span class="ident">f</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def f(self):
+    return self._f</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.adv_diff_slcn_problem_description"><code class="name flex">
+<span>def <span class="ident">adv_diff_slcn_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def adv_diff_slcn_problem_description(self):
+    # f0 residual term
+    self._f0 = self.F0.sym
+
+    # f1 residual term
+    self._f1 = self.F1.sym
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.estimate_dt"><code class="name flex">
+<span>def <span class="ident">estimate_dt</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def estimate_dt(self):
+    r&#34;&#34;&#34;
+    Calculates an appropriate timestep for the given
+    mesh and diffusivity configuration. This is an implicit solver
+    so the $\delta_t$ should be interpreted as:
+
+        - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+        - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+        returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+    &#34;&#34;&#34;
+
+    if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
+        if uw.function.fn_is_constant_expr(
+            self.constitutive_model.Parameters.diffusivity
+        ):
+            max_diffusivity = uw.function.evaluate(
+                self.constitutive_model.Parameters.diffusivity,
+                np.zeros((1, self.mesh.dim)),
+            )
+
+        else:
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
+
+            max_diffusivity = k.max()
+    else:
+        k = self.constitutive_model.Parameters.diffusivity
+        max_diffusivity = k
+
+    ### required modules
+    from mpi4py import MPI
+
+    ## get global max dif value
+    comm = uw.mpi.comm
+    diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+    ### get the velocity values
+    vel = uw.function.evaluate(
+        self.V_fn,
+        self.mesh._centroids,
+        self.mesh.N,
+    )
+
+    ### get global velocity from velocity field
+    max_magvel = np.linalg.norm(vel, axis=1).max()
+    max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+    ## get radius
+    min_dx = self.mesh.get_min_radius()
+
+    ## estimate dt of adv and diff components
+
+    self.dt_adv = 0.0
+    self.dt_diff = 0.0
+
+    if max_magvel_glob == 0.0:
+        dt_diff = (min_dx**2) / diffusivity_glob
+        self.dt_diff = dt_diff
+        dt_estimate = dt_diff
+    elif diffusivity_glob == 0.0:
+        dt_adv = min_dx / max_magvel_glob
+        self.dt_adv = dt_adv
+        dt_estimate = dt_adv
+    else:
+        dt_diff = (min_dx**2) / diffusivity_glob
+        self.dt_diff = dt_diff
+        dt_adv = min_dx / max_magvel_glob
+        self.dt_adv = dt_adv
+
+        dt_estimate = min(dt_diff, dt_adv)
+
+    return dt_estimate</code></pre>
+</details>
+<div class="desc"><p>Calculates an appropriate timestep for the given
+mesh and diffusivity configuration. This is an implicit solver
+so the $\delta_t$ should be interpreted as:</p>
+<pre><code>- ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+- ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+</code></pre></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self, zero_init_guess: bool = True, timestep: float = None, verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def solve(
+    self,
+    zero_init_guess: bool = True,
+    timestep: float = None,
+    _force_setup: bool = False,
+    _evalf=False,
+    verbose=False,
+):
+    &#34;&#34;&#34;
+    Generates solution to constructed system.
+
+    Params
+    ------
+    zero_init_guess:
+        If `True`, a zero initial guess will be used for the
+        system solution. Otherwise, the current values of `self.u` will be used.
+    &#34;&#34;&#34;
+
+    if timestep is not None and timestep != self.delta_t:
+        self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+    if _force_setup:
+        self.is_setup = False
+
+    if not self.constitutive_model._solver_is_setup:
+        self.is_setup = False
+        self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+    if not self.is_setup:
+        self._setup_pointwise_functions(verbose)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+    # Update History / Flux History terms
+    # SemiLagrange and Lagrange may have different sequencing.
+
+    self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+    self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+
+    super().solve(zero_init_guess, _force_setup)
+
+    self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+    self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+
+    self.is_setup = True
+    self.constitutive_model._solver_is_setup = True
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code> will be used.</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy"><code class="flex name class">
+<span>class <span class="ident">SNES_Darcy</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>h_Field: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>v_Field: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int = 2,<br>verbose=False,<br>DuDt=None,<br>DFDt=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Darcy(SNES_Scalar):
+    r&#34;&#34;&#34;
+    This class provides functionality for a discrete representation
+    of the Groundwater flow equations
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
+    $$
+
+    The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients
+
+    $$
+    \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
+    $$
+
+    The time-dependent term $\dot{\mathbf{f}}$ is not implemented in this version.
+
+    ## Properties
+
+      - The unknown is $h$, the hydraulic head
+
+      - The permeability tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - Volumetric sources for the pressure gradient are supplied through
+        the $s$ property [e.g. $s = \rho g$ ]
+
+      - $W$ is a pressure source term
+
+      - $S_s$ is the specific storage coefficient
+
+    ## Notes
+
+      - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity)
+
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        h_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        ## Parent class will set up default values etc
+        super().__init__(
+            mesh,
+            h_Field,
+            degree,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # default values for properties
+        self._f = sympy.Matrix([0])
+        self._k = 1
+
+        self._constitutive_model = None
+
+        ## Set up the projection operator that
+        ## solves the flow rate
+
+        self._v_projector = uw.systems.solvers.SNES_Vector_Projection(
+            self.mesh,
+            v_Field,
+            degree=self.Unknowns.u.degree - 1,
+        )
+
+        self._v = self._v_projector.Unknowns.u
+
+        # If we add smoothing, it should be small
+        self._v_projector.smoothing = 1.0e-6
+
+    ## This function is the one we will typically over-ride to build specific solvers.
+    ## This example is a poisson-like problem with isotropic coefficients
+
+    @property
+    def F0(self):
+
+        f0_val = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            -self.f,
+            &#34;Darcy pointwise force term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0_val.sym
+
+        return f0_val
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            sympy.simplify(self.darcy_flux),
+            &#34;Darcy pointwise flux term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val.sym
+        self._v_projector.uw_function = -F1_val.sym
+
+        return F1_val
+
+    @timing.routine_timer_decorator
+    def darcy_problem_description(self):
+        # f1 residual term (weighted integration)
+        self._f0 = self.F0.sym
+
+        # f1 residual term (integration by parts / gradients)
+        self._f1 = self.F1.sym
+
+        # Flow calculation
+        self._v_projector.uw_function = -self.F1.sym
+
+        return
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def darcy_flux(self):
+        flux = self.constitutive_model.flux.T
+        return flux
+
+    @property
+    def v(self):
+        return self._v
+
+    @v.setter
+    def v(self, value):
+        self._v_projector.is_setup = False
+        self._v = sympify(value)
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        verbose: bool = False,
+        _force_setup: bool = False,
+    ):
+        &#34;&#34;&#34;
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        timestep:
+            value used to evaluate inertial contribution
+        &#34;&#34;&#34;
+
+        if (not self.is_setup) or _force_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Solve pressure
+
+        super().solve(zero_init_guess, _force_setup)
+
+        # Now solve flow field
+
+        # self._v_projector.petsc_options[&#34;snes_rtol&#34;] = 1.0e-6
+        # self._v_projector.petsc_options.delValue(&#34;ksp_monitor&#34;)
+        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.solve(zero_init_guess)
+
+        return
+
+    # @timing.routine_timer_decorator
+    # def _setup_terms(self):
+    #     self._v_projector.uw_function = self.darcy_flux
+    #     self._v_projector._setup_terms()  # _setup_pointwise_functions()  #
+    #     super()._setup_terms()</code></pre>
+</details>
+<div class="desc"><p>This class provides functionality for a discrete representation
+of the Groundwater flow equations</p>
+<p><span><span class="MathJax_Preview">
+\color{Green}{\underbrace{ \Bigl[
+S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h
+- \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+\color{Green}{\underbrace{ \Bigl[
+S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h
+- \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p>The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients</p>
+<p><span><span class="MathJax_Preview">
+\boldsymbol{v} = \left( \boldsymbol\kappa \nabla h
+- \boldsymbol{s} \right)
+</span><script type="math/tex; mode=display">
+\boldsymbol{v} = \left( \boldsymbol\kappa \nabla h
+- \boldsymbol{s} \right)
+</script></span></p>
+<p>The time-dependent term $\dot{\mathbf{f}}$ is not implemented in this version.</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknown is $h$, the hydraulic head</p>
+</li>
+<li>
+<p>The permeability tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>Volumetric sources for the pressure gradient are supplied through
+the $s$ property [e.g. $s = \rho g$ ]</p>
+</li>
+<li>
+<p>$W$ is a pressure source term</p>
+</li>
+<li>
+<p>$S_s$ is the specific storage coefficient</p>
+</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>The solver returns the primary field and also the Darcy flux term (the mean-flow velocity)</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Darcy.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0_val = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        -self.f,
+        &#34;Darcy pointwise force term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0_val.sym
+
+    return f0_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        sympy.simplify(self.darcy_flux),
+        &#34;Darcy pointwise flux term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val.sym
+    self._v_projector.uw_function = -F1_val.sym
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy.darcy_flux"><code class="name">prop <span class="ident">darcy_flux</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def darcy_flux(self):
+    flux = self.constitutive_model.flux.T
+    return flux</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy.f"><code class="name">prop <span class="ident">f</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def f(self):
+    return self._f</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy.v"><code class="name">prop <span class="ident">v</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def v(self):
+    return self._v</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Darcy.darcy_problem_description"><code class="name flex">
+<span>def <span class="ident">darcy_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def darcy_problem_description(self):
+    # f1 residual term (weighted integration)
+    self._f0 = self.F0.sym
+
+    # f1 residual term (integration by parts / gradients)
+    self._f1 = self.F1.sym
+
+    # Flow calculation
+    self._v_projector.uw_function = -self.F1.sym
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Darcy.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self, zero_init_guess: bool = True, timestep: float = None, verbose: bool = False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def solve(
+    self,
+    zero_init_guess: bool = True,
+    timestep: float = None,
+    verbose: bool = False,
+    _force_setup: bool = False,
+):
+    &#34;&#34;&#34;
+    Generates solution to constructed system.
+
+    Params
+    ------
+    zero_init_guess:
+        If `True`, a zero initial guess will be used for the
+        system solution. Otherwise, the current values of `self.u` will be used.
+    timestep:
+        value used to evaluate inertial contribution
+    &#34;&#34;&#34;
+
+    if (not self.is_setup) or _force_setup:
+        self._setup_pointwise_functions(verbose)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+    # Solve pressure
+
+    super().solve(zero_init_guess, _force_setup)
+
+    # Now solve flow field
+
+    # self._v_projector.petsc_options[&#34;snes_rtol&#34;] = 1.0e-6
+    # self._v_projector.petsc_options.delValue(&#34;ksp_monitor&#34;)
+    self._v_projector.uw_function = self.darcy_flux
+    self._v_projector.solve(zero_init_guess)
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code> will be used.
+timestep:
+value used to evaluate inertial contribution</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Diffusion"><code class="flex name class">
+<span>class <span class="ident">SNES_Diffusion</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0>,<br>order: int = 1,<br>theta: float = 0.0,<br>evalf: bool | None = False,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Diffusion(SNES_Scalar):
+    r&#34;&#34;&#34;
+    This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+    $$
+
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
+
+    ## Properties
+
+      - The unknown is $u$.
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
+        It is usually a constant or a function of position / time and may also be non-linear
+        or anisotropic.
+
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+        `meshVariable` or `swarmVariable` types.
+
+
+
+    &#34;&#34;&#34;
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r&#34;$\quad\mathrm{u} = $ &#34; + self.u.sym._repr_latex_()))
+        display(Latex(r&#34;$\quad\Delta t = $ &#34; + self.delta_t._repr_latex_()))
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable,
+        order: int = 1,
+        theta: float = 0.0,
+        evalf: Optional[bool] = False,
+        verbose=False,
+        DuDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        ## Parent class will set up default values etc
+        super().__init__(
+            mesh,
+            u_Field,
+            u_Field.degree,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
+
+        self.theta = theta
+
+        # These are unique to the advection solver
+        self._delta_t = uw.function.expression(
+            R&#34;\Delta t&#34;, 0, &#34;Physically motivated timestep&#34;
+        )
+        self.is_setup = False
+
+        ### Setup the history terms ... This version should not build anything
+        ### by default - it&#39;s the template / skeleton
+
+        ## NB - Smoothing is generally required for stability. 0.0001 is effective
+        ## at the various resolutions tested.
+
+        if DuDt is None:
+            self.Unknowns.DuDt = Eulerian_DDt(
+                self.mesh,
+                u_Field,
+                vtype=uw.VarType.SCALAR,
+                degree=u_Field.degree,
+                continuous=u_Field.continuous,
+                varsymbol=u_Field.symbol,
+                verbose=verbose,
+                evalf=evalf,
+                bcs=self.essential_bcs,
+                order=order,
+                smoothing=0.0,
+            )
+
+        else:
+            # validation
+            if order is None:
+                order = DuDt.order
+
+            else:
+                if DuDt.order &lt; order:
+                    raise RuntimeError(
+                        f&#34;DuDt supplied is order {DuDt.order} but order requested is {order}&#34;
+                    )
+
+            self.Unknowns.DuDt = DuDt
+
+        if DFDt is None:
+            self.Unknowns.DFDt = Symbolic_DDt(
+                sympy.Matrix([[0] * self.mesh.dim]),
+                varsymbol=rf&#34;{{F[ {self.u.symbol} ] }}&#34;,
+                theta=theta,
+                bcs=None,
+                order=order,
+            )
+            ### solution unable to solve after n timesteps, due to the projection of flux term (???)
+            # self.Unknowns.DFDt = Eulerian_DDt(
+            #     self.mesh,
+            #     sympy.Matrix(
+            #         [[0] * self.mesh.dim]
+            #     ),  # Actual function is not defined at this point
+            #     vtype=uw.VarType.VECTOR,
+            #     degree=u_Field.degree,
+            #     continuous=u_Field.continuous,
+            #     varsymbol=rf&#34;{{F[ {self.u.symbol} ] }}&#34;,
+            #     theta=theta,
+            #     evalf=evalf,
+            #     verbose=verbose,
+            #     bcs=None,
+            #     order=order,
+            #     smoothing=0.0,
+            # )
+
+        return
+
+    @property
+    def F0(self):
+
+        f0 = uw.function.expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+            &#34;Diffusion pointwise force term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0
+
+        return f0
+
+    @property
+    def F1(self):
+
+        F1_val = uw.function.expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self.DFDt.adams_moulton_flux(),
+            &#34;Diffusion pointwise flux term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t.sym = value
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r&#34;&#34;&#34;
+        Calculates an appropriate timestep for the given
+        mesh and diffusivity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+        &#34;&#34;&#34;
+
+        if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
+            if uw.function.fn_is_constant_expr(self.constitutive_model.diffusivity.sym):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.diffusivity.sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.diffusivity.sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
+        else:
+            k = self.constitutive_model.diffusivity.sym
+            max_diffusivity = k
+
+        ### required modules
+        from mpi4py import MPI
+
+        ## get global max dif value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ## get radius
+        min_dx = self.mesh.get_min_radius()
+
+        ## estimate dt of adv and diff components
+        self.dt_diff = 0.0
+
+        dt_diff = (min_dx**2) / diffusivity_glob
+        self.dt_diff = dt_diff
+
+        dt_estimate = dt_diff
+
+        return dt_estimate
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        evalf: bool = False,
+        _force_setup: bool = False,
+        verbose=False,
+    ):
+        &#34;&#34;&#34;
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        &#34;&#34;&#34;
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            # self._flux =  self.constitutive_model.flux.T
+            # self._flux_star =  self._flux.copy()
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Update History / Flux History terms
+        # SemiLagrange and Lagrange may have different sequencing.
+        # self.DuDt.update_pre_solve(verbose=verbose)
+        # self.DFDt.update_pre_solve(verbose=verbose)
+
+        super().solve(zero_init_guess, _force_setup)
+
+        self.DuDt.update_post_solve(evalf=evalf, verbose=verbose)
+        self.DFDt.update_post_solve(evalf=evalf, verbose=verbose)
+
+        # if isinstance(self.DFDt, Eulerian_DDt):
+        #     for i in range(order):
+        #         ### have to substitute the unknown history term into the symbolic flux term
+        #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
+
+        # self._flux_star =  self._flux.copy()
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return</code></pre>
+</details>
+<div class="desc"><p>This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.</p>
+<p><span><span class="MathJax_Preview">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+</span><script type="math/tex; mode=display">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
+</script></span></p>
+<p>The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknown is $u$.</p>
+</li>
+<li>
+<p>The diffusivity tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of <code>sympy</code> functions of position and
+<code>meshVariable</code> or <code>swarmVariable</code> types.</p>
+</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0 = uw.function.expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+        &#34;Diffusion pointwise force term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0
+
+    return f0</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = uw.function.expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        self.DFDt.adams_moulton_flux(),
+        &#34;Diffusion pointwise flux term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.delta_t"><code class="name">prop <span class="ident">delta_t</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def delta_t(self):
+    return self._delta_t</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.f"><code class="name">prop <span class="ident">f</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def f(self):
+    return self._f</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.estimate_dt"><code class="name flex">
+<span>def <span class="ident">estimate_dt</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def estimate_dt(self):
+    r&#34;&#34;&#34;
+    Calculates an appropriate timestep for the given
+    mesh and diffusivity configuration. This is an implicit solver
+    so the $\delta_t$ should be interpreted as:
+
+        - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+        - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+        returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+    &#34;&#34;&#34;
+
+    if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
+        if uw.function.fn_is_constant_expr(self.constitutive_model.diffusivity.sym):
+            max_diffusivity = uw.function.evaluate(
+                self.constitutive_model.diffusivity.sym,
+                np.zeros((1, self.mesh.dim)),
+            )
+
+        else:
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.diffusivity.sym),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
+
+            max_diffusivity = k.max()
+    else:
+        k = self.constitutive_model.diffusivity.sym
+        max_diffusivity = k
+
+    ### required modules
+    from mpi4py import MPI
+
+    ## get global max dif value
+    comm = uw.mpi.comm
+    diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+    ## get radius
+    min_dx = self.mesh.get_min_radius()
+
+    ## estimate dt of adv and diff components
+    self.dt_diff = 0.0
+
+    dt_diff = (min_dx**2) / diffusivity_glob
+    self.dt_diff = dt_diff
+
+    dt_estimate = dt_diff
+
+    return dt_estimate</code></pre>
+</details>
+<div class="desc"><p>Calculates an appropriate timestep for the given
+mesh and diffusivity configuration. This is an implicit solver
+so the $\delta_t$ should be interpreted as:</p>
+<pre><code>- ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
+- ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+</code></pre></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Diffusion.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self,<br>zero_init_guess: bool = True,<br>timestep: float = None,<br>evalf: bool = False,<br>verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def solve(
+    self,
+    zero_init_guess: bool = True,
+    timestep: float = None,
+    evalf: bool = False,
+    _force_setup: bool = False,
+    verbose=False,
+):
+    &#34;&#34;&#34;
+    Generates solution to constructed system.
+
+    Params
+    ------
+    zero_init_guess:
+        If `True`, a zero initial guess will be used for the
+        system solution. Otherwise, the current values of `self.u` will be used.
+    &#34;&#34;&#34;
+
+    if timestep is not None and timestep != self.delta_t:
+        self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+    if _force_setup:
+        self.is_setup = False
+
+    if not self.constitutive_model._solver_is_setup:
+        self.is_setup = False
+        self.DFDt.psi_fn = self.constitutive_model.flux.T
+        # self._flux =  self.constitutive_model.flux.T
+        # self._flux_star =  self._flux.copy()
+
+    if not self.is_setup:
+        self._setup_pointwise_functions(verbose)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+    # Update History / Flux History terms
+    # SemiLagrange and Lagrange may have different sequencing.
+    # self.DuDt.update_pre_solve(verbose=verbose)
+    # self.DFDt.update_pre_solve(verbose=verbose)
+
+    super().solve(zero_init_guess, _force_setup)
+
+    self.DuDt.update_post_solve(evalf=evalf, verbose=verbose)
+    self.DFDt.update_post_solve(evalf=evalf, verbose=verbose)
+
+    # if isinstance(self.DFDt, Eulerian_DDt):
+    #     for i in range(order):
+    #         ### have to substitute the unknown history term into the symbolic flux term
+    #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
+
+    # self._flux_star =  self._flux.copy()
+
+    self.is_setup = True
+    self.constitutive_model._solver_is_setup = True
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code> will be used.</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes"><code class="flex name class">
+<span>class <span class="ident">SNES_NavierStokes</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0>,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0>,<br>rho: float | None = 0.0,<br>restore_points_func: Callable = None,<br>order: int | None = 2,<br>p_continuous: bool | None = False,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_NavierStokes(SNES_Stokes_SaddlePt):
+    r&#34;&#34;&#34;
+    This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
+    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman &amp; Katz, 2006) but using a
+    distributed sampling of upstream values taken from an arbitrary swarm variable.
+
+    $$
+    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
+                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
+        \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+    $$
+
+    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+
+    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
+    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
+    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
+    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
+    **and update** the swarmVariable representing $u^{ * }$
+
+    ## Properties
+
+      - The unknown is $u$.
+
+      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
+        calculated in situ (e.g. `V_Field = v_solution.sym`)
+
+      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user&#39;s responsibility to keep this
+        variable updated.
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+        one of the scalar `uw.constitutive_models` classes and populating the parameters.
+        It is usually a constant or a function of position / time and may also be non-linear
+        or anisotropic.
+
+      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
+        `meshVariable` or `swarmVariable` types.
+
+    ## Notes
+
+      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
+        Spiegelman &amp; Katz recommend cubic or higher degree for $u$ but this is not checked.
+
+    ## Reference
+
+    Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+    &#34;&#34;&#34;
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+
+        super()._object_viewer()
+
+        ## feedback on this instance
+        display(Latex(r&#34;$\quad\mathrm{u} = $ &#34; + self.u.sym._repr_latex_()))
+        display(Latex(r&#34;$\quad\mathbf{p} = $ &#34; + self.p.sym._repr_latex_()))
+        display(Latex(r&#34;$\quad\Delta t = $ &#34; + self.delta_t._repr_latex_()))
+        display(Latex(rf&#34;$\quad\rho = $&#34; + self.rho._repr_latex_()))
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: uw.discretisation.MeshVariable,
+        pressureField: uw.discretisation.MeshVariable,
+        rho: Optional[float] = 0.0,
+        restore_points_func: Callable = None,
+        order: Optional[int] = 2,
+        p_continuous: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        ## Parent class will set up default values and load u_Field into the solver
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            order,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # These are unique to the advection solver
+        self._delta_t = expression(r&#34;\Delta t&#34;, sympy.oo, &#34;Navier-Stokes timestep&#34;)
+
+        self.is_setup = False
+        self._rho = expression(R&#34;{\uprho}&#34;, rho, &#34;Density&#34;)
+        self._first_solve = True
+
+        self._order = order
+        self._penalty = expression(R&#34;{\uplambda}&#34;, 0, &#34;Incompressibility Penalty&#34;)
+
+        self.restore_points_to_domain_func = restore_points_func
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
+        self._constitutive_model = None
+
+        # self._E = self.mesh.vector.strain_tensor(self.u.sym)
+        self._Estar = None
+
+        self._constraints = sympy.Matrix((self.div_u,))
+
+        ### sets up DuDt and DFDt
+        ## ._setup_history_terms()
+
+        # If DuDt is not provided, then we can build a SLCN version
+        if self.Unknowns.DuDt is None:
+            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                self.u.sym,
+                self.u.sym,
+                vtype=uw.VarType.VECTOR,
+                degree=self.u.degree,
+                continuous=self.u.continuous,
+                varsymbol=self.u.symbol,
+                verbose=self.verbose,
+                bcs=self.essential_bcs,
+                order=self._order,
+                smoothing=0.0001,
+            )
+
+        # F (at least for N-S) is a nodal point variable so there is no benefit
+        # to treating it as a swarm variable. We&#39;ll define and use our own SL tracker
+        # as we do in the SLCN version. We&#39;ll leave the option for an over-ride.
+        #
+        # Maybe u.degree-1. The scalar equivalent seems to show
+        # little benefit from specific choices here other than
+        # discontinuous flux variables amplifying instabilities.
+
+        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self.u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree,
+            continuous=self.u.continuous,
+            varsymbol=rf&#34;{{ F[ {self.u.symbol} ] }}&#34;,
+            verbose=self.verbose,
+            bcs=None,
+            order=self._order,
+        )
+
+        ## Add in the history terms provided ...
+
+        return
+
+    @property
+    def F0(self):
+
+        DuDt = self.Unknowns.DuDt
+
+        # I think this should be bdf(1) ... the higher order
+        # terms are introduced through the adams_moulton fluxes
+
+        f0 = expression(
+            r&#34;\mathbf{f}_0\left( \mathbf{u} \right)&#34;,
+            -self.bodyforce + self.rho * DuDt.bdf(1) / self.delta_t,
+            &#34;NStokes pointwise force term: f_0(u)&#34;,
+        )
+
+        self._u_f0 = f0
+
+        return f0
+
+    @property
+    def F1(self):
+        dim = self.mesh.dim
+
+        DFDt = self.Unknowns.DFDt
+
+        if DFDt is not None:
+            # We can flag to only do this if the constitutive model has been updated
+            DFDt.psi_fn = self._constitutive_model.flux.T
+
+            F1 = expression(
+                r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+                DFDt.adams_moulton_flux()
+                - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+                + self.penalty * self.div_u * sympy.eye(dim),
+                &#34;NStokes pointwise flux term: F_1(u)&#34;,
+            )
+        # Is the else condition useful - other than to prevent a crash ?
+        # Yes, because then it can just live on the Stokes solver ...
+        else:
+            F1 = expression(
+                r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+                self._constitutive_model.flux.T
+                - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
+                &#34;NStokes pressure gradient term: F_1(u) - No Flux history provided&#34;,
+            )
+
+        self._u_f1 = F1
+
+        return F1
+
+    @property
+    def PF0(self):
+
+        dim = self.mesh.dim
+
+        f0 = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{p} \right)&#34;,
+            sympy.simplify(sympy.Matrix((self.constraints))),
+            &#34;NStokes pointwise flux term: f_0(p)&#34;,
+        )
+
+        self._p_f0 = f0
+
+        return f0
+
+    ## Deprecate this function
+    def navier_stokes_problem_description(self):
+        # f0 residual term
+        self._u_f0 = self.F0.sym
+
+        # f1 residual term
+        self._u_f1 = self.F1.sym
+
+        # p1 residual term
+        self._p_f0 = self.PF0.sym
+
+        return
+
+    @property
+    def delta_t(self):
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        self._delta_t.sym = value
+
+    @property
+    def rho(self):
+        return self._rho
+
+    @rho.setter
+    def rho(self, value):
+        self.is_setup = False
+        self._rho.sym = value
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def div_u(self):
+        E = self.strainrate
+        divergence = E.trace()
+        return divergence
+
+    @property
+    def strainrate(self):
+        return sympy.Matrix(self.Unknowns.E)
+
+    @property
+    def DuDt(self):
+        return self.Unknowns.DuDt
+
+    @DuDt.setter
+    def DuDt(
+        self,
+        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+    ):
+        self.Unknowns.DuDt = DuDt_value
+        self._solver_is_setup = False
+
+    @property
+    def DFDt(self):
+        return self.Unknowns.DFDt
+
+    @property
+    def constraints(self):
+        return self._constraints
+
+    @constraints.setter
+    def constraints(self, constraints_matrix):
+        self._is_setup = False
+        symval = sympify(constraints_matrix)
+        self._constraints = symval
+
+    @property
+    def bodyforce(self):
+        return self._bodyforce
+
+    @bodyforce.setter
+    def bodyforce(self, value):
+        self.is_setup = False
+        self._bodyforce = self.mesh.vector.to_matrix(value)
+
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._saddle_preconditioner = symval
+
+    @property
+    def penalty(self):
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        self._penalty.sym = value
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+        evalf=False,
+        order=None,
+    ):
+        &#34;&#34;&#34;
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        &#34;&#34;&#34;
+
+        if order is None or order &gt; self._order:
+            order = self._order
+
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;NS solver - pre-solve DuDt update&#34;, flush=True)
+
+        # Update SemiLagrange Flux terms
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;NS solver - solve Stokes flow&#34;, flush=True)
+
+        super().solve(
+            zero_init_guess,
+            _force_setup=_force_setup,
+            verbose=verbose,
+            picard=0,
+        )
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;NS solver - post-solve DuDt update&#34;, flush=True)
+
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r&#34;&#34;&#34;
+        Calculates an appropriate timestep for the given
+        mesh and viscosity configuration. This is an implicit solver
+        so the $\delta_t$ should be interpreted as:
+
+            - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
+            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+        returns: ${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$
+
+
+        &#34;&#34;&#34;
+
+        # cf advection-diffusion. Here the diffusivity is represented by viscosity
+        if isinstance(self.constitutive_model.viscosity, sympy.Expr):
+            if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
+                max_diffusivity = uw.function.evaluate(
+                    self.constitutive_model.Parameters.viscosity,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                k = uw.function.evaluate(
+                    sympy.sympify(self.constitutive_model.viscosity),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+
+                max_diffusivity = k.max()
+        else:
+            k = self.constitutive_model.viscosity / self.rho
+            max_diffusivity = k
+
+        ### required modules
+        from mpi4py import MPI
+
+        ## get global max dif value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+        ### get the velocity values
+        vel = uw.function.evaluate(
+            self.u.sym,
+            self.mesh._centroids,
+            self.mesh.N,
+        )
+
+        v_degree = self.u.degree
+
+        ### get global velocity from velocity field
+        max_magvel = np.linalg.norm(vel, axis=1).max()
+        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+        ## get radius
+        min_dx = self.mesh.get_min_radius()
+
+        ## estimate dt of adv and diff components
+
+        if max_magvel_glob == 0.0:
+            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
+            dt_estimate = dt_diff
+        elif diffusivity_glob == 0.0:
+            dt_adv = min_dx / max_magvel_glob
+            dt_estimate = dt_adv
+        else:
+            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
+            dt_adv = min_dx / max_magvel_glob
+            dt_estimate = min(dt_diff, dt_adv)
+
+        return dt_diff, dt_adv</code></pre>
+</details>
+<div class="desc"><p>This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
+used in the Semi-Lagrange Crank-Nicholson method (Spiegelman &amp; Katz, 2006) but using a
+distributed sampling of upstream values taken from an arbitrary swarm variable.</p>
+<p><span><span class="MathJax_Preview">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
+\left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+\nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
+\left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
+\nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p>The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
+the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.</p>
+<p>The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
+the beginning of the timestep. This is achieved using a <code>swarmVariable</code> that carries history information along the flow path.
+A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
+for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
+<strong>and update</strong> the swarmVariable representing $u^{ * }$</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknown is $u$.</p>
+</li>
+<li>
+<p>The velocity field is $\mathbf{v}$ and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be
+calculated in situ (e.g. <code>V_Field = v_solution.sym</code>)</p>
+</li>
+<li>
+<p>The history variable is $u^*$ and is provided in the form of a <code>sympy</code> function. It is the user's responsibility to keep this
+variable updated.</p>
+</li>
+<li>
+<p>The diffusivity tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of <code>sympy</code> functions of position and
+<code>meshVariable</code> or <code>swarmVariable</code> types.</p>
+</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>The solver requires relatively high order shape functions to accurately interpolate the history terms.
+Spiegelman &amp; Katz recommend cubic or higher degree for $u$ but this is not checked.</li>
+</ul>
+<h2 id="reference">Reference</h2>
+<p>Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
+of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). <a href="https://doi.org/10.1029/2005GC001073">https://doi.org/10.1029/2005GC001073</a></p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Stokes_SaddlePt</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.DFDt"><code class="name">prop <span class="ident">DFDt</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def DFDt(self):
+    return self.Unknowns.DFDt</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.DuDt"><code class="name">prop <span class="ident">DuDt</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def DuDt(self):
+    return self.Unknowns.DuDt</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    DuDt = self.Unknowns.DuDt
+
+    # I think this should be bdf(1) ... the higher order
+    # terms are introduced through the adams_moulton fluxes
+
+    f0 = expression(
+        r&#34;\mathbf{f}_0\left( \mathbf{u} \right)&#34;,
+        -self.bodyforce + self.rho * DuDt.bdf(1) / self.delta_t,
+        &#34;NStokes pointwise force term: f_0(u)&#34;,
+    )
+
+    self._u_f0 = f0
+
+    return f0</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+    dim = self.mesh.dim
+
+    DFDt = self.Unknowns.DFDt
+
+    if DFDt is not None:
+        # We can flag to only do this if the constitutive model has been updated
+        DFDt.psi_fn = self._constitutive_model.flux.T
+
+        F1 = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            DFDt.adams_moulton_flux()
+            - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+            + self.penalty * self.div_u * sympy.eye(dim),
+            &#34;NStokes pointwise flux term: F_1(u)&#34;,
+        )
+    # Is the else condition useful - other than to prevent a crash ?
+    # Yes, because then it can just live on the Stokes solver ...
+    else:
+        F1 = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self._constitutive_model.flux.T
+            - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
+            &#34;NStokes pressure gradient term: F_1(u) - No Flux history provided&#34;,
+        )
+
+    self._u_f1 = F1
+
+    return F1</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.PF0"><code class="name">prop <span class="ident">PF0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def PF0(self):
+
+    dim = self.mesh.dim
+
+    f0 = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{p} \right)&#34;,
+        sympy.simplify(sympy.Matrix((self.constraints))),
+        &#34;NStokes pointwise flux term: f_0(p)&#34;,
+    )
+
+    self._p_f0 = f0
+
+    return f0</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.bodyforce"><code class="name">prop <span class="ident">bodyforce</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def bodyforce(self):
+    return self._bodyforce</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.constraints"><code class="name">prop <span class="ident">constraints</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def constraints(self):
+    return self._constraints</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.delta_t"><code class="name">prop <span class="ident">delta_t</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def delta_t(self):
+    return self._delta_t</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.div_u"><code class="name">prop <span class="ident">div_u</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def div_u(self):
+    E = self.strainrate
+    divergence = E.trace()
+    return divergence</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.f"><code class="name">prop <span class="ident">f</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def f(self):
+    return self._f</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.penalty"><code class="name">prop <span class="ident">penalty</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def penalty(self):
+    return self._penalty</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.rho"><code class="name">prop <span class="ident">rho</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def rho(self):
+    return self._rho</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.saddle_preconditioner"><code class="name">prop <span class="ident">saddle_preconditioner</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def saddle_preconditioner(self):
+    return self._saddle_preconditioner</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.strainrate"><code class="name">prop <span class="ident">strainrate</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def strainrate(self):
+    return sympy.Matrix(self.Unknowns.E)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.estimate_dt"><code class="name flex">
+<span>def <span class="ident">estimate_dt</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def estimate_dt(self):
+    r&#34;&#34;&#34;
+    Calculates an appropriate timestep for the given
+    mesh and viscosity configuration. This is an implicit solver
+    so the $\delta_t$ should be interpreted as:
+
+        - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
+        - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+
+    returns: ${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$
+
+
+    &#34;&#34;&#34;
+
+    # cf advection-diffusion. Here the diffusivity is represented by viscosity
+    if isinstance(self.constitutive_model.viscosity, sympy.Expr):
+        if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
+            max_diffusivity = uw.function.evaluate(
+                self.constitutive_model.Parameters.viscosity,
+                np.zeros((1, self.mesh.dim)),
+            )
+        else:
+            k = uw.function.evaluate(
+                sympy.sympify(self.constitutive_model.viscosity),
+                self.mesh._centroids,
+                self.mesh.N,
+            )
+
+            max_diffusivity = k.max()
+    else:
+        k = self.constitutive_model.viscosity / self.rho
+        max_diffusivity = k
+
+    ### required modules
+    from mpi4py import MPI
+
+    ## get global max dif value
+    comm = uw.mpi.comm
+    diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+
+    ### get the velocity values
+    vel = uw.function.evaluate(
+        self.u.sym,
+        self.mesh._centroids,
+        self.mesh.N,
+    )
+
+    v_degree = self.u.degree
+
+    ### get global velocity from velocity field
+    max_magvel = np.linalg.norm(vel, axis=1).max()
+    max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+
+    ## get radius
+    min_dx = self.mesh.get_min_radius()
+
+    ## estimate dt of adv and diff components
+
+    if max_magvel_glob == 0.0:
+        dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
+        dt_estimate = dt_diff
+    elif diffusivity_glob == 0.0:
+        dt_adv = min_dx / max_magvel_glob
+        dt_estimate = dt_adv
+    else:
+        dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
+        dt_adv = min_dx / max_magvel_glob
+        dt_estimate = min(dt_diff, dt_adv)
+
+    return dt_diff, dt_adv</code></pre>
+</details>
+<div class="desc"><p>Calculates an appropriate timestep for the given
+mesh and viscosity configuration. This is an implicit solver
+so the $\delta_t$ should be interpreted as:</p>
+<pre><code>- ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
+- ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+</code></pre>
+<p>returns: ${\delta t}<em>\textrm{diff}$, ${\delta t}</em>\textrm{adv}$</p></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.navier_stokes_problem_description"><code class="name flex">
+<span>def <span class="ident">navier_stokes_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def navier_stokes_problem_description(self):
+    # f0 residual term
+    self._u_f0 = self.F0.sym
+
+    # f1 residual term
+    self._u_f1 = self.F1.sym
+
+    # p1 residual term
+    self._p_f0 = self.PF0.sym
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_NavierStokes.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self,<br>zero_init_guess: bool = True,<br>timestep: float = None,<br>verbose=False,<br>evalf=False,<br>order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def solve(
+    self,
+    zero_init_guess: bool = True,
+    timestep: float = None,
+    _force_setup: bool = False,
+    verbose=False,
+    evalf=False,
+    order=None,
+):
+    &#34;&#34;&#34;
+    Generates solution to constructed system.
+
+    Params
+    ------
+    zero_init_guess:
+        If `True`, a zero initial guess will be used for the
+        system solution. Otherwise, the current values of `self.u` will be used.
+    &#34;&#34;&#34;
+
+    if order is None or order &gt; self._order:
+        order = self._order
+
+    if timestep is not None and timestep != self.delta_t:
+        self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
+
+    if _force_setup:
+        self.is_setup = False
+
+    if not self.constitutive_model._solver_is_setup:
+        self.is_setup = False
+        self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+    if not self.is_setup:
+        self._setup_pointwise_functions(verbose)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;NS solver - pre-solve DuDt update&#34;, flush=True)
+
+    # Update SemiLagrange Flux terms
+    self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+    self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;NS solver - solve Stokes flow&#34;, flush=True)
+
+    super().solve(
+        zero_init_guess,
+        _force_setup=_force_setup,
+        verbose=verbose,
+        picard=0,
+    )
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;NS solver - post-solve DuDt update&#34;, flush=True)
+
+    self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+    self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+    self.is_setup = True
+    self.constitutive_model._solver_is_setup = True
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code> will be used.</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Poisson"><code class="flex name class">
+<span>class <span class="ident">SNES_Poisson</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>verbose=False,<br>degree=2,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Poisson(SNES_Scalar):
+    r&#34;&#34;&#34;
+    This class provides functionality for a discrete representation
+    of the Poisson equation
+
+    $$
+    \nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+    $$
+
+    The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$
+
+    ## Properties
+
+      - The unknown is $u$
+
+      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - $f$ is a volumetric source term
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        verbose=False,
+        degree=2,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        ## Keep track
+
+        ## Parent class will set up default values etc
+        super().__init__(
+            mesh,
+            u_Field,
+            degree,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # default values for properties
+        self.f = sympy.Matrix.zeros(1, 1)
+
+        self._constitutive_model = None
+
+    @property
+    def F0(self):
+
+        f0_val = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            -self.f,
+            &#34;Poisson pointwise force term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0_val
+
+        return f0_val
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            sympy.simplify(self.constitutive_model.flux.T),
+            &#34;Poisson pointwise flux term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @timing.routine_timer_decorator
+    def poisson_problem_description(self):
+        # f1 residual term (weighted integration) - scalar function
+        self._f0 = self.F0.sym
+
+        # f1 residual term (integration by parts / gradients)
+        # isotropic
+        self._f1 = self.F1.sym
+
+        return
+
+    @property
+    def f(self):
+        return self._f
+
+    @f.setter
+    def f(self, value):
+        self.is_setup = False
+        self._f = sympy.Matrix((value,))
+
+    @property
+    def CM_is_setup(self):
+        return self._constitutive_model._solver_is_setup</code></pre>
+</details>
+<div class="desc"><p>This class provides functionality for a discrete representation
+of the Poisson equation</p>
+<p><span><span class="MathJax_Preview">
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p>The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknown is $u$</p>
+</li>
+<li>
+<p>The diffusivity tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>$f$ is a volumetric source term</p>
+</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Poisson.CM_is_setup"><code class="name">prop <span class="ident">CM_is_setup</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def CM_is_setup(self):
+    return self._constitutive_model._solver_is_setup</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Poisson.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0_val = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        -self.f,
+        &#34;Poisson pointwise force term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0_val
+
+    return f0_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Poisson.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        sympy.simplify(self.constitutive_model.flux.T),
+        &#34;Poisson pointwise flux term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Poisson.f"><code class="name">prop <span class="ident">f</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def f(self):
+    return self._f</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Poisson.poisson_problem_description"><code class="name flex">
+<span>def <span class="ident">poisson_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def poisson_problem_description(self):
+    # f1 residual term (weighted integration) - scalar function
+    self._f0 = self.F0.sym
+
+    # f1 residual term (integration by parts / gradients)
+    # isotropic
+    self._f1 = self.F1.sym
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Projection"><code class="flex name class">
+<span>class <span class="ident">SNES_Projection</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Projection(SNES_Scalar):
+    r&#34;&#34;&#34;
+    Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
+    $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
+    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+    evaluated within that context.
+
+    The projection implemented by creating a solver for this problem
+
+    $$
+    -\nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
+    $$
+
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        degree=2,
+        verbose=False,
+    ):
+
+        super().__init__(
+            mesh,
+            u_Field,
+            degree,
+            verbose,
+        )
+
+        self.is_setup = False
+        self._smoothing = sympy.sympify(0)
+        self._uw_weighting_function = sympy.sympify(1)
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
+            self.Unknowns
+        )
+
+        return
+
+    @property
+    def F0(self):
+
+        f0_val = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            (self.u.sym - self.uw_function) * self.uw_weighting_function,
+            &#34;Scalar Projection pointwise misfit term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0_val
+
+        return f0_val
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self.smoothing * self.mesh.vector.gradient(self.u.sym),
+            &#34;Scalar projection pointwise smoothing term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @property
+    def uw_function(self):
+        return self._uw_function
+
+    @uw_function.setter
+    def uw_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_function = sympy.Matrix([user_uw_function])
+
+    @property
+    def smoothing(self):
+        return self._smoothing
+
+    @smoothing.setter
+    def smoothing(self, smoothing_factor):
+        self.is_setup = False
+        self._smoothing = sympify(smoothing_factor)
+
+    @property
+    def uw_weighting_function(self):
+        return self._uw_weighting_function
+
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_weighting_function = user_uw_function</code></pre>
+</details>
+<div class="desc"><p>Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
+$u$ is a <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
+continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
+variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+evaluated within that context.</p>
+<p>The projection implemented by creating a solver for this problem</p>
+<p><span><span class="MathJax_Preview">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
+</span><script type="math/tex; mode=display">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
+</script></span></p>
+<p>Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="underworld3.systems.solvers.SNES_Tensor_Projection" href="#underworld3.systems.solvers.SNES_Tensor_Projection">SNES_Tensor_Projection</a></li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Projection.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0_val = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        &#34;Scalar Projection pointwise misfit term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0_val
+
+    return f0_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Projection.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        self.smoothing * self.mesh.vector.gradient(self.u.sym),
+        &#34;Scalar projection pointwise smoothing term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Projection.smoothing"><code class="name">prop <span class="ident">smoothing</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def smoothing(self):
+    return self._smoothing</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Projection.uw_function"><code class="name">prop <span class="ident">uw_function</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def uw_function(self):
+    return self._uw_function</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Projection.uw_weighting_function"><code class="name">prop <span class="ident">uw_weighting_function</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def uw_weighting_function(self):
+    return self._uw_weighting_function</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes"><code class="flex name class">
+<span>class <span class="ident">SNES_Stokes</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Stokes(SNES_Stokes_SaddlePt):
+    r&#34;&#34;&#34;
+    This class provides functionality for a discrete representation
+    of the Stokes flow equations assuming an incompressibility
+    (or near-incompressibility) constraint.
+
+    $$
+    -\nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[
+                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+    $$
+
+    $$
+    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+    $$
+
+    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+
+    $$
+        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+    $$
+
+    The constraint equation, $\mathbf{h}_p = 0$ gives incompressible flow by default but can be set
+    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+
+    ## Properties
+
+      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint parameter $\mathbf{p}$
+
+      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - $\mathbf f$ is a volumetric source term (i.e. body forces)
+      and is set by providing the `bodyforce` property.
+
+      - An Augmented Lagrangian approach to application of the incompressibility
+    constraint is to penalise incompressibility in the Stokes equation by adding
+    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
+    (this is in addition to the constraint equation, unlike in the classical penalty method).
+    This is activated by setting the `penalty` property to a non-zero floating point value which adds
+    the term in the `sympy` expression.
+
+      - A preconditioner is usually required for the saddle point system and this is provided
+    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+
+    ## Notes
+
+      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
+        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
+
+      - The interpolation order of the `pressureField` variable is used to determine the integration order of
+    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
+
+      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
+
+    &#34;&#34;&#34;
+
+    instances = 0
+
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        degree: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        verbose: Optional[bool] = False,
+        # Not used in Stokes, but may be used in NS, VE etc
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            degree,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        self._degree = degree
+        # User-facing operations are matrices / vectors by preference
+
+        self._Estar = None
+
+        self._penalty = expression(R&#34;\uplambda&#34;, 0, &#34;Numerical Penalty&#34;)
+        self._constraints = sympy.Matrix(
+            (self.div_u,)
+        )  # by default, incompressibility constraint
+
+        self._bodyforce = expression(
+            Rf&#34;\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)&#34;,
+            sympy.Matrix([[0] * self.mesh.dim]),
+            &#34;Stokes pointwise force term: f_0(u)&#34;,
+        )
+
+        # this attrib records if we need to setup the problem (again)
+        self.is_setup = False
+
+        self._constitutive_model = None
+
+        return
+
+    ## Problem Description:
+    ##  F0 - velocity equation forcing terms
+    ##  F1 - velocity equation flux terms
+    ##  PF0 - pressure / constraint equation forcing terms
+
+    @property
+    def F0(self):
+
+        # f0 = expression(
+        #     r&#34;\mathbf{f}_0\left( \mathbf{u} \right)&#34;,
+        #     -self.bodyforce,
+        #     &#34;Stokes pointwise force term: f_0(u)&#34;,
+        # )
+
+        # backward compatibility
+        self._u_f0 = self._bodyforce
+
+        return self._bodyforce
+
+    @property
+    def F1(self):
+
+        dim = self.mesh.dim
+
+        ## Should not define a new function on each call (madness !)
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(dim)),
+            &#34;Stokes pointwise flux term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._u_f1 = F1_val
+
+        return F1_val
+
+    @property
+    def PF0(self):
+
+        ## Should not define a new function on each call (madness !)
+
+        f0 = expression(
+            r&#34;\mathbf{h}_0\left( \mathbf{p} \right)&#34;,
+            sympy.simplify(sympy.Matrix((self.constraints))),
+            &#34;Pointwise force term: h_0(p)&#34;,
+        )
+
+        # backward compatibility
+        self._p_f0 = f0
+
+        return f0
+
+    # deprecated
+    @timing.routine_timer_decorator
+    def stokes_problem_description(self):
+
+        # f0 residual term
+        self._u_f0 = self.F0.sym
+
+        # f1 residual term
+        self._u_f1 = self.F1.sym
+
+        # p0 residual term
+        self._p_f0 = self.PF0.sym
+
+        return
+
+    @property
+    def CM_is_setup(self):
+        return self._constitutive_model._solver_is_setup
+
+    @property
+    def strainrate(self):
+        return sympy.Matrix(self.mesh.vector.strain_tensor(self.Unknowns.u.sym))
+
+    @property
+    def strainrate_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)
+
+    @property
+    def strainrate_star_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
+
+    # This should return standard viscous behaviour if strainrate_star is None
+    @property
+    def stress_deviator(self):
+        return self.constitutive_model.flux  # strainrate, strain-rate history
+
+    @property
+    def stress_deviator_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)  ##
+
+    @property
+    def stress(self):
+        return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+
+    @property
+    def stress_1d(self):
+        return uw.maths.tensor.rank2_to_voigt(self.stress, self.mesh.dim)
+
+    @property
+    def div_u(self):
+        # E = self.strainrate
+        # divergence = E.trace()
+        # return divergence
+
+        return self.mesh.vector.divergence(self.Unknowns.u.sym)
+
+    @property
+    def constraints(self):
+        return self._constraints
+
+    @constraints.setter
+    def constraints(self, constraints_matrix):
+        self._is_setup = False
+        symval = sympify(constraints_matrix)
+        self._constraints = symval
+
+    @property
+    def bodyforce(self):
+        return self._bodyforce
+
+    @bodyforce.setter
+    def bodyforce(self, value):
+        self.is_setup = False
+        if isinstance(value, uw.function.expressions.UWexpression):
+            self._bodyforce.sym = -1 * value.sym
+        else:
+            self._bodyforce.sym = sympy.Matrix(-1 * value)
+
+    @property
+    def saddle_preconditioner(self):
+        return self._saddle_preconditioner
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._saddle_preconditioner = symval
+
+    @property
+    def penalty(self):
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        self._penalty.sym = value
+
+    # @property
+    # def continuity_rhs(self):
+    #     return self._continuity_rhs
+
+    # @continuity_rhs.setter
+    # def continuity_rhs(self, value):
+    #     self.is_setup = False
+    #     self._continuity_rhs.sym = value</code></pre>
+</details>
+<div class="desc"><p>This class provides functionality for a discrete representation
+of the Stokes flow equations assuming an incompressibility
+(or near-incompressibility) constraint.</p>
+<p><span><span class="MathJax_Preview">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[
+\boldsymbol{\tau} -
+p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[
+\boldsymbol{\tau} -
+p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p><span><span class="MathJax_Preview">
+\underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+</span><script type="math/tex; mode=display">
+\underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+</script></span></p>
+<p>The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$</p>
+<p><span><span class="MathJax_Preview">
+\mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+</span><script type="math/tex; mode=display">
+\mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+</script></span></p>
+<p>The constraint equation, $\mathbf{h}_p = 0$ gives incompressible flow by default but can be set
+to any function of the unknown
+$\mathbf{u}$ and
+$\nabla\cdot\mathbf{u}$</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint parameter $\mathbf{p}$</p>
+</li>
+<li>
+<p>The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>$\mathbf f$ is a volumetric source term (i.e. body forces)
+and is set by providing the <code>bodyforce</code> property.</p>
+</li>
+<li>
+<p>An Augmented Lagrangian approach to application of the incompressibility
+constraint is to penalise incompressibility in the Stokes equation by adding
+$ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
+(this is in addition to the constraint equation, unlike in the classical penalty method).
+This is activated by setting the <code>penalty</code> property to a non-zero floating point value which adds
+the term in the <code>sympy</code> expression.</p>
+</li>
+<li>
+<p>A preconditioner is usually required for the saddle point system and this is provided
+through the <code>saddle_preconditioner</code> property. The default choice is $1/\eta$ for a scalar viscosity function.</p>
+</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>
+<p>For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
+stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.</p>
+</li>
+<li>
+<p>The interpolation order of the <code>pressureField</code> variable is used to determine the integration order of
+the mixed finite element method and is usually lower than the order of the <code>velocityField</code> variable.</p>
+</li>
+<li>
+<p>It is possible to set discontinuous pressure variables by setting the <code>p_continous</code> option to <code>False</code></p>
+</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Stokes_SaddlePt</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="underworld3.systems.solvers.SNES_VE_Stokes" href="#underworld3.systems.solvers.SNES_VE_Stokes">SNES_VE_Stokes</a></li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Stokes.instances"><code class="name">var <span class="ident">instances</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Stokes.CM_is_setup"><code class="name">prop <span class="ident">CM_is_setup</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def CM_is_setup(self):
+    return self._constitutive_model._solver_is_setup</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    # f0 = expression(
+    #     r&#34;\mathbf{f}_0\left( \mathbf{u} \right)&#34;,
+    #     -self.bodyforce,
+    #     &#34;Stokes pointwise force term: f_0(u)&#34;,
+    # )
+
+    # backward compatibility
+    self._u_f0 = self._bodyforce
+
+    return self._bodyforce</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    dim = self.mesh.dim
+
+    ## Should not define a new function on each call (madness !)
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(dim)),
+        &#34;Stokes pointwise flux term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._u_f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.PF0"><code class="name">prop <span class="ident">PF0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def PF0(self):
+
+    ## Should not define a new function on each call (madness !)
+
+    f0 = expression(
+        r&#34;\mathbf{h}_0\left( \mathbf{p} \right)&#34;,
+        sympy.simplify(sympy.Matrix((self.constraints))),
+        &#34;Pointwise force term: h_0(p)&#34;,
+    )
+
+    # backward compatibility
+    self._p_f0 = f0
+
+    return f0</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.bodyforce"><code class="name">prop <span class="ident">bodyforce</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def bodyforce(self):
+    return self._bodyforce</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.constraints"><code class="name">prop <span class="ident">constraints</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def constraints(self):
+    return self._constraints</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.div_u"><code class="name">prop <span class="ident">div_u</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def div_u(self):
+    # E = self.strainrate
+    # divergence = E.trace()
+    # return divergence
+
+    return self.mesh.vector.divergence(self.Unknowns.u.sym)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.penalty"><code class="name">prop <span class="ident">penalty</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def penalty(self):
+    return self._penalty</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.saddle_preconditioner"><code class="name">prop <span class="ident">saddle_preconditioner</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def saddle_preconditioner(self):
+    return self._saddle_preconditioner</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.strainrate"><code class="name">prop <span class="ident">strainrate</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def strainrate(self):
+    return sympy.Matrix(self.mesh.vector.strain_tensor(self.Unknowns.u.sym))</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.strainrate_1d"><code class="name">prop <span class="ident">strainrate_1d</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def strainrate_1d(self):
+    return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.strainrate_star_1d"><code class="name">prop <span class="ident">strainrate_star_1d</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def strainrate_star_1d(self):
+    return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.stress"><code class="name">prop <span class="ident">stress</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def stress(self):
+    return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.stress_1d"><code class="name">prop <span class="ident">stress_1d</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def stress_1d(self):
+    return uw.maths.tensor.rank2_to_voigt(self.stress, self.mesh.dim)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.stress_deviator"><code class="name">prop <span class="ident">stress_deviator</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def stress_deviator(self):
+    return self.constitutive_model.flux  # strainrate, strain-rate history</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Stokes.stress_deviator_1d"><code class="name">prop <span class="ident">stress_deviator_1d</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def stress_deviator_1d(self):
+    return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)  ##</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Stokes.stokes_problem_description"><code class="name flex">
+<span>def <span class="ident">stokes_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def stokes_problem_description(self):
+
+    # f0 residual term
+    self._u_f0 = self.F0.sym
+
+    # f1 residual term
+    self._u_f1 = self.F1.sym
+
+    # p0 residual term
+    self._p_f0 = self.PF0.sym
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Tensor_Projection"><code class="flex name class">
+<span>class <span class="ident">SNES_Tensor_Projection</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>tensor_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>scalar_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Tensor_Projection(SNES_Projection):
+    r&#34;&#34;&#34;
+    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
+    $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
+    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+    evaluated within that context.
+
+    The projection implemented by creating a solver for this problem
+
+    $$
+    -\nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+    $$
+
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+
+    Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.
+
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        tensor_Field: uw.discretisation.MeshVariable = None,
+        scalar_Field: uw.discretisation.MeshVariable = None,
+        degree=2,
+        verbose=False,
+    ):
+        self.t_field = tensor_Field
+
+        super().__init__(
+            mesh=mesh,
+            u_Field=scalar_Field,
+            degree=degree,
+            verbose=verbose,
+        )
+
+        return
+
+    ## Need to over-ride solve method to run over all components
+
+    def solve(self, verbose=False):
+        # Loop over the components of the tensor. If this is a symmetric
+        # tensor, we&#39;ll usually be given the 1d form to prevent duplication
+
+        # if self.t_field.sym_1d.shape != self.uw_function.shape:
+        #     raise ValueError(
+        #         &#34;Tensor shapes for uw_function and MeshVariable are not the same&#34;
+        #     )
+
+        symm = self.t_field.sym.is_symmetric()
+
+        for i in range(self.uw_function.shape[0]):
+            for j in range(self.uw_function.shape[1]):
+
+                if symm and j &gt; i:
+                    continue
+
+                self.uw_scalar_function = sympy.Matrix([[self.uw_function[i, j]]])
+
+                with self.mesh.access(self.u):
+                    self.u.data[:, 0] = self.t_field[i, j].data[:]
+
+                # solve the projection for the scalar sub-problem
+                super().solve(verbose=verbose)
+
+                with self.mesh.access(self.t_field):
+                    self.t_field[i, j].data[:] = self.u.data[:, 0]
+
+        # That might be all ...
+
+    # This is re-defined so it uses uw_scalar_function
+
+    @property
+    def F0(self):
+
+        f0_val = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
+            &#34;Scalar subproblem of tensor projection: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0_val
+
+        return f0_val
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self.smoothing * self.mesh.vector.gradient(self.u.sym),
+            &#34;Scalar subproblem of tensor projection (smoothing): F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @property
+    def uw_scalar_function(self):
+        return self._uw_scalar_function
+
+    @uw_scalar_function.setter
+    def uw_scalar_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_scalar_function = user_uw_function</code></pre>
+</details>
+<div class="desc"><p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
+$\mathbf{u}$ is a tensor <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
+continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
+variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+evaluated within that context.</p>
+<p>The projection implemented by creating a solver for this problem</p>
+<p><span><span class="MathJax_Preview">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+</span><script type="math/tex; mode=display">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+</script></span></p>
+<p>Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.</p>
+<p>Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="underworld3.systems.solvers.SNES_Projection" href="#underworld3.systems.solvers.SNES_Projection">SNES_Projection</a></li>
+<li>underworld3.cython.generic_solvers.SNES_Scalar</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Tensor_Projection.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0_val = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
+        &#34;Scalar subproblem of tensor projection: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0_val
+
+    return f0_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Tensor_Projection.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        self.smoothing * self.mesh.vector.gradient(self.u.sym),
+        &#34;Scalar subproblem of tensor projection (smoothing): F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Tensor_Projection.uw_scalar_function"><code class="name">prop <span class="ident">uw_scalar_function</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def uw_scalar_function(self):
+    return self._uw_scalar_function</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Tensor_Projection.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self, verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def solve(self, verbose=False):
+    # Loop over the components of the tensor. If this is a symmetric
+    # tensor, we&#39;ll usually be given the 1d form to prevent duplication
+
+    # if self.t_field.sym_1d.shape != self.uw_function.shape:
+    #     raise ValueError(
+    #         &#34;Tensor shapes for uw_function and MeshVariable are not the same&#34;
+    #     )
+
+    symm = self.t_field.sym.is_symmetric()
+
+    for i in range(self.uw_function.shape[0]):
+        for j in range(self.uw_function.shape[1]):
+
+            if symm and j &gt; i:
+                continue
+
+            self.uw_scalar_function = sympy.Matrix([[self.uw_function[i, j]]])
+
+            with self.mesh.access(self.u):
+                self.u.data[:, 0] = self.t_field[i, j].data[:]
+
+            # solve the projection for the scalar sub-problem
+            super().solve(verbose=verbose)
+
+            with self.mesh.access(self.t_field):
+                self.t_field[i, j].data[:] = self.u.data[:, 0]
+
+    # That might be all ...</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code>
+and <code>self.p</code> will be used.</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_VE_Stokes"><code class="flex name class">
+<span>class <span class="ident">SNES_VE_Stokes</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int | None = 2,<br>order: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_VE_Stokes(SNES_Stokes):
+    r&#34;&#34;&#34;
+    This class provides functionality for a discrete representation
+    of the Stokes flow equations assuming an incompressibility
+    (or near-incompressibility) constraint and with a flux history
+    term included to allow for viscoelastic modelling.
+
+    All other functionality is inherited from SNES_Stokes
+
+    $$
+    -\nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[
+                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+    $$
+
+    $$
+    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+    $$
+
+    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+
+    $$
+        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+    $$
+
+    The constraint equation, $\mathbf{h}_p = 0$ is incompressible flow by default but can be set
+    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+
+    ## Properties
+
+      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
+
+      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
+    one of the scalar `uw.constitutive_models` classes and populating the parameters.
+    It is usually a constant or a function of position / time and may also be non-linear
+    or anisotropic.
+
+      - $\mathbf f$ is a volumetric source term (i.e. body forces)
+      and is set by providing the `bodyforce` property.
+
+      - An Augmented Lagrangian approach to application of the incompressibility
+    constraint is to penalise incompressibility in the Stokes equation by adding
+    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
+    (this is in addition to the constraint equation, unlike in the classical penalty method).
+    This is activated by setting the `penalty` property to a non-zero floating point value which adds
+    the term in the `sympy` expression.
+
+      - A preconditioner is usually required for the saddle point system and this is provided
+    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+
+    ## Notes
+
+      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
+        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
+
+      - The interpolation order of the `pressureField` variable is used to determine the integration order of
+    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
+
+      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
+
+    &#34;&#34;&#34;
+
+    instances = 0
+
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        degree: Optional[int] = 2,
+        order: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        verbose: Optional[bool] = False,
+        # DuDt Not used in VE, but may be in child classes
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+
+        # Stokes is parent (will not build DuDt or DFDt)
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            degree,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        self._order = order  # VE time-order
+
+        if self.Unknowns.DFDt is None:
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                vtype=uw.VarType.SYM_TENSOR,
+                degree=self.u.degree - 1,
+                continuous=True,
+                varsymbol=rf&#34;{{F[ {self.u.symbol} ] }}&#34;,
+                verbose=self.verbose,
+                bcs=None,
+                order=self._order,
+                smoothing=0.0001,
+            )
+
+        return
+
+    @property
+    def delta_t(self):
+
+        return self.constitutive_model.Parameters.dt_elastic
+
+    ## Solver needs to update the stress history terms as well as call the SNES solve:
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+        evalf=False,
+        order=None,
+    ):
+        &#34;&#34;&#34;
+        Generates solution to constructed system.
+
+        Params
+        ------
+        zero_init_guess:
+            If `True`, a zero initial guess will be used for the
+            system solution. Otherwise, the current values of `self.u` will be used.
+        &#34;&#34;&#34;
+
+        if order is None or order &gt; self._order:
+            order = self._order
+
+        if timestep is None:
+            timestep = self.delta_t.sym
+
+        if timestep != self.delta_t:
+            self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
+
+        if _force_setup:
+            self.is_setup = False
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;VE Stokes solver - pre-solve DFDt update&#34;, flush=True)
+
+        # Update SemiLagrange Flux terms
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;VE Stokes solver - solve Stokes flow&#34;, flush=True)
+
+        super().solve(
+            zero_init_guess,
+            _force_setup=_force_setup,
+            verbose=verbose,
+            picard=0,
+        )
+
+        if uw.mpi.rank == 0 and verbose:
+            print(f&#34;VEP Stokes solver - post-solve DFDt update&#34;, flush=True)
+
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return</code></pre>
+</details>
+<div class="desc"><p>This class provides functionality for a discrete representation
+of the Stokes flow equations assuming an incompressibility
+(or near-incompressibility) constraint and with a flux history
+term included to allow for viscoelastic modelling.</p>
+<p>All other functionality is inherited from SNES_Stokes</p>
+<p><span><span class="MathJax_Preview">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[
+\boldsymbol{\tau} -
+p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</span><script type="math/tex; mode=display">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[
+\boldsymbol{\tau} -
+p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
+</script></span></p>
+<p><span><span class="MathJax_Preview">
+\underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+</span><script type="math/tex; mode=display">
+\underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
+</script></span></p>
+<p>The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
+( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$</p>
+<p><span><span class="MathJax_Preview">
+\mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+</span><script type="math/tex; mode=display">
+\mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+</script></span></p>
+<p>The constraint equation, $\mathbf{h}_p = 0$ is incompressible flow by default but can be set
+to any function of the unknown
+$\mathbf{u}$ and
+$\nabla\cdot\mathbf{u}$</p>
+<h2 id="properties">Properties</h2>
+<ul>
+<li>
+<p>The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$</p>
+</li>
+<li>
+<p>The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the <code>constitutive_model</code> property to
+one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters.
+It is usually a constant or a function of position / time and may also be non-linear
+or anisotropic.</p>
+</li>
+<li>
+<p>$\mathbf f$ is a volumetric source term (i.e. body forces)
+and is set by providing the <code>bodyforce</code> property.</p>
+</li>
+<li>
+<p>An Augmented Lagrangian approach to application of the incompressibility
+constraint is to penalise incompressibility in the Stokes equation by adding
+$ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
+(this is in addition to the constraint equation, unlike in the classical penalty method).
+This is activated by setting the <code>penalty</code> property to a non-zero floating point value which adds
+the term in the <code>sympy</code> expression.</p>
+</li>
+<li>
+<p>A preconditioner is usually required for the saddle point system and this is provided
+through the <code>saddle_preconditioner</code> property. The default choice is $1/\eta$ for a scalar viscosity function.</p>
+</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>
+<p>For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
+stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.</p>
+</li>
+<li>
+<p>The interpolation order of the <code>pressureField</code> variable is used to determine the integration order of
+the mixed finite element method and is usually lower than the order of the <code>velocityField</code> variable.</p>
+</li>
+<li>
+<p>It is possible to set discontinuous pressure variables by setting the <code>p_continous</code> option to <code>False</code></p>
+</li>
+</ul></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="underworld3.systems.solvers.SNES_Stokes" href="#underworld3.systems.solvers.SNES_Stokes">SNES_Stokes</a></li>
+<li>underworld3.cython.generic_solvers.SNES_Stokes_SaddlePt</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_VE_Stokes.instances"><code class="name">var <span class="ident">instances</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_VE_Stokes.delta_t"><code class="name">prop <span class="ident">delta_t</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def delta_t(self):
+
+    return self.constitutive_model.Parameters.dt_elastic</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_VE_Stokes.solve"><code class="name flex">
+<span>def <span class="ident">solve</span></span>(<span>self,<br>zero_init_guess: bool = True,<br>timestep: float = None,<br>verbose=False,<br>evalf=False,<br>order=None)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def solve(
+    self,
+    zero_init_guess: bool = True,
+    timestep: float = None,
+    _force_setup: bool = False,
+    verbose=False,
+    evalf=False,
+    order=None,
+):
+    &#34;&#34;&#34;
+    Generates solution to constructed system.
+
+    Params
+    ------
+    zero_init_guess:
+        If `True`, a zero initial guess will be used for the
+        system solution. Otherwise, the current values of `self.u` will be used.
+    &#34;&#34;&#34;
+
+    if order is None or order &gt; self._order:
+        order = self._order
+
+    if timestep is None:
+        timestep = self.delta_t.sym
+
+    if timestep != self.delta_t:
+        self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
+
+    if _force_setup:
+        self.is_setup = False
+
+    if not self.constitutive_model._solver_is_setup:
+        self.is_setup = False
+        self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+    if not self.is_setup:
+        self._setup_pointwise_functions(verbose)
+        self._setup_discretisation(verbose)
+        self._setup_solver(verbose)
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;VE Stokes solver - pre-solve DFDt update&#34;, flush=True)
+
+    # Update SemiLagrange Flux terms
+    self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;VE Stokes solver - solve Stokes flow&#34;, flush=True)
+
+    super().solve(
+        zero_init_guess,
+        _force_setup=_force_setup,
+        verbose=verbose,
+        picard=0,
+    )
+
+    if uw.mpi.rank == 0 and verbose:
+        print(f&#34;VEP Stokes solver - post-solve DFDt update&#34;, flush=True)
+
+    self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+    self.is_setup = True
+    self.constitutive_model._solver_is_setup = True
+
+    return</code></pre>
+</details>
+<div class="desc"><p>Generates solution to constructed system.</p>
+<h2 id="params">Params</h2>
+<p>zero_init_guess:
+If <code>True</code>, a zero initial guess will be used for the
+system solution. Otherwise, the current values of <code>self.u</code> will be used.</p></div>
+</dd>
+</dl>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection"><code class="flex name class">
+<span>class <span class="ident">SNES_Vector_Projection</span></span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SNES_Vector_Projection(SNES_Vector):
+    r&#34;&#34;&#34;
+    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
+    $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
+    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
+    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+    evaluated within that context.
+
+    The projection is implemented by creating a solver for this problem
+
+    $$
+    -\nabla \cdot
+            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+    $$
+
+    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    &#34;&#34;&#34;
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        degree=2,
+        verbose=False,
+    ):
+        super().__init__(
+            mesh,
+            u_Field,
+            degree,
+            verbose,
+        )
+
+        self.is_setup = False
+        self._smoothing = 0.0
+        self._penalty = 0.0
+        self._uw_weighting_function = 1.0
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
+            self.Unknowns
+        )
+
+        return
+
+    @property
+    def F0(self):
+
+        f0_val = expression(
+            r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+            (self.u.sym - self.uw_function) * self.uw_weighting_function,
+            &#34;Vector projection pointwise misfit term: f_0(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f0 = f0_val
+
+        return f0_val
+
+    @property
+    def F1(self):
+
+        F1_val = expression(
+            r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+            self.smoothing * self.Unknowns.E
+            + self.penalty
+            * self.mesh.vector.divergence(self.u.sym)
+            * sympy.eye(self.mesh.dim),
+            &#34;Vector projection pointwise smoothing term: F_1(u)&#34;,
+        )
+
+        # backward compatibility
+        self._f1 = F1_val
+
+        return F1_val
+
+    @timing.routine_timer_decorator
+    def projection_problem_description(self):
+        # residual terms - defines the problem:
+        # solve for a best fit to the continuous mesh
+        # variable given the values in self.function
+        # F0 is left in place for the user to inject
+        # non-linear constraints if required
+
+        self._f0 = self.F0.sym
+
+        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+
+        self._f1 = (
+            self.F1.sym
+            + self.smoothing * self.Unknowns.E
+            + self.penalty
+            * self.mesh.vector.divergence(self.u.sym)
+            * sympy.eye(self.mesh.dim)
+        )
+
+        return
+
+    @property
+    def uw_function(self):
+        return self._uw_function
+
+    @uw_function.setter
+    def uw_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_function = sympy.Matrix(user_uw_function)
+
+    @property
+    def smoothing(self):
+        return self._smoothing
+
+    @smoothing.setter
+    def smoothing(self, smoothing_factor):
+        self.is_setup = False
+        self._smoothing = sympify(smoothing_factor)
+
+    @property
+    def penalty(self):
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        self.is_setup = False
+        symval = sympify(value)
+        self._penalty = symval
+
+    @property
+    def uw_weighting_function(self):
+        return self._uw_weighting_function
+
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, user_uw_function):
+        self.is_setup = False
+        self._uw_weighting_function = user_uw_function</code></pre>
+</details>
+<div class="desc"><p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
+$\mathbf{u}$ is a vector <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
+continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
+the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
+variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
+evaluated within that context.</p>
+<p>The projection is implemented by creating a solver for this problem</p>
+<p><span><span class="MathJax_Preview">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+</span><script type="math/tex; mode=display">
+-\nabla \cdot
+\color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
+\color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
+</script></span></p>
+<p>Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.</p></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.cython.generic_solvers.SNES_Vector</li>
+<li>underworld3.cython.generic_solvers.SolverBaseClass</li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.F0"><code class="name">prop <span class="ident">F0</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F0(self):
+
+    f0_val = expression(
+        r&#34;f_0 \left( \mathbf{u} \right)&#34;,
+        (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        &#34;Vector projection pointwise misfit term: f_0(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f0 = f0_val
+
+    return f0_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.F1"><code class="name">prop <span class="ident">F1</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def F1(self):
+
+    F1_val = expression(
+        r&#34;\mathbf{F}_1\left( \mathbf{u} \right)&#34;,
+        self.smoothing * self.Unknowns.E
+        + self.penalty
+        * self.mesh.vector.divergence(self.u.sym)
+        * sympy.eye(self.mesh.dim),
+        &#34;Vector projection pointwise smoothing term: F_1(u)&#34;,
+    )
+
+    # backward compatibility
+    self._f1 = F1_val
+
+    return F1_val</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.penalty"><code class="name">prop <span class="ident">penalty</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def penalty(self):
+    return self._penalty</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.smoothing"><code class="name">prop <span class="ident">smoothing</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def smoothing(self):
+    return self._smoothing</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.uw_function"><code class="name">prop <span class="ident">uw_function</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def uw_function(self):
+    return self._uw_function</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.uw_weighting_function"><code class="name">prop <span class="ident">uw_weighting_function</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def uw_weighting_function(self):
+    return self._uw_weighting_function</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.systems.solvers.SNES_Vector_Projection.projection_problem_description"><code class="name flex">
+<span>def <span class="ident">projection_problem_description</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@timing.routine_timer_decorator
+def projection_problem_description(self):
+    # residual terms - defines the problem:
+    # solve for a best fit to the continuous mesh
+    # variable given the values in self.function
+    # F0 is left in place for the user to inject
+    # non-linear constraints if required
+
+    self._f0 = self.F0.sym
+
+    # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
+
+    self._f1 = (
+        self.F1.sym
+        + self.smoothing * self.Unknowns.E
+        + self.penalty
+        * self.mesh.vector.divergence(self.u.sym)
+        * sympy.eye(self.mesh.dim)
+    )
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+</dl>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3.systems" href="index.html">underworld3.systems</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.expression" href="#underworld3.systems.solvers.expression">expression</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion">SNES_AdvectionDiffusion</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.F0" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.F1" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.V_fn" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.V_fn">V_fn</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.adv_diff_slcn_problem_description" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.adv_diff_slcn_problem_description">adv_diff_slcn_problem_description</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.delta_t" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.delta_t">delta_t</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.estimate_dt" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.estimate_dt">estimate_dt</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.f" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.f">f</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_AdvectionDiffusion.solve" href="#underworld3.systems.solvers.SNES_AdvectionDiffusion.solve">solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Darcy" href="#underworld3.systems.solvers.SNES_Darcy">SNES_Darcy</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.F0" href="#underworld3.systems.solvers.SNES_Darcy.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.F1" href="#underworld3.systems.solvers.SNES_Darcy.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.darcy_flux" href="#underworld3.systems.solvers.SNES_Darcy.darcy_flux">darcy_flux</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.darcy_problem_description" href="#underworld3.systems.solvers.SNES_Darcy.darcy_problem_description">darcy_problem_description</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.f" href="#underworld3.systems.solvers.SNES_Darcy.f">f</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.solve" href="#underworld3.systems.solvers.SNES_Darcy.solve">solve</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Darcy.v" href="#underworld3.systems.solvers.SNES_Darcy.v">v</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Diffusion" href="#underworld3.systems.solvers.SNES_Diffusion">SNES_Diffusion</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.F0" href="#underworld3.systems.solvers.SNES_Diffusion.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.F1" href="#underworld3.systems.solvers.SNES_Diffusion.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.delta_t" href="#underworld3.systems.solvers.SNES_Diffusion.delta_t">delta_t</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.estimate_dt" href="#underworld3.systems.solvers.SNES_Diffusion.estimate_dt">estimate_dt</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.f" href="#underworld3.systems.solvers.SNES_Diffusion.f">f</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Diffusion.solve" href="#underworld3.systems.solvers.SNES_Diffusion.solve">solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_NavierStokes" href="#underworld3.systems.solvers.SNES_NavierStokes">SNES_NavierStokes</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.DFDt" href="#underworld3.systems.solvers.SNES_NavierStokes.DFDt">DFDt</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.DuDt" href="#underworld3.systems.solvers.SNES_NavierStokes.DuDt">DuDt</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.F0" href="#underworld3.systems.solvers.SNES_NavierStokes.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.F1" href="#underworld3.systems.solvers.SNES_NavierStokes.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.PF0" href="#underworld3.systems.solvers.SNES_NavierStokes.PF0">PF0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.bodyforce" href="#underworld3.systems.solvers.SNES_NavierStokes.bodyforce">bodyforce</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.constraints" href="#underworld3.systems.solvers.SNES_NavierStokes.constraints">constraints</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.delta_t" href="#underworld3.systems.solvers.SNES_NavierStokes.delta_t">delta_t</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.div_u" href="#underworld3.systems.solvers.SNES_NavierStokes.div_u">div_u</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.estimate_dt" href="#underworld3.systems.solvers.SNES_NavierStokes.estimate_dt">estimate_dt</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.f" href="#underworld3.systems.solvers.SNES_NavierStokes.f">f</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.navier_stokes_problem_description" href="#underworld3.systems.solvers.SNES_NavierStokes.navier_stokes_problem_description">navier_stokes_problem_description</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.penalty" href="#underworld3.systems.solvers.SNES_NavierStokes.penalty">penalty</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.rho" href="#underworld3.systems.solvers.SNES_NavierStokes.rho">rho</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.saddle_preconditioner" href="#underworld3.systems.solvers.SNES_NavierStokes.saddle_preconditioner">saddle_preconditioner</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.solve" href="#underworld3.systems.solvers.SNES_NavierStokes.solve">solve</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_NavierStokes.strainrate" href="#underworld3.systems.solvers.SNES_NavierStokes.strainrate">strainrate</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Poisson" href="#underworld3.systems.solvers.SNES_Poisson">SNES_Poisson</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Poisson.CM_is_setup" href="#underworld3.systems.solvers.SNES_Poisson.CM_is_setup">CM_is_setup</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Poisson.F0" href="#underworld3.systems.solvers.SNES_Poisson.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Poisson.F1" href="#underworld3.systems.solvers.SNES_Poisson.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Poisson.f" href="#underworld3.systems.solvers.SNES_Poisson.f">f</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Poisson.poisson_problem_description" href="#underworld3.systems.solvers.SNES_Poisson.poisson_problem_description">poisson_problem_description</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Projection" href="#underworld3.systems.solvers.SNES_Projection">SNES_Projection</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Projection.F0" href="#underworld3.systems.solvers.SNES_Projection.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Projection.F1" href="#underworld3.systems.solvers.SNES_Projection.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Projection.smoothing" href="#underworld3.systems.solvers.SNES_Projection.smoothing">smoothing</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Projection.uw_function" href="#underworld3.systems.solvers.SNES_Projection.uw_function">uw_function</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Projection.uw_weighting_function" href="#underworld3.systems.solvers.SNES_Projection.uw_weighting_function">uw_weighting_function</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Stokes" href="#underworld3.systems.solvers.SNES_Stokes">SNES_Stokes</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.CM_is_setup" href="#underworld3.systems.solvers.SNES_Stokes.CM_is_setup">CM_is_setup</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.F0" href="#underworld3.systems.solvers.SNES_Stokes.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.F1" href="#underworld3.systems.solvers.SNES_Stokes.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.PF0" href="#underworld3.systems.solvers.SNES_Stokes.PF0">PF0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.bodyforce" href="#underworld3.systems.solvers.SNES_Stokes.bodyforce">bodyforce</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.constraints" href="#underworld3.systems.solvers.SNES_Stokes.constraints">constraints</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.div_u" href="#underworld3.systems.solvers.SNES_Stokes.div_u">div_u</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.instances" href="#underworld3.systems.solvers.SNES_Stokes.instances">instances</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.penalty" href="#underworld3.systems.solvers.SNES_Stokes.penalty">penalty</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.saddle_preconditioner" href="#underworld3.systems.solvers.SNES_Stokes.saddle_preconditioner">saddle_preconditioner</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.stokes_problem_description" href="#underworld3.systems.solvers.SNES_Stokes.stokes_problem_description">stokes_problem_description</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.strainrate" href="#underworld3.systems.solvers.SNES_Stokes.strainrate">strainrate</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.strainrate_1d" href="#underworld3.systems.solvers.SNES_Stokes.strainrate_1d">strainrate_1d</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.strainrate_star_1d" href="#underworld3.systems.solvers.SNES_Stokes.strainrate_star_1d">strainrate_star_1d</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.stress" href="#underworld3.systems.solvers.SNES_Stokes.stress">stress</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.stress_1d" href="#underworld3.systems.solvers.SNES_Stokes.stress_1d">stress_1d</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.stress_deviator" href="#underworld3.systems.solvers.SNES_Stokes.stress_deviator">stress_deviator</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Stokes.stress_deviator_1d" href="#underworld3.systems.solvers.SNES_Stokes.stress_deviator_1d">stress_deviator_1d</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Tensor_Projection" href="#underworld3.systems.solvers.SNES_Tensor_Projection">SNES_Tensor_Projection</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Tensor_Projection.F0" href="#underworld3.systems.solvers.SNES_Tensor_Projection.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Tensor_Projection.F1" href="#underworld3.systems.solvers.SNES_Tensor_Projection.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Tensor_Projection.solve" href="#underworld3.systems.solvers.SNES_Tensor_Projection.solve">solve</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Tensor_Projection.uw_scalar_function" href="#underworld3.systems.solvers.SNES_Tensor_Projection.uw_scalar_function">uw_scalar_function</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_VE_Stokes" href="#underworld3.systems.solvers.SNES_VE_Stokes">SNES_VE_Stokes</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_VE_Stokes.delta_t" href="#underworld3.systems.solvers.SNES_VE_Stokes.delta_t">delta_t</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_VE_Stokes.instances" href="#underworld3.systems.solvers.SNES_VE_Stokes.instances">instances</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_VE_Stokes.solve" href="#underworld3.systems.solvers.SNES_VE_Stokes.solve">solve</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.systems.solvers.SNES_Vector_Projection" href="#underworld3.systems.solvers.SNES_Vector_Projection">SNES_Vector_Projection</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.F0" href="#underworld3.systems.solvers.SNES_Vector_Projection.F0">F0</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.F1" href="#underworld3.systems.solvers.SNES_Vector_Projection.F1">F1</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.penalty" href="#underworld3.systems.solvers.SNES_Vector_Projection.penalty">penalty</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.projection_problem_description" href="#underworld3.systems.solvers.SNES_Vector_Projection.projection_problem_description">projection_problem_description</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.smoothing" href="#underworld3.systems.solvers.SNES_Vector_Projection.smoothing">smoothing</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.uw_function" href="#underworld3.systems.solvers.SNES_Vector_Projection.uw_function">uw_function</a></code></li>
+<li><code><a title="underworld3.systems.solvers.SNES_Vector_Projection.uw_weighting_function" href="#underworld3.systems.solvers.SNES_Vector_Projection.uw_weighting_function">uw_weighting_function</a></code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>

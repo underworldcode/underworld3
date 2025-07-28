@@ -1,0 +1,961 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
+<meta name="generator" content="pdoc3 0.11.6">
+<title>underworld3.function.expressions API documentation</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/sanitize.min.css" integrity="sha512-y1dtMcuvtTMJc1yPgEqF0ZjQbhnc/bFhyvIyVNb9Zk5mIGtqVaAB1Ttl28su8AvFMOY0EwRbAe+HCLqj6W7/KA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/13.0.0/typography.min.css" integrity="sha512-Y1DYSb995BAfxobCkKepB1BqJJTPrOp3zPL74AWFugHHmmdcvO+C48WLrUOlhGMc0QG7AE3f7gmvvcrmX2fDoA==" crossorigin>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:1.5em;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:2em 0 .50em 0}h3{font-size:1.4em;margin:1.6em 0 .7em 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .2s ease-in-out}a:visited{color:#503}a:hover{color:#b62}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900;font-weight:bold}pre code{font-size:.8em;line-height:1.4em;padding:1em;display:block}code{background:#f3f3f3;font-family:"DejaVu Sans Mono",monospace;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source > summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible;min-width:max-content}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em 1em;margin:1em 0}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul ul{padding-left:1em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { inlineMath: [ ['$','$'], ["\\(","\\)"] ], processEscapes: true } });</script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML" integrity="sha256-kZafAc6mZvK3W3v1pHOcUix30OHQN6pU/NO2oFkqZVw=" crossorigin></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => {
+hljs.configure({languages: ['bash', 'css', 'diff', 'graphql', 'ini', 'javascript', 'json', 'plaintext', 'python', 'python-repl', 'rust', 'shell', 'sql', 'typescript', 'xml', 'yaml']});
+hljs.highlightAll();
+/* Collapse source docstrings */
+setTimeout(() => {
+[...document.querySelectorAll('.hljs.language-python > .hljs-string')]
+.filter(el => el.innerHTML.length > 200 && ['"""', "'''"].includes(el.innerHTML.substring(0, 3)))
+.forEach(el => {
+let d = document.createElement('details');
+d.classList.add('hljs-string');
+d.innerHTML = '<summary>"""</summary>' + el.innerHTML.substring(3);
+el.replaceWith(d);
+});
+}, 100);
+})</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>underworld3.function.expressions</code></h1>
+</header>
+<section id="section-intro">
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-functions">Functions</h2>
+<dl>
+<dt id="underworld3.function.expressions.extract_expressions"><code class="name flex">
+<span>def <span class="ident">extract_expressions</span></span>(<span>fn)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def extract_expressions(fn):
+    import underworld3
+
+    if isinstance(fn, underworld3.function.expression):
+        fn = fn.sym
+
+    atoms = fn.atoms(sympy.Symbol)
+
+    # exhaustion criterion
+    if atoms == fn.atoms():
+        return set()
+
+    for atom in atoms:
+        if isinstance(atom, underworld3.function.expression):
+            sub_atomic = extract_expressions(atom)
+            atoms = atoms.union(sub_atomic)
+
+    return atoms</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.extract_expressions_and_functions"><code class="name flex">
+<span>def <span class="ident">extract_expressions_and_functions</span></span>(<span>fn)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def extract_expressions_and_functions(fn):
+
+    import underworld3
+
+    if isinstance(fn, underworld3.function.expression):
+        fn = fn.sym
+
+    atoms = fn.atoms(sympy.Symbol, sympy.Function, sympy.vector.scalar.BaseScalar)
+
+    # exhaustion criterion
+    if atoms == fn.atoms():
+        return atoms
+
+    for atom in atoms:
+        if isinstance(atom, underworld3.function.expression):
+            sub_atomic = extract_expressions_and_functions(atom)
+            atoms = atoms.union(sub_atomic)
+
+    return atoms</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.is_constant_expr"><code class="name flex">
+<span>def <span class="ident">is_constant_expr</span></span>(<span>fn)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def is_constant_expr(fn):
+
+    deps = extract_expressions_and_functions(fn)
+
+    # bool(deps) -&gt; True if not the empty set
+    if bool(deps):
+        return False
+    else:
+        return True</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.substitute"><code class="name flex">
+<span>def <span class="ident">substitute</span></span>(<span>fn, keep_constants=True, return_self=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def substitute(fn, keep_constants=True, return_self=True):
+    return unwrap(fn, keep_constants, return_self)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.substitute_expr"><code class="name flex">
+<span>def <span class="ident">substitute_expr</span></span>(<span>fn, sub_expr, keep_constants=True, return_self=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
+    expr = fn
+    expr_s = _substitute_one_expr(expr, sub_expr, keep_constants)
+
+    while expr is not expr_s:
+        expr = expr_s
+        expr_s = _substitute_one_expr(expr, sub_expr, keep_constants)
+    return expr</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.unwrap"><code class="name flex">
+<span>def <span class="ident">unwrap</span></span>(<span>fn, keep_constants=True, return_self=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def unwrap(fn, keep_constants=True, return_self=True):
+    if isinstance(fn, sympy.Matrix):
+        f = lambda x: _unwrap_expressions(
+            x, keep_constants=keep_constants, return_self=return_self
+        )
+        return fn.applyfunc(f)
+    else:
+        return _unwrap_expressions(
+            fn, keep_constants=keep_constants, return_self=return_self
+        )</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</section>
+<section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="underworld3.function.expressions.UWDerivativeExpression"><code class="flex name class">
+<span>class <span class="ident">UWDerivativeExpression</span></span>
+<span>(</span><span>name, expr, diff_variable, description='derivative of expression provided')</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class UWDerivativeExpression(UWexpression):
+    &#34;&#34;&#34;
+    underworld `expressions` are sympy symbols with attached
+    numeric/expression values that are substituted into an underworld function
+    before evaluation.
+
+    derivative expressions are unevaluated / symbolic derivatives that remain
+    symbolic until they need to be evaluated.
+
+    Note - this class would usually be automatically generated by asking for the
+    derivative of an expression with `evaluate=False`
+
+    ```{python}
+        alpha = UWDerivativeExpression(
+                        r&#39;\\alpha&#39;,
+                        expr=uw_expression,
+                        diff_expr=diff_expression,
+                        description=fr&#34;\partial{expr.description}/\partial{diff_expr.description}&#34;
+                            )
+        print(alpha.sym)
+        print(alpha.description)
+    ```
+
+    &#34;&#34;&#34;
+
+    def __init__(
+        self,
+        name,
+        expr,
+        diff_variable,
+        description=&#34;derivative of expression provided&#34;,
+    ):
+
+        self.symbol = self._given_name
+        self.diff_variable = None
+
+        self._sym = expr  # Accept anything, sympify is overly opinionated if we try to `sympify`
+        self._diff_variable = diff_variable
+        self.description = description
+
+        # this is not being honoured by sympy Symbol so do it by hand
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
+
+        return
+
+    @property
+    def sym(self):
+        return uw.function.derivative(self._sym, self.diff_variable)
+
+    @property
+    def expr(self):
+        return self._sym
+
+    @property
+    def diff_variable(self):
+        return self._diff_variable
+
+    @diff_variable.setter
+    def diff_variable(self, value):
+        self._diff_variable = value
+
+    # TODO: DEPRECATION
+    # The value attribute is no longer needed in the offical release of Underworld3
+    @property
+    def value(self):
+        import warnings
+
+        warnings.warn(
+            message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {self}, please use &#39;sym&#39; attribute&#34;
+        )
+        return self.sym</code></pre>
+</details>
+<div class="desc"><p>underworld <code>expressions</code> are sympy symbols with attached
+numeric/expression values that are substituted into an underworld function
+before evaluation.</p>
+<p>derivative expressions are unevaluated / symbolic derivatives that remain
+symbolic until they need to be evaluated.</p>
+<p>Note - this class would usually be automatically generated by asking for the
+derivative of an expression with <code>evaluate=False</code></p>
+<pre><code python="python">    alpha = UWDerivativeExpression(
+                    r'\alpha',
+                    expr=uw_expression,
+                    diff_expr=diff_expression,
+                    description=fr&quot;\partial{expr.description}/\partial{diff_expr.description}&quot;
+                        )
+    print(alpha.sym)
+    print(alpha.description)
+</code></pre></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="underworld3.function.expressions.UWexpression" href="#underworld3.function.expressions.UWexpression">UWexpression</a></li>
+<li>underworld3.utilities._api_tools.uw_object</li>
+<li>sympy.core.symbol.Symbol</li>
+<li>sympy.core.expr.AtomicExpr</li>
+<li>sympy.core.basic.Atom</li>
+<li>sympy.core.expr.Expr</li>
+<li>sympy.logic.boolalg.Boolean</li>
+<li>sympy.core.basic.Basic</li>
+<li>sympy.printing.defaults.Printable</li>
+<li>sympy.core.evalf.EvalfMixin</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.function.expressions.UWDerivativeExpression.default_assumptions"><code class="name">var <span class="ident">default_assumptions</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.function.expressions.UWDerivativeExpression.diff_variable"><code class="name">prop <span class="ident">diff_variable</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def diff_variable(self):
+    return self._diff_variable</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWDerivativeExpression.expr"><code class="name">prop <span class="ident">expr</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def expr(self):
+    return self._sym</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWDerivativeExpression.sym"><code class="name">prop <span class="ident">sym</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def sym(self):
+    return uw.function.derivative(self._sym, self.diff_variable)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWDerivativeExpression.value"><code class="name">prop <span class="ident">value</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def value(self):
+    import warnings
+
+    warnings.warn(
+        message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {self}, please use &#39;sym&#39; attribute&#34;
+    )
+    return self.sym</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="underworld3.function.expressions.UWexpression" href="#underworld3.function.expressions.UWexpression">UWexpression</a></b></code>:
+<ul class="hlist">
+<li><code><a title="underworld3.function.expressions.UWexpression.expression_number" href="#underworld3.function.expressions.UWexpression.expression_number">expression_number</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.is_constant" href="#underworld3.function.expressions.UWexpression.is_constant">is_constant</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression"><code class="flex name class">
+<span>class <span class="ident">UWexpression</span></span>
+<span>(</span><span>name, sym=None, description='No description provided', value=None, **kwargs)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class UWexpression(uw_object, Symbol):
+    &#34;&#34;&#34;
+    underworld `expressions` are sympy symbols with attached
+                numeric/expression values that are substituted into an underworld function
+                before evaluation. In sympy expressions, the symbol form is shown.
+
+    ```{python}
+        alpha = UWexpression(
+                        r&#39;\\alpha&#39;,
+                        sym=3.0e-5,
+                        description=&#34;thermal expansivity&#34;
+                            )
+        print(alpha.sym)
+        print(alpha.description)
+    ```
+
+    &#34;&#34;&#34;
+
+    _expr_count = 0
+    _expr_names = {}
+
+    def __new__(
+        cls,
+        name,
+        *args,
+        _unique_name_generation=False,
+        **kwargs,
+    ):
+
+        import warnings
+
+        instance_no = UWexpression._expr_count
+
+        ## if the expression already exists, do not replace it (but return the existing object instead)
+
+        if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
+            warnings.warn(
+                message=f&#34;EXPRESSIONS {name}: Each expression should have a unique name - new expression was not generated&#34;,
+            )
+            return UWexpression._expr_names[name]
+
+        if name in UWexpression._expr_names and _unique_name_generation == True:
+            invisible = rf&#34;\hspace{{ {instance_no/100}pt }}&#34;
+            unique_name = f&#34;{{ {name} {invisible} }}&#34;
+        else:
+            unique_name = name
+
+        obj = Symbol.__new__(cls, unique_name)
+        obj._instance_no = instance_no
+        obj._unique_name = unique_name
+        obj._given_name = name
+
+        UWexpression._expr_names[unique_name] = obj
+        UWexpression._expr_count += 1
+
+        return obj
+
+    def __init__(
+        self,
+        name,
+        sym=None,
+        description=&#34;No description provided&#34;,
+        value=None,
+        **kwargs,
+    ):
+        if value is not None and sym is None:
+            import warnings
+
+            warnings.warn(
+                message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {value}, please use &#39;sym&#39; attribute&#34;
+            )
+            sym = value
+
+        if value is not None and sym is not None:
+            raise ValueError(
+                &#34;Both &#39;sym&#39; and &#39;value&#39; attributes are provided, please use one&#34;
+            )
+
+        self.symbol = self._given_name
+        self.sym = sym  # Accept anything, sympify is opinionated
+        self.description = description
+
+        # this is not being honoured by sympy Symbol so do it by hand
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
+
+        return
+
+    def copy(self, other):
+        if not isinstance(other, UWexpression):
+            raise ValueError
+        else:
+            # Note: sympy symbols are uniquely defined by name and so
+            # the uw expressions based on symbols cannot be renamed: only the
+            # value can be changed. As a result, copy is just an assignment to
+            # self.sym and should be deprecated.
+
+            # self.symbol = other.symbol # Can&#39;t change this
+            self._sym = other._sym
+            # self.description = other.description # Shouldn&#39;t change this
+
+        return
+
+    # Matches sympy
+    def is_constant(self):
+        return is_constant_expr(self)
+
+    # deprecate
+    def constant(self):
+        return is_constant_expr(self)
+
+    @property
+    def expression_number(self):
+        &#34;&#34;&#34;Unique number of the expression instance&#34;&#34;&#34;
+        return self._expr_count
+
+    @property
+    def sym(self):
+        return self._sym
+
+    @sym.setter
+    def sym(self, new_value):
+        if isinstance(new_value, (sympy.Basic, sympy.matrices.MatrixBase)):
+            self._sym = new_value
+        else:
+            self._sym = sympy.sympify(new_value)
+        return
+
+    # TODO: DEPRECATION
+    # The value attribute is no longer needed in the offical release of Underworld3
+    @property
+    def value(self):
+        import warnings
+
+        warnings.warn(
+            message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {self}, please use &#39;sym&#39; attribute&#34;
+        )
+        return self._sym
+
+    @value.setter
+    def value(self, new_value):
+        import warnings
+
+        warnings.warn(
+            message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {new_value}, please use &#39;sym&#39; attribute&#34;
+        )
+        self._sym = sympy.sympify(new_value)
+        return
+
+    @property
+    def expression(self):
+        return self.unwrap()
+
+    @property
+    def description(self):
+        return self._description
+
+    @description.setter
+    def description(self, new_description):
+        self._description = new_description
+        return
+
+    def unwrap(self, keep_constants=True, return_self=True):
+        return unwrap(self, keep_constants=keep_constants)
+
+    def sub_all(self, keep_constants=True):
+        return substitute(self, keep_constants=keep_constants)
+
+    def sub_expr(self, expr, keep_constants=True):
+        self_s = substitute_expr(self, expr, keep_constants=keep_constants)
+
+        return self_s
+
+    def dependencies(self, keep_constants=True):
+        return extract_expressions(self)
+
+    def all_dependencies(self, keep_constants=True):
+        return extract_expressions_and_functions(self)
+
+    def _ipython_display_(self):
+        from IPython.display import Latex, Markdown, display
+
+        display(Markdown(&#34;$&#34; + self.symbol + &#34;$&#34;))
+
+    def __repr__(self):
+        # print(&#34;Customised !&#34;)
+        return str(self.symbol)
+
+    def _repr_latex_(self):
+        # print(&#34;Customised !&#34;)
+        return rf&#34;$\\displaystyle {str(self.symbol)}$&#34;
+
+    def _object_viewer(self, description=True, level=1):
+        from IPython.display import Latex, Markdown, display
+        import sympy
+
+        level = max(1, level)
+
+        if isinstance(self.sym, (sympy.Basic, sympy.matrices.MatrixBase)):
+            latex = self.sym._repr_latex_()
+        else:
+            latex = sympy.sympify(self.sym)._repr_latex_()
+
+        ## feedback on this instance
+        if sympy.sympify(self.sym) is not None:
+            display(
+                Latex(
+                    r&#34;$&#34; + r&#34;\quad&#34; * level + &#34;$&#34; + self._repr_latex_() + &#34;$=$&#34; + latex
+                ),
+            )
+            if description == True:
+                display(
+                    Markdown(
+                        r&#34;$&#34;
+                        + r&#34;\quad&#34; * level
+                        + &#34;$&#34;
+                        + f&#34;**Description:**  {self.description}&#34;
+                    ),
+                )
+
+        try:
+            atoms = self.sym.atoms()
+            for atom in atoms:
+                if atom is not self.sym:
+                    try:
+                        atom._object_viewer(description=False, level=level + 1)
+                    except AttributeError:
+                        pass
+        except:
+            pass
+
+        return</code></pre>
+</details>
+<div class="desc"><p>underworld <code>expressions</code> are sympy symbols with attached
+numeric/expression values that are substituted into an underworld function
+before evaluation. In sympy expressions, the symbol form is shown.</p>
+<pre><code python="python">    alpha = UWexpression(
+                    r'\alpha',
+                    sym=3.0e-5,
+                    description=&quot;thermal expansivity&quot;
+                        )
+    print(alpha.sym)
+    print(alpha.description)
+</code></pre></div>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>underworld3.utilities._api_tools.uw_object</li>
+<li>sympy.core.symbol.Symbol</li>
+<li>sympy.core.expr.AtomicExpr</li>
+<li>sympy.core.basic.Atom</li>
+<li>sympy.core.expr.Expr</li>
+<li>sympy.logic.boolalg.Boolean</li>
+<li>sympy.core.basic.Basic</li>
+<li>sympy.printing.defaults.Printable</li>
+<li>sympy.core.evalf.EvalfMixin</li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="underworld3.function.expressions.UWDerivativeExpression" href="#underworld3.function.expressions.UWDerivativeExpression">UWDerivativeExpression</a></li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="underworld3.function.expressions.UWexpression.default_assumptions"><code class="name">var <span class="ident">default_assumptions</span></code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Instance variables</h3>
+<dl>
+<dt id="underworld3.function.expressions.UWexpression.description"><code class="name">prop <span class="ident">description</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def description(self):
+    return self._description</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.expression"><code class="name">prop <span class="ident">expression</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def expression(self):
+    return self.unwrap()</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.expression_number"><code class="name">prop <span class="ident">expression_number</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def expression_number(self):
+    &#34;&#34;&#34;Unique number of the expression instance&#34;&#34;&#34;
+    return self._expr_count</code></pre>
+</details>
+<div class="desc"><p>Unique number of the expression instance</p></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.sym"><code class="name">prop <span class="ident">sym</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def sym(self):
+    return self._sym</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.value"><code class="name">prop <span class="ident">value</span></code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def value(self):
+    import warnings
+
+    warnings.warn(
+        message=f&#34;DEPRECATION warning, don&#39;t use &#39;value&#39; attribute for expression: {self}, please use &#39;sym&#39; attribute&#34;
+    )
+    return self._sym</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="underworld3.function.expressions.UWexpression.all_dependencies"><code class="name flex">
+<span>def <span class="ident">all_dependencies</span></span>(<span>self, keep_constants=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def all_dependencies(self, keep_constants=True):
+    return extract_expressions_and_functions(self)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.constant"><code class="name flex">
+<span>def <span class="ident">constant</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def constant(self):
+    return is_constant_expr(self)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.copy"><code class="name flex">
+<span>def <span class="ident">copy</span></span>(<span>self, other)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def copy(self, other):
+    if not isinstance(other, UWexpression):
+        raise ValueError
+    else:
+        # Note: sympy symbols are uniquely defined by name and so
+        # the uw expressions based on symbols cannot be renamed: only the
+        # value can be changed. As a result, copy is just an assignment to
+        # self.sym and should be deprecated.
+
+        # self.symbol = other.symbol # Can&#39;t change this
+        self._sym = other._sym
+        # self.description = other.description # Shouldn&#39;t change this
+
+    return</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.dependencies"><code class="name flex">
+<span>def <span class="ident">dependencies</span></span>(<span>self, keep_constants=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def dependencies(self, keep_constants=True):
+    return extract_expressions(self)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.is_constant"><code class="name flex">
+<span>def <span class="ident">is_constant</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def is_constant(self):
+    return is_constant_expr(self)</code></pre>
+</details>
+<div class="desc"><p>Return True if self is constant, False if not, or None if
+the constancy could not be determined conclusively.</p>
+<h1 id="explanation">Explanation</h1>
+<p>If an expression has no free symbols then it is a constant. If
+there are free symbols it is possible that the expression is a
+constant, perhaps (but not necessarily) zero. To test such
+expressions, a few strategies are tried:</p>
+<p>1) numerical evaluation at two random points. If two such evaluations
+give two different values and the values have a precision greater than
+1 then self is not constant. If the evaluations agree or could not be
+obtained with any precision, no decision is made. The numerical testing
+is done only if <code>wrt</code> is different than the free symbols.</p>
+<p>2) differentiation with respect to variables in 'wrt' (or all free
+symbols if omitted) to see if the expression is constant or not. This
+will not always lead to an expression that is zero even though an
+expression is constant (see added test in test_expr.py). If
+all derivatives are zero then self is constant with respect to the
+given symbols.</p>
+<p>3) finding out zeros of denominator expression with free_symbols.
+It will not be constant if there are zeros. It gives more negative
+answers for expression that are not constant.</p>
+<p>If neither evaluation nor differentiation can prove the expression is
+constant, None is returned unless two numerical values happened to be
+the same and the flag <code>failing_number</code> is True &ndash; in that case the
+numerical value will be returned.</p>
+<p>If flag simplify=False is passed, self will not be simplified;
+the default is True since self should be simplified before testing.</p>
+<h1 id="examples">Examples</h1>
+<pre><code class="language-python-repl">&gt;&gt;&gt; from sympy import cos, sin, Sum, S, pi
+&gt;&gt;&gt; from sympy.abc import a, n, x, y
+&gt;&gt;&gt; x.is_constant()
+False
+&gt;&gt;&gt; S(2).is_constant()
+True
+&gt;&gt;&gt; Sum(x, (x, 1, 10)).is_constant()
+True
+&gt;&gt;&gt; Sum(x, (x, 1, n)).is_constant()
+False
+&gt;&gt;&gt; Sum(x, (x, 1, n)).is_constant(y)
+True
+&gt;&gt;&gt; Sum(x, (x, 1, n)).is_constant(n)
+False
+&gt;&gt;&gt; Sum(x, (x, 1, n)).is_constant(x)
+True
+&gt;&gt;&gt; eq = a*cos(x)**2 + a*sin(x)**2 - a
+&gt;&gt;&gt; eq.is_constant()
+True
+&gt;&gt;&gt; eq.subs({x: pi, a: 2}) == eq.subs({x: pi, a: 3}) == 0
+True
+</code></pre>
+<pre><code class="language-python-repl">&gt;&gt;&gt; (0**x).is_constant()
+False
+&gt;&gt;&gt; x.is_constant()
+False
+&gt;&gt;&gt; (x**x).is_constant()
+False
+&gt;&gt;&gt; one = cos(x)**2 + sin(x)**2
+&gt;&gt;&gt; one.is_constant()
+True
+&gt;&gt;&gt; ((one - 1)**(x + 1)).is_constant() in (True, False) # could be 0 or 1
+True
+</code></pre></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.sub_all"><code class="name flex">
+<span>def <span class="ident">sub_all</span></span>(<span>self, keep_constants=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def sub_all(self, keep_constants=True):
+    return substitute(self, keep_constants=keep_constants)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.sub_expr"><code class="name flex">
+<span>def <span class="ident">sub_expr</span></span>(<span>self, expr, keep_constants=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def sub_expr(self, expr, keep_constants=True):
+    self_s = substitute_expr(self, expr, keep_constants=keep_constants)
+
+    return self_s</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+<dt id="underworld3.function.expressions.UWexpression.unwrap"><code class="name flex">
+<span>def <span class="ident">unwrap</span></span>(<span>self, keep_constants=True, return_self=True)</span>
+</code></dt>
+<dd>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def unwrap(self, keep_constants=True, return_self=True):
+    return unwrap(self, keep_constants=keep_constants)</code></pre>
+</details>
+<div class="desc"></div>
+</dd>
+</dl>
+</dd>
+</dl>
+</section>
+</article>
+<nav id="sidebar">
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="underworld3.function" href="index.html">underworld3.function</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-functions">Functions</a></h3>
+<ul class="">
+<li><code><a title="underworld3.function.expressions.extract_expressions" href="#underworld3.function.expressions.extract_expressions">extract_expressions</a></code></li>
+<li><code><a title="underworld3.function.expressions.extract_expressions_and_functions" href="#underworld3.function.expressions.extract_expressions_and_functions">extract_expressions_and_functions</a></code></li>
+<li><code><a title="underworld3.function.expressions.is_constant_expr" href="#underworld3.function.expressions.is_constant_expr">is_constant_expr</a></code></li>
+<li><code><a title="underworld3.function.expressions.substitute" href="#underworld3.function.expressions.substitute">substitute</a></code></li>
+<li><code><a title="underworld3.function.expressions.substitute_expr" href="#underworld3.function.expressions.substitute_expr">substitute_expr</a></code></li>
+<li><code><a title="underworld3.function.expressions.unwrap" href="#underworld3.function.expressions.unwrap">unwrap</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="underworld3.function.expressions.UWDerivativeExpression" href="#underworld3.function.expressions.UWDerivativeExpression">UWDerivativeExpression</a></code></h4>
+<ul class="">
+<li><code><a title="underworld3.function.expressions.UWDerivativeExpression.default_assumptions" href="#underworld3.function.expressions.UWDerivativeExpression.default_assumptions">default_assumptions</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWDerivativeExpression.diff_variable" href="#underworld3.function.expressions.UWDerivativeExpression.diff_variable">diff_variable</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWDerivativeExpression.expr" href="#underworld3.function.expressions.UWDerivativeExpression.expr">expr</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWDerivativeExpression.sym" href="#underworld3.function.expressions.UWDerivativeExpression.sym">sym</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWDerivativeExpression.value" href="#underworld3.function.expressions.UWDerivativeExpression.value">value</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="underworld3.function.expressions.UWexpression" href="#underworld3.function.expressions.UWexpression">UWexpression</a></code></h4>
+<ul class="two-column">
+<li><code><a title="underworld3.function.expressions.UWexpression.all_dependencies" href="#underworld3.function.expressions.UWexpression.all_dependencies">all_dependencies</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.constant" href="#underworld3.function.expressions.UWexpression.constant">constant</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.copy" href="#underworld3.function.expressions.UWexpression.copy">copy</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.default_assumptions" href="#underworld3.function.expressions.UWexpression.default_assumptions">default_assumptions</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.dependencies" href="#underworld3.function.expressions.UWexpression.dependencies">dependencies</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.description" href="#underworld3.function.expressions.UWexpression.description">description</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.expression" href="#underworld3.function.expressions.UWexpression.expression">expression</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.expression_number" href="#underworld3.function.expressions.UWexpression.expression_number">expression_number</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.is_constant" href="#underworld3.function.expressions.UWexpression.is_constant">is_constant</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.sub_all" href="#underworld3.function.expressions.UWexpression.sub_all">sub_all</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.sub_expr" href="#underworld3.function.expressions.UWexpression.sub_expr">sub_expr</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.sym" href="#underworld3.function.expressions.UWexpression.sym">sym</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.unwrap" href="#underworld3.function.expressions.UWexpression.unwrap">unwrap</a></code></li>
+<li><code><a title="underworld3.function.expressions.UWexpression.value" href="#underworld3.function.expressions.UWexpression.value">value</a></code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc" title="pdoc: Python API documentation generator"><cite>pdoc</cite> 0.11.6</a>.</p>
+</footer>
+</body>
+</html>
