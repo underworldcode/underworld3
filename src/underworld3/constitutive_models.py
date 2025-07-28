@@ -19,7 +19,10 @@ from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
-from underworld3.function import expression
+
+from underworld3.function import expression as public_expression
+
+expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
 # How do we use the default here if input is required ?
@@ -214,8 +217,10 @@ class Constitutive_Model(uw_object):
 
         if not self._is_setup:
             self._build_c_tensor()
-
-        return self._c.as_immutable()
+        if hasattr(self._c, "sym"):
+            return sympy.Matrix(self._c.sym).as_immutable()
+        else:
+            return self._c.as_immutable()
 
     @property
     def flux(self):
@@ -243,7 +248,7 @@ class Constitutive_Model(uw_object):
             flux = c * ddu.T
         else:  # rank==4
             flux = sympy.tensorcontraction(
-                sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (3, 5)), (0, 1)
+                sympy.tensorcontraction(sympy.tensorproduct(c, ddu), (1, 5)), (0, 3)
             )
 
         return sympy.Matrix(flux)
@@ -341,7 +346,7 @@ class ViscousFlowModel(Constitutive_Model):
 
         super().__init__(unknowns)
 
-        # self._viscosity = uw.function.expression(
+        # self._viscosity = expression(
         #     R"{\eta_0}",
         #     1,
         #     " Apparent viscosity",
@@ -407,7 +412,7 @@ class ViscousFlowModel(Constitutive_Model):
             flux = c * edot
         else:  # rank==4
             flux = sympy.tensorcontraction(
-                sympy.tensorcontraction(sympy.tensorproduct(c, edot), (3, 5)), (0, 1)
+                sympy.tensorcontraction(sympy.tensorproduct(c, edot), (1, 5)), (0, 3)
             )
 
         return sympy.Matrix(flux)
@@ -503,13 +508,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         super().__init__(unknowns)
 
-        self._strainrate_inv_II = uw.function.expression(
+        self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
             sympy.sqrt((self.grad_u**2).trace() / 2),
             "Strain rate 2nd Invariant",
         )
 
-        self._plastic_eff_viscosity = uw.function.expression(
+        self._plastic_eff_viscosity = expression(
             R"{\eta_\textrm{eff,p}}",
             1,
             "Effective viscosity (plastic)",
@@ -1133,7 +1138,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                     2 * self.Parameters.dt_elastic * self.Parameters.shear_modulus
                 )
 
-        strainrate_inv_II = uw.function.expression(
+        strainrate_inv_II = expression(
             R"{\dot\varepsilon_{II}'}",
             sympy.sqrt((Edot**2).trace() / 2),
             "Strain rate 2nd Invariant including elastic strain rate term",
@@ -1465,6 +1470,141 @@ class DiffusionModel(Constitutive_Model):
 
         return
 
+# AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
+class AnisotropicDiffusionModel(DiffusionModel):
+    class _Parameters:
+        def __init__(inner_self, _owning_model):
+            dim = _owning_model.dim
+            inner_self._owning_model = _owning_model
+            # Set default diffusivity as an identity matrix wrapped in an expression
+            default_diffusivity = sympy.ones(_owning_model.dim, 1)
+            elements = [default_diffusivity[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                comp = validate_parameters(
+                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                )
+                if comp is not None:
+                    validated.append(comp)
+            # Store the validated diffusivity as a diagonal matrix
+            inner_self._diffusivity = sympy.diag(*validated)
+        
+        @property
+        def diffusivity(inner_self):
+            return inner_self._diffusivity
+        
+        @diffusivity.setter
+        def diffusivity(inner_self, value: sympy.Matrix):
+            dim = inner_self._owning_model.dim
+
+            # Accept shape (dim, 1) or (1, dim)
+            if value.shape not in [(dim, 1), (1, dim)]:
+                raise ValueError(
+                    f"Diffusivity must be a vector of length {dim}. Got shape {value.shape}."
+                )
+            # Validate each component using validate_parameters
+            elements = [value[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                diff = validate_parameters(
+                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                )
+                if diff is not None:
+                    validated.append(diff)
+            # Store the validated diffusivity as a diagonal matrix
+            inner_self._diffusivity = sympy.diag(*validated)
+            inner_self._reset()
+
+    def _build_c_tensor(self):
+        """Constructs the anisotropic (diagonal) tensor from the diffusivity vector."""
+        self._c = self.Parameters.diffusivity
+        self._is_setup = True
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        
+        super()._object_viewer()
+        
+        diagonal = self.Parameters.diffusivity.diagonal()
+        latex_entries = ", ".join([sympy.latex(k) for k in diagonal])
+        kappa_latex = r"\kappa = \mathrm{diag}\left(" + latex_entries + r"\right)"
+        display(Latex(r"$\quad " + kappa_latex + r"$"))
+
+
+class GenericFluxModel(Constitutive_Model):
+    r"""
+    A generic constitutive model with symbolic flux expression.
+
+    Example usage:
+    ```python
+    grad_phi = sympy.Matrix([sp.Symbol("∂φ/∂x"), sp.Symbol("∂φ/∂y")])
+    flux_expr = sympy.Matrix([[kappa_11, kappa_12], [kappa_21, kappa_22]]) * grad_phi
+
+    model = GenericFluxModel(dim=2)
+    model.flux = flux_expr
+    scalar_solver.constititutive_model = model
+    ```
+    """
+
+    class _Parameters:
+        def __init__(inner_self, _owning_model):
+            inner_self._owning_model = _owning_model
+
+            default_flux = sympy.zeros(_owning_model.dim, 1)
+            elements = [default_flux[i] for i in range(_owning_model.dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                flux_component = validate_parameters(
+                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                )
+                if flux_component is not None:
+                    validated.append(flux_component)
+
+            inner_self._flux = sympy.Matrix(validated)
+
+        @property
+        def flux(inner_self):
+            return inner_self._flux
+
+        @flux.setter
+        def flux(inner_self, value: sympy.Matrix):
+            dim = inner_self._owning_model.dim
+
+            # Accept shape (dim, 1) or (1, dim)
+            if value.shape not in [(dim, 1), (1, dim)]:
+                raise ValueError(
+                    f"Flux must be a symbolic vector of length {dim}. "
+                    f"Got shape {value.shape}."
+                )
+
+            # Flatten and validate
+            elements = [value[i] for i in range(dim)]
+            validated = []
+            for i, v in enumerate(elements):
+                flux_component = validate_parameters(
+                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                )
+                if flux_component is not None:
+                    validated.append(flux_component)
+
+            inner_self._flux = sympy.Matrix(validated).reshape(dim, 1)
+            inner_self._reset()
+
+    @property
+    def flux(self):
+        # if self._flux is None:
+        #     raise RuntimeError("Flux expression has not been set.")
+        return self.Parameters.flux
+
+
+    def _object_viewer(self):
+        from IPython.display import display, Latex
+        super()._object_viewer()
+        if self.flux is not None:
+            display(Latex(r"$\vec{q} = " + sympy.latex(self.flux) + "$"))
+        else:
+            display(Latex(r"No flux expression set."))
+
 
 class DarcyFlowModel(Constitutive_Model):
     r"""
@@ -1582,7 +1722,7 @@ class DarcyFlowModel(Constitutive_Model):
         return self._q(ddu)
 
 
-class TransverseIsotropicFlowModel(Constitutive_Model):
+class TransverseIsotropicFlowModel(ViscousFlowModel):
     r"""
     ```python
     class TransverseIsotropicFlowModel(Constitutive_Model)
@@ -1614,6 +1754,21 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
     ---
     """
 
+    def __init__(self, unknowns):
+        # All this needs to do is define the
+        # viscosity property and init the parent(s)
+        # In this case, nothing seems to be needed.
+        # The viscosity is completely defined
+        # in terms of the Parameters
+
+        super().__init__(unknowns)
+
+        # self._viscosity = expression(
+        #     R"{\eta_0}",
+        #     1,
+        #     " Apparent viscosity",
+        # )
+
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
@@ -1623,16 +1778,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         def __init__(
             inner_self,
             _owning_model,
-            eta_0: Union[float, sympy.Function] = 1,
-            eta_1: Union[float, sympy.Function] = 1,
-            director: Union[sympy.Matrix, sympy.Function] = sympy.Matrix([0, 0, 1]),
         ):
             inner_self._owning_model = _owning_model
 
-            inner_self._eta_0 = eta_0
-            inner_self._eta_1 = eta_1
-            inner_self._director = director
-            # inner_self.constitutive_model_class = const_model
+            inner_self._eta_0 = expression(r"\eta_0", 1, "Shear viscosity")
+            inner_self._eta_1 = expression(r"\eta_1", 1, "Second viscosity")
+            inner_self._director = expression(r"\hat{n}", 1, "Director orientation")
 
         ## Note the inefficiency below if we change all these values one after the other
 
@@ -1645,7 +1796,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self,
             value: Union[float, sympy.Function],
         ):
-            inner_self._eta_0 = value
+            visc_expr = validate_parameters(
+                R"\eta_0", value, default=None, allow_number=True
+            )
+
+            inner_self._eta_0.copy(visc_expr)
+            del visc_expr
             inner_self._reset()
 
         @property
@@ -1657,7 +1813,12 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
             inner_self,
             value: Union[float, sympy.Function],
         ):
-            inner_self._eta_1 = value
+            visc_expr = validate_parameters(
+                R"\eta_1", value, default=None, allow_number=True
+            )
+
+            inner_self._eta_1.copy(visc_expr)
+            del visc_expr
             inner_self._reset()
 
         @property
@@ -1667,21 +1828,37 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         @director.setter
         def director(
             inner_self,
-            value: Union[sympy.Matrix, sympy.Function],
+            value: Union[sympy.Matrix, sympy.Function, expression],
         ):
-            inner_self._director = value
+
+            inner_self._director._sym = value
             inner_self._reset()
 
-    def __init__(self, dim):
-        u_dim = dim
-        super().__init__(dim, u_dim)
+    ## End of parameters
 
-        # default values ... maybe ??
-        return
+    @property
+    def viscosity(self):
+        """Whatever the consistutive model defines as the effective value of viscosity
+        in the form of an uw.expression"""
+
+        return self.Parameters._eta_0
+
+    @property
+    def K(self):
+        """Whatever the consistutive model defines as the effective value of viscosity
+        in the form of an uw.expression"""
+
+        return self.Parameters._eta_0
+
+    @property
+    def grad_u(self):
+        mesh = self.Unknowns.u.mesh
+
+        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
 
     def _build_c_tensor(self):
         """For this constitutive law, we expect two viscosity functions
-        and a sympy matrix that describes the director components n_{i}"""
+        and a sympy row-matrix that describes the director components n_{i}"""
 
         if self._is_setup:
             return
@@ -1691,25 +1868,28 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
 
         eta_0 = self.Parameters.eta_0
         eta_1 = self.Parameters.eta_1
-        n = self.Parameters.director
+        n = self.Parameters.director.sym
 
-        Delta = eta_1 - eta_0
-
-        lambda_mat = uw.maths.tensor.rank4_identity(d) * eta_0
+        Delta = eta_0 - eta_1
+        lambda_mat = 2 * uw.maths.tensor.rank4_identity(d) * eta_0
 
         for i in range(d):
             for j in range(d):
                 for k in range(d):
                     for l in range(d):
-                        lambda_mat[i, j, k, l] += Delta * (
-                            (
-                                n[i] * n[k] * int(j == l)
-                                + n[j] * n[k] * int(l == i)
-                                + n[i] * n[l] * int(j == k)
-                                + n[j] * n[l] * int(k == i)
+                        lambda_mat[i, j, k, l] -= (
+                            2
+                            * Delta
+                            * (
+                                (
+                                    n[i] * n[k] * int(j == l)
+                                    + n[j] * n[k] * int(l == i)
+                                    + n[i] * n[l] * int(j == k)
+                                    + n[j] * n[l] * int(k == i)
+                                )
+                                / 2
+                                - 2 * n[i] * n[j] * n[k] * n[l]
                             )
-                            / 2
-                            - 2 * n[i] * n[j] * n[k] * n[l]
                         )
 
         lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))

@@ -111,6 +111,7 @@ def test_getext_sympy_fns():
     )
 
 
+
 def test_getext_meshVar():
 
     res_fn = sympy.ImmutableDenseMatrix([v.sym[0], w.sym])
@@ -136,10 +137,16 @@ def test_getext_meshVar():
             cache=False,
         )
 
+    print(captured_setup_solver)
+    print(len(captured_setup_solver))
+
+    # Notes on this test - would be better to find appropriate substrings among outputs in the list
+    # because the various disambiguations strings (\\hspace{}) may change if other tests are added
+
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2")
     assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2/cy_ext.h")
     assert (
-        r"Processing JIT    5 / Matrix([[{\mathbf{v}}_{ 0,1}(N.x, N.y)/{\mathbf{v}}_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
+        "Processing JIT    5 / Matrix([[{ \\hspace{ 0.02pt } {\\mathbf{v}} }_{ 0,1}(N.x, N.y)/{ \\hspace{ 0.02pt } {\\mathbf{v}} }_{ 0 }(N.x, N.y)], [N.x*exp(N.x*N.y)]])"
         in captured_setup_solver
     )
 

@@ -5,7 +5,7 @@ top level `README.md` for further information.
 
 ### Licensing
 
-1) All Underworld source code is released under the LGPL-3 (See the file LICENCE in his repository). This covers all files in `underworld` constituting the Underworld3 Python module (library), and any other material not explicitly identified under (2) below.
+1) All Underworld source code is released under the LGPL-3 (See the file LGPLv3.txt in this repository). This covers all files in `underworld` constituting the Underworld3 Python module (library), and any other material not explicitly identified under (2) below.
 
 2) Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License. To view a copy of this license, visit http://creativecommons.org/licenses/by/4.0/ or send a letter to Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.  We offer this licence to encourage you to modify and share the examples and use them to help you in your research. Where no individual creator is identified in these files, the appropriate attribution is "The Underworld Team". All the files covered by this license are found in the `UserGuide` directory.
 

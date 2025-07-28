@@ -19,13 +19,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Add micromamba
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
-          micromamba-version: "1.5.6-0" # any version from https://github.com/mamba-org/micromamba-releases
-          environment-file: .github/workflows/envs/build_quickstart.yml
+          #micromamba-version: "1.5.6-0" # any version from https://github.com/mamba-org/micromamba-releases
+          #environment-file: .github/workflows/envs/build_quickstart.yml
+          environment-file: ./environment.yml
           init-shell: bash
           cache-environment: true
           post-cleanup: "all"
+          create-args: quarto
 
       - name: Render docs with quarto
         shell: bash -l {0}
@@ -33,7 +35,6 @@ jobs:
           quarto install tinytex
           cd docs/user
           quarto render --cache-refresh --log-level info
-
       ## Always deploy to version directory
       - name: Deploy quarto book
         uses: peaceiris/actions-gh-pages@v3

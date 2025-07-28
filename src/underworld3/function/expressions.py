@@ -1,5 +1,6 @@
 import sympy
 from sympy import Symbol, simplify, Number
+import underworld3 as uw
 from underworld3.utilities._api_tools import uw_object
 from underworld3.discretisation import _MeshVariable
 
@@ -17,10 +18,9 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
     else:
         expr = fn
 
-    for atom in extract_expressions(fn):
-
+    for atom in extract_expressions_and_functions(fn):
         if isinstance(atom, UWexpression):
-            if keep_constants and isinstance(atom.sym, (float, int, Number)):
+            if keep_constants and is_constant_expr(atom):
                 continue
             else:
                 expr = expr.subs(atom, atom.sym)
@@ -51,13 +51,14 @@ def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
 def substitute(fn, keep_constants=True, return_self=True):
     return unwrap(fn, keep_constants, return_self)
 
+
 def _unwrap_expressions(fn, keep_constants=True, return_self=True):
     expr = fn
     expr_s = _substitute_all_once(expr, keep_constants, return_self)
 
     while expr is not expr_s:
         expr = expr_s
-        expr_s = _substitute_all_once(expr, keep_constants)
+        expr_s = _substitute_all_once(expr, keep_constants, return_self)
 
     return expr
 
@@ -155,28 +156,51 @@ class UWexpression(uw_object, Symbol):
     """
 
     _expr_count = 0
+    _expr_names = {}
 
     def __new__(
         cls,
         name,
         *args,
+        _unique_name_generation=False,
         **kwargs,
     ):
 
+        import warnings
+
         instance_no = UWexpression._expr_count
 
-        invisible = rf"\hspace{{ {instance_no/100}pt }}"
-        unique_name = f"{{ {name} {invisible} }}"
+        ## if the expression already exists, do not replace it (but return the existing object instead)
+
+        if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
+            warnings.warn(
+                message=f"EXPRESSIONS {name}: Each expression should have a unique name - new expression was not generated",
+            )
+            return UWexpression._expr_names[name]
+
+        if name in UWexpression._expr_names and _unique_name_generation == True:
+            invisible = rf"\hspace{{ {instance_no/100}pt }}"
+            unique_name = f"{{ {name} {invisible} }}"
+        else:
+            unique_name = name
+
         obj = Symbol.__new__(cls, unique_name)
         obj._instance_no = instance_no
         obj._unique_name = unique_name
+        obj._given_name = name
 
+        UWexpression._expr_names[unique_name] = obj
         UWexpression._expr_count += 1
 
         return obj
 
     def __init__(
-        self, name, sym=None, description="No description provided", value=None
+        self,
+        name,
+        sym=None,
+        description="No description provided",
+        value=None,
+        **kwargs,
     ):
         if value is not None and sym is None:
             import warnings
@@ -191,8 +215,8 @@ class UWexpression(uw_object, Symbol):
                 "Both 'sym' and 'value' attributes are provided, please use one"
             )
 
-        self.symbol = self._unique_name
-        self.sym = sympy.sympify(sym)
+        self.symbol = self._given_name
+        self.sym = sym  # Accept anything, sympify is opinionated
         self.description = description
 
         # this is not being honoured by sympy Symbol so do it by hand
@@ -205,9 +229,14 @@ class UWexpression(uw_object, Symbol):
         if not isinstance(other, UWexpression):
             raise ValueError
         else:
-            self.symbol = other.symbol
+            # Note: sympy symbols are uniquely defined by name and so
+            # the uw expressions based on symbols cannot be renamed: only the
+            # value can be changed. As a result, copy is just an assignment to
+            # self.sym and should be deprecated.
+
+            # self.symbol = other.symbol # Can't change this
             self._sym = other._sym
-            self.description = other.description
+            # self.description = other.description # Shouldn't change this
 
         return
 
@@ -230,7 +259,10 @@ class UWexpression(uw_object, Symbol):
 
     @sym.setter
     def sym(self, new_value):
-        self._sym = sympy.sympify(new_value)
+        if isinstance(new_value, (sympy.Basic, sympy.matrices.MatrixBase)):
+            self._sym = new_value
+        else:
+            self._sym = sympy.sympify(new_value)
         return
 
     # TODO: DEPRECATION
@@ -256,7 +288,7 @@ class UWexpression(uw_object, Symbol):
 
     @property
     def expression(self):
-        return self.sub_all()
+        return self.unwrap()
 
     @property
     def description(self):
@@ -269,19 +301,6 @@ class UWexpression(uw_object, Symbol):
 
     def unwrap(self, keep_constants=True, return_self=True):
         return unwrap(self, keep_constants=keep_constants)
-
-    # # This should be the thing that gets called by sympy when we ask for self.diff()
-    # def fdiff(self, variable, evaluate=True):
-    #     if evaluate:
-    #         return sympy.diff(self.unwrap(keep_constants=False, return_self=False), variable, evaluate=True)
-    #     else:
-    #         if isinstance(self, (sympy.Matrix, sympy.ImmutableMatrix)):
-    #             f = lambda x: sympy.diff(
-    #                     x, variable, evaluate=False
-    #                 )
-    #             return self.applyfunc(f)
-    #         else:
-    #             return sympy.diff(self, variable, evaluate=False)
 
     def sub_all(self, keep_constants=True):
         return substitute(self, keep_constants=keep_constants)
@@ -302,22 +321,30 @@ class UWexpression(uw_object, Symbol):
 
         display(Markdown("$" + self.symbol + "$"))
 
+    def __repr__(self):
+        # print("Customised !")
+        return str(self.symbol)
+
+    def _repr_latex_(self):
+        # print("Customised !")
+        return rf"$\\displaystyle {str(self.symbol)}$"
+
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display
         import sympy
 
         level = max(1, level)
 
+        if isinstance(self.sym, (sympy.Basic, sympy.matrices.MatrixBase)):
+            latex = self.sym._repr_latex_()
+        else:
+            latex = sympy.sympify(self.sym)._repr_latex_()
+
         ## feedback on this instance
         if sympy.sympify(self.sym) is not None:
             display(
                 Latex(
-                    r"$"
-                    + r"\quad" * level
-                    + "$"
-                    + self._repr_latex_()
-                    + "$=$"
-                    + sympy.sympify(self.sym)._repr_latex_()
+                    r"$" + r"\quad" * level + "$" + self._repr_latex_() + "$=$" + latex
                 ),
             )
             if description == True:
@@ -342,3 +369,77 @@ class UWexpression(uw_object, Symbol):
             pass
 
         return
+
+
+class UWDerivativeExpression(UWexpression):
+    """
+    underworld `expressions` are sympy symbols with attached
+    numeric/expression values that are substituted into an underworld function
+    before evaluation.
+
+    derivative expressions are unevaluated / symbolic derivatives that remain
+    symbolic until they need to be evaluated.
+
+    Note - this class would usually be automatically generated by asking for the
+    derivative of an expression with `evaluate=False`
+
+    ```{python}
+        alpha = UWDerivativeExpression(
+                        r'\\alpha',
+                        expr=uw_expression,
+                        diff_expr=diff_expression,
+                        description=fr"\partial{expr.description}/\partial{diff_expr.description}"
+                            )
+        print(alpha.sym)
+        print(alpha.description)
+    ```
+
+    """
+
+    def __init__(
+        self,
+        name,
+        expr,
+        diff_variable,
+        description="derivative of expression provided",
+    ):
+
+        self.symbol = self._given_name
+        self.diff_variable = None
+
+        self._sym = expr  # Accept anything, sympify is overly opinionated if we try to `sympify`
+        self._diff_variable = diff_variable
+        self.description = description
+
+        # this is not being honoured by sympy Symbol so do it by hand
+        self._uw_id = uw_object._obj_count
+        uw_object._obj_count += 1
+
+        return
+
+    @property
+    def sym(self):
+        return uw.function.derivative(self._sym, self.diff_variable)
+
+    @property
+    def expr(self):
+        return self._sym
+
+    @property
+    def diff_variable(self):
+        return self._diff_variable
+
+    @diff_variable.setter
+    def diff_variable(self, value):
+        self._diff_variable = value
+
+    # TODO: DEPRECATION
+    # The value attribute is no longer needed in the offical release of Underworld3
+    @property
+    def value(self):
+        import warnings
+
+        warnings.warn(
+            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute"
+        )
+        return self.sym

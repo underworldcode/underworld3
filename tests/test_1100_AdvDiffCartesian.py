@@ -6,31 +6,32 @@
 
 import underworld3 as uw
 import numpy as np
+import sympy as sp
 import math
 import pytest
+import matplotlib.pyplot as plt
 
 
 # ### Set up variables of the model
 
 # +
-res = 12
+res = 24
 nsteps = 1
 kappa = 1.0  # diffusive constant
 
 velocity = 1 / res  # /res
 
-### min and max temps
-tmin = 0.5  # temp min
-tmax = 1.0  # temp max
 
-### Thickness of hot pipe in centre of box
-pipe_thickness = 0.4
-
+t_start = 1e-4
+t_end   = 2e-4
 
 # ### Set up the mesh
-
 xmin, xmax = 0, 1
 ymin, ymax = 0, 1
+
+u_degree = 2
+
+
 
 ### Quads
 meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
@@ -47,8 +48,20 @@ unstructured_simplex_box_irregular = uw.meshing.UnstructuredSimplexBox(
 unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     cellSize=1 / res, regular=True, qdegree=3, refinement=0
 )
+# -
+
+# ### setup analytical function
+
+# +
+u, t, x, x0, x1 = sp.symbols('u, t, x, x0, x1')
 
 
+U_a_x = 0.5 * ( sp.erf( (x1 - x + (u * t)) / (2 * sp.sqrt(kappa * t))) + sp.erf((-x0 + x - (u * t)) / (2 * sp.sqrt(kappa * t))) )
+
+
+
+
+# +
 @pytest.mark.parametrize(
     "mesh",
     [
@@ -62,7 +75,7 @@ def test_advDiff_boxmesh(mesh):
 
     # Create an mesh vars
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
-    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=u_degree)
 
     # #### Create the advDiff solver
 
@@ -82,102 +95,48 @@ def test_advDiff_boxmesh(mesh):
     adv_diff.constitutive_model.Parameters.diffusivity = kappa
 
     ### fix temp of top and bottom walls
-    adv_diff.add_dirichlet_bc(tmin, "Bottom")
-    adv_diff.add_dirichlet_bc(tmin, "Top")
-    # adv_diff.add_dirichlet_bc(0., "Left")
-    # adv_diff.add_dirichlet_bc(0., "Right")
+    adv_diff.add_dirichlet_bc(0., "Left")
+    adv_diff.add_dirichlet_bc(0., "Right")
 
     with mesh.access(v):
         # initialise fields
         # v.data[:,0] = -1*v.coords[:,1]
         v.data[:, 1] = velocity
 
+    U_start = U_a_x.subs({u:velocity, t:t_start,x:mesh.X[0], x0:0.4, x1:0.6})
     with mesh.access(T):
-        T.data[...] = tmin
+        T.data[:,0] = uw.function.evaluate(U_start, T.coords)
 
-        pipePosition = ((ymax - ymin) - pipe_thickness) / 2.0
 
-        T.data[
-            (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
-            & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
-        ] = tmax
-
-    # ### Create points to sample the UW results
-    ### y coords to sample
-    sample_y = np.arange(
-        mesh.data[:, 1].min(), mesh.data[:, 1].max(), 0.1 * mesh.get_min_radius()
-    )  ### Vertical profile
-
-    ### x coords to sample
-    sample_x = np.zeros_like(sample_y)  ### LHS of box
-
-    sample_points = np.empty((sample_x.shape[0], 2))
-    sample_points[:, 0] = sample_x
-    sample_points[:, 1] = sample_y
-    # -
-
-    ### get the initial temp profile
-    T_orig = uw.function.evaluate(T.sym[0], sample_points)
-
-    #### 1D diffusion function
-    #### To compare UW results with a numerical results
-
-    def diffusion_1D(sample_points, T0, diffusivity, vel, time_1D):
-        x = sample_points
-        T = T0
-        k = diffusivity
-        time = time_1D
-
-        dx = sample_points[1] - sample_points[0]
-
-        dt_dif = dx**2 / k
-        dt_adv = dx / velocity
-
-        dt = 0.5 * min(dt_dif, dt_adv)
-
-        if time > 0:
-            """determine number of its"""
-            nts = math.ceil(time / dt)
-
-            """ get dt of 1D model """
-            final_dt = time / nts
-
-            for i in range(nts):
-                qT = -k * np.diff(T) / dx
-                dTdt = -np.diff(qT) / dx
-                T[1:-1] += dTdt * final_dt
-
-        return T
-
-    model_time = 0.0
+    model_time = t_start
 
     #### Solve
-    dt_est = adv_diff.estimate_dt()
+    dt = adv_diff.estimate_dt()
 
-    # This should be stable, and soluble by the 1D FD
-    dt = 0.001
+    while  model_time < t_end:
+    
+        if model_time + dt > t_end:
+            dt = t_end - model_time
 
-    ### diffuse through underworld
-    adv_diff.solve(timestep=dt)
+        ### diffuse through underworld
+        adv_diff.solve(timestep=dt)
+    
+        model_time += dt
 
-    model_time += dt
+    sample_x = np.arange(0,1,mesh.get_min_radius() )
+    sample_y = np.zeros_like(sample_x) + 0.5
+    sample_points = np.column_stack([sample_x, sample_y])
 
     ### compare UW and 1D numerical solution
-    T_UW = uw.function.evalf(T.sym[0], sample_points)
+    T_UW = uw.function.evaluate(T.sym[0], sample_points)
 
-    T_1D_model = diffusion_1D(
-        sample_points=sample_points[:, 1],
-        T0=T_orig.copy(),
-        diffusivity=kappa,
-        vel=velocity,
-        time_1D=model_time,
-    )
+    U_end = U_a_x.subs({u:velocity, t:t_end,x:mesh.X[0], x0:0.4, x1:0.6})
+    T_analytical = uw.function.evaluate(U_end, sample_points)
 
-    #### 1D numerical advection
-    new_y = sample_points[:, 1] + (velocity * model_time)
+    
 
-    ### some issues with the projection of data onto the sample points so high rtol
-    assert np.allclose(T_UW, T_1D_model, atol=0.2)
+    ### moderate atol due to evaluating onto points
+    assert np.allclose(T_UW, T_analytical, atol=0.05)
 
     del mesh
     del adv_diff

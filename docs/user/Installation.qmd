@@ -20,7 +20,7 @@ The `underworld3` build / run-time dependencies can be installed using
     (base) % mamba env create -n uw3 -f environment.yml
     (base) % mamba activate uw3
 
-    (uw3) % pip install .
+    (uw3) % compile.sh
 ```
 
 ## Source code build using mamba and existing PETSc
@@ -66,7 +66,7 @@ Building `underworld3` against this version of `PETSc` should be identical to th
 
 ```bash
     (uw3p) % cd /path/to/underworld3
-    (uw3p) % pip install .
+    (uw3p) % compile.sh
 ```
 
 #### Did it work ?
@@ -79,6 +79,19 @@ First run the tests:
 ```
 
 If you have problems, contact us via the `underworl3` [GitHub issue tracker](https://github.com/underworldcode/underworld3/issues)
+
+#### To uninstall `underworld3`
+
+```bash
+  (uw3) % pip uninstall underworld3
+```
+
+And to clean the source directory if applicable
+
+```bash
+  (uw3) % cd /path/to/underworld3
+  (uw3) % ./clean.sh
+```
 
 ## Docker container
 

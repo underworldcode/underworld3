@@ -18,11 +18,11 @@ def rank2_to_voigt(
     r"""Convert rank 2 tensor ($v_{ij}$) to Voigt (vector) form ($V_I$)"""
 ```
 
-We do not enforce this formatting at the `git commit` level, but it is strongly encouraged that you set up your code editor to adopt the `black` style. 
+We do not enforce this formatting at the `git commit` level, but it is strongly encouraged that you set up your code editor to adopt the `black` style.
 
 ## Variable / function names
 
-Underworld3 leans heavily on the `petsc4py` and `sympy` packages. `petsc4py` wraps the `C` / `Fortran` layers of the `PETSc` ecosystem and tends to inherit CamelCase/camelCase variable naming everywhere whereas `sympy`, like other python packages, *favours* snake_case for variables and CamelCase for classes. 
+Underworld3 leans heavily on the `petsc4py` and `sympy` packages. `petsc4py` wraps the `C` / `Fortran` layers of the `PETSc` ecosystem and tends to inherit CamelCase/camelCase variable naming everywhere whereas `sympy`, like other python packages, *favours* snake_case for variables and CamelCase for classes.
 
 In Underworld3, we prefer to use snake_case naming for functions, properties and variables, camelCase for classes. We also know that we are not completely consistent at present. Sorry !
 
@@ -34,7 +34,7 @@ We use `typing` for this.
 
 ## Cython considerations
 
-Many `underworld3` objects carry underlying `C` objects that they manage and there is usually some `cython` code that handles the interaction between the two. We use `cython` explicitly for some of this wrapper code and it is present implictly because we make heavy use of the `petsc4py` module. 
+Many `underworld3` objects carry underlying `C` objects that they manage and there is usually some `cython` code that handles the interaction between the two. We use `cython` explicitly for some of this wrapper code and it is present implictly because we make heavy use of the `petsc4py` module.
 
 `cython` objects may require explicit deletion (because python cannot always drill down to the `C` layer to find objects that are ready for automatic deletion). We strongly encourage the use of the `destroy()` method that is available for many `petsc4py` objects when you are sure the object is no longer required by you. Be aware that lists of pointers to `PETSc` objects may prevent them being automatically deleted and use the `weakref` module to avoid this problem.
 
@@ -42,9 +42,9 @@ Where possible, keep pure python functions in separate source files from `cython
 
 ## API-level Documentation
 
-The best way to develop `Underworld3` python programs is within the [`jupyter`](jupyter.org) notebook environment. The documentation of the `Underworld3` API assumes that rendered markdown formatting will be available for code highlighting and mathematical equations when the user asks (interactively) for help. 
+The best way to develop `Underworld3` python programs is within the [`jupyter`](jupyter.org) notebook environment. The documentation of the `Underworld3` API assumes that rendered markdown formatting will be available for code highlighting and mathematical equations when the user asks (interactively) for help.
 
-We use `pdoc` to produce API documentation from the python source code. The `pdoc` configuration assumes all docstrings are markdown and may include mathematics and code snippets. `pdoc` automatically documents arguments to functions and classes, so we do not require these to be described unless there is a need for clarification. 
+We use `pdoc` to produce API documentation from the python source code. The `pdoc` configuration assumes all docstrings are markdown and may include mathematics and code snippets. `pdoc` automatically documents arguments to functions and classes, so we do not require these to be described unless there is a need for clarification.
 
 In the `jupyter` environment `Underworld3` objects display `help` documentation and their internal state through their `self.view()` methods. Many classes have equivalent documentation available before they have been instantiated so a notebook user can progressively construct a model.
 
@@ -65,7 +65,7 @@ once the following criteria are met:
    3. All tests pass
    4. Blog post update for significant changes
    5. Update CHANGES.md
-   
+
 ## Version Numbering
 
 Underworld follows PEP440 for versioning:
@@ -86,20 +86,19 @@ Z = Micro/Patch version. Backwards compatible bug fixes.
 The version number may also be appended with pre-release type designations, for
 example 3.0.0b.
 
-Development software will be have the 'dev' suffix, e.g. 3.0.0-dev, and should 
+Development software will be have the 'dev' suffix, e.g. 3.0.0-dev, and should
 represent the version the development is working towards, so 3.1.0-dev is working
-towards release 3.1.0. 
+towards release 3.1.0.
 
 ## Testing
 
-The 'test.sh' script  can be used to execute the pytest framework. 
+The 'test.sh' script  can be used to execute the pytest framework.
 Individual tests are found in the `tests` directory. These are small collections
-of unit tests that address parcels of functionality in the code. Tests need to be 
-small and fast, and should be orthogonal to other tests as far as possible. 
+of unit tests that address parcels of functionality in the code. Tests need to be
+small and fast, and should be orthogonal to other tests as far as possible.
 In the testing framework, we test the deeper levels of the code first (e.g. mesh building)
 so that we can use those features for subsequent tests.
 
-We strongly encourage testing to be fine grained with as little as possible additional code that
-can go wrong. Please do not just paste in your example notebooks in the hope that `pytest` will 
-sort things out. It won't. Somebody else will need to figure out why the test broke sometime in the
-future and we don't want that somebody to discover that the problem is not in the unit testing part of the code.
+We strongly encourage testing to be fine grained with as little as possible additional code that can go wrong. Please do not just paste in your example notebooks in the hope that `pytest` will sort things out. It won't. Somebody else will need to figure out why the test broke sometime in the future and we don't want that somebody to discover that the problem is not in the unit testing part of the code.
+
+Although `pytest` tests should be independent, there are some issues with the PETSc subsystem removing objects correctly at the end of a test. This is why we break up the testing suite into multiple files which rebuild the PETSc layer each time.

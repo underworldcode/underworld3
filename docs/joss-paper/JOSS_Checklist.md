@@ -5,33 +5,33 @@ Following the [Submission requirements](https://joss.readthedocs.io/en/latest/su
 ## Repository format / content
 
     - [ ] README.md
-      - [ ] Links to uw web page
-      - [ ] Binder launch link for Quick-start
-      - [ ] Acknowledgements
+      - [x] Links to uw web page
+      - [x] Binder launch link for Quick-start
+      - [x] Acknowledgements
 
-    - [ ] paper.md
-    - [ ] paper.bib
+    - [x] paper.md
+    - [x] paper.bib
     - [x] Install GitHub workflow
     - [x] Validate workflow
     - [x] Open source licence file
     - [?] Publication branch (this is acceptable, must be kept up to date on submission).
-    - [ ] Check Insights / Community Standards for GitHub repo / put into line with UW2
+    - [x] Check Insights / Community Standards for GitHub repo / put into line with UW2
     - [x] Check authors and .zenodo creators align
 
-    - [ ] Quickstart Guide for users (deployable on binder)
+    - [x] Quickstart Guide for users (deployable on binder)
       - [x] Installation details
-      - [ ] Notebook examples (ipynb)
-      - [ ] Links to API docs
-      - [ ] Links to Github
-      - [ ] Links to Underworld Community
+      - [x] Notebook examples (ipynb)
+      - [x] Links to API docs
+      - [x] Links to Github
+      - [x] Links to Underworld Community
 
 ## Clean up checklist
 
-    - [ ] Audit GitHub issues / clear where possible
-    - [ ] Clear outdated PRs
-    - [ ] Merge dev into main
-        - [ ] create joss-submission branch from main at submission time
-        - [ ] joss-submission branch may need restructuring in order to build (e.g. paper in the root directory)
+    - [x] Audit GitHub issues / clear where possible
+    - [x] Clear outdated PRs
+    - [x] Merge dev into main
+        - [x] create joss-submission branch from main at submission time
+        - [x] joss-submission branch may need restructuring in order to build (e.g. paper in the root directory)
 
 ## Software checklist
 
