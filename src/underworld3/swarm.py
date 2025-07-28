@@ -2608,7 +2608,7 @@ class Swarm(Stateful, uw_object):
         npoints = len(valid_coordinates)
         swarm_size = self.dm.getLocalSize()
 
-        # -1 means no particles have been added yet
+        # -1 means no particles have been added yet (PETSc interface change)
         if swarm_size == -1:
             swarm_size = 0
             npoints = npoints + 1
@@ -2628,7 +2628,6 @@ class Swarm(Stateful, uw_object):
                 self._remeshed.data[...] = 0
 
         self.dm.migrate(remove_sent_points=True)
-
         return npoints
 
     @timing.routine_timer_decorator
@@ -3312,8 +3311,6 @@ class Swarm(Stateful, uw_object):
                         + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
-
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
@@ -3343,7 +3340,6 @@ class Swarm(Stateful, uw_object):
 
                     new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
@@ -3372,8 +3368,6 @@ class Swarm(Stateful, uw_object):
                         ).reshape(-1)
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
-
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
 
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
@@ -3463,6 +3457,13 @@ class Swarm(Stateful, uw_object):
             self.cycle += 1
 
             ## End of cycle_swarm loop
+            #
+
+        # Remove points no longer in the domain
+        self.migrate(
+            delete_lost_points=True,
+            max_its=1,
+        )
 
         return
 

@@ -616,32 +616,36 @@ class Mesh(Stateful, uw_object):
                 print(f"\n")
                 print(f"Mesh # {self.instance}: {self.name}\n")
 
-                uw.visualisation.plot_mesh(self)
+                # Only if notebook and serial
+                if uw.is_notebook and uw.mpi.size == 1:
+                    uw.visualisation.plot_mesh(self, window_size=(600, 400))
 
                 # Total number of cells
                 nstart, nend = self.dm.getHeightStratum(0)
                 num_cells = nend - nstart
-                print(f"Number of cells: {num_cells}\n")
 
-                if len(self.vars) > 0:
-                    print(
-                        f"| Variable Name       | component | degree |     type        |"
-                    )
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
-                    for vname in self.vars.keys():
-                        v = self.vars[vname]
+                if uw.mpi.rank == 0:
+                    print(f"Number of cells: {num_cells}\n")
+
+                    if len(self.vars) > 0:
                         print(
-                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                            f"| Variable Name       | component | degree |     type        |"
                         )
+                        print(
+                            f"| ---------------------------------------------------------- |"
+                        )
+                        for vname in self.vars.keys():
+                            v = self.vars[vname]
+                            print(
+                                f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                            )
 
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
-                    print("\n", flush=True)
-                else:
-                    print(f"No variables are defined on the mesh\n", flush=True)
+                        print(
+                            f"| ---------------------------------------------------------- |"
+                        )
+                        print("\n", flush=True)
+                    else:
+                        print(f"No variables are defined on the mesh\n", flush=True)
 
             ## Boundary information
 
@@ -3337,10 +3341,12 @@ def checkpoint_xdmf(
 """
 
     ## The mesh Var attributes
-    
+
     def get_cell_field_size(h5_filename, mesh_var):
-        with h5py.File(h5_filename, 'r') as f:
-            size = f[f'cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}'].shape[0]
+        with h5py.File(h5_filename, "r") as f:
+            size = f[f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"].shape[
+                0
+            ]
         return size
 
     attributes = ""
@@ -3353,7 +3359,7 @@ def checkpoint_xdmf(
             variable_type = "Vector"
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
-        if not getattr(var, "continuous") or getattr(var, "degree")==0:
+        if not getattr(var, "continuous") or getattr(var, "degree") == 0:
             center = "Cell"
             numItems = get_cell_field_size(var_filename, var)
             field_group = "cell_fields"

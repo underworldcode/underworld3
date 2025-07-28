@@ -336,7 +336,7 @@ class Eulerian(uw_object):
                     self.psi_star[0].data[...] = uw.function.evaluate(
                         self.psi_fn,
                         self.psi_star[0].coords,
-                        evalf=evalf,
+                        evalf=self.evalf,
                     ).reshape(-1, max(self.psi_fn.shape))
                     # print('evaluate data', flush=True)
 
@@ -465,8 +465,10 @@ class Eulerian(uw_object):
 
 
 class SemiLagrangian(uw_object):
-    r"""Nodal-Swarm  Lagrangian History Manager:
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    r"""
+    # Nodal-Swarm  Semi-Lagrangian History Manager:
+
+    This manages the semi-Lagrangian update of a Mesh Variable, $\psi$, on the mesh across timesteps.
     $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
     $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
     $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
@@ -706,6 +708,8 @@ class SemiLagrangian(uw_object):
             #                 self.psi_star[i].sym[d], self._nswarm_psi.data
             #             )
             # else:
+            #
+
             with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
                 for d in range(self.psi_star[i].shape[1]):
                     self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(

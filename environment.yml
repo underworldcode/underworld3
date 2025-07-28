@@ -32,5 +32,8 @@ dependencies:
   - pint
   - typeguard
   - pip
-  # - pip:
-  #   - gmsh-api # is this used still in UW?
+  - pip:
+      - rich<14
+      - meshio
+      - pygmsh
+        # - gmsh-api # is this used still in UW?
