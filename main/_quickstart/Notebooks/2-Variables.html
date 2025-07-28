@@ -76,7 +76,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-37eea08aefeeee20ff55810ff984fec1.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-6c22da3f700b1fd0acc9b46213ed99c5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-1e3dae862af4d1ca44e734596caa1c7a.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -297,17 +297,17 @@ window.Quarto = {
 
 
 <p>We can add discrete variables (unknowns associated with the mesh points).</p>
-<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="3">
+<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="51deb47c-0d19-4962-92a9-cda8ce60ee66" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="4">
+<div id="51deb47c-0d19-4962-92a9-cda8ce60ee66" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.uw.meshing.CubedSphere(</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    numElements<span class="op">=</span><span class="dv">8</span>,</span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    simplex<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    simplex<span class="op">=</span><span class="va">True</span>,</span>
 <span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
 <span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>)</span>
 <span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
@@ -318,7 +318,7 @@ window.Quarto = {
 <span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>phi_vec <span class="op">=</span>  mesh.CoordinateSystem.unit_e_2</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>This example shows how we can add a scalar field with a single value associated with each mesh node, and a vector field which has quadratic interpolation (points at the nodes plus interpolating points along mesh edges).</p>
-<div id="82e5784c-7aa9-458f-bcb7-3a28cd73383b" class="cell" data-execution_count="5">
+<div id="82e5784c-7aa9-458f-bcb7-3a28cd73383b" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># mesh variable example / test</span></span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>scalar_var <span class="op">=</span> uw.discretisation.MeshVariable(</span>
@@ -331,21 +331,24 @@ window.Quarto = {
 <span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>vector_var <span class="op">=</span> uw.discretisation.MeshVariable(</span>
 <span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    varname<span class="op">=</span><span class="st">"Vertical_Vec"</span>,</span>
 <span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    mesh<span class="op">=</span>mesh, </span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    degree<span class="op">=</span><span class="dv">2</span>,</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    degree<span class="op">=</span><span class="dv">2</span>, <span class="co">#quadratic interpolation</span></span>
 <span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    vtype <span class="op">=</span> uw.VarType.VECTOR,</span>
 <span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="dv">\m</span><span class="vs">athbf{v}"</span>,</span>
 <span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>)</span>
 <span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<p>To set values of the variable, we first have to unlock it using the <code>access</code> context manager, and then we can <code>evaluate</code> a function at the coordinates appropriate to fill up each variable:</p>
-<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-execution_count="6">
+<p>To set values of the variable, we first have to unlock it using the <code>access</code> context manager, and then we can <code>evaluate</code> a function at the coordinates appropriate to fill up each variable. The locking is a <code>PETSc</code> requirement which is used to make sure data remains synchronised when we run code in parallel.</p>
+<div id="333ea2f7-1df3-49f5-9f28-0dbebabae49b" class="cell" data-execution_count="18">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(scalar_var, vector_var):</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    scalar_var.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(r, scalar_var.coords)</span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    vector_var.data[:,:] <span class="op">=</span> uw.function.evaluate(r_vec, vector_var.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    scalar_var.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(r, scalar_var.coords, evalf<span class="op">=</span><span class="va">False</span> )</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    vector_var.data[:,:] <span class="op">=</span> uw.function.evaluate(r_vec, vector_var.coords, evalf<span class="op">=</span><span class="va">False</span>, verbose<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Expression to be evaluated: Matrix([[N.x/sqrt(N.x**2 + N.y**2 + N.z**2), N.y/sqrt(N.x**2 + N.y**2 + N.z**2), N.z/sqrt(N.x**2 + N.y**2 + N.z**2)]])</code></pre>
+</div>
 </div>
 <p>Variables are like most <code>underworld</code> and <code>PETSc</code> objects - they can be examined using their <code>view()</code> method. The information that you will see is split into the underworld representation (listed under <strong>MeshVariable</strong>) and the PETSc representation (listed under <strong>FE Data</strong> which also includes the numerical values).</p>
-<div id="9e778873-9ba9-4778-a0d2-828c1647cf50" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>scalar_var.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="9e778873-9ba9-4778-a0d2-828c1647cf50" class="cell" data-execution_count="24">
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>scalar_var.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>Class</strong>: &lt;class ‘underworld3.discretisation._MeshVariable’&gt;</p>
 </div>
@@ -354,7 +357,7 @@ window.Quarto = {
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <blockquote class="blockquote">
-<p>symbol: <span class="math inline">\({ \hspace{ 0.03pt } {r} }\)</span></p>
+<p>symbol: <span class="math inline">\({ \hspace{ 0.05pt } {r} }\)</span></p>
 </blockquote>
 <blockquote class="blockquote">
 <p>shape: <span class="math inline">\((1, 1)\)</span></p>
@@ -381,52 +384,52 @@ window.Quarto = {
 </blockquote>
 </div>
 <div class="cell-output cell-output-display">
-<pre><code>array([[1.      ],
-       [1.      ],
-       [1.      ],
+<pre><code>array([[1.        ],
+       [1.        ],
+       [1.        ],
        ...,
-       [0.830125],
-       [0.88675 ],
-       [0.943375]])</code></pre>
+       [0.88636051],
+       [0.83309475],
+       [0.79595533]])</code></pre>
 </div>
 </div>
-<div id="1ad62dad-6247-4818-a7bd-8227fc5ace69" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Visualise it / them</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"z"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, mesh.CoordinateSystem.X[<span class="dv">2</span>])</span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"r"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, scalar_var.sym[<span class="dv">0</span>])</span>
-<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, (<span class="dv">1</span><span class="op">-</span>scalar_var.sym[<span class="dv">0</span>]) <span class="op">*</span> vector_var.sym)</span>
-<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> mesh.dim<span class="op">==</span><span class="dv">3</span>:</span>
-<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    pvmesh_clipped <span class="op">=</span> pvmesh.clip( normal<span class="op">=</span><span class="st">'z'</span>, crinkle<span class="op">=</span><span class="va">True</span>,origin<span class="op">=</span>(<span class="fl">0.0</span>,<span class="fl">0.0</span>,<span class="fl">0.01</span>))</span>
-<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a><span class="co"># pvmesh.plot(show_edges=True, show_scalar_bar=False)</span></span>
-<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
-<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh_clipped, </span>
-<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>            show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>            scalars<span class="op">=</span><span class="st">"z"</span>, </span>
-<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a>            opacity<span class="op">=</span><span class="fl">0.6</span>,</span>
-<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>            show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>pl.add_arrows(pvmesh.points, </span>
-<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a>              pvmesh.point_data[<span class="st">"V"</span>],</span>
-<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a>              mag<span class="op">=</span><span class="fl">0.25</span>,</span>
-<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a>              opacity<span class="op">=</span><span class="fl">0.6</span>,</span>
-<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a>              color<span class="op">=</span><span class="st">"Black"</span>,</span>
-<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a>              show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-31"><a href="#cb7-31" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/echidna_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="1ad62dad-6247-4818-a7bd-8227fc5ace69" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="25">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Visualise it / them</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"z"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, mesh.CoordinateSystem.X[<span class="dv">2</span>])</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"r"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, scalar_var.sym[<span class="dv">0</span>])</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, (<span class="dv">1</span><span class="op">-</span>scalar_var.sym[<span class="dv">0</span>]) <span class="op">*</span> vector_var.sym)</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> mesh.dim<span class="op">==</span><span class="dv">3</span>:</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>    pvmesh_clipped <span class="op">=</span> pvmesh.clip( normal<span class="op">=</span><span class="st">'z'</span>, crinkle<span class="op">=</span><span class="va">False</span>,origin<span class="op">=</span>(<span class="fl">0.0</span>,<span class="fl">0.0</span>,<span class="fl">0.01</span>))</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a><span class="co"># pvmesh.plot(show_edges=True, show_scalar_bar=False)</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh_clipped, </span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>            show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>            scalars<span class="op">=</span><span class="st">"z"</span>, </span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>            opacity<span class="op">=</span><span class="fl">0.6</span>,</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>            show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a>pl.add_arrows(pvmesh.points, </span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a>              pvmesh.point_data[<span class="st">"V"</span>],</span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a>              mag<span class="op">=</span><span class="fl">0.25</span>,</span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a>              opacity<span class="op">=</span><span class="fl">0.6</span>,</span>
+<span id="cb8-28"><a href="#cb8-28" aria-hidden="true" tabindex="-1"></a>              color<span class="op">=</span><span class="st">"Black"</span>,</span>
+<span id="cb8-29"><a href="#cb8-29" aria-hidden="true" tabindex="-1"></a>              show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb8-30"><a href="#cb8-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-31"><a href="#cb8-31" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/echidna_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="4754590a-23c4-42d7-ab04-97f6ea8421a9" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="9">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/echidna_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="9">
+<div id="4754590a-23c4-42d7-ab04-97f6ea8421a9" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="26">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/echidna_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="26">
 
         <iframe width="600" height="400" src="html5/echidna_plot.html" frameborder="0" allowfullscreen=""></iframe>
         

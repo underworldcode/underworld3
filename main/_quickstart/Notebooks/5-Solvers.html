@@ -76,7 +76,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-37eea08aefeeee20ff55810ff984fec1.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-6c22da3f700b1fd0acc9b46213ed99c5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-1e3dae862af4d1ca44e734596caa1c7a.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -299,7 +299,7 @@ window.Quarto = {
 
 
 <p>Mesh with embedded internal surface where we apply harmonic thermal forcing. This allows us to compute topography and gravity kernels. We’ll use a cylindrical annulus this timeand we’ll use free-slip boundary conditions throughout.</p>
-<div id="0678b0d7-bc26-4a29-b306-f2575c16814d" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="12">
+<div id="0678b0d7-bc26-4a29-b306-f2575c16814d" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -310,7 +310,7 @@ window.Quarto = {
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>r_int <span class="op">=</span> <span class="fl">0.825</span></span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>r_i <span class="op">=</span> <span class="fl">0.55</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="ba20e3bb-2e8d-4e33-a79a-a2768bb2af58" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="4">
+<div id="ba20e3bb-2e8d-4e33-a79a-a2768bb2af58" class="cell" data-editable="true" data-scrolled="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>meshball <span class="op">=</span> uw.meshing.AnnulusInternalBoundary(radiusOuter<span class="op">=</span>r_o, </span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>                                              radiusInternal<span class="op">=</span>r_int, </span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>                                              radiusInner<span class="op">=</span>r_i, </span>
@@ -318,7 +318,7 @@ window.Quarto = {
 <span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>                                              cellSize_Internal<span class="op">=</span>res<span class="op">*</span><span class="fl">0.5</span>,</span>
 <span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>                                              cellSize_Outer<span class="op">=</span>res,</span>
 <span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>                                              centre<span class="op">=</span><span class="va">False</span>,)</span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>meshball.view()</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co"># meshball.view()</span></span>
 <span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>x, y <span class="op">=</span> meshball.CoordinateSystem.X</span>
 <span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>r, th <span class="op">=</span> meshball.CoordinateSystem.xR</span>
@@ -328,111 +328,76 @@ window.Quarto = {
 <span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Orientation of surface normals</span></span>
 <span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>Gamma_N <span class="op">=</span> unit_rvec</span>
 <span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-stdout">
-<pre><code>
-
-Mesh # 0: .meshes/uw_annulus_internalBoundary_rO1.0rInt0.825_rI0.55_csize0.1_csizefs0.075.msh
-
-No variables are defined on the mesh
-
-| Boundary Name            | ID    | Min Size | Max Size |
-| ------------------------------------------------------ |
-| Lower                    | 1     | 94       | 94       |
-| Internal                 | 2     | 278      | 278      |
-| Upper                    | 3     | 166      | 166      |
-| Centre                   | 10    | 0        | 0        |
-| All_Edges                | 1000  | 0        | 0        |
-| All_Boundaries           | 1001  | 132      | 132      |
-| UW_Boundaries            | --    | 538      | 538      |
-| ------------------------------------------------------ |
-
-
-DM Object: uw_.meshes/uw_annulus_internalBoundary_rO1.0rInt0.825_rI0.55_csize0.1_csizefs0.075.msh 1 MPI process
-  type: plex
-uw_.meshes/uw_annulus_internalBoundary_rO1.0rInt0.825_rI0.55_csize0.1_csizefs0.075.msh in 2 dimensions:
-  Number of 0-cells per rank: 1142
-  Number of 1-cells per rank: 3294
-  Number of 2-cells per rank: 2152
-Labels:
-  depth: 3 strata with value/size (0 (1142), 1 (3294), 2 (2152))
-  All_Boundaries: 1 strata with value/size (1001 (132))
-  Elements: 1 strata with value/size (666666 (3022))
-  Internal: 1 strata with value/size (2 (278))
-  Lower: 1 strata with value/size (1 (94))
-  Upper: 1 strata with value/size (3 (166))
-  celltype: 3 strata with value/size (0 (1142), 1 (3294), 3 (2152))
-  UW_Boundaries: 3 strata with value/size (1 (94), 2 (278), 3 (166))</code></pre>
-</div>
 </div>
 <section id="solver-setup" class="level3">
 <h3 class="anchored" data-anchor-id="solver-setup">Solver setup</h3>
 <p>We can obtain unit vectors in the natural coordinate system (here <span class="math inline">\(r\)</span>, <span class="math inline">\(\theta\)</span>) as <code>mesh.CoordinateSystem.unit_e_0</code>, <code>mesh.CoordinateSystem.unit_e_1</code>. There is a null space if we apply the boundary conditions exactly, and so we define a function to represent the null space.</p>
 <p>We can set solver options via the <code>petsc_options</code> interface on the solver.</p>
 <div id="bddfc407-7622-45f0-b5b5-50d72ada879e" class="cell" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a density structure / buoyancy force</span></span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># gravity will vary linearly from zero at the centre</span></span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co"># of the sphere to (say) 1 at the surface</span></span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space in velocity (constant v_theta) expressed in x,y coordinates</span></span>
-<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>v_theta_fn_xy <span class="op">=</span> r <span class="op">*</span> meshball.CoordinateSystem.rRotN.T <span class="op">*</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">1</span>))</span>
-<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Mesh variables for the unknowns</span></span>
-<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>v_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"V0"</span>, meshball, <span class="dv">2</span>, degree<span class="op">=</span><span class="dv">2</span>, varsymbol<span class="op">=</span><span class="vs">r"{v_0}"</span>)</span>
-<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>p_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"p"</span>, meshball, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">1</span>, continuous<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>stokes <span class="op">=</span> uw.systems.Stokes(</span>
-<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>    meshball, </span>
-<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln, </span>
-<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln,</span>
-<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
-<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-6</span></span>
-<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options.setValue(<span class="st">"ksp_monitor"</span>, <span class="va">None</span>)</span>
-<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options.setValue(<span class="st">"snes_monitor"</span>, <span class="va">None</span>)</span>
-<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options[<span class="st">"fieldsplit_velocity_mg_coarse_pc_type"</span>] <span class="op">=</span> <span class="st">"svd"</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a density structure / buoyancy force</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="co"># gravity will vary linearly from zero at the centre</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co"># of the sphere to (say) 1 at the surface</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space in velocity (constant v_theta) expressed in x,y coordinates</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>v_theta_fn_xy <span class="op">=</span> r <span class="op">*</span> meshball.CoordinateSystem.rRotN.T <span class="op">*</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">1</span>))</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Mesh variables for the unknowns</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>v_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"V0"</span>, meshball, <span class="dv">2</span>, degree<span class="op">=</span><span class="dv">2</span>, varsymbol<span class="op">=</span><span class="vs">r"{v_0}"</span>)</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>p_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"p"</span>, meshball, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">1</span>, continuous<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>stokes <span class="op">=</span> uw.systems.Stokes(</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>    meshball, </span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln, </span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln,</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-6</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options.setValue(<span class="st">"ksp_monitor"</span>, <span class="va">None</span>)</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options.setValue(<span class="st">"snes_monitor"</span>, <span class="va">None</span>)</span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>stokes.petsc_options[<span class="st">"fieldsplit_velocity_mg_coarse_pc_type"</span>] <span class="op">=</span> <span class="st">"svd"</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="natural-boundary-conditions" class="level3">
 <h3 class="anchored" data-anchor-id="natural-boundary-conditions">Natural boundary conditions</h3>
 <p>In FEM, natural boundary conditions are fluxes specified at a boundary (through surface integrals). We can also apply integrals to internal surfaces. We need to compute the vector components of the boundary condition (normal / tangential) and supply them in the Cartesian frame.</p>
 <p>The bouyancy force on the internal surface is already radial, so this translates to</p>
-<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="op">-</span>t_init <span class="op">*</span> unit_rvec, <span class="st">"Internal"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="op">-</span>t_init <span class="op">*</span> unit_rvec, <span class="st">"Internal"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>To set a no-normal-flow boundary condition, we need to penalise the radial velocity at the boundaries. Symbolically this is</p>
 <p><span class="math display">\[
     \mathbf{f} = \lambda \left( \mathbf{v} \cdot \Gamma_N \right) \,\, \Gamma_N
 \]</span></p>
 <p>where <span class="math inline">\(\lambda\)</span> is a large penalty value. This translates into <code>sympy</code> code as</p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>                penalty <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Lower"</span></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>                )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>                penalty <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Lower"</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>                )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div id="3a01a29a-495d-42a5-be74-99316a4d6cbc" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix([<span class="dv">0</span>,<span class="dv">0</span>])</span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Note, the thermal bouyancy field is localised in the radius using a </span></span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="co"># gaussian solely for the purposes of plotting. It is automatically</span></span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="co"># a delta function when applied through a surface integral</span></span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>t_init <span class="op">=</span> sympy.sin(<span class="dv">5</span><span class="op">*</span>th) <span class="op">*</span> sympy.exp(<span class="op">-</span><span class="fl">1000.0</span> <span class="op">*</span> ((r <span class="op">-</span> r_int) <span class="op">**</span> <span class="dv">2</span>)) </span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>stokes.add_natural_bc(<span class="op">-</span>t_init <span class="op">*</span> unit_rvec, <span class="st">"Internal"</span>)</span>
-<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Upper"</span>)</span>
-<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> r_i <span class="op">!=</span> <span class="fl">0.0</span>:</span>
-<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Lower"</span>)</span>
-<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>stokes.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix([<span class="dv">0</span>,<span class="dv">0</span>])</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Note, the thermal bouyancy field is localised in the radius using a </span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="co"># gaussian solely for the purposes of plotting. It is automatically</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="co"># a delta function when applied through a surface integral</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>t_init <span class="op">=</span> sympy.sin(<span class="dv">5</span><span class="op">*</span>th) <span class="op">*</span> sympy.exp(<span class="op">-</span><span class="fl">1000.0</span> <span class="op">*</span> ((r <span class="op">-</span> r_int) <span class="op">**</span> <span class="dv">2</span>)) </span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>stokes.add_natural_bc(<span class="op">-</span>t_init <span class="op">*</span> unit_rvec, <span class="st">"Internal"</span>)</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Upper"</span>)</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> r_i <span class="op">!=</span> <span class="fl">0.0</span>:</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> Gamma_N.dot(v_soln.sym) <span class="op">*</span>  Gamma_N, <span class="st">"Lower"</span>)</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>stokes.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>  0 SNES Function norm 2.307507502179e-01
-    Residual norms for stokes_ solve.
-    0 KSP Residual norm 8.742204758135e+00
-    1 KSP Residual norm 7.603223176805e-07
-  1 SNES Function norm 4.751452850114e-08</code></pre>
+    Residual norms for Solver_7_ solve.
+    0 KSP Residual norm 8.742204758196e+00
+    1 KSP Residual norm 7.602202411042e-07
+  1 SNES Function norm 4.872437719294e-08</code></pre>
 </div>
 </div>
 </section>
@@ -440,78 +405,78 @@ Labels:
 <h3 class="anchored" data-anchor-id="removal-of-the-null-space">Removal of the null space</h3>
 <p>We can use the <code>uw.maths.Integral</code> to compute the inner product of the null space and the velocity solution. It is not zero, so we remove it !</p>
 <div id="5be55132-2bf9-4581-a7c6-2e8be30d7109" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space evaluation</span></span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>I0 <span class="op">=</span> uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_theta_fn_xy))</span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>vnorm <span class="op">=</span> I0.evaluate()</span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>                                  </span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>I0.fn <span class="op">=</span> v_theta_fn_xy.dot(v_soln.sym)</span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>ns <span class="op">=</span> I0.evaluate()</span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ns<span class="op">/</span>vnorm, vnorm)</span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> meshball.access(v_soln):</span>
-<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    dv <span class="op">=</span> uw.function.evaluate(ns <span class="op">*</span> v_theta_fn_xy, v_soln.coords) <span class="op">/</span> vnorm</span>
-<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    v_soln.data[...] <span class="op">-=</span> dv </span>
-<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>ns <span class="op">=</span> I0.evaluate()</span>
-<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ns<span class="op">/</span>vnorm, vnorm)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space evaluation</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>I0 <span class="op">=</span> uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_theta_fn_xy))</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>vnorm <span class="op">=</span> I0.evaluate()</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>                                  </span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>I0.fn <span class="op">=</span> v_theta_fn_xy.dot(v_soln.sym)</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>ns <span class="op">=</span> I0.evaluate()</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ns<span class="op">/</span>vnorm, vnorm)</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> meshball.access(v_soln):</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>    dv <span class="op">=</span> uw.function.evaluate(ns <span class="op">*</span> v_theta_fn_xy, v_soln.coords) <span class="op">/</span> vnorm</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>    v_soln.data[...] <span class="op">-=</span> dv </span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>ns <span class="op">=</span> I0.evaluate()</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ns<span class="op">/</span>vnorm, vnorm)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0.0005624988949826505 1.4249504223200373
-1.9675625281382883e-19 1.4249504223200373</code></pre>
+<pre><code>0.0005624988973658309 1.4249504223200373
+3.7567961262338314e-19 1.4249504223200373</code></pre>
 </div>
 </div>
-<div id="d2ecdcac-a63b-4df9-838b-d0b5bacdcff2" class="cell" data-execution_count="10">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(meshball)</span>
-<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"P"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)</span>
-<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)</span>
-<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"T"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t_init)</span>
-<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>    skip <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>    points <span class="op">=</span> np.zeros((meshball._centroids[::skip].shape[<span class="dv">0</span>], <span class="dv">3</span>))</span>
-<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>    points[:, <span class="dv">0</span>] <span class="op">=</span> meshball._centroids[::skip, <span class="dv">0</span>]</span>
-<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>    points[:, <span class="dv">1</span>] <span class="op">=</span> meshball._centroids[::skip, <span class="dv">1</span>]</span>
-<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>    point_cloud <span class="op">=</span> pv.PolyData(points)</span>
-<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>    pvstream <span class="op">=</span> pvmesh.streamlines_from_source(</span>
-<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>        point_cloud, vectors<span class="op">=</span><span class="st">"V"</span>, </span>
-<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>        integration_direction<span class="op">=</span><span class="st">"both"</span>, </span>
-<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>        integrator_type<span class="op">=</span><span class="dv">45</span>,</span>
-<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>        surface_streamlines<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>        initial_step_length<span class="op">=</span><span class="fl">0.01</span>,</span>
-<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a>        max_time<span class="op">=</span><span class="fl">0.5</span>,</span>
-<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a>        max_steps<span class="op">=</span><span class="dv">500</span>, </span>
-<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a>   </span>
-<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
-<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
-<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
-<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
-<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"T"</span>,</span>
-<span id="cb12-36"><a href="#cb12-36" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb12-37"><a href="#cb12-37" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb12-38"><a href="#cb12-38" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">1.0</span>,</span>
-<span id="cb12-39"><a href="#cb12-39" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">False</span></span>
-<span id="cb12-40"><a href="#cb12-40" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb12-41"><a href="#cb12-41" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-42"><a href="#cb12-42" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-43"><a href="#cb12-43" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(pvstream, opacity<span class="op">=</span><span class="fl">0.3</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, cmap<span class="op">=</span><span class="st">"Greens"</span>, render_lines_as_tubes<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb12-44"><a href="#cb12-44" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/stokes_annulus_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="d2ecdcac-a63b-4df9-838b-d0b5bacdcff2" class="cell" data-execution_count="8">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(meshball)</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"P"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"T"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, t_init)</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    skip <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    points <span class="op">=</span> np.zeros((meshball._centroids[::skip].shape[<span class="dv">0</span>], <span class="dv">3</span>))</span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>    points[:, <span class="dv">0</span>] <span class="op">=</span> meshball._centroids[::skip, <span class="dv">0</span>]</span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>    points[:, <span class="dv">1</span>] <span class="op">=</span> meshball._centroids[::skip, <span class="dv">1</span>]</span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>    point_cloud <span class="op">=</span> pv.PolyData(points)</span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>    pvstream <span class="op">=</span> pvmesh.streamlines_from_source(</span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a>        point_cloud, vectors<span class="op">=</span><span class="st">"V"</span>, </span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>        integration_direction<span class="op">=</span><span class="st">"both"</span>, </span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>        integrator_type<span class="op">=</span><span class="dv">45</span>,</span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>        surface_streamlines<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a>        initial_step_length<span class="op">=</span><span class="fl">0.01</span>,</span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>        max_time<span class="op">=</span><span class="fl">0.5</span>,</span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a>        max_steps<span class="op">=</span><span class="dv">500</span>, </span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>   </span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"coolwarm"</span>,</span>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
+<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"T"</span>,</span>
+<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">1.0</span>,</span>
+<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">False</span></span>
+<span id="cb11-40"><a href="#cb11-40" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb11-41"><a href="#cb11-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-42"><a href="#cb11-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-43"><a href="#cb11-43" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(pvstream, opacity<span class="op">=</span><span class="fl">0.3</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, cmap<span class="op">=</span><span class="st">"Greens"</span>, render_lines_as_tubes<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb11-44"><a href="#cb11-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-45"><a href="#cb11-45" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/stokes_annulus_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="a0a2ce11-9f40-46e4-a877-139813fa289d" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="11">
-<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/stokes_annulus_plot.html"</span>, width<span class="op">=</span><span class="dv">500</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="11">
+<div id="a0a2ce11-9f40-46e4-a877-139813fa289d" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="9">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/stokes_annulus_plot.html"</span>, width<span class="op">=</span><span class="dv">500</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="9">
 
         <iframe width="500" height="400" src="html5/stokes_annulus_plot.html" frameborder="0" allowfullscreen=""></iframe>
         

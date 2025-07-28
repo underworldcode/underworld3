@@ -76,7 +76,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-37eea08aefeeee20ff55810ff984fec1.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-6c22da3f700b1fd0acc9b46213ed99c5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-1e3dae862af4d1ca44e734596caa1c7a.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -107,6 +107,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" integrity="sha512-c3Nl8+7g4LMSTdrm621y7kf9v3SDPnhxLNhcjFJbKECVnmZHTdo+IRO05sNLTH/D3vA6u1X32ehoLC7WFVdheg==" crossorigin="anonymous"></script>
 
 <script type="application/javascript">define('jquery', [],function() {return window.jQuery;})</script>
+<script src="https://unpkg.com/@jupyter-widgets/html-manager@*/dist/embed-amd.js" crossorigin="anonymous"></script>
 
   <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
@@ -299,12 +300,9 @@ window.Quarto = {
 
 
 <div style="float: right; width: 40%">
-<img src="media/SampleSphericalMesh.png" width="100%">
-
-<i> </i>
-
+<p><img src="media/SampleSphericalMesh.png" class="img-fluid"></p>
 </div>
-<p>Introducing meshes: how to build them, interogate them and visualise them.</p>
+<p>Introducing meshes: how to build them, interrogate them and visualise them.</p>
 <ul>
 <li><code>mesh.view()</code></li>
 <li>Mesh refinement options</li>
@@ -313,7 +311,7 @@ window.Quarto = {
 <li>Mesh deformation</li>
 </ul>
 <p>Mesh adaptivity is a work-in-progress.</p>
-<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-scrolled="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="9">
+<div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-scrolled="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -322,76 +320,83 @@ window.Quarto = {
 <h4 class="anchored" data-anchor-id="underworld-meshing-module">Underworld meshing module</h4>
 <p>Underworld can read mesh definition files from the <code>gmsh</code> package but there are some constraints on how to specify boundaries if those meshes are to be used to solve numerical problems.</p>
 <p>The <code>underworld.meshing</code> module has a collection of <code>gmsh</code> (python) examples for common, simple meshes.</p>
-<div id="1c928d60-24a9-4415-ab22-41834695c70a" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="3">
+<div id="1c928d60-24a9-4415-ab22-41834695c70a" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="22">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.uw.meshing.CubedSphere(</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    numElements<span class="op">=</span><span class="dv">8</span>,</span>
 <span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    refinement<span class="op">=</span><span class="dv">0</span>,</span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    simplex<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    simplex<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">True</span>,</span>
 <span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Constructing UW mesh from gmsh .meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexTrue.msh
+Mesh refinement levels: 0
+Mesh coarsening levels: None
+Populating mesh coordinates CoordinateSystemType.SPHERICAL</code></pre>
+</div>
 </div>
 </section>
 <section id="mesh-coordinate-arrays" class="level4">
 <h4 class="anchored" data-anchor-id="mesh-coordinate-arrays">Mesh coordinate arrays</h4>
 <p>If you need to check the physical coordinates of the mesh, there is a data array</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>    mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>which is a read-only <code>numpy</code> view of the coordinates (on the local segment of the mesh when running in parallel)</p>
-<div id="b9cfac97-5c19-46b1-aebd-0fb77678b9ed" class="cell" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="4">
+<div id="b9cfac97-5c19-46b1-aebd-0fb77678b9ed" class="cell" data-execution_count="23">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="23">
 <pre><code>array([[ 0.57735027,  0.57735027, -0.57735027],
        [-0.57735027,  0.57735027, -0.57735027],
        [-0.57735027, -0.57735027, -0.57735027],
        ...,
-       [ 0.58691901, -0.41511058, -0.41511058],
-       [ 0.6269543 , -0.44342636, -0.44342636],
-       [ 0.66698958, -0.47174214, -0.47174214]])</code></pre>
+       [ 0.61340251,  0.4866531 ,  0.41538064],
+       [ 0.56556024,  0.42209717,  0.44274422],
+       [ 0.51755571,  0.41031492,  0.44421012]])</code></pre>
 </div>
 </div>
 <p>There are other pre-built meshes you can try. This is a cuboid divided into regular tetrahedra:</p>
-<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>mesh_usb <span class="op">=</span> uw.meshing.UnstructuredSimplexBox(</span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    minCoords <span class="op">=</span> (<span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>),</span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    maxCoords <span class="op">=</span> (<span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>),</span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    cellSize <span class="op">=</span> <span class="fl">0.2</span>,</span>
-<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    regular<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>mesh_usb <span class="op">=</span> uw.meshing.UnstructuredSimplexBox(</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    minCoords <span class="op">=</span> (<span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>, <span class="op">-</span><span class="fl">1.0</span>),</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    maxCoords <span class="op">=</span> (<span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>, <span class="op">+</span><span class="fl">1.0</span>),</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    cellSize <span class="op">=</span> <span class="fl">0.2</span>,</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    regular<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>and this is a two-dimensional annulus mesh</p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>mesh_ann <span class="op">=</span> uw.meshing.Annulus(</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    cellSize<span class="op">=</span> <span class="fl">0.5</span>,</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    cellSizeOuter<span class="op">=</span><span class="fl">0.033</span>,</span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    cellSizeInner<span class="op">=</span><span class="fl">0.05</span>,</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>mesh_ann <span class="op">=</span> uw.meshing.Annulus(</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    cellSize<span class="op">=</span> <span class="fl">0.5</span>,</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    cellSizeOuter<span class="op">=</span><span class="fl">0.033</span>,</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    cellSizeInner<span class="op">=</span><span class="fl">0.05</span>,</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>The meshing infrastructure for underworld3 is documented here: https://underworldcode.github.io/underworld3/main_api/underworld3/meshing.html</p>
-<div id="1cb8378c-cdb8-4e75-bd12-e85f12169ef7" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Try out each one !</span></span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"z"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, mesh.CoordinateSystem.X[<span class="dv">2</span>])</span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> mesh.dim<span class="op">==</span><span class="dv">3</span>:</span>
-<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    pvmesh_c <span class="op">=</span> pvmesh.clip( normal<span class="op">=</span><span class="st">'z'</span>, crinkle<span class="op">=</span><span class="va">True</span>, inplace<span class="op">=</span><span class="va">False</span>, origin<span class="op">=</span>(<span class="fl">0.0</span>,<span class="fl">0.0</span>,<span class="fl">0.01</span>))</span>
-<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
-<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh_c, show_edges<span class="op">=</span><span class="va">True</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, opacity<span class="op">=</span><span class="fl">1.0</span>)</span>
-<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh, show_edges<span class="op">=</span><span class="va">True</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, opacity<span class="op">=</span><span class="fl">0.3</span>)</span>
-<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Save and show the mesh</span></span>
-<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/spherical_mesh_plot.html"</span>) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="1cb8378c-cdb8-4e75-bd12-e85f12169ef7" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="26">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Try out each one !</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>pvmesh.point_data[<span class="st">"z"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, mesh.CoordinateSystem.X[<span class="dv">2</span>])</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>pvmesh1 <span class="op">=</span> pvmesh.copy()</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> mesh.dim<span class="op">==</span><span class="dv">3</span>:</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>    pvmesh_c <span class="op">=</span> pvmesh.clip( normal<span class="op">=</span><span class="st">'z'</span>, crinkle<span class="op">=</span><span class="va">True</span>, inplace<span class="op">=</span><span class="va">False</span>, origin<span class="op">=</span>(<span class="fl">0.0</span>,<span class="fl">0.0</span>,<span class="fl">0.01</span>))</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">750</span>))</span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh_c, show_edges<span class="op">=</span><span class="va">True</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, opacity<span class="op">=</span><span class="fl">1.0</span>)</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>pl.add_mesh(pvmesh1, show_edges<span class="op">=</span><span class="va">True</span>, show_scalar_bar<span class="op">=</span><span class="va">False</span>, opacity<span class="op">=</span><span class="fl">0.3</span>)</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a><span class="co"># Save and show the mesh</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/spherical_mesh_plot.html"</span>) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="fd6cbed0-3159-4c6c-a482-6a9636158854" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/spherical_mesh_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="6">
+<div id="fd6cbed0-3159-4c6c-a482-6a9636158854" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="27">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/spherical_mesh_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="27">
 
         <iframe width="600" height="400" src="html5/spherical_mesh_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
@@ -404,19 +409,19 @@ window.Quarto = {
 <p>The mesh has an associated “natural” coordinate system (usually Cartesian), but it may also have other, more convenient, coordinate systems.</p>
 <p>For example, the spherical mesh above has a Cartesian coordinate system which is the one used to navigate the mesh and describe the location of each point. It also has a spherical <span class="math inline">\((r, \theta, \phi)\)</span> system which is <strong>symbolic</strong> and can be expanded in terms of the Cartesian coordinates.</p>
 <div id="610fdf53-e3c8-462f-82c9-7aef24920a34" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co">## The coordinate system</span></span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>X <span class="op">=</span> mesh.CoordinateSystem.X</span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>R <span class="op">=</span> mesh.CoordinateSystem.R</span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>display(X)</span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>display(R)</span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>display(uw.function.expression.unwrap(R))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co">## The coordinate system</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>X <span class="op">=</span> mesh.CoordinateSystem.X</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>R <span class="op">=</span> mesh.CoordinateSystem.R</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>display(X)</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>display(R)</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>display(uw.function.expression.unwrap(R))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><span class="math inline">\(\displaystyle \left[\begin{matrix}\mathrm{x} &amp; \mathrm{y} &amp; \mathrm{z}\end{matrix}\right]\)</span></p>
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
-<p><span class="math inline">\(\displaystyle \left[\begin{matrix}{ r \hspace{ 0.0pt } } &amp; { \theta \hspace{ 0.01pt } } &amp; { \phi \hspace{ 0.02pt } }\end{matrix}\right]\)</span></p>
+<p><span class="math inline">\(\displaystyle \left[\begin{matrix}r &amp; \theta &amp; \phi\end{matrix}\right]\)</span></p>
 </div>
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><span class="math inline">\(\displaystyle \left[\begin{matrix}\sqrt{\mathrm{x}^{2} + \mathrm{y}^{2} + \mathrm{z}^{2}} &amp; \operatorname{acos}{\left(\frac{\mathrm{z}}{\sqrt{\mathrm{x}^{2} + \mathrm{y}^{2} + \mathrm{z}^{2}}} \right)} &amp; \operatorname{atan}_{2}{\left(\mathrm{y},\mathrm{x} \right)}\end{matrix}\right]\)</span></p>
@@ -428,45 +433,43 @@ window.Quarto = {
 <p><code>mesh.view()</code> allows you to interrogate the mesh to identify the mesh data structures (which means you can find by name any variable that is automatically constructed by, for example, one of the numerical solvers).</p>
 <p>It also identifies boundaries of the mesh and their sizes when distributed in parallel. There is a <code>PETSc</code> equivalent which is also called and this contains low-level information on the mesh topology.</p>
 <div id="141785af-fa2e-48df-9421-535b775d79bc" class="cell" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>mesh.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>mesh.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>
 
 Mesh # 0: .meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexFalse.msh
+</code></pre>
+</div>
+<div class="cell-output cell-output-display">
+<script type="application/vnd.jupyter.widget-view+json">
+{"model_id":"f18b77ba1d8d44ae96a3832ea3ffa5a3","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
+</script>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Number of cells: 3072
 
 No variables are defined on the mesh
 
-| Boundary Name            | ID    | Min Size | Max Size |
-| ------------------------------------------------------ |
-| Lower                    | 1     | 678      | 678      |
-| Upper                    | 2     | 678      | 678      |
-| All_Boundaries           | 1001  | 768      | 768      |
-| UW_Boundaries            | --    | 1356     | 1356     |
-| ------------------------------------------------------ |
+| Boundary Name            | ID    |
+| -------------------------------- |
+| Lower                    | 1     |
+| Upper                    | 2     |
+| Null_Boundary            | 666   |
+| All_Boundaries           | 1001  |
+| All_Boundaries           | 1001  |
+| UW_Boundaries            | --    |
+| -------------------------------- |
 
 
-DM Object: uw_.meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexFalse.msh 1 MPI process
-  type: plex
-uw_.meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexFalse.msh in 3 dimensions:
-  Number of 0-cells per rank: 3474
-  Number of 1-cells per rank: 10000
-  Number of 2-cells per rank: 9600
-  Number of 3-cells per rank: 3072
-Labels:
-  depth: 4 strata with value/size (0 (3474), 1 (10000), 2 (9600), 3 (3072))
-  All_Boundaries: 1 strata with value/size (1001 (768))
-  Elements: 1 strata with value/size (99999 (5130))
-  Lower: 1 strata with value/size (1 (678))
-  Upper: 1 strata with value/size (2 (678))
-  celltype: 4 strata with value/size (0 (3474), 1 (10000), 4 (9600), 7 (3072))
-  UW_Boundaries: 2 strata with value/size (1 (678), 2 (678))</code></pre>
+Use view(1) to view detailed mesh information.
+</code></pre>
 </div>
 </div>
 </section>
 <section id="mesh-deformation" class="level3">
 <h3 class="anchored" data-anchor-id="mesh-deformation">Mesh deformation</h3>
 <p>You can adjust the coordinates using:</p>
-<div class="sourceCode" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>    mesh.deform(local_coordinate_array)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>    mesh.deform(local_coordinate_array)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>This rebuilds all the finite element gadgets that live on the mesh but it will not do any remeshing of the points. It is useful for small deformation such as following a free surface but not large-deformation adaptive meshing.</p>
 <p>See Notebook 8 for a short mesh-deformation example.</p>
 

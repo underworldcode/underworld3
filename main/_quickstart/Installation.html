@@ -76,7 +76,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="site_libs/quarto-html/quarto-syntax-highlighting-37eea08aefeeee20ff55810ff984fec1.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="site_libs/bootstrap/bootstrap-6c22da3f700b1fd0acc9b46213ed99c5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-1e3dae862af4d1ca44e734596caa1c7a.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -283,7 +283,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba env create <span class="at">-n</span> uw3 <span class="at">-f</span> environment.yml</span>
 <span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">base</span><span class="kw">)</span> <span class="ex">%</span> mamba activate uw3</span>
 <span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> compile.sh</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </section>
 <section id="source-code-build-using-mamba-and-existing-petsc" class="level2">
 <h2 class="anchored" data-anchor-id="source-code-build-using-mamba-and-existing-petsc">Source code build using mamba and existing PETSc</h2>
@@ -308,13 +308,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>Building <code>underworld3</code> against this version of <code>PETSc</code> should be identical to the mamba version.</p>
 <div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> pip install .</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> compile.sh</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <section id="did-it-work" class="level4">
 <h4 class="anchored" data-anchor-id="did-it-work">Did it work ?</h4>
 <p>First run the tests:</p>
 <div class="sourceCode" id="cb6"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">(</span><span class="ex">uw3p</span><span class="kw">)</span> <span class="ex">%</span> source test.sh</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>If you have problems, contact us via the <code>underworl3</code> <a href="https://github.com/underworldcode/underworld3/issues">GitHub issue tracker</a></p>
+</section>
+<section id="to-uninstall-underworld3" class="level4">
+<h4 class="anchored" data-anchor-id="to-uninstall-underworld3">To uninstall <code>underworld3</code></h4>
+<div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>  <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> pip uninstall underworld3</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>And to clean the source directory if applicable</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>  <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> cd /path/to/underworld3</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="kw">(</span><span class="ex">uw3</span><span class="kw">)</span> <span class="ex">%</span> ./clean.sh</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </section>
 </section>
 <section id="docker-container" class="level2">
