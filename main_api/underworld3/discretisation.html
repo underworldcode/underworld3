@@ -295,10 +295,12 @@ Over-ride the varname with a symbolic form for printing etc (latex). Should be a
 &#34;&#34;&#34;
 
     ## The mesh Var attributes
-    
+
     def get_cell_field_size(h5_filename, mesh_var):
-        with h5py.File(h5_filename, &#39;r&#39;) as f:
-            size = f[f&#39;cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}&#39;].shape[0]
+        with h5py.File(h5_filename, &#34;r&#34;) as f:
+            size = f[f&#34;cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}&#34;].shape[
+                0
+            ]
         return size
 
     attributes = &#34;&#34;
@@ -311,7 +313,7 @@ Over-ride the varname with a symbolic form for printing etc (latex). Should be a
             variable_type = &#34;Vector&#34;
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
-        if not getattr(var, &#34;continuous&#34;) or getattr(var, &#34;degree&#34;)==0:
+        if not getattr(var, &#34;continuous&#34;) or getattr(var, &#34;degree&#34;) == 0:
             center = &#34;Cell&#34;
             numItems = get_cell_field_size(var_filename, var)
             field_group = &#34;cell_fields&#34;
@@ -847,6 +849,12 @@ True: index into the local coordinate array</p>
         else:
             self.dm.setName(f&#34;uw_{self.name}&#34;)
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETSc dmplex set-up complete&#34;,
+                flush=True,
+            )
+
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
@@ -942,6 +950,12 @@ True: index into the local coordinate array</p>
 
         if verbose and uw.mpi.rank == 0:
             print(
+                f&#34;PETSc spatial discretisation - complete&#34;,
+                flush=True,
+            )
+
+        if verbose and uw.mpi.rank == 0:
+            print(
                 f&#34;Populating mesh coordinates {coordinate_system_type}&#34;,
                 flush=True,
             )
@@ -1019,32 +1033,36 @@ True: index into the local coordinate array</p>
                 print(f&#34;\n&#34;)
                 print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
 
-                uw.visualisation.plot_mesh(self)
+                # Only if notebook and serial
+                if uw.is_notebook and uw.mpi.size == 1:
+                    uw.visualisation.plot_mesh(self, window_size=(600, 400))
 
                 # Total number of cells
                 nstart, nend = self.dm.getHeightStratum(0)
                 num_cells = nend - nstart
-                print(f&#34;Number of cells: {num_cells}\n&#34;)
 
-                if len(self.vars) &gt; 0:
-                    print(
-                        f&#34;| Variable Name       | component | degree |     type        |&#34;
-                    )
-                    print(
-                        f&#34;| ---------------------------------------------------------- |&#34;
-                    )
-                    for vname in self.vars.keys():
-                        v = self.vars[vname]
+                if uw.mpi.rank == 0:
+                    print(f&#34;Number of cells: {num_cells}\n&#34;)
+
+                    if len(self.vars) &gt; 0:
                         print(
-                            f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                            f&#34;| Variable Name       | component | degree |     type        |&#34;
                         )
+                        print(
+                            f&#34;| ---------------------------------------------------------- |&#34;
+                        )
+                        for vname in self.vars.keys():
+                            v = self.vars[vname]
+                            print(
+                                f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                            )
 
-                    print(
-                        f&#34;| ---------------------------------------------------------- |&#34;
-                    )
-                    print(&#34;\n&#34;, flush=True)
-                else:
-                    print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
+                        print(
+                            f&#34;| ---------------------------------------------------------- |&#34;
+                        )
+                        print(&#34;\n&#34;, flush=True)
+                    else:
+                        print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
 
             ## Boundary information
 
@@ -3770,32 +3788,36 @@ If the local vector is already up to date, this method will do nothing.</p></div
             print(f&#34;\n&#34;)
             print(f&#34;Mesh # {self.instance}: {self.name}\n&#34;)
 
-            uw.visualisation.plot_mesh(self)
+            # Only if notebook and serial
+            if uw.is_notebook and uw.mpi.size == 1:
+                uw.visualisation.plot_mesh(self, window_size=(600, 400))
 
             # Total number of cells
             nstart, nend = self.dm.getHeightStratum(0)
             num_cells = nend - nstart
-            print(f&#34;Number of cells: {num_cells}\n&#34;)
 
-            if len(self.vars) &gt; 0:
-                print(
-                    f&#34;| Variable Name       | component | degree |     type        |&#34;
-                )
-                print(
-                    f&#34;| ---------------------------------------------------------- |&#34;
-                )
-                for vname in self.vars.keys():
-                    v = self.vars[vname]
+            if uw.mpi.rank == 0:
+                print(f&#34;Number of cells: {num_cells}\n&#34;)
+
+                if len(self.vars) &gt; 0:
                     print(
-                        f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                        f&#34;| Variable Name       | component | degree |     type        |&#34;
                     )
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
+                    for vname in self.vars.keys():
+                        v = self.vars[vname]
+                        print(
+                            f&#34;| {v.clean_name:&lt;20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |&#34;
+                        )
 
-                print(
-                    f&#34;| ---------------------------------------------------------- |&#34;
-                )
-                print(&#34;\n&#34;, flush=True)
-            else:
-                print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
+                    print(
+                        f&#34;| ---------------------------------------------------------- |&#34;
+                    )
+                    print(&#34;\n&#34;, flush=True)
+                else:
+                    print(f&#34;No variables are defined on the mesh\n&#34;, flush=True)
 
         ## Boundary information
 

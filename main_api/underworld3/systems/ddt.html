@@ -50,7 +50,7 @@ el.replaceWith(d);
 <dl>
 <dt id="underworld3.systems.ddt.Eulerian"><code class="flex name class">
 <span>class <span class="ident">Eulerian</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: <function MeshVariable at 0x7f5e720a9bc0> | sympy.core.basic.Basic,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>evalf: bool | None = False,<br>theta: float | None = 0.5,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>psi_fn: <function MeshVariable at 0x7f929eb99bc0> | sympy.core.basic.Basic,<br>vtype: underworld3._var_types.VarType,<br>degree: int,<br>continuous: bool,<br>evalf: bool | None = False,<br>theta: float | None = 0.5,<br>varsymbol: str | None = 'u',<br>verbose: bool | None = False,<br>bcs=[],<br>order=1,<br>smoothing=0.0)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -1413,8 +1413,10 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">class SemiLagrangian(uw_object):
-    r&#34;&#34;&#34;Nodal-Swarm  Lagrangian History Manager:
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    r&#34;&#34;&#34;
+    # Nodal-Swarm  Semi-Lagrangian History Manager:
+
+    This manages the semi-Lagrangian update of a Mesh Variable, $\psi$, on the mesh across timesteps.
     $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
     $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
     $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
@@ -1654,6 +1656,8 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
             #                 self.psi_star[i].sym[d], self._nswarm_psi.data
             #             )
             # else:
+            #
+
             with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
                 for d in range(self.psi_star[i].shape[1]):
                     self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
@@ -1825,9 +1829,9 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
 
         return am</code></pre>
 </details>
-<div class="desc"><p>Nodal-Swarm
-Lagrangian History Manager:
-This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+<div class="desc"><h1 id="nodal-swarm-semi-lagrangian-history-manager">Nodal-Swarm
+Semi-Lagrangian History Manager:</h1>
+<p>This manages the semi-Lagrangian update of a Mesh Variable, $\psi$, on the mesh across timesteps.
 <span><span class="MathJax_Preview">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad</script></span>
 <span><span class="MathJax_Preview">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</span><script type="math/tex; mode=display">\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad</script></span>
 <span><span class="MathJax_Preview">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</span><script type="math/tex; mode=display">\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}</script></span></p></div>
@@ -2048,6 +2052,8 @@ Note that you will need <code>bdf</code> / $\delta t$ in computing derivatives</
         #                 self.psi_star[i].sym[d], self._nswarm_psi.data
         #             )
         # else:
+        #
+
         with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
             for d in range(self.psi_star[i].shape[1]):
                 self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(

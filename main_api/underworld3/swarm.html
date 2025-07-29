@@ -425,7 +425,7 @@ def sym_1d(self):
 </dd>
 <dt id="underworld3.swarm.NodalPointPICSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointPICSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f5e720a9bc0>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f929eb99bc0>, verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -622,7 +622,7 @@ def advection(
 </dd>
 <dt id="underworld3.swarm.NodalPointUWSwarm"><code class="flex name class">
 <span>class <span class="ident">NodalPointUWSwarm</span></span>
-<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f5e720a9bc0>, verbose=False)</span>
+<span>(</span><span>trackedVariable: <function MeshVariable at 0x7f929eb99bc0>, verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3849,7 +3849,7 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
         npoints = len(valid_coordinates)
         swarm_size = self.dm.getLocalSize()
 
-        # -1 means no particles have been added yet
+        # -1 means no particles have been added yet (PETSc interface change)
         if swarm_size == -1:
             swarm_size = 0
             npoints = npoints + 1
@@ -3869,7 +3869,6 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
                 self._remeshed.data[...] = 0
 
         self.dm.migrate(remove_sent_points=True)
-
         return npoints
 
     @timing.routine_timer_decorator
@@ -4553,8 +4552,6 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
                         + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
-
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
@@ -4584,7 +4581,6 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
 
                     new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
@@ -4613,8 +4609,6 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
                         ).reshape(-1)
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
-
-                    # validate_coords to ensure they live within the domain (or there will be trouble)
 
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
@@ -4704,6 +4698,13 @@ The type of compression to use. 'gzip' and 'lzf' are the supported types, with '
             self.cycle += 1
 
             ## End of cycle_swarm loop
+            #
+
+        # Remove points no longer in the domain
+        self.migrate(
+            delete_lost_points=True,
+            max_its=1,
+        )
 
         return
 
@@ -5110,7 +5111,7 @@ def add_particles_with_coordinates(self, coordinatesArray) -&gt; int:
     npoints = len(valid_coordinates)
     swarm_size = self.dm.getLocalSize()
 
-    # -1 means no particles have been added yet
+    # -1 means no particles have been added yet (PETSc interface change)
     if swarm_size == -1:
         swarm_size = 0
         npoints = npoints + 1
@@ -5130,7 +5131,6 @@ def add_particles_with_coordinates(self, coordinatesArray) -&gt; int:
             self._remeshed.data[...] = 0
 
     self.dm.migrate(remove_sent_points=True)
-
     return npoints</code></pre>
 </details>
 <div class="desc"><p>Add particles to the swarm using particle coordinates provided
@@ -5382,8 +5382,6 @@ def advection(
                     + 0.5 * delta_t * v_at_Vpts / substeps
                 )
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
-
                 if restore_points_to_domain_func is not None:
                     mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
@@ -5413,7 +5411,6 @@ def advection(
 
                 new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
-                # validate_coords to ensure they live within the domain (or there will be trouble)
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
 
@@ -5442,8 +5439,6 @@ def advection(
                     ).reshape(-1)
 
                 new_coords = self.data + delta_t * v_at_Vpts / substeps
-
-                # validate_coords to ensure they live within the domain (or there will be trouble)
 
                 if restore_points_to_domain_func is not None:
                     new_coords = restore_points_to_domain_func(new_coords)
@@ -5533,6 +5528,13 @@ def advection(
         self.cycle += 1
 
         ## End of cycle_swarm loop
+        #
+
+    # Remove points no longer in the domain
+    self.migrate(
+        delete_lost_points=True,
+        max_its=1,
+    )
 
     return</code></pre>
 </details>

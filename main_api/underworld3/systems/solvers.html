@@ -65,7 +65,7 @@ el.replaceWith(d);
 <dl>
 <dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion"><code class="flex name class">
 <span>class <span class="ident">SNES_AdvectionDiffusion</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0>,<br>V_fn: <function MeshVariable at 0x7f5e720a9bc0> | sympy.core.basic.Basic,<br>order: int = 1,<br>restore_points_func: Callable = None,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f929eb99bc0>,<br>V_fn: <function MeshVariable at 0x7f929eb99bc0> | sympy.core.basic.Basic,<br>order: int = 1,<br>restore_points_func: Callable = None,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -74,6 +74,8 @@ el.replaceWith(d);
 </summary>
 <pre><code class="python">class SNES_AdvectionDiffusion(SNES_Scalar):
     r&#34;&#34;&#34;
+    # Advection-Diffusion Equation Solver (Scalar Variable)
+
     This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
     which is described in Spiegelman &amp; Katz, (2006).
 
@@ -96,7 +98,7 @@ el.replaceWith(d);
       - The unknown is $u$.
 
       - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it&#39;s not. Currently it is a MeshVariable** this is the desired behaviour though.
+        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it&#39;s not.
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.constitutive_models` classes and populating the parameters.
@@ -106,7 +108,9 @@ el.replaceWith(d);
       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
+    ## References
 
+    Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
 
     &#34;&#34;&#34;
 
@@ -402,7 +406,8 @@ el.replaceWith(d);
 
         return</code></pre>
 </details>
-<div class="desc"><p>This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
+<div class="desc"><h1 id="advection-diffusion-equation-solver-scalar-variable">Advection-Diffusion Equation Solver (Scalar Variable)</h1>
+<p>This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
 which is described in Spiegelman &amp; Katz, (2006).</p>
 <p><span><span class="MathJax_Preview">
 \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
@@ -427,7 +432,7 @@ swarm variable which is advected backwards from the nodal points automatically d
 </li>
 <li>
 <p>The velocity field is $\mathbf{v}$ and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be
-calculated in situ (e.g. <code>V_Field = v_solution.sym</code>) <strong>NOTE: no it's not. Currently it is a MeshVariable</strong> this is the desired behaviour though.</p>
+calculated in situ (e.g. <code>V_Field = v_solution.sym</code>) **NOTE: no it's not.</p>
 </li>
 <li>
 <p>The diffusivity tensor, $\kappa$ is provided by setting the <code>constitutive_model</code> property to
@@ -439,7 +444,9 @@ or anisotropic.</p>
 <p>Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of <code>sympy</code> functions of position and
 <code>meshVariable</code> or <code>swarmVariable</code> types.</p>
 </li>
-</ul></div>
+</ul>
+<h2 id="references">References</h2>
+<p>Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). <a href="https://doi.org/10.1029/2005GC001073">https://doi.org/10.1029/2005GC001073</a></p></div>
 <h3>Ancestors</h3>
 <ul class="hlist">
 <li>underworld3.cython.generic_solvers.SNES_Scalar</li>
@@ -713,7 +720,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Darcy"><code class="flex name class">
 <span>class <span class="ident">SNES_Darcy</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>h_Field: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>v_Field: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int = 2,<br>verbose=False,<br>DuDt=None,<br>DFDt=None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>h_Field: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>v_Field: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>degree: int = 2,<br>verbose=False,<br>DuDt=None,<br>DFDt=None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -722,6 +729,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </summary>
 <pre><code class="python">class SNES_Darcy(SNES_Scalar):
     r&#34;&#34;&#34;
+    # Darcy Flow Equation Solver
+
     This class provides functionality for a discrete representation
     of the Groundwater flow equations
 
@@ -915,7 +924,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
     #     self._v_projector._setup_terms()  # _setup_pointwise_functions()  #
     #     super()._setup_terms()</code></pre>
 </details>
-<div class="desc"><p>This class provides functionality for a discrete representation
+<div class="desc"><h1 id="darcy-flow-equation-solver">Darcy Flow Equation Solver</h1>
+<p>This class provides functionality for a discrete representation
 of the Groundwater flow equations</p>
 <p><span><span class="MathJax_Preview">
 \color{Green}{\underbrace{ \Bigl[
@@ -1141,7 +1151,7 @@ value used to evaluate inertial contribution</p></div>
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Diffusion"><code class="flex name class">
 <span>class <span class="ident">SNES_Diffusion</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0>,<br>order: int = 1,<br>theta: float = 0.0,<br>evalf: bool | None = False,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f929eb99bc0>,<br>order: int = 1,<br>theta: float = 0.0,<br>evalf: bool | None = False,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -1150,6 +1160,8 @@ value used to evaluate inertial contribution</p></div>
 </summary>
 <pre><code class="python">class SNES_Diffusion(SNES_Scalar):
     r&#34;&#34;&#34;
+    # Diffusion Equation Solver (Scalar Variable)
+
     This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
 
     $$
@@ -1172,8 +1184,6 @@ value used to evaluate inertial contribution</p></div>
 
       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
-
-
 
     &#34;&#34;&#34;
 
@@ -1439,7 +1449,8 @@ value used to evaluate inertial contribution</p></div>
 
         return</code></pre>
 </details>
-<div class="desc"><p>This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.</p>
+<div class="desc"><h1 id="diffusion-equation-solver-scalar-variable">Diffusion Equation Solver (Scalar Variable)</h1>
+<p>This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.</p>
 <p><span><span class="MathJax_Preview">
 \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
 \nabla \cdot
@@ -1692,7 +1703,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_NavierStokes"><code class="flex name class">
 <span>class <span class="ident">SNES_NavierStokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0>,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0>,<br>rho: float | None = 0.0,<br>restore_points_func: Callable = None,<br>order: int | None = 2,<br>p_continuous: bool | None = False,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f929eb99bc0>,<br>pressureField: <function MeshVariable at 0x7f929eb99bc0>,<br>rho: float | None = 0.0,<br>restore_points_func: Callable = None,<br>order: int | None = 2,<br>p_continuous: bool | None = False,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -1701,6 +1712,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </summary>
 <pre><code class="python">class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     r&#34;&#34;&#34;
+    # Navier-Stokes Equation Solver
+
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman &amp; Katz, 2006) but using a
     distributed sampling of upstream values taken from an arbitrary swarm variable.
@@ -1727,9 +1740,6 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 
       - The unknown is $u$.
 
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
       - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user&#39;s responsibility to keep this
         variable updated.
 
@@ -1746,7 +1756,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
         Spiegelman &amp; Katz recommend cubic or higher degree for $u$ but this is not checked.
 
-    ## Reference
+    ## References
 
     Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
     of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
@@ -2027,7 +2037,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
         timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
-        evalf=False,
+        _evalf=False,
         order=None,
     ):
         &#34;&#34;&#34;
@@ -2062,8 +2072,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
             print(f&#34;NS solver - pre-solve DuDt update&#34;, flush=True)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
         if uw.mpi.rank == 0 and verbose:
             print(f&#34;NS solver - solve Stokes flow&#34;, flush=True)
@@ -2078,8 +2088,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
         if uw.mpi.rank == 0 and verbose:
             print(f&#34;NS solver - post-solve DuDt update&#34;, flush=True)
 
-        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -2158,7 +2168,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 
         return dt_diff, dt_adv</code></pre>
 </details>
-<div class="desc"><p>This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
+<div class="desc"><h1 id="navier-stokes-equation-solver">Navier-Stokes Equation Solver</h1>
+<p>This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
 used in the Semi-Lagrange Crank-Nicholson method (Spiegelman &amp; Katz, 2006) but using a
 distributed sampling of upstream values taken from an arbitrary swarm variable.</p>
 <p><span><span class="MathJax_Preview">
@@ -2189,10 +2200,6 @@ for history tracking of variables with different interpolation order and for mat
 <p>The unknown is $u$.</p>
 </li>
 <li>
-<p>The velocity field is $\mathbf{v}$ and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be
-calculated in situ (e.g. <code>V_Field = v_solution.sym</code>)</p>
-</li>
-<li>
 <p>The history variable is $u^*$ and is provided in the form of a <code>sympy</code> function. It is the user's responsibility to keep this
 variable updated.</p>
 </li>
@@ -2212,7 +2219,7 @@ or anisotropic.</p>
 <li>The solver requires relatively high order shape functions to accurately interpolate the history terms.
 Spiegelman &amp; Katz recommend cubic or higher degree for $u$ but this is not checked.</li>
 </ul>
-<h2 id="reference">Reference</h2>
+<h2 id="references">References</h2>
 <p>Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
 of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). <a href="https://doi.org/10.1029/2005GC001073">https://doi.org/10.1029/2005GC001073</a></p></div>
 <h3>Ancestors</h3>
@@ -2559,7 +2566,7 @@ so the $\delta_t$ should be interpreted as:</p>
 <div class="desc"></div>
 </dd>
 <dt id="underworld3.systems.solvers.SNES_NavierStokes.solve"><code class="name flex">
-<span>def <span class="ident">solve</span></span>(<span>self,<br>zero_init_guess: bool = True,<br>timestep: float = None,<br>verbose=False,<br>evalf=False,<br>order=None)</span>
+<span>def <span class="ident">solve</span></span>(<span>self,<br>zero_init_guess: bool = True,<br>timestep: float = None,<br>verbose=False,<br>order=None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -2573,7 +2580,7 @@ def solve(
     timestep: float = None,
     _force_setup: bool = False,
     verbose=False,
-    evalf=False,
+    _evalf=False,
     order=None,
 ):
     &#34;&#34;&#34;
@@ -2608,8 +2615,8 @@ def solve(
         print(f&#34;NS solver - pre-solve DuDt update&#34;, flush=True)
 
     # Update SemiLagrange Flux terms
-    self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-    self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+    self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+    self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
     if uw.mpi.rank == 0 and verbose:
         print(f&#34;NS solver - solve Stokes flow&#34;, flush=True)
@@ -2624,8 +2631,8 @@ def solve(
     if uw.mpi.rank == 0 and verbose:
         print(f&#34;NS solver - post-solve DuDt update&#34;, flush=True)
 
-    self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-    self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+    self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+    self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
     self.is_setup = True
     self.constitutive_model._solver_is_setup = True
@@ -2642,7 +2649,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Poisson"><code class="flex name class">
 <span>class <span class="ident">SNES_Poisson</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>verbose=False,<br>degree=2,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f929eb99bc0> = None,<br>verbose=False,<br>degree=2,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -2651,6 +2658,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </summary>
 <pre><code class="python">class SNES_Poisson(SNES_Scalar):
     r&#34;&#34;&#34;
+    # Poisson Equation Solver
+
     This class provides functionality for a discrete representation
     of the Poisson equation
 
@@ -2753,7 +2762,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
     def CM_is_setup(self):
         return self._constitutive_model._solver_is_setup</code></pre>
 </details>
-<div class="desc"><p>This class provides functionality for a discrete representation
+<div class="desc"><h1 id="poisson-equation-solver">Poisson Equation Solver</h1>
+<p>This class provides functionality for a discrete representation
 of the Poisson equation</p>
 <p><span><span class="MathJax_Preview">
 \nabla \cdot
@@ -2884,7 +2894,7 @@ def poisson_problem_description(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f929eb99bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -2893,6 +2903,8 @@ def poisson_problem_description(self):
 </summary>
 <pre><code class="python">class SNES_Projection(SNES_Scalar):
     r&#34;&#34;&#34;
+    # Projection Solver
+
     Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
     $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -2991,7 +3003,8 @@ def poisson_problem_description(self):
         self.is_setup = False
         self._uw_weighting_function = user_uw_function</code></pre>
 </details>
-<div class="desc"><p>Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
+<div class="desc"><h1 id="projection-solver">Projection Solver</h1>
+<p>Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
 $u$ is a <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
 continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
 the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
@@ -3104,7 +3117,7 @@ def uw_weighting_function(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Stokes"><code class="flex name class">
 <span>class <span class="ident">SNES_Stokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>degree: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3113,6 +3126,8 @@ def uw_weighting_function(self):
 </summary>
 <pre><code class="python">class SNES_Stokes(SNES_Stokes_SaddlePt):
     r&#34;&#34;&#34;
+    # Stokes Equation Solver
+
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint.
@@ -3379,7 +3394,8 @@ def uw_weighting_function(self):
     #     self.is_setup = False
     #     self._continuity_rhs.sym = value</code></pre>
 </details>
-<div class="desc"><p>This class provides functionality for a discrete representation
+<div class="desc"><h1 id="stokes-equation-solver">Stokes Equation Solver</h1>
+<p>This class provides functionality for a discrete representation
 of the Stokes flow equations assuming an incompressibility
 (or near-incompressibility) constraint.</p>
 <p><span><span class="MathJax_Preview">
@@ -3735,7 +3751,7 @@ def stokes_problem_description(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Tensor_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Tensor_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>tensor_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>scalar_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>tensor_Field: <function MeshVariable at 0x7f929eb99bc0> = None,<br>scalar_Field: <function MeshVariable at 0x7f929eb99bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3744,6 +3760,8 @@ def stokes_problem_description(self):
 </summary>
 <pre><code class="python">class SNES_Tensor_Projection(SNES_Projection):
     r&#34;&#34;&#34;
+    # Projection Solver (Tensor Variable)
+
     Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
     $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -3856,7 +3874,8 @@ def stokes_problem_description(self):
         self.is_setup = False
         self._uw_scalar_function = user_uw_function</code></pre>
 </details>
-<div class="desc"><p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
+<div class="desc"><h1 id="projection-solver-tensor-variable">Projection Solver (Tensor Variable)</h1>
+<p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
 $\mathbf{u}$ is a tensor <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
 continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
 the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
@@ -3991,7 +4010,7 @@ and <code>self.p</code> will be used.</p></div>
 </dd>
 <dt id="underworld3.systems.solvers.SNES_VE_Stokes"><code class="flex name class">
 <span>class <span class="ident">SNES_VE_Stokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f5e720a9bc0> | None = None,<br>degree: int | None = 2,<br>order: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f929eb99bc0> | None = None,<br>degree: int | None = 2,<br>order: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -4000,6 +4019,8 @@ and <code>self.p</code> will be used.</p></div>
 </summary>
 <pre><code class="python">class SNES_VE_Stokes(SNES_Stokes):
     r&#34;&#34;&#34;
+    # ViscoElastic Stokes Equation Solver
+
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint and with a flux history
@@ -4183,7 +4204,8 @@ and <code>self.p</code> will be used.</p></div>
 
         return</code></pre>
 </details>
-<div class="desc"><p>This class provides functionality for a discrete representation
+<div class="desc"><h1 id="viscoelastic-stokes-equation-solver">ViscoElastic Stokes Equation Solver</h1>
+<p>This class provides functionality for a discrete representation
 of the Stokes flow equations assuming an incompressibility
 (or near-incompressibility) constraint and with a flux history
 term included to allow for viscoelastic modelling.</p>
@@ -4376,7 +4398,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Vector_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Vector_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f5e720a9bc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f929eb99bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -4385,6 +4407,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </summary>
 <pre><code class="python">class SNES_Vector_Projection(SNES_Vector):
     r&#34;&#34;&#34;
+    # Projection Solver (Vector Variable)
+
     Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
     $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -4518,7 +4542,8 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
         self.is_setup = False
         self._uw_weighting_function = user_uw_function</code></pre>
 </details>
-<div class="desc"><p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
+<div class="desc"><h1 id="projection-solver-vector-variable">Projection Solver (Vector Variable)</h1>
+<p>Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
 $\mathbf{u}$ is a vector <code>meshVariable</code> with associated shape functions. Typically, the projection is used to obtain a
 continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
 the spatial derivatives of one or more <code>meshVariable</code> (e.g. components of fluxes) can be mapped to continuous
