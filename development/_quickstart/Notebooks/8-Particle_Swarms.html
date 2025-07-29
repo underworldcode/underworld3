@@ -234,17 +234,17 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  <a href="../Notebooks/4-Solvers-i-Poisson.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  <a href="../Notebooks/5-Solvers-ii-Stokes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -309,23 +309,23 @@ window.Quarto = {
 </caption>
 </div>
 -->
-<p>We used a particle swarm to track the flow in Example 7. We called this a “passive” swarm because the points did not influence the flow in any way but was simply carried along.</p>
+<p>We used a particle swarm to track the flow in Example 7. We called this a “passive” swarm because the points did not influence the flow in any way but were simply carried along with the fluid.</p>
 <p>Particle swarms are unstructured data objects that live within the computational domain. Their points can be moved arbitrarily through the domain and points may migrate from one process to another when the coordinates are changed. By default they carry only the particle location, but we can add scalar, vector and tensor variables to the swarm and they will be transported with the particles.</p>
 <p>Particle transport is usually through a velocity or displacement field that incrementally changes the locations. This is a common use, but particles can be used to represent any unstructured field. For example, during mesh adaptation, the nodal points from the previous mesh are equivalent to a disconnected swarm from the point of view of the new mesh. The same is true when reading data save from one mesh to the <code>MeshVariables</code> on another.</p>
 <div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-execution_count="2">
-<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div id="d17b5f9b-d00e-43c2-ba10-b9a8920aa3be" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>res <span class="op">=</span> <span class="dv">12</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>width <span class="op">=</span> <span class="dv">8</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.UnstructuredSimplexBox(</span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    cellSize<span class="op">=</span><span class="dv">1</span><span class="op">/</span>res,</span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    minCoords<span class="op">=</span>(<span class="fl">0.0</span>,<span class="fl">0.0</span>),</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    cellSize<span class="op">=</span><span class="dv">1</span> <span class="op">/</span> res,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    minCoords<span class="op">=</span>(<span class="fl">0.0</span>, <span class="fl">0.0</span>),</span>
 <span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    maxCoords<span class="op">=</span>(width, <span class="fl">1.0</span>),</span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    qdegree<span class="op">=</span><span class="dv">3</span>,     </span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    qdegree<span class="op">=</span><span class="dv">3</span>,</span>
 <span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>)</span>
 <span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Coordinate directions etc</span></span>
@@ -334,21 +334,20 @@ window.Quarto = {
 <div id="0bfae0f1-b6e8-45d4-8b02-987915ce1d47" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># original y coordinate</span></span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>y0 <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"Y0"</span>, </span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>                                    mesh, </span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>                                    vtype<span class="op">=</span>uw.VarType.SCALAR,</span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>                                    varsymbol<span class="op">=</span><span class="vs">r"y_0"</span>)</span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(y0):</span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    y0.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evalf(y, y0.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>y0 <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Y0"</span>, mesh, vtype<span class="op">=</span>uw.VarType.SCALAR, varsymbol<span class="op">=</span><span class="vs">r"y_0"</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(y0):</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    y0.data[:, <span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(y, y0.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <section id="deform-the-mesh" class="level4">
 <h4 class="anchored" data-anchor-id="deform-the-mesh">Deform the mesh</h4>
 <p>Move all nodes down to meet an undulating lower surface. The displacement field is smooth and continuous, so there is no particular need to remesh in this case. However, it is generally better to consider either deforming the mesh with <code>gmsh</code> before triangulation, or remeshing (both are possible with underworld3, but not as simple to demonstrate).</p>
 <div id="5d0ed583-0e58-4079-a924-410c15297d4d" class="cell" data-scrolled="true" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>new_coords <span class="op">=</span> mesh.data</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>dy <span class="op">=</span>  (<span class="dv">1</span><span class="op">-</span>y) <span class="op">*</span> (sympy.sin(sympy.pi <span class="op">*</span> x)<span class="op">/</span><span class="dv">10</span>) </span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>new_coords[:,<span class="dv">1</span>] <span class="op">=</span> uw.function.evalf(y<span class="op">-</span>dy, mesh.data)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>dy <span class="op">=</span> (<span class="dv">1</span> <span class="op">-</span> y) <span class="op">*</span> (sympy.sin(sympy.pi <span class="op">*</span> x) <span class="op">/</span> <span class="dv">10</span>)</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>new_coords[:, <span class="dv">1</span>] <span class="op">=</span> uw.function.evaluate(y <span class="op">-</span> dy, mesh.data)</span>
 <span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>display(dy)</span>
 <span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a></span>
@@ -357,262 +356,277 @@ window.Quarto = {
 <p><span class="math inline">\(\displaystyle \frac{\left(1 - \mathrm{y}\right) \sin{\left(\mathrm{x} \pi \right)}}{10}\)</span></p>
 </div>
 </div>
-<div id="3a2dd8a5-b391-41d2-9a57-dd2cb18e4ca9" class="cell" data-execution_count="6">
+<div id="3a2dd8a5-b391-41d2-9a57-dd2cb18e4ca9" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># y coordinate after 1st deformation</span></span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>y1 <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"Y1"</span>, </span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>                                    mesh, </span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>                                    vtype<span class="op">=</span>uw.VarType.SCALAR,</span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>                                    varsymbol<span class="op">=</span><span class="vs">r"y_1"</span>)</span>
-<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(y1):</span>
-<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    y1.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evalf(y, y1.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>y1 <span class="op">=</span> uw.discretisation.MeshVariable(</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Y1"</span>, mesh, vtype<span class="op">=</span>uw.VarType.SCALAR, varsymbol<span class="op">=</span><span class="vs">r"y_1"</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> mesh.access(y1):</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    y1.data[:, <span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(y, y1.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Variable with name Y1 already exists on the mesh - Skipping.</code></pre>
+</div>
 </div>
 </section>
 <section id="deform-the-mesh-again" class="level4">
 <h4 class="anchored" data-anchor-id="deform-the-mesh-again">Deform the mesh again</h4>
 <p>Now we tilt the lower surface down. The variable <code>y1</code> is negative in regions where the surface was low in the deformed mesh so it is a good first approximation to where ponds of dense fluid <em>might</em> form (e.g.&nbsp;water under ice).</p>
-<div id="765c02f4-78fa-4c75-958c-c56192e3e37c" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>new_coords <span class="op">=</span> mesh.data</span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>dy <span class="op">=</span>  (<span class="dv">1</span><span class="op">-</span>y) <span class="op">*</span> x<span class="op">/</span><span class="dv">16</span> </span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>new_coords[:,<span class="dv">1</span>] <span class="op">=</span> uw.function.evalf(y<span class="op">-</span>dy, mesh.data)</span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>mesh.deform_mesh(new_coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-</div>
-<div id="c3e1937a-2c8c-46e7-992f-3b74cd991463" class="cell" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<div id="765c02f4-78fa-4c75-958c-c56192e3e37c" class="cell" data-execution_count="8">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>new_coords <span class="op">=</span> mesh.data</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>dy <span class="op">=</span> (<span class="dv">1</span> <span class="op">-</span> y) <span class="op">*</span> x <span class="op">/</span> <span class="dv">16</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>new_coords[:, <span class="dv">1</span>] <span class="op">=</span> uw.function.evaluate(y <span class="op">-</span> dy, mesh.data)</span>
 <span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y0"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y0.sym)</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y1"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y1.sym)</span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
-<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"y1"</span>,</span>
-<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
-<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
-<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
-<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>    pl.camera.zoom(<span class="dv">3</span>)</span>
-<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>mesh.deform_mesh(new_coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="c3e1937a-2c8c-46e7-992f-3b74cd991463" class="cell" data-execution_count="9">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y0"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y0.sym)</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y1"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y1.sym)</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"y1"</span>,</span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>    pl.camera.zoom(<span class="dv">3</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="add-a-swarm-to-this-mesh" class="level3">
 <h3 class="anchored" data-anchor-id="add-a-swarm-to-this-mesh">Add a swarm to this mesh</h3>
 <p>A swarm object can be constructed either by adding local points (Example 7) or by filling the mesh with a given density. The density value that we provide (<code>fill_param</code>) adds particles on the Gaussian integration points: 0 will populate the centroids of the mesh elements A value of 1 provides three points per triangle, four per quad, four in a tetrahedron, eight in a hexahedron (the points that support linear interpolation in standard FEM).</p>
 <p><strong>Note:</strong> in the current implementation of <code>underworld</code> swarm, we an only start adding points when the swarm variables are all finalised.</p>
-<div id="82355f5f-f62b-4630-b999-dc79787fda4c" class="cell" data-execution_count="9">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>swarm <span class="op">=</span> uw.swarm.Swarm(mesh)</span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> uw.swarm.SwarmVariable(<span class="st">"S"</span>, </span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>                           swarm, </span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>                           vtype<span class="op">=</span>uw.VarType.SCALAR, </span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>                           proxy_degree<span class="op">=</span><span class="dv">1</span>, </span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>                           proxy_continuous<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>                           varsymbol<span class="op">=</span><span class="vs">r"</span><span class="dv">\S</span><span class="vs">igma"</span>,</span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>                       )</span>
-<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="co">## It is a limitation of the swarm that we </span></span>
-<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a><span class="co">## can only start adding points when the swarm variables </span></span>
-<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="co">## are all finalised.</span></span>
-<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>swarm.populate(<span class="dv">0</span>)</span>
-<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a><span class="co">## Set some values on s</span></span>
-<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> swarm.access(s):</span>
-<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>    s.data[:,<span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(y1.sym, swarm.particle_coordinates.data)</span>
-<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="82355f5f-f62b-4630-b999-dc79787fda4c" class="cell" data-execution_count="20">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>swarm <span class="op">=</span> uw.swarm.Swarm(mesh)</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> uw.swarm.SwarmVariable(</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">"S"</span>,</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    swarm,</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>    vtype<span class="op">=</span>uw.VarType.SCALAR,</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>    proxy_degree<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    proxy_continuous<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>    varsymbol<span class="op">=</span><span class="vs">r"</span><span class="dv">\S</span><span class="vs">igma"</span>,</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a><span class="co">## It is a limitation of the swarm that we</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="co">## can only start adding points when the swarm variables</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a><span class="co">## are all finalised.</span></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>swarm.populate(<span class="dv">0</span>)</span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a><span class="co">## Set some values on s</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> swarm.access(s):</span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>    s.data[:, <span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(y1.sym, swarm.particle_coordinates.data)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Variable with name proxy_S already exists on the mesh - Skipping.</code></pre>
+</div>
 </div>
 <section id="proxy-variables" class="level4">
 <h4 class="anchored" data-anchor-id="proxy-variables">Proxy Variables</h4>
 <p>Swarm variables are completely unstructured (they are not located on a grid and they also have no neighbour information). We want to be able to mix their values with mesh-based variables in <code>sympy</code> expressions. To do this, each swarm variable has (by default) a <em>proxy</em> mesh variable which is constructed through a projection to nodal point values. It is accessed as <code>SwarmVariable.sym</code> and, symbolically, it is bracketed <span class="math inline">\(\left&lt; \cdot \right&gt;\)</span> as a reminder that there is a projection in between the values and the representation on the mesh.</p>
-<div id="384bb196-a1ba-4d17-b952-546dd0067f63" class="cell" data-execution_count="10">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>s.sym <span class="op">+</span> y1.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="10">
-<p><span class="math inline">\(\displaystyle \left[\begin{matrix}{\left&lt;\Sigma\right&gt;}(\mathbf{x}) + {y_1}(\mathbf{x})\end{matrix}\right]\)</span></p>
+<section id="resolution-of-proxy-variables" class="level5">
+<h5 class="anchored" data-anchor-id="resolution-of-proxy-variables">Resolution of proxy variables</h5>
+<p>The default projection method from Lagrangian swarm variables onto nodal point variables is an inverse-distance weighted average computed using the <code>underworld</code> radial basis function module. This is robust and reproducible, but does not preserve moments of the particle field. You can explore the effect of different swarm densities on the fidelity of the mesh representation by adjusting the number of particles in the swarm (in the cell above) and checking the resulting fields.</p>
+<div id="384bb196-a1ba-4d17-b952-546dd0067f63" class="cell" data-execution_count="21">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>s.sym <span class="op">+</span> y1.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="21">
+<p><span class="math inline">\(\displaystyle \left[\begin{matrix}{ \hspace{ 0.02pt } {\left&lt;\Sigma\right&gt;} }(\mathbf{x}) + { \hspace{ 0.02pt } {y_1} }(\mathbf{x})\end{matrix}\right]\)</span></p>
 </div>
 </div>
-<div id="43728b48-ce25-4cde-b6d2-87185479dda5" class="cell" data-scrolled="true" data-execution_count="11">
-<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y0"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y0.sym)</span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y1"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y1.sym)</span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"S"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym)</span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"delta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym <span class="op">-</span> y1.sym)</span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    swarm_points <span class="op">=</span> vis.swarm_to_pv_cloud(swarm)</span>
-<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
-<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
-<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
-<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"delta"</span>,</span>
-<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
-<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.75</span>,</span>
-<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a>    pl.add_points(swarm_points.points, </span>
-<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a>                  point_size<span class="op">=</span><span class="dv">3</span>,</span>
-<span id="cb10-30"><a href="#cb10-30" aria-hidden="true" tabindex="-1"></a>                  style<span class="op">=</span><span class="st">'points'</span>,</span>
-<span id="cb10-31"><a href="#cb10-31" aria-hidden="true" tabindex="-1"></a>                  color<span class="op">=</span><span class="st">"Black"</span>, </span>
-<span id="cb10-32"><a href="#cb10-32" aria-hidden="true" tabindex="-1"></a>                  opacity<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb10-33"><a href="#cb10-33" aria-hidden="true" tabindex="-1"></a>                 )</span>
-<span id="cb10-34"><a href="#cb10-34" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb10-35"><a href="#cb10-35" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="ss">f"html5/terrain_flow_mesh_only.html"</span>)</span>
-<span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a>    </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="43728b48-ce25-4cde-b6d2-87185479dda5" class="cell" data-scrolled="true" data-execution_count="24">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y0"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y0.sym)</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"y1"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, y1.sym)</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"S"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym)</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"delta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym <span class="op">-</span> y1.sym)</span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>    swarm_points <span class="op">=</span> vis.swarm_to_pv_cloud(swarm)</span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"S"</span>,</span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.75</span>,</span>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a>    pl.add_points(</span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a>        swarm_points.points,</span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a>        point_size<span class="op">=</span><span class="dv">3</span>,</span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>        style<span class="op">=</span><span class="st">"points"</span>,</span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>        color<span class="op">=</span><span class="st">"Black"</span>,</span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="ss">f"html5/terrain_flow_mesh_only.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="0adf1c25-c69d-4853-987a-1e6e5fad30b1" class="cell" data-execution_count="12">
-<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_mesh_only.html"</span>, width<span class="op">=</span><span class="dv">750</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="12">
+<div id="0adf1c25-c69d-4853-987a-1e6e5fad30b1" class="cell" data-execution_count="25">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_mesh_only.html"</span>, width<span class="op">=</span><span class="dv">750</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="25">
 
         <iframe width="750" height="300" src="html5/terrain_flow_mesh_only.html" frameborder="0" allowfullscreen=""></iframe>
         
 <p>Interactive Image: Convection model output</p>
 </div>
 </div>
-<div id="377301f7-9596-4216-917f-fc5dca474c0d" class="cell" data-execution_count="13">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Mesh variables for the unknowns</span></span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>v_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"V0"</span>, mesh, <span class="dv">2</span>, degree<span class="op">=</span><span class="dv">2</span>, varsymbol<span class="op">=</span><span class="vs">r"{v_0}"</span>)</span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>p_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"p"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">1</span>, continuous<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="377301f7-9596-4216-917f-fc5dca474c0d" class="cell" data-execution_count="26">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Mesh variables for the unknowns</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>v_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"V0"</span>, mesh, <span class="dv">2</span>, degree<span class="op">=</span><span class="dv">2</span>, varsymbol<span class="op">=</span><span class="vs">r"{v_0}"</span>)</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>p_soln <span class="op">=</span> uw.discretisation.MeshVariable(<span class="st">"p"</span>, mesh, <span class="dv">1</span>, degree<span class="op">=</span><span class="dv">1</span>, continuous<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="3f3c3875-4ba1-4e99-a793-3446af229b6d" class="cell" data-execution_count="14">
-<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>fixed_base <span class="op">=</span> <span class="va">True</span></span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>stokes <span class="op">=</span> uw.systems.Stokes(</span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    mesh, </span>
-<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln, </span>
-<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln, </span>
-<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>,<span class="dv">0</span>))</span>
-<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
-<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.Piecewise(</span>
-<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>                                (sympy.sympify(<span class="dv">1</span>)<span class="op">/</span><span class="dv">100</span>, s.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="fl">0.05</span>), </span>
-<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>                                (<span class="dv">1</span>, <span class="va">True</span>, )    </span>
-<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>                            )</span>
-<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>stokes.add_essential_bc((<span class="dv">1</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span>
-<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> fixed_base <span class="op">==</span> <span class="va">True</span>:</span>
-<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>    stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
-<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
-<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Free slip on the (deformed) base below a certain Level:</span></span>
-<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 1) Penalise normal velocity below</span></span>
-<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 2) Penalise the entire velocity vector above</span></span>
-<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
-<span id="cb13-29"><a href="#cb13-29" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(<span class="vs">r"</span><span class="cf">|</span><span class="dv">\G</span><span class="vs">amma</span><span class="cf">|</span><span class="vs">"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span>)</span>
-<span id="cb13-30"><a href="#cb13-30" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
-<span id="cb13-31"><a href="#cb13-31" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb13-32"><a href="#cb13-32" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> v_soln.sym.dot(GammaN) <span class="op">*</span> GammaN, <span class="st">"Bottom"</span>)</span>
-<span id="cb13-33"><a href="#cb13-33" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb13-34"><a href="#cb13-34" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-4</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="3f3c3875-4ba1-4e99-a793-3446af229b6d" class="cell" data-execution_count="27">
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>fixed_base <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>stokes <span class="op">=</span> uw.systems.Stokes(</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>    mesh,</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    velocityField<span class="op">=</span>v_soln,</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    pressureField<span class="op">=</span>p_soln,</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>stokes.bodyforce <span class="op">=</span> sympy.Matrix((<span class="dv">0</span>, <span class="dv">0</span>))</span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model <span class="op">=</span> uw.constitutive_models.ViscousFlowModel</span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0 <span class="op">=</span> sympy.Piecewise(</span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>    (sympy.sympify(<span class="dv">1</span>) <span class="op">/</span> <span class="dv">100</span>, s.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="fl">0.05</span>),</span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>    (</span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a>        <span class="dv">1</span>,</span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>        <span class="va">True</span>,</span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>stokes.add_essential_bc((<span class="dv">1</span>, <span class="dv">0</span>), <span class="st">"Top"</span>)</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> fixed_base <span class="op">==</span> <span class="va">True</span>:</span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>    stokes.add_essential_bc((<span class="dv">0</span>, <span class="dv">0</span>), <span class="st">"Bottom"</span>)</span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
+<span id="cb15-26"><a href="#cb15-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-27"><a href="#cb15-27" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Free slip on the (deformed) base below a certain Level:</span></span>
+<span id="cb15-28"><a href="#cb15-28" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 1) Penalise normal velocity below</span></span>
+<span id="cb15-29"><a href="#cb15-29" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 2) Penalise the entire velocity vector above</span></span>
+<span id="cb15-30"><a href="#cb15-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-31"><a href="#cb15-31" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
+<span id="cb15-32"><a href="#cb15-32" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(</span>
+<span id="cb15-33"><a href="#cb15-33" aria-hidden="true" tabindex="-1"></a>        <span class="vs">r"</span><span class="cf">|</span><span class="dv">\G</span><span class="vs">amma</span><span class="cf">|</span><span class="vs">"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span></span>
+<span id="cb15-34"><a href="#cb15-34" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb15-35"><a href="#cb15-35" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
+<span id="cb15-36"><a href="#cb15-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-37"><a href="#cb15-37" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(<span class="dv">10000</span> <span class="op">*</span> v_soln.sym.dot(GammaN) <span class="op">*</span> GammaN, <span class="st">"Bottom"</span>)</span>
+<span id="cb15-38"><a href="#cb15-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-39"><a href="#cb15-39" aria-hidden="true" tabindex="-1"></a>stokes.tolerance <span class="op">=</span> <span class="fl">1.0e-4</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="85122b6c-a44d-4253-9eae-c182f1402df2" class="cell" data-execution_count="15">
-<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="15">
-<p><span class="math inline">\(\displaystyle \begin{cases} \frac{1}{100} &amp; \text{for}\: {\left&lt;\Sigma\right&gt;}(\mathbf{x}) &lt; 0.05 \\1 &amp; \text{otherwise} \end{cases}\)</span></p>
+<div id="85122b6c-a44d-4253-9eae-c182f1402df2" class="cell" data-execution_count="28">
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="28">
+<p><span class="math inline">\(\displaystyle \begin{cases} \frac{1}{100} &amp; \text{for}\: { \hspace{ 0.02pt } {\left&lt;\Sigma\right&gt;} }(\mathbf{x}) &lt; 0.05 \\1 &amp; \text{otherwise} \end{cases}\)</span></p>
 </div>
 </div>
-<div id="7ecf2fbf-f714-4c5f-9d99-bbe86b462da8" class="cell" data-execution_count="16">
-<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>stokes.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="7ecf2fbf-f714-4c5f-9d99-bbe86b462da8" class="cell" data-execution_count="29">
+<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>stokes.solve()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="b1c3f95e-f6ea-49b8-87bd-824587a91336" class="cell" data-execution_count="17">
-<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
-<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
-<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
-<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
-<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"S"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym)</span>
-<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"eta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, stokes.constitutive_model.Parameters.shear_viscosity_0.sym)</span>
-<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)</span>
-<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>    pvswarm <span class="op">=</span> vis.swarm_to_pv_cloud(swarm)</span>
-<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>    pvswarm.point_data[<span class="st">"eta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvswarm, stokes.constitutive_model.Parameters.shear_viscosity_0.sym)</span>
-<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
-<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
-<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
-<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
-<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
-<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"eta"</span>,</span>
-<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
-<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.05</span>,</span>
-<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>    pl.add_points(</span>
-<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a>        pvswarm,</span>
-<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"eta"</span>,</span>
-<span id="cb16-31"><a href="#cb16-31" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"Blues_r"</span>,</span>
-<span id="cb16-32"><a href="#cb16-32" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
-<span id="cb16-33"><a href="#cb16-33" aria-hidden="true" tabindex="-1"></a>        point_size<span class="op">=</span><span class="dv">5</span>,</span>
-<span id="cb16-34"><a href="#cb16-34" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb16-35"><a href="#cb16-35" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb16-36"><a href="#cb16-36" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-37"><a href="#cb16-37" aria-hidden="true" tabindex="-1"></a>    pl.add_arrows(pvmesh.points, </span>
-<span id="cb16-38"><a href="#cb16-38" aria-hidden="true" tabindex="-1"></a>                  pvmesh.point_data[<span class="st">"V"</span>], </span>
-<span id="cb16-39"><a href="#cb16-39" aria-hidden="true" tabindex="-1"></a>                  cmap<span class="op">=</span><span class="st">"Greens"</span>,</span>
-<span id="cb16-40"><a href="#cb16-40" aria-hidden="true" tabindex="-1"></a>                  mag<span class="op">=</span><span class="fl">0.5</span>, </span>
-<span id="cb16-41"><a href="#cb16-41" aria-hidden="true" tabindex="-1"></a>                  show_scalar_bar<span class="op">=</span><span class="va">False</span>)</span>
-<span id="cb16-42"><a href="#cb16-42" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb16-43"><a href="#cb16-43" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="ss">f"html5/terrain_flow_plot.html"</span>)</span>
-<span id="cb16-44"><a href="#cb16-44" aria-hidden="true" tabindex="-1"></a></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="b1c3f95e-f6ea-49b8-87bd-824587a91336" class="cell" data-execution_count="30">
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> uw.mpi.size <span class="op">==</span> <span class="dv">1</span>:</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> pyvista <span class="im">as</span> pv</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    pvmesh <span class="op">=</span> vis.mesh_to_pv_mesh(mesh)</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"S"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(pvmesh, s.sym)</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"eta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(</span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>        pvmesh, stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    pvmesh.point_data[<span class="st">"V"</span>] <span class="op">=</span> vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    pvswarm <span class="op">=</span> vis.swarm_to_pv_cloud(swarm)</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>    pvswarm.point_data[<span class="st">"eta"</span>] <span class="op">=</span> vis.scalar_fn_to_pv_points(</span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>        pvswarm, stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a>    pl <span class="op">=</span> pv.Plotter(window_size<span class="op">=</span>(<span class="dv">750</span>, <span class="dv">250</span>))</span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>    pl.add_mesh(</span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a>        pvmesh,</span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"RdBu_r"</span>,</span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a>        edge_color<span class="op">=</span><span class="st">"Grey"</span>,</span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"eta"</span>,</span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a>        edge_opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a>        show_edges<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb18-26"><a href="#cb18-26" aria-hidden="true" tabindex="-1"></a>        use_transparency<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb18-27"><a href="#cb18-27" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.05</span>,</span>
+<span id="cb18-28"><a href="#cb18-28" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb18-29"><a href="#cb18-29" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb18-30"><a href="#cb18-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-31"><a href="#cb18-31" aria-hidden="true" tabindex="-1"></a>    pl.add_points(</span>
+<span id="cb18-32"><a href="#cb18-32" aria-hidden="true" tabindex="-1"></a>        pvswarm,</span>
+<span id="cb18-33"><a href="#cb18-33" aria-hidden="true" tabindex="-1"></a>        scalars<span class="op">=</span><span class="st">"eta"</span>,</span>
+<span id="cb18-34"><a href="#cb18-34" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"Blues_r"</span>,</span>
+<span id="cb18-35"><a href="#cb18-35" aria-hidden="true" tabindex="-1"></a>        opacity<span class="op">=</span><span class="fl">0.33</span>,</span>
+<span id="cb18-36"><a href="#cb18-36" aria-hidden="true" tabindex="-1"></a>        point_size<span class="op">=</span><span class="dv">5</span>,</span>
+<span id="cb18-37"><a href="#cb18-37" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb18-38"><a href="#cb18-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-39"><a href="#cb18-39" aria-hidden="true" tabindex="-1"></a>    pl.add_arrows(</span>
+<span id="cb18-40"><a href="#cb18-40" aria-hidden="true" tabindex="-1"></a>        pvmesh.points,</span>
+<span id="cb18-41"><a href="#cb18-41" aria-hidden="true" tabindex="-1"></a>        pvmesh.point_data[<span class="st">"V"</span>],</span>
+<span id="cb18-42"><a href="#cb18-42" aria-hidden="true" tabindex="-1"></a>        cmap<span class="op">=</span><span class="st">"Greens"</span>,</span>
+<span id="cb18-43"><a href="#cb18-43" aria-hidden="true" tabindex="-1"></a>        mag<span class="op">=</span><span class="fl">0.5</span>,</span>
+<span id="cb18-44"><a href="#cb18-44" aria-hidden="true" tabindex="-1"></a>        show_scalar_bar<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb18-45"><a href="#cb18-45" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb18-46"><a href="#cb18-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-47"><a href="#cb18-47" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="ss">f"html5/terrain_flow_plot.html"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="4948cff8-89da-4822-aee7-f2207aa513b0" class="cell" data-execution_count="18">
-<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_plot.html"</span>, width<span class="op">=</span><span class="dv">750</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="18">
+<div id="4948cff8-89da-4822-aee7-f2207aa513b0" class="cell" data-execution_count="31">
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="ss">f"html5/terrain_flow_plot.html"</span>, width<span class="op">=</span><span class="dv">750</span>, height<span class="op">=</span><span class="dv">300</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="31">
 
         <iframe width="750" height="300" src="html5/terrain_flow_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
-<p>Interactive Image: Convection model output</p>
+<p>Interactive Image: Flow model output</p>
 </div>
 </div>
+</section>
 </section>
 </section>
 <section id="exercise---8.1" class="level2">
 <h2 class="anchored" data-anchor-id="exercise---8.1">Exercise - 8.1</h2>
 <p>Look at the Stokes example and try with a free slip base and low / high viscosity for the trapped material. You could also see what mixing the boundary condition looks like: free slip in the troughs, fixed in the highs. This is possible with a single boundary condition if you use <code>sympy.Piecewise</code> to switch between different penalty conditions.</p>
-<div class="sourceCode" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Free slip base (conditional)</span></span>
-<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
-<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(<span class="vs">r"</span><span class="cf">|</span><span class="dv">\G</span><span class="vs">amma</span><span class="cf">|</span><span class="vs">"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span>)</span>
-<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
-<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    </span>
-<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    bc_mask <span class="op">=</span> sympy.Piecewise((<span class="fl">1.0</span>, y1.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="op">-</span><span class="fl">0.05</span>), (<span class="fl">0.0</span>, <span class="va">True</span>))</span>
-<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    nbc <span class="op">=</span> <span class="dv">10000</span> <span class="op">*</span> bc_mask <span class="op">*</span> GammaN.dot(v_soln.sym) <span class="op">*</span>  GammaN <span class="op">+</span> (<span class="dv">1</span><span class="op">-</span>bc_mask) <span class="op">*</span> v_soln.sym            </span>
-<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(nbc, <span class="st">"Lower"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Free slip base (conditional)</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>    Gamma <span class="op">=</span> mesh.Gamma</span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    GammaNorm <span class="op">=</span> uw.function.expression(<span class="vs">r"</span><span class="cf">|</span><span class="dv">\G</span><span class="vs">amma</span><span class="cf">|</span><span class="vs">"</span>, sympy.sqrt(Gamma.dot(Gamma)), <span class="st">"Scaling for surface normals"</span>)</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>    GammaN <span class="op">=</span> Gamma <span class="op">/</span> GammaNorm</span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>    bc_mask <span class="op">=</span> sympy.Piecewise((<span class="fl">1.0</span>, y1.sym[<span class="dv">0</span>] <span class="op">&lt;</span> <span class="op">-</span><span class="fl">0.05</span>), (<span class="fl">0.0</span>, <span class="va">True</span>))</span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    nbc <span class="op">=</span> <span class="dv">10000</span> <span class="op">*</span> bc_mask <span class="op">*</span> GammaN.dot(v_soln.sym) <span class="op">*</span>  GammaN <span class="op">+</span> (<span class="dv">1</span><span class="op">-</span>bc_mask) <span class="op">*</span> v_soln.sym            </span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a>    stokes.add_natural_bc(nbc, <span class="st">"Lower"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>Give that a try !</p>
 
 

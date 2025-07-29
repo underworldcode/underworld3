@@ -236,17 +236,17 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  <a href="../Notebooks/4-Solvers-i-Poisson.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  <a href="../Notebooks/5-Solvers-ii-Stokes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -302,15 +302,7 @@ window.Quarto = {
 <div style="float: right; width: 40%">
 <p><img src="media/SampleSphericalMesh.png" class="img-fluid"></p>
 </div>
-<p>Introducing meshes: how to build them, interrogate them and visualise them.</p>
-<ul>
-<li><code>mesh.view()</code></li>
-<li>Mesh refinement options</li>
-<li>Mesh coordinates</li>
-<li>Mesh coordinate systems</li>
-<li>Mesh deformation</li>
-</ul>
-<p>Mesh adaptivity is a work-in-progress.</p>
+<p>This notebookIntroduces the mesh discretisation that we use in <code>Underworld3</code> and how you can build one of the pre-defined meshes. This notebook also show you how to use the <code>pyvista</code> visualisation tools for <code>Underworld3</code> objects. The mesh holds information on the mesh geometry, boundaries and coordinate systems and you can attach data to the mesh (see Notebook 2: <a href="../Notebooks/2-Variables.html">Variables</a>).</p>
 <div id="5a4437ff-63ae-4ffa-9f2b-8ec1b8b4baeb" class="cell" data-editable="true" data-scrolled="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3 <span class="im">as</span> uw</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
@@ -320,7 +312,7 @@ window.Quarto = {
 <h4 class="anchored" data-anchor-id="underworld-meshing-module">Underworld meshing module</h4>
 <p>Underworld can read mesh definition files from the <code>gmsh</code> package but there are some constraints on how to specify boundaries if those meshes are to be used to solve numerical problems.</p>
 <p>The <code>underworld.meshing</code> module has a collection of <code>gmsh</code> (python) examples for common, simple meshes.</p>
-<div id="1c928d60-24a9-4415-ab22-41834695c70a" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="22">
+<div id="1c928d60-24a9-4415-ab22-41834695c70a" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>mesh <span class="op">=</span> uw.meshing.uw.meshing.CubedSphere(</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    radiusOuter<span class="op">=</span><span class="fl">1.0</span>,</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    radiusInner<span class="op">=</span><span class="fl">0.547</span>,</span>
@@ -342,9 +334,9 @@ Populating mesh coordinates CoordinateSystemType.SPHERICAL</code></pre>
 <p>If you need to check the physical coordinates of the mesh, there is a data array</p>
 <div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>which is a read-only <code>numpy</code> view of the coordinates (on the local segment of the mesh when running in parallel)</p>
-<div id="b9cfac97-5c19-46b1-aebd-0fb77678b9ed" class="cell" data-execution_count="23">
+<div id="b9cfac97-5c19-46b1-aebd-0fb77678b9ed" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>mesh.data</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="23">
+<div class="cell-output cell-output-display" data-execution_count="4">
 <pre><code>array([[ 0.57735027,  0.57735027, -0.57735027],
        [-0.57735027,  0.57735027, -0.57735027],
        [-0.57735027, -0.57735027, -0.57735027],
@@ -372,7 +364,7 @@ Populating mesh coordinates CoordinateSystemType.SPHERICAL</code></pre>
 <span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    verbose<span class="op">=</span><span class="va">False</span>,</span>
 <span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>The meshing infrastructure for underworld3 is documented here: https://underworldcode.github.io/underworld3/main_api/underworld3/meshing.html</p>
-<div id="1cb8378c-cdb8-4e75-bd12-e85f12169ef7" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="26">
+<div id="1cb8378c-cdb8-4e75-bd12-e85f12169ef7" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyvista <span class="im">as</span> pv</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> underworld3.visualisation <span class="im">as</span> vis</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -393,10 +385,10 @@ Populating mesh coordinates CoordinateSystemType.SPHERICAL</code></pre>
 <span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a><span class="co"># Save and show the mesh</span></span>
 <span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a>pl.export_html(<span class="st">"html5/spherical_mesh_plot.html"</span>) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="fd6cbed0-3159-4c6c-a482-6a9636158854" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="27">
+<div id="fd6cbed0-3159-4c6c-a482-6a9636158854" class="cell" data-editable="true" data-quarto-private-1="{&quot;key&quot;:&quot;slideshow&quot;,&quot;value&quot;:{&quot;slide_type&quot;:&quot;&quot;}}" data-tags="[]" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
 <span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/spherical_mesh_plot.html"</span>, width<span class="op">=</span><span class="dv">600</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="27">
+<div class="cell-output cell-output-display" data-execution_count="6">
 
         <iframe width="600" height="400" src="html5/spherical_mesh_plot.html" frameborder="0" allowfullscreen=""></iframe>
         
@@ -433,36 +425,50 @@ Populating mesh coordinates CoordinateSystemType.SPHERICAL</code></pre>
 <p><code>mesh.view()</code> allows you to interrogate the mesh to identify the mesh data structures (which means you can find by name any variable that is automatically constructed by, for example, one of the numerical solvers).</p>
 <p>It also identifies boundaries of the mesh and their sizes when distributed in parallel. There is a <code>PETSc</code> equivalent which is also called and this contains low-level information on the mesh topology.</p>
 <div id="141785af-fa2e-48df-9421-535b775d79bc" class="cell" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>mesh.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>mesh.view(<span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>
 
-Mesh # 0: .meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexFalse.msh
+Mesh # 0: .meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexTrue.msh
 </code></pre>
 </div>
 <div class="cell-output cell-output-display">
 <script type="application/vnd.jupyter.widget-view+json">
-{"model_id":"f18b77ba1d8d44ae96a3832ea3ffa5a3","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
+{"model_id":"9b169322ec7d469e81893a05b2cbfffb","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
 </script>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>Number of cells: 3072
+<pre><code>Number of cells: 7615
 
 No variables are defined on the mesh
 
-| Boundary Name            | ID    |
-| -------------------------------- |
-| Lower                    | 1     |
-| Upper                    | 2     |
-| Null_Boundary            | 666   |
-| All_Boundaries           | 1001  |
-| All_Boundaries           | 1001  |
-| UW_Boundaries            | --    |
-| -------------------------------- |
+| Boundary Name            | ID    | Min Size | Max Size |
+| ------------------------------------------------------ |
+| Lower                    | 1     | 1062     | 1062     |
+| Upper                    | 2     | 1062     | 1062     |
+| Null_Boundary            | 666   | 1672     | 1672     |
+| All_Boundaries           | 1001  | 1536     | 1536     |
+| All_Boundaries           | 1001  | 1536     | 1536     |
+| UW_Boundaries            | --    | 5332     | 5332     |
+| ------------------------------------------------------ |
 
 
-Use view(1) to view detailed mesh information.
-</code></pre>
+DM Object: uw_.meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexTrue.msh 1 MPI process
+  type: plex
+uw_.meshes/uw_cubed_spherical_shell_ro1.0_ri0.547_elts8_plexTrue.msh in 3 dimensions:
+  Number of 0-cells per rank: 1672
+  Number of 1-cells per rank: 10053
+  Number of 2-cells per rank: 15998
+  Number of 3-cells per rank: 7615
+Labels:
+  depth: 4 strata with value/size (0 (1672), 1 (10053), 2 (15998), 3 (7615))
+  All_Boundaries: 1 strata with value/size (1001 (1536))
+  Elements: 1 strata with value/size (99999 (7871))
+  Lower: 1 strata with value/size (1 (1062))
+  Upper: 1 strata with value/size (2 (1062))
+  celltype: 4 strata with value/size (0 (1672), 1 (10053), 3 (15998), 6 (7615))
+  Null_Boundary: 1 strata with value/size (666 (1672))
+  UW_Boundaries: 4 strata with value/size (1 (1062), 2 (1062), 666 (1672), 1001 (1536))</code></pre>
 </div>
 </div>
 </section>
