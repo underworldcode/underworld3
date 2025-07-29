@@ -726,7 +726,7 @@ class IndexSwarmVariable(SwarmVariable):
                 kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
                 d, n = kd_swarm.query(
-                    self._meshLevelSetVars[0].coords, k=1, sqr_dist=True
+                    self._meshLevelSetVars[0].coords, k=1, sqr_dists=True
                 )
 
             for ii in range(self.indices):
@@ -763,7 +763,7 @@ class IndexSwarmVariable(SwarmVariable):
             with self.swarm.access():
                 kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
                 n_distance, n_indices = kd.query(
-                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dist=True
+                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=True
                 )
 
             for ii in range(self.indices):
