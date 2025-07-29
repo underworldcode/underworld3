@@ -444,6 +444,12 @@ class Mesh(Stateful, uw_object):
         else:
             self.dm.setName(f"uw_{self.name}")
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc dmplex set-up complete",
+                flush=True,
+            )
+
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
@@ -536,6 +542,12 @@ class Mesh(Stateful, uw_object):
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc spatial discretisation - complete",
+                flush=True,
+            )
 
         if verbose and uw.mpi.rank == 0:
             print(

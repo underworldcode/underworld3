@@ -82,11 +82,6 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
             case (False, 3):
                 meshio_cell_type = "hexahedron"
 
-        cell_points_list = []
-        for cell_id in range(cStart, cEnd):
-            cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            cell_points_list.append(cell_points - pStart)
-
         mmesh = meshio.Mesh(
             points=mesh.data, cells=[(meshio_cell_type, np.array(cell_points_list))]
         )
