@@ -849,6 +849,12 @@ True: index into the local coordinate array</p>
         else:
             self.dm.setName(f&#34;uw_{self.name}&#34;)
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETSc dmplex set-up complete&#34;,
+                flush=True,
+            )
+
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
@@ -941,6 +947,12 @@ True: index into the local coordinate array</p>
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETSc spatial discretisation - complete&#34;,
+                flush=True,
+            )
 
         if verbose and uw.mpi.rank == 0:
             print(
