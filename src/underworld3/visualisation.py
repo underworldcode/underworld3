@@ -57,16 +57,6 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
     from petsc4py import PETSc
 
-    match (mesh.dm.isSimplex(), mesh.dim):
-        case (True, 2):
-            vtk_cell_type = pv.cell.CellType.TRIANGLE
-        case (True, 3):
-            vtk_cell_type = pv.cell.CellType.TETRA
-        case (False, 2):
-            vtk_cell_type = pv.cell.CellType.QUAD
-        case (False, 3):
-            vtk_cell_type = pv.cell.CellType.HEXAHEDRON
-
     cStart, cEnd = mesh.dm.getHeightStratum(0)
     fStart, fEnd = mesh.dm.getHeightStratum(1)
     pStart, pEnd = mesh.dm.getDepthStratum(0)
@@ -79,17 +69,49 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
         cell_points_list.append(cell_points - pStart)
 
-    cells_array = np.array(cell_points_list, dtype=int)
-    cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
-    cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
+    try:
+        import meshio
 
-    cells_array = np.hstack((cells_size, cells_array), dtype=int)
+        match (mesh.dm.isSimplex(), mesh.dim):
+            case (True, 2):
+                meshio_cell_type = "triangle"
+            case (True, 3):
+                meshio_cell_type = "tetra"
+            case (False, 2):
+                meshio_cell_type = "quad"
+            case (False, 3):
+                meshio_cell_type = "hexahedron"
 
-    pv_mesh = pv.UnstructuredGrid(
-        cells_array, cells_type, coords_to_pv_coords(mesh.data)
-    )
+        mmesh = meshio.Mesh(
+            points=mesh.data, cells=[(meshio_cell_type, np.array(cell_points_list))]
+        )
 
-    return pv_mesh
+        pv_mesh = pv.from_meshio(mmesh)
+        return pv_mesh
+
+    except ImportError:
+
+        match (mesh.dm.isSimplex(), mesh.dim):
+            case (True, 2):
+                vtk_cell_type = pv.cell.CellType.TRIANGLE
+            case (True, 3):
+                vtk_cell_type = pv.cell.CellType.TETRA
+            case (False, 2):
+                vtk_cell_type = pv.cell.CellType.QUAD
+            case (False, 3):
+                vtk_cell_type = pv.cell.CellType.HEXAHEDRON
+
+        cells_array = np.array(cell_points_list, dtype=int)
+        cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
+        cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
+
+        cells_array = np.hstack((cells_size, cells_array), dtype=int)
+
+        pv_mesh = pv.UnstructuredGrid(
+            cells_array, cells_type, coords_to_pv_coords(mesh.data)
+        )
+
+        return pv_mesh
 
 
 def coords_to_pv_coords(coords):

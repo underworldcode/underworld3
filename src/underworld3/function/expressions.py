@@ -327,7 +327,7 @@ class UWexpression(uw_object, Symbol):
 
     def _repr_latex_(self):
         # print("Customised !")
-        return rf"$\\displaystyle {str(self.symbol)}$"
+        return rf"$\displaystyle {str(self.symbol)}$"
 
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display

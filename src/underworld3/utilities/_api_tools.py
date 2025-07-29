@@ -34,14 +34,15 @@ class class_or_instance_method(object):
 
         return newfunc
 
-class uw_object():
+
+class uw_object:
     """
     The UW (mixin) class adds common functionality that we wish to provide on all uw_objects
     such as the view methods (classmethod for generic information and instance method that can be over-ridden)
     to provide instance-specific information
     """
 
-    _obj_count = 0 # a class variable to count the number of objects
+    _obj_count = 0  # a class variable to count the number of objects
 
     def __init__(self):
         super().__init__
@@ -53,12 +54,12 @@ class uw_object():
     # see - https://stackoverflow.com/questions/128573/using-property-on-classmethods/64738850#64738850
     @classmethod
     def uw_object_counter(cls):
-        """ Number of uw_object instances created """
+        """Number of uw_object instances created"""
         return uw_object._obj_count
 
     @property
     def instance_number(self):
-        """ Unique number of the uw_object instance """
+        """Unique number of the uw_object instance"""
         return self._uw_id
 
     def __str__(self):
@@ -67,7 +68,7 @@ class uw_object():
 
     @staticmethod
     def _reset():
-        """ Reset the object counter """
+        """Reset the object counter"""
         uw_object._obj_count = 0
 
     @class_or_instance_method
@@ -108,7 +109,6 @@ class uw_object():
         if inspect.isclass(self_or_cls) or class_documentation == True:
 
             docstring = dedent(self_or_cls.__doc__)
-            # docstring = docstring.replace("$", "$").replace("$", "$")
             display(Markdown(docstring))
 
             if class_documentation:
@@ -127,6 +127,6 @@ class uw_object():
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
 
-        display(Markdown("## Details"))
+        display(Markdown("# Details"))
 
         return

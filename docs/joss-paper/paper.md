@@ -67,6 +67,8 @@ Users of `underworld3` typically develop python scripts within `jupyter` noteboo
 
 # Statement of need
 
+Typical problems in geodynamics usually require computing material deformation, damage evolution, and interface tracking in the large-deformation limit. These are typically not well supported by standard engineering finite element simulation codes. Underworld is a python software framework that is intended to solve geodynamics problems that sit at the interface between computational fluid mechanics and solid mechanics (often known as *complex fluids*). It does so by putting Lagrangian and Eulerian variables on an equal footing at both the user and computational levels.
+
 Underworld is built around a general, symbolic partial differential equation solver but provides template forms to solve common geophysical fluid dynamics problems such as the Stokes equation for mantle convection, subduction-zone evolution, lithospheric deformation, glacial isostatic adjustment, ice flow; Navier-Stokes equations for finite Prandtl number fluid flow and short-timescale, viscoelastic deformation; and Darcy Flow for porous media problems including groundwater flow and contaminant transport.
 
 These problems have a number of defining characteristics:  geomaterials are non-linear, viscoelastic/plastic and have a propensity for strain-dependent softening during deformation; strain localisation is very common as a consequence. Geological structures that we seek to understand are often emergent over the course of loading and are observed in the very-large deformation limit. Material properties have strong spatial gradients arising from pressure and temperature dependence and jumps of several orders of magnitude resulting from material interfaces.

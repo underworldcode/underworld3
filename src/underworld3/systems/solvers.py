@@ -23,6 +23,8 @@ from .ddt import Symbolic as Symbolic_DDt
 
 class SNES_Poisson(SNES_Scalar):
     r"""
+    # Poisson Equation Solver
+
     This class provides functionality for a discrete representation
     of the Poisson equation
 
@@ -128,6 +130,8 @@ class SNES_Poisson(SNES_Scalar):
 
 class SNES_Darcy(SNES_Scalar):
     r"""
+    # Darcy Flow Equation Solver
+
     This class provides functionality for a discrete representation
     of the Groundwater flow equations
 
@@ -333,6 +337,8 @@ class SNES_Darcy(SNES_Scalar):
 
 class SNES_Stokes(SNES_Stokes_SaddlePt):
     r"""
+    # Stokes Equation Solver
+
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint.
@@ -602,6 +608,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 class SNES_VE_Stokes(SNES_Stokes):
     r"""
+    # ViscoElastic Stokes Equation Solver
+
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint and with a flux history
@@ -788,6 +796,8 @@ class SNES_VE_Stokes(SNES_Stokes):
 
 class SNES_Projection(SNES_Scalar):
     r"""
+    # Projection Solver
+
     Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
     $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -899,6 +909,8 @@ class SNES_Projection(SNES_Scalar):
 
 class SNES_Vector_Projection(SNES_Vector):
     r"""
+    # Projection Solver (Vector Variable)
+
     Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
     $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -1035,6 +1047,8 @@ class SNES_Vector_Projection(SNES_Vector):
 
 class SNES_Tensor_Projection(SNES_Projection):
     r"""
+    # Projection Solver (Tensor Variable)
+
     Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
     $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
     continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
@@ -1158,6 +1172,8 @@ class SNES_Tensor_Projection(SNES_Projection):
 
 class SNES_AdvectionDiffusion(SNES_Scalar):
     r"""
+    # Advection-Diffusion Equation Solver (Scalar Variable)
+
     This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
     which is described in Spiegelman & Katz, (2006).
 
@@ -1180,7 +1196,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
       - The unknown is $u$.
 
       - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not. Currently it is a MeshVariable** this is the desired behaviour though.
+        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not.
 
       - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
         one of the scalar `uw.constitutive_models` classes and populating the parameters.
@@ -1190,7 +1206,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
 
+    ## References
 
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
 
     """
 
@@ -1489,6 +1507,8 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
 class SNES_Diffusion(SNES_Scalar):
     r"""
+    # Diffusion Equation Solver (Scalar Variable)
+
     This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
 
     $$
@@ -1511,8 +1531,6 @@ class SNES_Diffusion(SNES_Scalar):
 
       - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
         `meshVariable` or `swarmVariable` types.
-
-
 
     """
 
@@ -1782,6 +1800,8 @@ class SNES_Diffusion(SNES_Scalar):
 # This one is already updated to work with the Lagrange D_Dt
 class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     r"""
+    # Navier-Stokes Equation Solver
+
     This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
     used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
     distributed sampling of upstream values taken from an arbitrary swarm variable.
@@ -1808,9 +1828,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
       - The unknown is $u$.
 
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`)
-
       - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
         variable updated.
 
@@ -1827,7 +1844,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
       - The solver requires relatively high order shape functions to accurately interpolate the history terms.
         Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
 
-    ## Reference
+    ## References
 
     Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
     of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
@@ -2108,7 +2125,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
-        evalf=False,
+        _evalf=False,
         order=None,
     ):
         """
@@ -2143,8 +2160,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             print(f"NS solver - pre-solve DuDt update", flush=True)
 
         # Update SemiLagrange Flux terms
-        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - solve Stokes flow", flush=True)
@@ -2159,8 +2176,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - post-solve DuDt update", flush=True)
 
-        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
