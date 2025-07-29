@@ -1,32 +1,33 @@
-name: Docker Image CI
+name: Image Build and Push
 
 on:
-  push:
-    branches: ["development"]
+  push: 
+    branches:
+      - development
+
 jobs:
-  build:
+  push-to-dockerhub:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Exact branch name
         run: echo "BRANCH=${GITHUB_REF##*/}" >> $GITHUB_ENV
 
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PWORD }}
+          username: ${{ secrets.XXX_USERNAME }}
+          password: ${{ secrets.XXX_PWORD }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4.1.1
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           file: ./Dockerfile
           platforms: linux/amd64
           # see https://github.com/docker/build-push-action/issues/276 for syntax help
-          tags: julesg/underworld3:${{ env.BRANCH }}
-          #-$(date +%s)
+          tags: underworldcode/underworld3:${{ env.BRANCH }} #-$(date +%s)

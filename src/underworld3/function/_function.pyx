@@ -22,6 +22,10 @@ cdef extern from "petsc.h" nogil:
     ctypedef enum DMSwarmMigrateType:
         pass
 
+cdef extern from "petsc.h" nogil:
+    ctypedef enum DMSwarmType:
+        pass
+
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
@@ -165,6 +169,145 @@ def evaluate(   expr,
                 coord_sys=None,
                 other_arguments=None,
                 simplify=True,
+                verbose=False,
+                evalf=False,
+                rbf=False,):
+    """
+    Evaluate a given expression at a list of coordinates.
+
+    Note it is not efficient to call this function to evaluate an expression at
+    a single coordinate. Instead the user should provide a numpy array of all
+    coordinates requiring evaluation.
+
+    Parameters
+    ----------
+    expr: sympy.Basic
+        Sympy expression requiring evaluation.
+    coords: numpy.ndarray
+        Numpy array of coordinates to evaluate expression at.
+    coord_sys: mesh.N vector coordinate system
+
+    other_arguments: dict
+        Dictionary of other arguments necessary to evaluate function.
+        Not yet implemented.
+
+
+    """
+
+
+    # Extract all the mesh/swarm variables in the expression and check that they all live on the
+    # same mesh. If not, this evaluation is not valid.
+
+    varfns = set()
+    def unpack_var_fns(exp):
+
+        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
+            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
+
+        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+        isMatrix = isinstance(exp, sympy.Matrix)
+
+        if isUW:
+            varfns.add(exp)
+            if exp.args != exp.meshvar().mesh.r:
+                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
+                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
+        elif isMatrix:
+            for sub_exp in exp:
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                    varfns.add(sub_exp)
+                else:
+                    # Recursively search for more functions
+                    for arg in sub_exp.args:
+                        unpack_var_fns(arg)
+
+        else:
+            # Recursively search for more functions
+            for arg in exp.args:
+                unpack_var_fns(arg)
+
+        return
+
+    unpack_var_fns(expr)
+
+    if verbose:
+        for varfn in varfns:
+            print(f"MeshVariable functions in evaluation: {varfns}")
+
+    # Check the same mesh is used for all mesh variables
+    mesh = None
+    for varfn in varfns:
+        if mesh is None:
+            mesh = varfn.meshvar().mesh
+        else:
+            if mesh != varfn.meshvar().mesh:
+                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
+
+
+    # If there are no mesh variables, then we have no need of a mesh to
+    # help us to evaluate the expression. The evalf flag will force rbf_evaluation and
+    # does not need mesh information
+
+    if evalf==True or rbf==True:
+        return rbf_evaluate( expr,
+                             coords,
+                            coord_sys,
+                            mesh,
+                            simplify=simplify,
+                            verbose=verbose,
+                            )
+
+
+
+    if mesh is None:
+        in_or_not = np.full((coords.shape[0]), True, dtype=bool )
+        return petsc_interpolate( expr,
+                                    coords[in_or_not],
+                                    coord_sys,
+                                    mesh,
+                                    simplify=simplify,
+                                    verbose=verbose, )
+
+
+
+    else:
+        in_or_not = mesh.points_in_domain(coords, strict_validation=False)
+        evaluation_interior = petsc_interpolate( expr,
+                                    coords[in_or_not],
+                                    coord_sys,
+                                    mesh,
+                                    simplify=simplify,
+                                    verbose=verbose, )
+
+        if np.count_nonzero(in_or_not == False) > 0:
+            evaluation_exterior = rbf_evaluate( expr,
+                                coords[~in_or_not],
+                                coord_sys,
+                                mesh,
+                                simplify=simplify,
+                                verbose=verbose, )
+        else:
+            evaluation_exterior = None
+
+
+        if len(evaluation_interior.shape) == 1:
+            evaluation = np.empty(shape=(in_or_not.shape[0],))
+        else:
+            evaluation = np.empty(shape=(in_or_not.shape[0],evaluation_interior.shape[1] ))
+
+        evaluation[in_or_not] = evaluation_interior
+        evaluation[~in_or_not] = evaluation_exterior
+
+
+    return evaluation
+
+
+def petsc_interpolate(   expr,
+                np.ndarray coords=None,
+                coord_sys=None,
+                mesh=None,
+                other_arguments=None,
+                simplify=True,
                 verbose=False, ):
     """
     Evaluate a given expression at a list of coordinates.
@@ -244,88 +387,20 @@ def evaluate(   expr,
     if verbose and uw.mpi.rank==0:
         print(f"Expression to be evaluated: {expr}")
 
-    # 1. Extract UW variables.
-    # Let's first collect all the meshvariables present in the expression and check
-    # them for validity. This is applied recursively across the expression
-    # Recurse the expression tree.
-
-    # varfns = set()
-    # def get_var_fns(exp):
-
-    #     if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-    #         raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-
-    #     isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-    #     if isUW:
-    #         varfns.add(exp)
-    #         if exp.args != exp.meshvar().mesh.r:
-    #             raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
-    #                                f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-    #     else:
-    #         # Recurse.
-    #         for arg in exp.args:
-    #             get_var_fns(arg)
-
-    #     return
-
-    # get_var_fns(expr)
-
-    varfns = set()
-    def unpack_var_fns(exp):
-
-        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-
-        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-        isMatrix = isinstance(exp, sympy.Matrix)
-
-        if isUW:
-            varfns.add(exp)
-            if exp.args != exp.meshvar().mesh.r:
-                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
-                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-        elif isMatrix:
-            for sub_exp in exp:
-                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
-                    varfns.add(sub_exp)
-        else:
-            # Recurse.
-            for arg in exp.args:
-                unpack_var_fns(arg)
-
-        return
-
-    unpack_var_fns(expr)
-
-    # Check the same mesh is used for all mesh variables
-    mesh = None
-    for varfn in varfns:
-
-        if mesh is None:
-            mesh = varfn.meshvar().mesh
-            #mesh = varfn.mesh
-        else:
-            if mesh != varfn.meshvar().mesh:
-                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
-
-    if verbose:
-        print(f"Mesh for evaluations: {mesh.name}", flush=True)
-
-
-
-    if (len(varfns)==0) and (coords is None):
-        raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
-                           "Mesh variables can only be interpolated at coordinates.")
-
-    if mesh is not None:
-        varfns = set()
-        for var in mesh.vars.values():
-            for subvar in var.sym_1d:
-                varfns.add(subvar)
+    # if (len(varfns)==0) and (coords is None):
+    #     raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
+    #                        "Mesh variables can only be interpolated at coordinates.")
 
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
     # more general situation.
+    #
+
+    varfns = set()
+    if mesh is not None and mesh.vars is not None:
+        for v in mesh.vars.values():
+            for sub in v.sym:
+                varfns.add(sub)
 
     from collections import defaultdict
     interpolant_varfns = defaultdict(lambda : [])
@@ -333,7 +408,6 @@ def evaluate(   expr,
     for varfn in varfns:
         if verbose and uw.mpi.rank == 0:
             print(f"Varfn for interpolation: {varfn}")
-
         interpolant_varfns[varfn.meshvar().mesh].append(varfn)
 
 
@@ -361,7 +435,7 @@ def evaluate(   expr,
             # by a simple coordinate hash. We kill this in the
             # .access for mesh variables but this is prone to mistakes
 
-            if coord_hash == mesh._evaluation_hash:
+            if False and coord_hash == mesh._evaluation_hash:
                 # if uw.mpi.rank == 0:
                 #     print("Using uw.evaluation cache", flush=True)
                 return mesh._evaluation_interpolated_results
@@ -428,7 +502,7 @@ def evaluate(   expr,
         ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
 
         # Create map between array slices and variable functions
-
+        #
         varfns_arrays = {}
         for varfn in varfns:
             var  = varfn.meshvar()
@@ -452,7 +526,7 @@ def evaluate(   expr,
         return varfns_arrays
 
 
-    # Get map of all variable functions across all meshes.
+    # Get map of all variable functions
     interpolated_results = {}
     for key, vals in interpolant_varfns.items():
         interpolated_var_values = interpolate_vars_on_mesh(vals, coords)
@@ -466,6 +540,7 @@ def evaluate(   expr,
     for varfn in interpolated_results.keys():
         randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
         varfns_symbols[varfn] = sympy.Symbol(randstr)
+
     # subs variable fns in expression for symbols
     subbedexpr = expr.subs(varfns_symbols)
 
@@ -490,6 +565,8 @@ def evaluate(   expr,
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
+
+
 
     lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
     # Leave out modules. This is equivalent to SYMPY_DECIDE and can then include scipy if available
@@ -540,9 +617,10 @@ evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function
 
 ### ------------------------------
 
-def evalf(  expr,
+def rbf_evaluate(  expr,
             coords=None,
             coord_sys=None,
+            mesh=None,
             other_arguments=None,
             verbose=False,
             simplify=True,):
@@ -590,13 +668,16 @@ def evalf(  expr,
 
     """
 
+    ## These checks should be in the calling `evaluate` function
+
     if not (isinstance( expr, sympy.Basic ) or isinstance( expr, sympy.Matrix ) ):
         raise RuntimeError("`evaluate()` function parameter `expr` does not appear to be a sympy expression.")
 
     sympy.core.cache.clear_cache()
 
     if uw.function.fn_is_constant_expr(expr):
-        return uw.function.expressions.unwrap(expr, keep_constants=False)
+        constant_value = uw.function.expressions.unwrap(expr, keep_constants=False)
+        return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float).reshape(-1))
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -619,59 +700,22 @@ def evalf(  expr,
     if simplify:
         expr = sympy.simplify(expr)
 
-    # 1. Extract UW variables.
-
-    # Let's first collect all the meshvariables present in the expression and check
-    # them for validity. This is applied recursively across the expression
-    # Recurse the expression tree.
-
-    varfns = set()
-    def unpack_var_fns(exp):
-
-        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-
-        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-        isMatrix = isinstance(exp, sympy.Matrix)
-
-        if isUW:
-            varfns.add(exp)
-            if exp.args != exp.meshvar().mesh.r:
-                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
-                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-        elif isMatrix:
-            for sub_exp in exp:
-                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
-                    varfns.add(sub_exp)
-        else:
-            # Recurse.
-            for arg in exp.args:
-                unpack_var_fns(arg)
-
-        return
-
-    unpack_var_fns(expr)
-
-    mesh = None
-    for varfn in varfns:
-
-        if mesh is None:
-            mesh = varfn.meshvar().mesh
-        else:
-            if mesh != varfn.meshvar().mesh:
-                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
-
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
+    #
+
+    varfns = set()
+    if mesh is not None and mesh.vars is not None:
+        for v in mesh.vars.values():
+            for sub in v.sym:
+                varfns.add(sub)
 
     # Get map of all variable functions (no cache)
     interpolated_results = {}
-
     for varfn in varfns:
         parent, component = uw.discretisation.meshVariable_lookup_by_symbol(mesh, varfn)
         values = parent.rbf_interpolate(coords, nnn=mesh.dim+1)[:,component]
         interpolated_results[varfn] = values
-
         if verbose:
             print(f"{varfn} = {parent.name}[{component}]")
 
@@ -703,13 +747,6 @@ def evalf(  expr,
         N = mesh.N
 
     r = N.base_scalars()[0:dim]
-
-    # # This likely never applies any more
-    # if isinstance(subbedexpr, sympy.vector.Vector):
-    #     subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]
-    # elif isinstance(subbedexpr, sympy.vector.Dyadic):
-    #     subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
-
     lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
 
     # 5. Eval generated lambda expression
@@ -751,11 +788,37 @@ def evalf(  expr,
 # Note that we don't use the @decorator here so that
 # we can pass in the `class_name` parameter.
 
-evalf = timing.routine_timer_decorator(routine=evalf, class_name="Function")
+rbf_evaluate = timing.routine_timer_decorator(routine=rbf_evaluate, class_name="Function")
+
+## Not sure these belong with the uw function cython
 
 def dm_swarm_get_migrate_type(swarm):
 
-    cdef DM dm = swarm.dm
+    # cdef DM dm = swarm.dm
+    # cdef PetscErrorCode ierr
+    # cdef DMSwarmMigrateType mtype
+
+    # ierr = DMSwarmGetMigrateType(dm.dm, &mtype); CHKERRQ(ierr)
+
+    mtype = _dmswarm_get_migrate_type(swarm.dm)
+
+    return mtype
+
+def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+
+    _dmswarm_set_migrate_type(swarm.dm, mtype)
+
+    # cdef DM dm = swarm.dm
+    # cdef PetscErrorCode ierr
+    # cdef DMSwarmMigrateType mig = mtype
+
+    # ierr = DMSwarmSetMigrateType(dm.dm, mig); CHKERRQ(ierr)
+
+    return
+
+def _dmswarm_get_migrate_type(sdm):
+
+    cdef DM dm = sdm
     cdef PetscErrorCode ierr
     cdef DMSwarmMigrateType mtype
 
@@ -763,9 +826,9 @@ def dm_swarm_get_migrate_type(swarm):
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+def _dmswarm_set_migrate_type(sdm, mtype:PETsc.DMSwarm.MigrateType):
 
-    cdef DM dm = swarm.dm
+    cdef DM dm = sdm
     cdef PetscErrorCode ierr
     cdef DMSwarmMigrateType mig = mtype
 

@@ -156,7 +156,7 @@ class UWexpression(uw_object, Symbol):
     """
 
     _expr_count = 0
-    _expr_names = []
+    _expr_names = {}
 
     def __new__(
         cls,
@@ -170,27 +170,26 @@ class UWexpression(uw_object, Symbol):
 
         instance_no = UWexpression._expr_count
 
-        if name in UWexpression._expr_names and _unique_name_generation == False:
+        ## if the expression already exists, do not replace it (but return the existing object instead)
+
+        if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
             warnings.warn(
                 message=f"EXPRESSIONS {name}: Each expression should have a unique name - new expression was not generated",
             )
-            return None
+            return UWexpression._expr_names[name]
 
         if name in UWexpression._expr_names and _unique_name_generation == True:
-
             invisible = rf"\hspace{{ {instance_no/100}pt }}"
             unique_name = f"{{ {name} {invisible} }}"
-
         else:
             unique_name = name
-
-        UWexpression._expr_names.append(unique_name)
 
         obj = Symbol.__new__(cls, unique_name)
         obj._instance_no = instance_no
         obj._unique_name = unique_name
         obj._given_name = name
 
+        UWexpression._expr_names[unique_name] = obj
         UWexpression._expr_count += 1
 
         return obj
@@ -328,7 +327,7 @@ class UWexpression(uw_object, Symbol):
 
     def _repr_latex_(self):
         # print("Customised !")
-        return rf"$\\displaystyle {str(self.symbol)}$"
+        return rf"$\displaystyle {str(self.symbol)}$"
 
     def _object_viewer(self, description=True, level=1):
         from IPython.display import Latex, Markdown, display

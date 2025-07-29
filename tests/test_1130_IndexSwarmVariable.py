@@ -3,7 +3,7 @@ import numpy as np
 import sympy
 import pytest
 
-# ### Test IndexSwarmVariable in gettting the right value on the Symmetrical Points
+# ### Test IndexSwarmVariable in getting the right value on the Symmetrical Points
 
 xmin, xmax = -1,1
 ymin, ymax = -1,1

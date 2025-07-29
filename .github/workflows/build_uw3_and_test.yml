@@ -1,4 +1,4 @@
-name: Build and test UW3
+name: test_uw3
 
 # We should trigger this from an upload event. Note that pdoc requires us to import the
 # built code, so this is a building test as well as documentation deployment
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,12 +27,6 @@ jobs:
           cache-downloads: true
           cache-environment: true
 
-          # # gmsh is such a pig to install properly
-          # - name: Add gmsh package
-          #   shell: bash -l {0}
-          #   run: |
-          #     pip install gmsh
-
       - name: Build UW3
         shell: bash -l {0}
         run: |
@@ -42,12 +36,8 @@ jobs:
 
           ## TODO. Use compile.sh once it is in development
           pip install -e . --no-build-isolation
-          ## ./compile.sh
-          
-      # Test - split into short, low memory tests 0???_*
-      #        and longer, solver-based tests 1???_*
 
-      - name: Run pytest
+      - name: Run tests 
         shell: bash -l {0}
         run: |
           ./test.sh

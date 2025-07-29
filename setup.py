@@ -10,6 +10,7 @@ import os
 import numpy
 import petsc4py
 
+
 def configure():
 
     INCLUDE_DIRS = []
@@ -22,6 +23,7 @@ def configure():
     # try get PETSC_DIR from petsc pip installation
     try:
         import petsc
+
         PETSC_DIR = petsc.get_petsc_dir()
     except:
         pass
@@ -43,8 +45,15 @@ def configure():
 
         if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
             import sys
+
             py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-            PETSC_DIR = os.path.join(os.environ["CONDA_PREFIX"],"lib","python"+py_version, "site-packages", "petsc") # symlink to latest python
+            PETSC_DIR = os.path.join(
+                os.environ["CONDA_PREFIX"],
+                "lib",
+                "python" + py_version,
+                "site-packages",
+                "petsc",
+            )  # symlink to latest python
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
         else:
             PETSC_DIR = os.environ["PETSC_DIR"]
@@ -54,7 +63,6 @@ def configure():
     print(f"PETSC_DIR: {PETSC_DIR}")
     print(f"PETSC_ARCH: {PETSC_ARCH}")
 
-
     from os.path import join, isdir
 
     if PETSC_ARCH and isdir(join(PETSC_DIR, PETSC_ARCH)):
@@ -63,13 +71,15 @@ def configure():
             join(PETSC_DIR, "include"),
         ]
         LIBRARY_DIRS += [join(PETSC_DIR, PETSC_ARCH, "lib")]
-        petscvars = join(PETSC_DIR,PETSC_ARCH,"lib","petsc","conf","petscvariables")
+        petscvars = join(
+            PETSC_DIR, PETSC_ARCH, "lib", "petsc", "conf", "petscvariables"
+        )
     else:
         if PETSC_ARCH:
             pass  # XXX should warn ...
         INCLUDE_DIRS += [join(PETSC_DIR, "include")]
         LIBRARY_DIRS += [join(PETSC_DIR, "lib")]
-        petscvars = join(PETSC_DIR,"lib","petsc","conf","petscvariables")
+        petscvars = join(PETSC_DIR, "lib", "petsc", "conf", "petscvariables")
 
     LIBRARIES += ["petsc"]
 
@@ -77,12 +87,12 @@ def configure():
     # This ought include mpi's details, ie mpicc --showme,
     # needed to compile UW cython extensions
     compiler = ""
-    with open(petscvars,"r") as f:
+    with open(petscvars, "r") as f:
         for line in f:
             line = line.strip()
             if line.startswith("CC ="):
-                compiler = line.split("=",1)[1].strip()
-    #print(f"***\n The c compiler is: {compiler}\n*****")
+                compiler = line.split("=", 1)[1].strip()
+    # print(f"***\n The c compiler is: {compiler}\n*****")
     os.environ["CC"] = compiler
 
     # PETSc for Python
@@ -107,6 +117,15 @@ conf = configure()
 extra_compile_args = ["-O3", "-g"]
 # extra_compile_args = ['-O0', '-g']
 extensions = [
+    Extension(
+        "underworld3.ckdtree",
+        sources=[
+            "src/underworld3/ckdtree.pyx",
+        ],
+        extra_compile_args=extra_compile_args + ["-std=c++11"],
+        language="c++",
+        **conf,
+    ),
     Extension(
         "underworld3.cython.petsc_discretisation",
         sources=[
@@ -146,7 +165,7 @@ extensions = [
             "src/underworld3/function/petsc_tools.c",
         ],
         extra_compile_args=extra_compile_args,
-        define_macros=[('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         **conf,
     ),
     Extension(
@@ -160,6 +179,7 @@ extensions = [
     ),
 ]
 
+
 # util function to get version information from file with __version__=
 def get_version(filename):
     try:
@@ -171,21 +191,23 @@ def get_version(filename):
                     break
             return version
     except FileNotFoundError:
-        print( f"Cannot get version information from {filename}" )
+        print(f"Cannot get version information from {filename}")
     except:
         raise
 
+
 # Create uwid if it doesn't exist
-idfile = './src/underworld3/_uwid.py'
+idfile = "./src/underworld3/_uwid.py"
 if not os.path.isfile(idfile):
     import uuid
+
     with open(idfile, "w+") as f:
-        f.write("uwid = \'" + str(uuid.uuid4()) + "\'")
-        
+        f.write("uwid = '" + str(uuid.uuid4()) + "'")
+
 setup(
     name="underworld3",
     packages=find_packages(),
-    version=get_version('./src/underworld3/_version.py'),
+    version=get_version("./src/underworld3/_version.py"),
     package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
     ext_modules=cythonize(
         extensions,

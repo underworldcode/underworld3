@@ -4,7 +4,6 @@ import os
 
 def initialise(jupyter_backend):
 
-
     import pyvista as pv
 
     pv.global_theme.background = "white"
@@ -40,18 +39,79 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     import shutil
     import tempfile
     import pyvista as pv
+    import numpy as np
 
-    with tempfile.TemporaryDirectory() as tmp:
-        if type(mesh) == str:  # reading msh file directly
-            vtk_filename = os.path.join(tmp, "tmpMsh.msh")
-            shutil.copyfile(mesh, vtk_filename)
-        else:  # reading mesh by creating vtk
-            vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
-            mesh.vtk(vtk_filename)
+    # with tempfile.TemporaryDirectory() as tmp:
+    #     if type(mesh) == str:  # reading msh file directly
+    #         vtk_filename = os.path.join(tmp, "tmpMsh.msh")
+    #         shutil.copyfile(mesh, vtk_filename)
+    #     else:  # reading mesh by creating vtk
+    #         vtk_filename = os.path.join(tmp, "tmpMsh.vtk")
+    #         mesh.vtk(vtk_filename)
 
-        pvmesh = pv.read(vtk_filename)
+    #     pvmesh = pv.read(vtk_filename)
 
-    return pvmesh
+    # return pvmesh
+
+    ## Alternative - not via file / create an unstructured grid in pyvista
+
+    from petsc4py import PETSc
+
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    fStart, fEnd = mesh.dm.getHeightStratum(1)
+    pStart, pEnd = mesh.dm.getDepthStratum(0)
+
+    cell_num_points = mesh.element.entities[mesh.dim]
+    face_num_points = mesh.element.face_entities[mesh.dim]
+
+    cell_points_list = []
+    for cell_id in range(cStart, cEnd):
+        cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+        cell_points_list.append(cell_points - pStart)
+
+    try:
+        import meshio
+
+        match (mesh.dm.isSimplex(), mesh.dim):
+            case (True, 2):
+                meshio_cell_type = "triangle"
+            case (True, 3):
+                meshio_cell_type = "tetra"
+            case (False, 2):
+                meshio_cell_type = "quad"
+            case (False, 3):
+                meshio_cell_type = "hexahedron"
+
+        mmesh = meshio.Mesh(
+            points=mesh.data, cells=[(meshio_cell_type, np.array(cell_points_list))]
+        )
+
+        pv_mesh = pv.from_meshio(mmesh)
+        return pv_mesh
+
+    except ImportError:
+
+        match (mesh.dm.isSimplex(), mesh.dim):
+            case (True, 2):
+                vtk_cell_type = pv.cell.CellType.TRIANGLE
+            case (True, 3):
+                vtk_cell_type = pv.cell.CellType.TETRA
+            case (False, 2):
+                vtk_cell_type = pv.cell.CellType.QUAD
+            case (False, 3):
+                vtk_cell_type = pv.cell.CellType.HEXAHEDRON
+
+        cells_array = np.array(cell_points_list, dtype=int)
+        cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
+        cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
+
+        cells_array = np.hstack((cells_size, cells_array), dtype=int)
+
+        pv_mesh = pv.UnstructuredGrid(
+            cells_array, cells_type, coords_to_pv_coords(mesh.data)
+        )
+
+        return pv_mesh
 
 
 def coords_to_pv_coords(coords):
@@ -151,7 +211,7 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
             dim = 3
 
     coords = pv_mesh.points[:, 0:dim]
-    scalar_values = uw.function.evalf(uw_fn, coords)
+    scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     return scalar_values
 
@@ -172,7 +232,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     coords = pv_mesh.points[:, 0:dim]
     vector_values = np.zeros_like(pv_mesh.points)
 
-    vector_values[:, 0:dim] = uw.function.evalf(uw_fn, coords)
+    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     return vector_values
 
@@ -190,7 +250,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 #     vector_values = np.zeros_like(coords)
 
 #     for i in range(0, dim):
-#         vector_values[:, i] = uw.function.evalf(uw_fn[i], coords)
+#         vector_values[:, i] = uw.function.evaluate(uw_fn[i], coords, evalf=True)
 
 #     return vector_values
 
@@ -243,7 +303,6 @@ def plot_mesh(
     save_png=False,
     dir_fname="",
 ):
-
     """
     Plot a mesh with optional clipping, edge display, and saving functionality.
 
@@ -330,7 +389,6 @@ def plot_scalar(
     save_png=False,
     dir_fname="",
 ):
-
     """
     Plot a scalar quantity from a mesh with options for clipping, colormap, and saving.
 
@@ -463,7 +521,6 @@ def plot_vector(
     scalar=None,
     scalar_name="",
 ):
-
     """
     Plot a vector quantity from a mesh with options for clipping, colormap, vector magnitude, and saving.
 
@@ -557,9 +614,7 @@ def plot_vector(
             pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
         )
     else:
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, scalar.sym
-        )
+        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
 
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
 
@@ -634,7 +689,6 @@ def save_colorbar(
     output_path="",
     fname="",
 ):
-
     """
     Save a colorbar separately from a plot with customizable appearance and format.
 

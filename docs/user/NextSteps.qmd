@@ -16,8 +16,10 @@ In addition to the notebooks in this brief set of examples, there are a number o
 
   - [The Underworld Website / Blog](https://www.underworldcode.org)
 
-  - [The API documentation](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html) 
+  - [The API documentation](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
     (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text.
+
+  - [The API documentation (development branch)](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html)
 
   - The [`underworld3` GitHub repository](https://github.com/underworldcode/underworld3) is the most active development community for the code.
 
@@ -43,6 +45,33 @@ Almost all of our notebook examples are annotated python for this reason.An exce
 ```
 
 The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the `PETSc` command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).
+
+#### Parallel scaling / performance
+
+Running geodynamic models on a single CPU/processor (i.e. serial) is time-consuming and limits us to low resolution. Underworld is build from the ground-up as a parallel computing solution which means we can easily run large models on high performance computing clusters (HPC); that is, sub-divide the problem into many smaller chunks and use multiple processors to solve each one, taking care to combine and synchronise the answers from each processor to obtain the correct solution to the original problem.
+
+Parallel computation can reduce time we need to wait for the our results to be computed but it does happen at the expense of some overhead The overhead does depend on the nature of the computer we are using but typically we need to think about:
+
+ - **Code complexity**: any time we manage computations across different processors, we have additional coding to reassemble the calculations correctly and we need to think about many special cases. For example, integrating a quantity of the surface of a mesh: many processes contribute, some do not, the results have to be computed independently then combined.
+
+ - **Additional memory is often required**: to manage copies of information that lives on / near boundaries, to store the topology of the decomposed domain and to help navigate the passing of information between processes.
+
+ - **The time taken to synchronise results** and the work required to keep track of who is doing what, when they are done, and in making sure everyone waits for everyone else. There is a time-cost in actually sending information as part of a synchronisation and a computational cost in ensuring that work is distributed efficiently.
+
+To determine the efficiency of parallel computation, we introduce the *strong scaling test* which measures the time taken to solve a problem in parallel compared to the same problem solved in serial. In strong scaling tests, the size of the problem is kept constant, while the number of processors is increased. The reduction in run-time due to the addition of more processors is commonly expressed in terms of the speed-up:
+
+$$
+\textrm{speed up} = \frac{t(N_{ref})}{t(N)}
+$$
+
+where $t(N_{ref})$ is the run-time for a reference number of processors, $N_{ref}$, and $t(N)$ is the run-time when $N$ processors are used. In the ideal case, $N$ additional processors should contribute all of its resources in solving the problem and reduce the compute time by a factor of $N$ relative to the reference run time. For example, using $2 N_{ref}$ processors will ideally halve the run-time resulting to a speed-up = 2.
+
+::: {#fig-strong-scaling}
+
+![](media/UW3-StrongScalingSolvers.png)
+
+Strong parallel-scaling tests run on Australia's peak computing system, [GADI, at the National Computational Infrastructure](https://nci.org.au/our-systems/hpc-systems?ref=underworldcode.org). This is a typical High Performance Computing facility with large numbers of dedicated, identical CPUs and fast communication links.
+:::
 
 
 ### Advanced capabilities
@@ -77,11 +106,11 @@ It is also possible to use the PETSc mesh adaption capabilities, to refine the r
 
 ```{=html}
 <center>
-<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="300">
+<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="500">
 </iframe>
 </center>
 ```
-*Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is three plume-like upwellings and the slope of this field is shown in colour (red high, blue low). The adapted mesh is shown in green.*
+*Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is a plume-like upwelling and the slope of this field is shown in colour (red high, blue low). Don't forget to zoom in !*
 
 ```python
 

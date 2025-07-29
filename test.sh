@@ -15,7 +15,6 @@ PYTEST="pytest --config-file=tests/pytest.ini"
 $PYTEST tests/test_00[0-4]*py || status=1
 #$PYTEST tests/test_0050*py    || status=1 # disable auditor test for now
 
-
 # Spatial / calculation tests
 $PYTEST tests/test_01*py tests/test_05*py tests/test_06*py || status=1
 
