@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Notebook 6: Time-dependence – Underworld3 Quick Start Guide</title>
+<title>Notebook 6: Rayleigh-Bénard Convection (time-stepping example) – Underworld3 Quick Start Guide</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -66,7 +66,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
 <link href="../Notebooks/7-Unsteady_Flow.html" rel="next">
-<link href="../Notebooks/5-Solvers.html" rel="prev">
+<link href="../Notebooks/5-Solvers-ii-Stokes.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -107,7 +107,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" integrity="sha512-c3Nl8+7g4LMSTdrm621y7kf9v3SDPnhxLNhcjFJbKECVnmZHTdo+IRO05sNLTH/D3vA6u1X32ehoLC7WFVdheg==" crossorigin="anonymous"></script>
 
 <script type="application/javascript">define('jquery', [],function() {return window.jQuery;})</script>
-<script src="https://unpkg.com/@jupyter-widgets/html-manager@*/dist/embed-amd.js" crossorigin="anonymous"></script>
 
   <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
@@ -163,7 +162,7 @@ window.Quarto = {
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
         <a class="flex-grow-1 no-decor" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
-          <h1 class="quarto-secondary-nav-title"><span class="chapter-title">Notebook 6: Time-dependence</span></h1>
+          <h1 class="quarto-secondary-nav-title"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></h1>
         </a>     
     </div>
   </nav>
@@ -236,17 +235,17 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  <a href="../Notebooks/4-Solvers-i-Poisson.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  <a href="../Notebooks/5-Solvers-ii-Stokes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  <a href="../Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -275,7 +274,10 @@ window.Quarto = {
   <li><a href="#curved-free-slip-boundaries" id="toc-curved-free-slip-boundaries" class="nav-link" data-scroll-target="#curved-free-slip-boundaries">Curved, free-slip boundaries</a></li>
   <li><a href="#initial-condition" id="toc-initial-condition" class="nav-link" data-scroll-target="#initial-condition">Initial condition</a></li>
   <li><a href="#exercise---null-space" id="toc-exercise---null-space" class="nav-link" data-scroll-target="#exercise---null-space">Exercise - Null space</a></li>
-  <li><a href="#exercise---heat-flux" id="toc-exercise---heat-flux" class="nav-link" data-scroll-target="#exercise---heat-flux">Exercise - Heat flux</a></li>
+  <li><a href="#exercise---heat-flux" id="toc-exercise---heat-flux" class="nav-link" data-scroll-target="#exercise---heat-flux">Exercise - Heat flux</a>
+  <ul class="collapse">
+  <li><a href="#references-2" id="toc-references-2" class="nav-link" data-scroll-target="#references-2">References</a></li>
+  </ul></li>
   </ul>
 <div class="quarto-other-links"><h2>Other Links</h2><ul><li><a href="https://github.com/underworldcode/underworld3"><i class="bi bi-github"></i>Github Repository</a></li><li><a href="https://www.underworlcode.org"><i class="bi bi-newspaper"></i>Underworld3 Blog</a></li></ul></div><div class="quarto-code-links"><h2>Code Links</h2><ul><li><a href="https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb"><i class="bi bi-rocket-takeoff"></i>Open in Binder</a></li></ul></div></nav>
     </div>
@@ -284,7 +286,7 @@ window.Quarto = {
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title d-none d-lg-block"><span class="chapter-title">Notebook 6: Time-dependence</span></h1>
+<h1 class="title d-none d-lg-block"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></h1>
 </div>
 
 
@@ -304,8 +306,21 @@ window.Quarto = {
 <div style="float: right; width: 40%">
 <p><img src="media/AnnulusConvectionModel.png" class="img-fluid"></p>
 </div>
-<p>We’ll look at a convection problem which couples Stokes Flow with time-dependent advection/diffusion.</p>
-<p>The starting point is our previous notebook where we solved for Stokes flow in a cylindrical annulus geometry. We then add an advection-diffusion solver to evolve temperature. The Stokes buoyancy force is proportional to the temperature anomaly, and the velocity solution is fed back into the temperature advection term.</p>
+<p>We’ll look at a convection problem which couples Stokes Flow with time-dependent advection/diffusion to give simple Rayleigh-Bénard convection model.</p>
+<p><span class="math display">\[
+-\nabla \cdot
+    \left[
+            \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) -  p \mathbf{I} \right] =
+     -\rho_0 \alpha T \mathbf{g}
+\]</span> <span class="math display">\[
+\nabla \cdot \mathbf{u} = 0
+\]</span></p>
+<p><span class="math inline">\(\eta\)</span> is viscosity, <span class="math inline">\(p\)</span> is pressure, <span class="math inline">\(\rho_0\)</span> is a reference density, <span class="math inline">\(\alpha\)</span> is thermal expansivity, and <span class="math inline">\(T\)</span> is the temperature. Here we explicitly express density variations in terms of temperature variations.</p>
+<p>Thermal evolution is given by <span class="math display">\[
+\frac{\partial T}{\partial t} - \mathbf{u}\cdot\nabla T = \kappa \nabla^2 T
+\]</span> where the velocity, <span class="math inline">\(\mathbf{u}\)</span> is the result of the Stokes flow calculation. <span class="math inline">\(\kappa\)</span> is the thermal diffusivity (compare this with Notebook 4).</p>
+<p>The starting point is our previous notebook where we solved for Stokes flow in a cylindrical annulus geometry. We then add an advection-diffusion solver to evolve temperature. The Stokes buoyancy force is proportional to the temperature anomaly, and the velocity solution is fed back into the temperature advection term. The timestepping loop is written by hand because usually you will want to do some analysis or output some checkpoints.</p>
+<p>To read more about the applications of simple mantle convection models like this one, see (for example) Schubert et al, 2001.</p>
 <div id="dddf1a25-1d89-4c39-90dc-9ca5a45db5dd" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sympy</span>
@@ -346,7 +361,7 @@ window.Quarto = {
 <p>The advection-diffusion solver evolved <code>t_soln</code> using the Stokes velocity <code>v_soln</code> in the fluid-transport term.</p>
 </section>
 <section id="curved-free-slip-boundaries" class="level3">
-<h3 class="anchored" data-anchor-id="curved-free-slip-boundaries">Curved, free-slip boundaries</h3>
+<h3 class="anchored">Curved, free-slip boundaries</h3>
 <p>In the annulus, a free slip boundary corresponds to zero radial velocity. However, in this mesh, <span class="math inline">\(v_r\)</span> is not one of the unknowns (<span class="math inline">\(\mathbf{v} = (v_x, v_y)\)</span>). We apply a non linear boundary condition that penalises <span class="math inline">\(v_r\)</span> on the boundary as discussed previously in Example 5.</p>
 <div id="3f3c3875-4ba1-4e99-a793-3446af229b6d" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>stokes <span class="op">=</span> uw.systems.Stokes(</span>
@@ -392,88 +407,48 @@ window.Quarto = {
 <span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>adv_diff.petsc_options.setValue(<span class="st">"snes_monitor"</span>, <span class="va">None</span>)</span>
 <span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>adv_diff.petsc_options.setValue(<span class="st">"ksp_monitor"</span>, <span class="va">None</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="6b97dabb-27b1-4682-982e-6536eeef6652" class="cell" data-scrolled="true" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>meshball.view(<span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-stdout">
-<pre><code>
-
-Mesh # 0: .meshes/uw_annulus_ro1.0_ri0.55_csize0.1.msh
-</code></pre>
+<div id="6b97dabb-27b1-4682-982e-6536eeef6652" class="cell" data-scrolled="true" data-execution_count="27">
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>uw.systems.AdvDiffusion.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<section id="advection-diffusion-equation-solver-scalar-variable" class="level1 cell-output cell-output-display cell-output-markdown">
+<h1>Advection-Diffusion Equation Solver (Scalar Variable)</h1>
+<p>This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method which is described in Spiegelman &amp; Katz, (2006).</p>
+<p><span class="math display">\[
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+        \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+        \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+\]</span></p>
+<p>The term <span class="math inline">\(\mathbf{F}\)</span> relates diffusive fluxes to gradients in the unknown <span class="math inline">\(u\)</span>. The advective flux that results from having gradients along the direction of transport (given by the velocity vector field <span class="math inline">\(\mathbf{v}\)</span> ) are included in the <span class="math inline">\(\dot{\mathbf{u}}\)</span> term.</p>
+<p>The term <span class="math inline">\(\dot{\mathbf{u}}\)</span> involves upstream sampling to find the value <span class="math inline">\(u^*\)</span> which represents the value of <span class="math inline">\(u\)</span> at the points which later arrive at the nodal points of the mesh. This is achieved using a “hidden” swarm variable which is advected backwards from the nodal points automatically during the <code>solve</code> phase.</p>
+<section id="properties" class="level2">
+<h2 class="anchored" data-anchor-id="properties">Properties</h2>
+<ul>
+<li><p>The unknown is <span class="math inline">\(u\)</span>.</p></li>
+<li><p>The velocity field is <span class="math inline">\(\mathbf{v}\)</span> and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be calculated in situ (e.g.&nbsp;<code>V_Field = v_solution.sym</code>) <strong>NOTE: no it’s not. Currently it is a MeshVariable</strong> this is the desired behaviour though.</p></li>
+<li><p>The diffusivity tensor, <span class="math inline">\(\kappa\)</span> is provided by setting the <code>constitutive_model</code> property to one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters. It is usually a constant or a function of position / time and may also be non-linear or anisotropic.</p></li>
+<li><p>Volumetric sources of <span class="math inline">\(u\)</span> are specified using the <span class="math inline">\(f\)</span> property and can be any valid combination of <code>sympy</code> functions of position and <code>meshVariable</code> or <code>swarmVariable</code> types.</p></li>
+</ul>
+</section>
+<section id="references" class="level2">
+<h2 class="anchored" data-anchor-id="references">References</h2>
+<p>Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073</p>
+</section>
+</section>
 </div>
-<div class="cell-output cell-output-display">
-<script type="application/vnd.jupyter.widget-view+json">
-{"model_id":"59bd8240401845d293e0d0503c4223a3","version_major":2,"version_minor":0,"quarto_mimetype":"application/vnd.jupyter.widget-view+json"}
-</script>
-</div>
-<div class="cell-output cell-output-stdout">
-<pre><code>Number of cells: 568
-
-| Variable Name       | component | degree |     type        |
-| ---------------------------------------------------------- |
-| V0                  |    2      |   2    |     VECTOR      |
-| p                   |    1      |   1    |     SCALAR      |
-| T                   |    1      |   3    |     SCALAR      |
-| psi_star_sl_16_0    |    1      |   3    |     SCALAR      |
-| W_16_0              |    1      |   3    |     SCALAR      |
-| psi_star_sl_28_0    |    2      |   3    |     VECTOR      |
-| psi_star_sl_28_1    |    2      |   3    |     VECTOR      |
-| W_28_1              |    2      |   3    |     VECTOR      |
-| ---------------------------------------------------------- |
-
-
-| Boundary Name            | ID    | Min Size | Max Size |
-| ------------------------------------------------------ |
-| Lower                    | 1     | 70       | 70       |
-| Upper                    | 2     | 126      | 126      |
-| Centre                   | 10    | 0        | 0        |
-| Null_Boundary            | 666   | 334      | 334      |
-| All_Boundaries           | 1001  | 100      | 100      |
-| All_Boundaries           | 1001  | 100      | 100      |
-| UW_Boundaries            | --    | 630      | 630      |
-| ------------------------------------------------------ |
-
-
-DM Object: uw_.meshes/uw_annulus_ro1.0_ri0.55_csize0.1.msh 1 MPI process
-  type: plex
-uw_.meshes/uw_annulus_ro1.0_ri0.55_csize0.1.msh in 2 dimensions:
-  Number of 0-cells per rank: 334
-  Number of 1-cells per rank: 902
-  Number of 2-cells per rank: 568
-Labels:
-  depth: 3 strata with value/size (0 (334), 1 (902), 2 (568))
-  All_Boundaries: 1 strata with value/size (1001 (100))
-  Elements: 1 strata with value/size (666666 (802))
-  Lower: 1 strata with value/size (1 (70))
-  Upper: 1 strata with value/size (2 (126))
-  celltype: 3 strata with value/size (0 (334), 1 (902), 3 (568))
-  Null_Boundary: 1 strata with value/size (666 (334))
-  UW_Boundaries: 4 strata with value/size (1 (70), 2 (126), 666 (334), 1001 (100))
-Field V0:
-  adjacency FEM
-Field p:
-  adjacency FEM
-Field T:
-  adjacency FEM
-Field psi_star_sl_16_0:
-  adjacency FEM
-Field W_16_0:
-  adjacency FEM
-Field psi_star_sl_28_0:
-  adjacency FEM
-Field psi_star_sl_28_1:
-  adjacency FEM
-Field W_28_1:
-  adjacency FEM</code></pre>
+<div id="ea889c84-5fae-48e7-b761-afdec4f2c4e2" class="cell" data-execution_count="31">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>uw.systems.SemiLagragian_DDt.view()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>Nodal-Swarm Lagrangian History Manager: This manages the update of a Lagrangian variable, <span class="math inline">\(\psi\)</span> on the swarm across timesteps. <span class="math display">\[\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad\]</span> <span class="math display">\[\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad\]</span> <span class="math display">\[\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}\]</span></p>
 </div>
 </div>
 <section id="underworld-expressions" class="level4">
 <h4 class="anchored" data-anchor-id="underworld-expressions">Underworld expressions</h4>
-<p>Note that</p>
+<p>Note that the parameters in the consititutive models are defined as <code>uw.expression</code>s because 1. We generally would like to display them symbolically in equations rather than see their floating point value 2. They can represent complex expressions that “blow up” the symbolic forms when we inspect the equations 3. We would like to be able to substitute new values in the equations and use the <em>lazy evaluation</em> of expressions to avoid having to redefine expressions in multiple locations where these symbols appear 4. For future reference, in optimisation problems, we differentiate expressions with respect to their parameters and want the results also to be evaluated in a lazy fashion.</p>
 <div id="1ddd1c6e-0847-4add-af60-032f039c2315" class="cell" data-execution_count="8">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>display(<span class="bu">type</span>(stokes.constitutive_model.Parameters.shear_viscosity_0))</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>display(<span class="bu">type</span>(adv_diff.constitutive_model.Parameters.diffusivity))</span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>display(<span class="bu">type</span>(stokes.constitutive_model.Parameters.shear_viscosity_0))</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>display(<span class="bu">type</span>(adv_diff.constitutive_model.Parameters.diffusivity))</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>stokes.constitutive_model.Parameters.shear_viscosity_0.sym</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-display">
 <pre><code>underworld3.function.expressions.UWexpression</code></pre>
 </div>
@@ -487,36 +462,131 @@ Field W_28_1:
 </section>
 </section>
 <section id="initial-condition" class="level3">
-<h3 class="anchored" data-anchor-id="initial-condition">Initial condition</h3>
+<h3 class="anchored">Initial condition</h3>
 <p>We need to set an initial condition for the temperature field as the coupled system is an initial value problem. Choose whatever works but remember that the boundary conditions will over-rule values you set on the lower and upper boundaries.</p>
-<div id="366ce888-c27a-4a30-bca0-ad406ccaa34c" class="cell" data-execution_count="9">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Initial temperature</span></span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>init_t <span class="op">=</span> <span class="fl">0.1</span> <span class="op">*</span> sympy.sin(<span class="dv">3</span> <span class="op">*</span> th) <span class="op">*</span> sympy.cos(np.pi <span class="op">*</span> (r <span class="op">-</span> r_i) <span class="op">/</span> (r_o <span class="op">-</span> r_i)) <span class="op">+</span> (</span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    r_o <span class="op">-</span> r</span>
-<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>) <span class="op">/</span> (r_o <span class="op">-</span> r_i)</span>
-<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> meshball.access(t_soln):</span>
-<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    t_soln.data[:, <span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(init_t, t_soln.coords, verbose<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-stdout">
-<pre><code>Expression to be evaluated: -2.22222222222222*sqrt(N.x**2 + N.y**2) + 0.1*sin(3*atan2(N.y, N.x))*cos(6.98131700797732*sqrt(N.x**2 + N.y**2) - 3.83972435438753) + 2.22222222222222</code></pre>
-</div>
+<div id="366ce888-c27a-4a30-bca0-ad406ccaa34c" class="cell" data-execution_count="18">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Initial temperature</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>init_t <span class="op">=</span> <span class="fl">0.1</span> <span class="op">*</span> sympy.sin(<span class="dv">3</span> <span class="op">*</span> th) <span class="op">*</span> sympy.cos(np.pi <span class="op">*</span> (r <span class="op">-</span> r_i) <span class="op">/</span> (r_o <span class="op">-</span> r_i)) <span class="op">+</span> (</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    r_o <span class="op">-</span> r</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>) <span class="op">/</span> (r_o <span class="op">-</span> r_i)</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> meshball.access(t_soln):</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    t_soln.data[:, <span class="dv">0</span>] <span class="op">=</span> uw.function.evaluate(init_t, t_soln.coords)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <section id="initial-velocity-solve" class="level4">
-<h4 class="anchored" data-anchor-id="initial-velocity-solve">Initial velocity solve</h4>
+<h4 class="anchored">Initial velocity solve</h4>
 <p>The first solve allows us to determine the magnitude of the velocity field and is useful to keep separated to check convergence rates etc.</p>
 <p>For non-linear problems, we usually need an initial guess using a reasonably close linear problem.</p>
 <p><code>zero_init_guess</code> is used to reset any information in the vector of unknowns (i.e.&nbsp;do not use any initial information if <code>zero_init_guess==True</code>).</p>
 <div id="51f82885-0b41-4454-9953-ac7ea23e38e3" class="cell" data-execution_count="10">
-<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>stokes.solve(zero_init_guess<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>stokes.solve(zero_init_guess<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div id="1c660972-f858-43bc-a6c4-5e09cc8f9fdf" class="cell" data-execution_count="11">
-<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep the initialisation separate</span></span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="co"># so we can run the loop again in a notebook</span></span>
-<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>max_steps <span class="op">=</span> <span class="dv">15</span></span>
-<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>timestep <span class="op">=</span> <span class="dv">0</span></span>
-<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>elapsed_time <span class="op">=</span> <span class="fl">0.0</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep the initialisation separate</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="co"># so we can run the loop again in a notebook</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>max_steps <span class="op">=</span> <span class="dv">15</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>timestep <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>elapsed_time <span class="op">=</span> <span class="fl">0.0</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="fba03f7d-0f61-4047-96ef-834442e42793" class="cell" data-execution_count="26">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>adv_diff.view(class_documentation<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<section id="advection-diffusion-equation-solver-scalar-variable-1" class="level1 cell-output cell-output-display cell-output-markdown">
+<h1>Advection-Diffusion Equation Solver (Scalar Variable)</h1>
+<p>This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method which is described in Spiegelman &amp; Katz, (2006).</p>
+<p><span class="math display">\[
+\color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
+\nabla \cdot
+        \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
+        \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
+\]</span></p>
+<p>The term <span class="math inline">\(\mathbf{F}\)</span> relates diffusive fluxes to gradients in the unknown <span class="math inline">\(u\)</span>. The advective flux that results from having gradients along the direction of transport (given by the velocity vector field <span class="math inline">\(\mathbf{v}\)</span> ) are included in the <span class="math inline">\(\dot{\mathbf{u}}\)</span> term.</p>
+<p>The term <span class="math inline">\(\dot{\mathbf{u}}\)</span> involves upstream sampling to find the value <span class="math inline">\(u^*\)</span> which represents the value of <span class="math inline">\(u\)</span> at the points which later arrive at the nodal points of the mesh. This is achieved using a “hidden” swarm variable which is advected backwards from the nodal points automatically during the <code>solve</code> phase.</p>
+<section id="properties-1" class="level2">
+<h2 class="anchored" data-anchor-id="properties-1">Properties</h2>
+<ul>
+<li><p>The unknown is <span class="math inline">\(u\)</span>.</p></li>
+<li><p>The velocity field is <span class="math inline">\(\mathbf{v}\)</span> and is provided as a <code>sympy</code> function to allow operations such as time-averaging to be calculated in situ (e.g.&nbsp;<code>V_Field = v_solution.sym</code>) <strong>NOTE: no it’s not. Currently it is a MeshVariable</strong> this is the desired behaviour though.</p></li>
+<li><p>The diffusivity tensor, <span class="math inline">\(\kappa\)</span> is provided by setting the <code>constitutive_model</code> property to one of the scalar <code>uw.constitutive_models</code> classes and populating the parameters. It is usually a constant or a function of position / time and may also be non-linear or anisotropic.</p></li>
+<li><p>Volumetric sources of <span class="math inline">\(u\)</span> are specified using the <span class="math inline">\(f\)</span> property and can be any valid combination of <code>sympy</code> functions of position and <code>meshVariable</code> or <code>swarmVariable</code> types.</p></li>
+</ul>
+</section>
+<section id="references-1" class="level2">
+<h2 class="anchored" data-anchor-id="references-1">References</h2>
+<p>Spiegelman, M., &amp; Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073</p>
+</section>
+</section>
+<div class="cell-output cell-output-display cell-output-markdown">
+<hr>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p><strong>Class</strong>: &lt;class ‘underworld3.systems.solvers.SNES_AdvectionDiffusion’&gt;</p>
+</div>
+<section id="underworld-petsc-general-scalar-equation-solver" class="level1 cell-output cell-output-display cell-output-markdown">
+<h1>Underworld / PETSc General Scalar Equation Solver</h1>
+</section>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>Primary problem:</p>
+</div>
+<div class="cell-output cell-output-display">
+<pre><code>&lt;IPython.core.display.Latex object&gt;</code></pre>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>$ = 0 $</p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p><em>Where:</em></p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p><span class="math inline">\(\quad\)</span><span class="math inline">\(\displaystyle \upkappa\)</span><span class="math inline">\(=\)</span><span class="math inline">\(\displaystyle 1\)</span></p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p><span class="math inline">\(\quad\)</span><span class="math inline">\(\displaystyle \Delta t\)</span><span class="math inline">\(=\)</span><span class="math inline">\(\displaystyle 0.00192729179220545\)</span></p>
+</div>
+<section id="boundary-conditions" class="level1 cell-output cell-output-display cell-output-markdown">
+<h1>Boundary Conditions</h1>
+</section>
+<div class="cell-output cell-output-display cell-output-markdown">
+<table class="caption-top table table-sm table-striped small">
+<colgroup>
+<col style="width: 58%">
+<col style="width: 18%">
+<col style="width: 23%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Type</th>
+<th>Boundary</th>
+<th>Expression</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;"><strong>essential</strong></td>
+<td>Lower</td>
+<td>$$</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><strong>essential</strong></td>
+<td>Upper</td>
+<td>$$</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>This solver is formulated as a 2 dimensional problem with a 2 dimensional mesh</p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>$ = $ <span class="math inline">\(\displaystyle \left[\begin{matrix}{ \hspace{ 0.04pt } {T} }(\mathbf{x})\end{matrix}\right]\)</span></p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>$ = $ <span class="math inline">\(\displaystyle \left[\begin{matrix}{ \hspace{ 0.04pt } {{v_0}} }_{ 0 }(\mathbf{x}) &amp; { \hspace{ 0.04pt } {{v_0}} }_{ 1 }(\mathbf{x})\end{matrix}\right]\)</span></p>
+</div>
+<div class="cell-output cell-output-display cell-output-markdown">
+<p>$t = $ <span class="math inline">\(\displaystyle \Delta t\)</span></p>
+</div>
 </div>
 <div id="4a334648-c328-42bf-b71f-383246cebdc9" class="cell" data-execution_count="12">
 <div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>init_t <span class="op">=</span> <span class="fl">0.1</span> <span class="op">*</span> sympy.sin(<span class="dv">3</span> <span class="op">*</span> th) <span class="op">*</span> sympy.cos(np.pi <span class="op">*</span> (r <span class="op">-</span> r_i) <span class="op">/</span> (r_o <span class="op">-</span> r_i)) <span class="op">+</span> (</span>
@@ -535,37 +605,33 @@ Field W_28_1:
 </div>
 </div>
 <div id="2993d3aa-6355-408b-ab60-cf80aebbf0cb" class="cell" data-execution_count="14">
-<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>adv_diff.solve(timestep<span class="op">=</span><span class="fl">0.01</span>, zero_init_guess<span class="op">=</span><span class="va">True</span>, _evalf<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>adv_diff.solve(timestep<span class="op">=</span><span class="fl">0.01</span>, zero_init_guess<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
-<pre><code>Substepping 1 / 0.9448225121764924, -0.01 
-Substepping 1 / 0.9448225121764924, -0.01 
-Substepping 1 / 0.9448225121764924, -0.01 
-  0 SNES Function norm 9.477349938932e+00
+<pre><code>  0 SNES Function norm 9.477337251545e+00
     Residual norms for Solver_14_ solve.
-    0 KSP Residual norm 5.145427711298e+01
-    1 KSP Residual norm 6.664542414006e+00
-    2 KSP Residual norm 1.519894691968e+00
-    3 KSP Residual norm 8.840535890006e-01
-    4 KSP Residual norm 5.301684627374e-01
-    5 KSP Residual norm 2.425123700002e-01
-    6 KSP Residual norm 1.150914265038e-01
-    7 KSP Residual norm 6.173456953468e-02
-    8 KSP Residual norm 3.137871636699e-02
-    9 KSP Residual norm 1.401507093394e-02
-   10 KSP Residual norm 6.781771828793e-03
-   11 KSP Residual norm 3.791327651989e-03
-  1 SNES Function norm 3.383908652549e-03
-Pre-solve time 2.046229600906372 / SNES solve time 0.03188920021057129 / post-solve time 5.9604644775390625e-06</code></pre>
+    0 KSP Residual norm 5.145688853471e+01
+    1 KSP Residual norm 6.664452877949e+00
+    2 KSP Residual norm 1.519834146720e+00
+    3 KSP Residual norm 8.840183259526e-01
+    4 KSP Residual norm 5.301397793504e-01
+    5 KSP Residual norm 2.424966321832e-01
+    6 KSP Residual norm 1.150826566498e-01
+    7 KSP Residual norm 6.172825406475e-02
+    8 KSP Residual norm 3.137375512549e-02
+    9 KSP Residual norm 1.401218686048e-02
+   10 KSP Residual norm 6.780473869117e-03
+   11 KSP Residual norm 3.790531875925e-03
+  1 SNES Function norm 3.383398820327e-03</code></pre>
 </div>
 </div>
-<div id="8db49d4c-9dcd-4920-901a-65cf8d0056db" class="cell" data-execution_count="16">
+<div id="8db49d4c-9dcd-4920-901a-65cf8d0056db" class="cell" data-execution_count="23">
 <div class="sourceCode cell-code" id="cb21"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Null space ?</span></span>
 <span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> step <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">0</span>, max_steps):</span>
 <span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    stokes.solve(zero_init_guess<span class="op">=</span><span class="va">False</span>)</span>
 <span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    delta_t <span class="op">=</span> <span class="dv">5</span> <span class="op">*</span> adv_diff.estimate_dt()</span>
-<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    adv_diff.solve(timestep<span class="op">=</span>delta_t, _evalf<span class="op">=</span><span class="va">False</span>, zero_init_guess<span class="op">=</span><span class="va">False</span>, verbose<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    adv_diff.solve(timestep<span class="op">=</span>delta_t, zero_init_guess<span class="op">=</span><span class="va">False</span>, verbose<span class="op">=</span><span class="va">False</span>)</span>
 <span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    timestep <span class="op">+=</span> <span class="dv">1</span></span>
 <span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    elapsed_time <span class="op">+=</span> delta_t</span>
@@ -573,48 +639,207 @@ Pre-solve time 2.046229600906372 / SNES solve time 0.03188920021057129 / post-so
 <span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> timestep <span class="op">%</span> <span class="dv">5</span> <span class="op">==</span> <span class="dv">0</span>:</span>
 <span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span>(<span class="ss">f"Timestep: </span><span class="sc">{</span>timestep<span class="sc">}</span><span class="ss">, time </span><span class="sc">{</span>elapsed_time<span class="sc">}</span><span class="ss">"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <div class="cell-output cell-output-stdout">
-<pre><code>SNES_Scalar (Solver_14_): Pointwise functions need to be built
-JIT compiled module cached ... 8681933316987824546 
-Substepping 1 / 0.5926793417919514, -0.007655378472205266 </code></pre>
+<pre><code>  0 SNES Function norm 5.519719545520e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 1.080481897680e+00
+    1 KSP Residual norm 2.794759495722e-01
+    2 KSP Residual norm 8.738937475137e-02
+    3 KSP Residual norm 2.538497096191e-02
+    4 KSP Residual norm 9.791736400409e-03
+    5 KSP Residual norm 3.712676600336e-03
+    6 KSP Residual norm 1.063757340521e-03
+    7 KSP Residual norm 4.172823722413e-04
+    8 KSP Residual norm 1.562544824097e-04
+    9 KSP Residual norm 5.223214632822e-05
+  1 SNES Function norm 4.882999045393e-05
+  0 SNES Function norm 4.773557354896e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 9.317588273285e-01
+    1 KSP Residual norm 2.459336490176e-01
+    2 KSP Residual norm 7.783642668213e-02
+    3 KSP Residual norm 2.191611878110e-02
+    4 KSP Residual norm 6.968378956074e-03
+    5 KSP Residual norm 3.165364530306e-03
+    6 KSP Residual norm 1.009565335997e-03
+    7 KSP Residual norm 4.012564067190e-04
+    8 KSP Residual norm 1.480223863671e-04
+    9 KSP Residual norm 5.045767013406e-05
+  1 SNES Function norm 4.665072060480e-05
+  0 SNES Function norm 4.134346531441e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 8.307659270725e-01
+    1 KSP Residual norm 2.259694308441e-01
+    2 KSP Residual norm 6.843626200604e-02
+    3 KSP Residual norm 2.044900509918e-02
+    4 KSP Residual norm 7.902904914890e-03
+    5 KSP Residual norm 3.123583935771e-03
+    6 KSP Residual norm 9.710014509369e-04
+    7 KSP Residual norm 4.067866782756e-04
+    8 KSP Residual norm 1.440315988629e-04
+    9 KSP Residual norm 4.828499765245e-05
+  1 SNES Function norm 4.388299556922e-05
+  0 SNES Function norm 3.702917051432e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 7.391018432834e-01
+    1 KSP Residual norm 2.118225742668e-01
+    2 KSP Residual norm 6.153300528419e-02
+    3 KSP Residual norm 1.888671986332e-02
+    4 KSP Residual norm 7.688485116852e-03
+    5 KSP Residual norm 2.892614443447e-03
+    6 KSP Residual norm 9.899961279690e-04
+    7 KSP Residual norm 4.303831257914e-04
+    8 KSP Residual norm 1.400355896622e-04
+    9 KSP Residual norm 4.622207543067e-05
+  1 SNES Function norm 4.202452224287e-05
+  0 SNES Function norm 3.315890905574e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 6.598577757155e-01
+    1 KSP Residual norm 1.933887338875e-01
+    2 KSP Residual norm 5.456342813682e-02
+    3 KSP Residual norm 1.650324248410e-02
+    4 KSP Residual norm 6.568305659431e-03
+    5 KSP Residual norm 2.510214143805e-03
+    6 KSP Residual norm 8.758541569735e-04
+    7 KSP Residual norm 3.932827467617e-04
+    8 KSP Residual norm 1.269075769185e-04
+    9 KSP Residual norm 4.140260482029e-05
+  1 SNES Function norm 3.796231562527e-05
+Timestep: 35, time 0.11813280083141166
+  0 SNES Function norm 2.960859596617e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 5.869188962370e-01
+    1 KSP Residual norm 1.726402385232e-01
+    2 KSP Residual norm 4.810609894045e-02
+    3 KSP Residual norm 1.599606132489e-02
+    4 KSP Residual norm 6.662165427614e-03
+    5 KSP Residual norm 2.357922152146e-03
+    6 KSP Residual norm 8.726421811308e-04
+    7 KSP Residual norm 3.684349989627e-04
+    8 KSP Residual norm 1.156301902495e-04
+    9 KSP Residual norm 3.679909417202e-05
+  1 SNES Function norm 3.370864114565e-05
+  0 SNES Function norm 2.635627796534e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 5.258120790880e-01
+    1 KSP Residual norm 1.546764180521e-01
+    2 KSP Residual norm 4.243034265403e-02
+    3 KSP Residual norm 1.387021411069e-02
+    4 KSP Residual norm 5.708313168922e-03
+    5 KSP Residual norm 2.062686684951e-03
+    6 KSP Residual norm 7.701770867568e-04
+    7 KSP Residual norm 3.260237474077e-04
+    8 KSP Residual norm 1.016927787321e-04
+    9 KSP Residual norm 3.305441847160e-05
+  1 SNES Function norm 3.021711111259e-05
+  0 SNES Function norm 2.352577982225e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 4.662224909913e-01
+    1 KSP Residual norm 1.308304571920e-01
+    2 KSP Residual norm 3.675067184174e-02
+    3 KSP Residual norm 1.198851986901e-02
+    4 KSP Residual norm 4.847809939836e-03
+    5 KSP Residual norm 1.779671490862e-03
+    6 KSP Residual norm 6.606400480385e-04
+    7 KSP Residual norm 2.862974583735e-04
+    8 KSP Residual norm 9.092912549642e-05
+    9 KSP Residual norm 2.899026967379e-05
+  1 SNES Function norm 2.618219715153e-05
+  0 SNES Function norm 2.081588556650e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 4.156850990805e-01
+    1 KSP Residual norm 1.156419232977e-01
+    2 KSP Residual norm 3.377209422854e-02
+    3 KSP Residual norm 1.082700216683e-02
+    4 KSP Residual norm 4.371252675824e-03
+    5 KSP Residual norm 1.608015818152e-03
+    6 KSP Residual norm 5.939159194124e-04
+    7 KSP Residual norm 2.567259407852e-04
+    8 KSP Residual norm 8.090958515797e-05
+    9 KSP Residual norm 2.659498917271e-05
+  1 SNES Function norm 2.387613974330e-05
+  0 SNES Function norm 1.937539199874e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 3.660019450414e-01
+    1 KSP Residual norm 1.012449593721e-01
+    2 KSP Residual norm 3.016900019735e-02
+    3 KSP Residual norm 9.957951093233e-03
+    4 KSP Residual norm 4.027053391943e-03
+    5 KSP Residual norm 1.469370028478e-03
+    6 KSP Residual norm 5.396240668210e-04
+    7 KSP Residual norm 2.271461084950e-04
+    8 KSP Residual norm 7.402569637476e-05
+    9 KSP Residual norm 2.413015212591e-05
+  1 SNES Function norm 2.192774200228e-05
+Timestep: 40, time 0.12751568320252216
+  0 SNES Function norm 1.713140082480e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 3.275014386494e-01
+    1 KSP Residual norm 8.737078444362e-02
+    2 KSP Residual norm 2.687213724804e-02
+    3 KSP Residual norm 8.787664223367e-03
+    4 KSP Residual norm 3.617192856344e-03
+    5 KSP Residual norm 1.260833952669e-03
+    6 KSP Residual norm 4.757542865847e-04
+    7 KSP Residual norm 1.966100827069e-04
+    8 KSP Residual norm 6.042671590804e-05
+    9 KSP Residual norm 2.060145655779e-05
+  1 SNES Function norm 1.819100561225e-05
+  0 SNES Function norm 1.542271929937e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 2.899407647694e-01
+    1 KSP Residual norm 7.762840966403e-02
+    2 KSP Residual norm 2.439377336038e-02
+    3 KSP Residual norm 7.951245333685e-03
+    4 KSP Residual norm 3.189174885852e-03
+    5 KSP Residual norm 1.154055078067e-03
+    6 KSP Residual norm 4.241741342927e-04
+    7 KSP Residual norm 1.754189293112e-04
+    8 KSP Residual norm 5.778549679325e-05
+    9 KSP Residual norm 1.899498942539e-05
+  1 SNES Function norm 1.737169503945e-05
+  0 SNES Function norm 1.419356276144e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 2.554491464883e-01
+    1 KSP Residual norm 6.657500094726e-02
+    2 KSP Residual norm 2.163952973113e-02
+    3 KSP Residual norm 6.743714153776e-03
+    4 KSP Residual norm 2.666299041981e-03
+    5 KSP Residual norm 9.953902746315e-04
+    6 KSP Residual norm 3.544054919803e-04
+    7 KSP Residual norm 1.514579514466e-04
+    8 KSP Residual norm 4.900847694450e-05
+    9 KSP Residual norm 1.629677497697e-05
+  1 SNES Function norm 1.500239684453e-05
+  0 SNES Function norm 1.339450298705e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 2.297263165696e-01
+    1 KSP Residual norm 6.048620647282e-02
+    2 KSP Residual norm 1.829847460780e-02
+    3 KSP Residual norm 5.775775135479e-03
+    4 KSP Residual norm 2.326081913902e-03
+    5 KSP Residual norm 8.641079797396e-04
+    6 KSP Residual norm 2.994387291383e-04
+    7 KSP Residual norm 1.301834057094e-04
+    8 KSP Residual norm 4.126632667759e-05
+    9 KSP Residual norm 1.454615633928e-05
+  1 SNES Function norm 1.300527300911e-05
+  0 SNES Function norm 1.285053937370e-01
+    Residual norms for Solver_14_ solve.
+    0 KSP Residual norm 2.010217455509e-01
+    1 KSP Residual norm 5.449025846566e-02
+    2 KSP Residual norm 1.679258699499e-02
+    3 KSP Residual norm 5.166940355687e-03
+    4 KSP Residual norm 2.134667802719e-03
+    5 KSP Residual norm 8.189528924733e-04
+    6 KSP Residual norm 2.897842345078e-04
+    7 KSP Residual norm 1.233878285600e-04
+    8 KSP Residual norm 3.991892988938e-05
+    9 KSP Residual norm 1.354400026959e-05
+  1 SNES Function norm 1.235867453176e-05
+Timestep: 45, time 0.13708032282577876</code></pre>
 </div>
-<div class="cell-output cell-output-error">
-<div class="ansi-escaped-output">
-<pre>Traceback <span class="ansi-cyan-fg">(most recent call last)</span>:
-
-  File <span class="ansi-bright-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/IPython/core/interactiveshell.py:3672</span> in <span class="ansi-bright-magenta-fg">run_code</span>
-    exec(code_obj, self.user_global_ns, self.user_ns)
-
-  Cell <span class="ansi-bright-green-fg">In[16]</span><span class="ansi-bright-green-fg">, line 7</span>
-    adv_diff.solve(timestep=delta_t, _evalf=False, zero_init_guess=False, verbose=True)
-
-  File <span class="ansi-bright-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/systems/solvers.py:1483</span> in <span class="ansi-bright-magenta-fg">solve</span>
-    self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
-
-  File <span class="ansi-bright-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/systems/ddt.py:673</span> in <span class="ansi-bright-magenta-fg">update_pre_solve</span>
-    self._nswarm_psi.advection(
-
-  File <span class="ansi-bright-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/swarm.py:3618</span> in <span class="ansi-bright-magenta-fg">advection</span>
-    super().advection(
-
-  File <span class="ansi-bright-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/swarm.py:3368</span> in <span class="ansi-bright-magenta-fg">advection</span>
-    v_at_Vpts[:, d] = uw.function.evaluate(
-
-  File <span class="ansi-bright-green-fg">src/underworld3/function/_function.pyx:288</span> in <span class="ansi-bright-magenta-fg">underworld3.function._function.evaluate</span>
-
-  File <span class="ansi-bright-green-fg">src/underworld3/function/_function.pyx:578</span> in <span class="ansi-bright-magenta-fg">underworld3.function._function.petsc_interpolate</span>
-
-<span class="ansi-cyan-fg">  </span><span class="ansi-cyan-fg">File </span><span class="ansi-green-fg">~/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/sympy/utilities/lambdify.py:919</span><span class="ansi-cyan-fg"> in </span><span class="ansi-magenta-fg">lambdify</span>
-<span class="ansi-red-fg">    </span><span class="ansi-red-fg">c = compile(funcstr, filename, 'exec')</span>
-
-  <span class="ansi-cyan-fg">File </span><span class="ansi-green-fg">&lt;lambdifygenerated-31&gt;:4</span>
-<span class="ansi-red-fg">    </span><span class="ansi-red-fg">return { \hspace{ 0.04pt } {{v_0}} }_{ 1 }(Dummy_689, Dummy_688)</span>
-              ^
-<span class="ansi-red-fg">SyntaxError</span><span class="ansi-red-fg">:</span> unexpected character after line continuation character
-</pre>
 </div>
-</div>
-</div>
-<div id="09e26f46-452e-49ec-8180-103163cc4fc2" class="cell">
+<div id="09e26f46-452e-49ec-8180-103163cc4fc2" class="cell" data-execution_count="21">
 <div class="sourceCode cell-code" id="cb23"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># visualise it</span></span>
 <span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -672,10 +897,16 @@ Substepping 1 / 0.5926793417919514, -0.007655378472205266 </code></pre>
 <span id="cb23-55"><a href="#cb23-55" aria-hidden="true" tabindex="-1"></a>    pl.export_html(<span class="st">"html5/annulus_convection_plot.html"</span>)</span>
 <span id="cb23-56"><a href="#cb23-56" aria-hidden="true" tabindex="-1"></a>    <span class="co"># pl.show(cpos="xy", jupyter_backend="trame")</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
-<div id="3775ea27-4d60-4675-a1cc-a9ba016b5d73" class="cell">
+<div id="3775ea27-4d60-4675-a1cc-a9ba016b5d73" class="cell" data-execution_count="22">
 <div class="sourceCode cell-code" id="cb24"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> IPython.display <span class="im">import</span> IFrame</span>
 <span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>IFrame(src<span class="op">=</span><span class="st">"html5/annulus_convection_plot.html"</span>, width<span class="op">=</span><span class="dv">500</span>, height<span class="op">=</span><span class="dv">400</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="22">
+
+        <iframe width="500" height="400" src="html5/annulus_convection_plot.html" frameborder="0" allowfullscreen=""></iframe>
+        
+<p>Interactive Image: Convection model output</p>
+</div>
 </div>
 </section>
 </section>
@@ -694,8 +925,12 @@ Substepping 1 / 0.5926793417919514, -0.007655378472205266 </code></pre>
 \]</span></p>
 <div class="sourceCode" id="cb26"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>    Q_surf <span class="op">=</span> <span class="op">-</span>meshball.vector.gradient(t_soln.sym).dot(unit_rvec) <span class="op">+\</span></span>
 <span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>                    t_soln.sym[<span class="dv">0</span>] <span class="op">*</span> v_soln.sym.dot(unit_rvec)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<section id="references-2" class="level3">
+<h3 class="anchored" data-anchor-id="references-2">References</h3>
+<p>Schubert, G., Turcotte, D. L., &amp; Olson, P. (2001). Mantle Convection in the Earth and Planets (1st ed.). Cambridge University Press. https://doi.org/10.1017/CBO9780511612879</p>
 
 
+</section>
 </section>
 
 </main> <!-- /main -->
@@ -1100,7 +1335,7 @@ Substepping 1 / 0.5926793417919514, -0.007655378472205266 </code></pre>
   </script>
 <nav class="page-navigation">
   <div class="nav-page nav-page-previous">
-      <a href="../Notebooks/5-Solvers.html" class="pagination-link" aria-label="Notebook 5: Stokes Equation">
+      <a href="../Notebooks/5-Solvers-ii-Stokes.html" class="pagination-link" aria-label="Notebook 5: Stokes Equation">
         <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-title">Notebook 5: Stokes Equation</span></span>
       </a>          
   </div>

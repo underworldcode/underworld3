@@ -105,6 +105,35 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   }
 }</script>
 
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
 
 </head>
 
@@ -203,17 +232,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="./Notebooks/4-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
+  <a href="./Notebooks/4-Solvers-i-Poisson.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 4: Poisson Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="./Notebooks/5-Solvers.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
+  <a href="./Notebooks/5-Solvers-ii-Stokes.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 5: Stokes Equation</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="./Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Time-dependence</span></a>
+  <a href="./Notebooks/6-Timestepping.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Notebook 6: Rayleigh-Bénard Convection (time-stepping example)</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -299,6 +328,31 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>Almost all of our notebook examples are annotated python for this reason.An exception is the collection of notebooks in this quick-start guide because we want to show you the rendered output in the static web pages.</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="ex">mpirun</span> <span class="at">-np</span> 1024 python3 Modelling_Script.py <span class="at">-uw_resolution</span> 96</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 <p>The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the <code>PETSc</code> command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).</p>
+<section id="parallel-scaling-performance" class="level4">
+<h4 class="anchored" data-anchor-id="parallel-scaling-performance">Parallel scaling / performance</h4>
+<p>Running geodynamic models on a single CPU/processor (i.e.&nbsp;serial) is time-consuming and limits us to low resolution. Underworld is build from the ground-up as a parallel computing solution which means we can easily run large models on high performance computing clusters (HPC); that is, sub-divide the problem into many smaller chunks and use multiple processors to solve each one, taking care to combine and synchronise the answers from each processor to obtain the correct solution to the original problem.</p>
+<p>Parallel computation can reduce time we need to wait for the our results to be computed but it does happen at the expense of some overhead The overhead does depend on the nature of the computer we are using but typically we need to think about:</p>
+<ul>
+<li><p><strong>Code complexity</strong>: any time we manage computations across different processors, we have additional coding to reassemble the calculations correctly and we need to think about many special cases. For example, integrating a quantity of the surface of a mesh: many processes contribute, some do not, the results have to be computed independently then combined.</p></li>
+<li><p><strong>Additional memory is often required</strong>: to manage copies of information that lives on / near boundaries, to store the topology of the decomposed domain and to help navigate the passing of information between processes.</p></li>
+<li><p><strong>The time taken to synchronise results</strong> and the work required to keep track of who is doing what, when they are done, and in making sure everyone waits for everyone else. There is a time-cost in actually sending information as part of a synchronisation and a computational cost in ensuring that work is distributed efficiently.</p></li>
+</ul>
+<p>To determine the efficiency of parallel computation, we introduce the <em>strong scaling test</em> which measures the time taken to solve a problem in parallel compared to the same problem solved in serial. In strong scaling tests, the size of the problem is kept constant, while the number of processors is increased. The reduction in run-time due to the addition of more processors is commonly expressed in terms of the speed-up:</p>
+<p><span class="math display">\[
+\textrm{speed up} = \frac{t(N_{ref})}{t(N)}
+\]</span></p>
+<p>where <span class="math inline">\(t(N_{ref})\)</span> is the run-time for a reference number of processors, <span class="math inline">\(N_{ref}\)</span>, and <span class="math inline">\(t(N)\)</span> is the run-time when <span class="math inline">\(N\)</span> processors are used. In the ideal case, <span class="math inline">\(N\)</span> additional processors should contribute all of its resources in solving the problem and reduce the compute time by a factor of <span class="math inline">\(N\)</span> relative to the reference run time. For example, using <span class="math inline">\(2 N_{ref}\)</span> processors will ideally halve the run-time resulting to a speed-up = 2.</p>
+<div id="fig-strong-scaling" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-strong-scaling-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<img src="media/UW3-StrongScalingSolvers.png" class="img-fluid figure-img">
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-strong-scaling-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;2.1: Strong parallel-scaling tests run on Australia’s peak computing system, <a href="https://nci.org.au/our-systems/hpc-systems?ref=underworldcode.org">GADI, at the National Computational Infrastructure</a>. This is a typical High Performance Computing facility with large numbers of dedicated, identical CPUs and fast communication links.
+</figcaption>
+</figure>
+</div>
+</section>
 </section>
 <section id="advanced-capabilities" class="level3">
 <h3 class="anchored" data-anchor-id="advanced-capabilities">Advanced capabilities</h3>
@@ -328,10 +382,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h4 class="anchored" data-anchor-id="mesh-adaptation">Mesh Adaptation</h4>
 <p>It is also possible to use the PETSc mesh adaption capabilities, to refine the resolution of a model where it is most needed and coarsen elsewhere. Dynamically-adapting meshes are possible but the interface is very low level at present, particularly in parallel.</p>
 <center>
-<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="300">
+<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="500">
 </iframe>
 </center>
-<p><em>Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is three plume-like upwellings and the slope of this field is shown in colour (red high, blue low). The adapted mesh is shown in green.</em></p>
+<p><em>Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is a plume-like upwelling and the slope of this field is shown in colour (red high, blue low). Don’t forget to zoom in !</em></p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># t is the driving "temperature". We form an isotropic refinement metric from its slope</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
