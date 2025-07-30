@@ -540,14 +540,14 @@ class Mesh(Stateful, uw_object):
             else:
                 self._element = ElementInfo("hexahedron", (1, 6, 12, 8), (0, 1, 4, 4))
 
-        # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
-
         if verbose and uw.mpi.rank == 0:
             print(
-                f"PETSc spatial discretisation - complete",
+                f"PETSc spatial discretisation",
                 flush=True,
             )
+
+        # Navigation / coordinates etc
+        self.nuke_coords_and_rebuild()
 
         if verbose and uw.mpi.rank == 0:
             print(
