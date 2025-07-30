@@ -945,14 +945,14 @@ True: index into the local coordinate array</p>
             else:
                 self._element = ElementInfo(&#34;hexahedron&#34;, (1, 6, 12, 8), (0, 1, 4, 4))
 
-        # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
-
         if verbose and uw.mpi.rank == 0:
             print(
-                f&#34;PETSc spatial discretisation - complete&#34;,
+                f&#34;PETSc spatial discretisation&#34;,
                 flush=True,
             )
+
+        # Navigation / coordinates etc
+        self.nuke_coords_and_rebuild()
 
         if verbose and uw.mpi.rank == 0:
             print(
