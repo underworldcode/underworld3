@@ -1370,6 +1370,14 @@ True: index into the local coordinate array</p>
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        #
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;UW kD-Tree&#34;,
+                flush=True,
+            )
+
         self._index = None
         self._build_kd_tree_index()
 
@@ -1381,6 +1389,12 @@ True: index into the local coordinate array</p>
         ) = self._get_mesh_sizes()
 
         self.dm.copyDS(self.dm_hierarchy[-1])
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;Mesh Spatial Discretisation Complete&#34;,
+                flush=True,
+            )
 
         return
 
@@ -3520,6 +3534,14 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
     # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+    #
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;UW kD-Tree&#34;,
+            flush=True,
+        )
+
     self._index = None
     self._build_kd_tree_index()
 
@@ -3531,6 +3553,12 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     ) = self._get_mesh_sizes()
 
     self.dm.copyDS(self.dm_hierarchy[-1])
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;Mesh Spatial Discretisation Complete&#34;,
+            flush=True,
+        )
 
     return</code></pre>
 </details>
