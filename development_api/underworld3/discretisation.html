@@ -952,7 +952,7 @@ True: index into the local coordinate array</p>
             )
 
         # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
+        self.nuke_coords_and_rebuild(verbose)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -1299,13 +1299,22 @@ True: index into the local coordinate array</p>
 
         return new_dm_hierarchy
 
-    def nuke_coords_and_rebuild(self):
+    def nuke_coords_and_rebuild(
+        self,
+        verbose,
+    ):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
 
         self.dm.clearDS()
         self.dm.createDS()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETScDS - (re) initialised&#34;,
+                flush=True,
+            )
 
         self._coord_array = {}
 
@@ -1329,6 +1338,12 @@ True: index into the local coordinate array</p>
             f&#34;meshproj_{self.mesh_instances}_&#34;,
         )
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETScFE - (re) initialised&#34;,
+                flush=True,
+            )
+
         if (
             PETSc.Sys.getVersion() &lt;= (3, 20, 5)
             and PETSc.Sys.getVersionInfo()[&#34;release&#34;] == True
@@ -1337,8 +1352,13 @@ True: index into the local coordinate array</p>
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-        # now set copy of this array into dictionary
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETSc DM - coordinates&#34;,
+                flush=True,
+            )
 
+        # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
 
         key = (
@@ -3422,20 +3442,29 @@ returns zero.</p></div>
 assumes a 1st order mesh. Cell labels are not respected in this function.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.nuke_coords_and_rebuild"><code class="name flex">
-<span>def <span class="ident">nuke_coords_and_rebuild</span></span>(<span>self)</span>
+<span>def <span class="ident">nuke_coords_and_rebuild</span></span>(<span>self, verbose)</span>
 </code></dt>
 <dd>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def nuke_coords_and_rebuild(self):
+<pre><code class="python">def nuke_coords_and_rebuild(
+    self,
+    verbose,
+):
     # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
     #
     #
 
     self.dm.clearDS()
     self.dm.createDS()
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETScDS - (re) initialised&#34;,
+            flush=True,
+        )
 
     self._coord_array = {}
 
@@ -3459,6 +3488,12 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
         f&#34;meshproj_{self.mesh_instances}_&#34;,
     )
 
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETScFE - (re) initialised&#34;,
+            flush=True,
+        )
+
     if (
         PETSc.Sys.getVersion() &lt;= (3, 20, 5)
         and PETSc.Sys.getVersionInfo()[&#34;release&#34;] == True
@@ -3467,8 +3502,13 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     else:
         self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-    # now set copy of this array into dictionary
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETSc DM - coordinates&#34;,
+            flush=True,
+        )
 
+    # now set copy of this array into dictionary
     arr = self.dm.getCoordinatesLocal().array
 
     key = (
