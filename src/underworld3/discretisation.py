@@ -547,7 +547,7 @@ class Mesh(Stateful, uw_object):
             )
 
         # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
+        self.nuke_coords_and_rebuild(verbose)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -894,13 +894,22 @@ class Mesh(Stateful, uw_object):
 
         return new_dm_hierarchy
 
-    def nuke_coords_and_rebuild(self):
+    def nuke_coords_and_rebuild(
+        self,
+        verbose,
+    ):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
 
         self.dm.clearDS()
         self.dm.createDS()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETScDS - (re) initialised",
+                flush=True,
+            )
 
         self._coord_array = {}
 
@@ -924,6 +933,12 @@ class Mesh(Stateful, uw_object):
             f"meshproj_{self.mesh_instances}_",
         )
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETScFE - (re) initialised",
+                flush=True,
+            )
+
         if (
             PETSc.Sys.getVersion() <= (3, 20, 5)
             and PETSc.Sys.getVersionInfo()["release"] == True
@@ -932,8 +947,13 @@ class Mesh(Stateful, uw_object):
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-        # now set copy of this array into dictionary
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc DM - coordinates",
+                flush=True,
+            )
 
+        # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
 
         key = (
