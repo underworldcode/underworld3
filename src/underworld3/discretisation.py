@@ -965,6 +965,14 @@ class Mesh(Stateful, uw_object):
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        #
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"UW kD-Tree",
+                flush=True,
+            )
+
         self._index = None
         self._build_kd_tree_index()
 
@@ -976,6 +984,12 @@ class Mesh(Stateful, uw_object):
         ) = self._get_mesh_sizes()
 
         self.dm.copyDS(self.dm_hierarchy[-1])
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh Spatial Discretisation Complete",
+                flush=True,
+            )
 
         return
 
