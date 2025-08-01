@@ -65,7 +65,7 @@ el.replaceWith(d);
 <dl>
 <dt id="underworld3.systems.solvers.SNES_AdvectionDiffusion"><code class="flex name class">
 <span>class <span class="ident">SNES_AdvectionDiffusion</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7fed1270dbc0>,<br>V_fn: <function MeshVariable at 0x7fed1270dbc0> | sympy.core.basic.Basic,<br>order: int = 1,<br>restore_points_func: Callable = None,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f35efeb5bc0>,<br>V_fn: <function MeshVariable at 0x7f35efeb5bc0> | sympy.core.basic.Basic,<br>order: int = 1,<br>restore_points_func: Callable = None,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -720,7 +720,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Darcy"><code class="flex name class">
 <span>class <span class="ident">SNES_Darcy</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>h_Field: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>v_Field: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>degree: int = 2,<br>verbose=False,<br>DuDt=None,<br>DFDt=None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>h_Field: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>v_Field: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>degree: int = 2,<br>verbose=False,<br>DuDt=None,<br>DFDt=None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -1151,7 +1151,7 @@ value used to evaluate inertial contribution</p></div>
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Diffusion"><code class="flex name class">
 <span>class <span class="ident">SNES_Diffusion</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7fed1270dbc0>,<br>order: int = 1,<br>theta: float = 0.0,<br>evalf: bool | None = False,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f35efeb5bc0>,<br>order: int = 1,<br>theta: float = 0.0,<br>evalf: bool | None = False,<br>verbose=False,<br>DuDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.Eulerian" href="ddt.html#underworld3.systems.ddt.Eulerian">Eulerian</a> | <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -1703,7 +1703,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_NavierStokes"><code class="flex name class">
 <span>class <span class="ident">SNES_NavierStokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7fed1270dbc0>,<br>pressureField: <function MeshVariable at 0x7fed1270dbc0>,<br>rho: float | None = 0.0,<br>restore_points_func: Callable = None,<br>order: int | None = 2,<br>p_continuous: bool | None = False,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f35efeb5bc0>,<br>pressureField: <function MeshVariable at 0x7f35efeb5bc0>,<br>rho: float | None = 0.0,<br>restore_points_func: Callable = None,<br>order: int | None = 2,<br>p_continuous: bool | None = False,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -2649,7 +2649,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Poisson"><code class="flex name class">
 <span>class <span class="ident">SNES_Poisson</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7fed1270dbc0> = None,<br>verbose=False,<br>degree=2,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f35efeb5bc0> = None,<br>verbose=False,<br>degree=2,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -2894,7 +2894,7 @@ def poisson_problem_description(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7fed1270dbc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f35efeb5bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3117,7 +3117,7 @@ def uw_weighting_function(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Stokes"><code class="flex name class">
 <span>class <span class="ident">SNES_Stokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>pressureField: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>degree: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>degree: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -3751,7 +3751,7 @@ def stokes_problem_description(self):
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Tensor_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Tensor_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>tensor_Field: <function MeshVariable at 0x7fed1270dbc0> = None,<br>scalar_Field: <function MeshVariable at 0x7fed1270dbc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>tensor_Field: <function MeshVariable at 0x7f35efeb5bc0> = None,<br>scalar_Field: <function MeshVariable at 0x7f35efeb5bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -4010,7 +4010,7 @@ and <code>self.p</code> will be used.</p></div>
 </dd>
 <dt id="underworld3.systems.solvers.SNES_VE_Stokes"><code class="flex name class">
 <span>class <span class="ident">SNES_VE_Stokes</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>pressureField: <function MeshVariable at 0x7fed1270dbc0> | None = None,<br>degree: int | None = 2,<br>order: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>velocityField: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>pressureField: <function MeshVariable at 0x7f35efeb5bc0> | None = None,<br>degree: int | None = 2,<br>order: int | None = 2,<br>p_continuous: bool | None = True,<br>verbose: bool | None = False,<br>DuDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None,<br>DFDt: <a title="underworld3.systems.ddt.SemiLagrangian" href="ddt.html#underworld3.systems.ddt.SemiLagrangian">SemiLagrangian</a> | <a title="underworld3.systems.ddt.Lagrangian" href="ddt.html#underworld3.systems.ddt.Lagrangian">Lagrangian</a> = None)</span>
 </code></dt>
 <dd>
 <details class="source">
@@ -4398,7 +4398,7 @@ system solution. Otherwise, the current values of <code>self.u</code> will be us
 </dd>
 <dt id="underworld3.systems.solvers.SNES_Vector_Projection"><code class="flex name class">
 <span>class <span class="ident">SNES_Vector_Projection</span></span>
-<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7fed1270dbc0> = None,<br>degree=2,<br>verbose=False)</span>
+<span>(</span><span>mesh: <a title="underworld3.discretisation.Mesh" href="../discretisation.html#underworld3.discretisation.Mesh">Mesh</a>,<br>u_Field: <function MeshVariable at 0x7f35efeb5bc0> = None,<br>degree=2,<br>verbose=False)</span>
 </code></dt>
 <dd>
 <details class="source">

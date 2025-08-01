@@ -1381,6 +1381,12 @@ True: index into the local coordinate array</p>
         self._index = None
         self._build_kd_tree_index()
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;UW kD-Tree - constructed&#34;,
+                flush=True,
+            )
+
         (
             self._min_size,
             self._radii,
@@ -2091,7 +2097,7 @@ True: index into the local coordinate array</p>
             control_points_cell_list.append(cell_id)
 
         self._indexCoords = numpy.array(control_points_list)
-        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
+        self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
@@ -3544,6 +3550,12 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
 
     self._index = None
     self._build_kd_tree_index()
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;UW kD-Tree - constructed&#34;,
+            flush=True,
+        )
 
     (
         self._min_size,
