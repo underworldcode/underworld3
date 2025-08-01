@@ -48,8 +48,8 @@ el.replaceWith(d);
 <section>
 <h2 class="section-title" id="header-classes">Classes</h2>
 <dl>
-<dt id="underworld3.ckdtree.cKDTree"><code class="flex name class">
-<span>class <span class="ident">cKDTree</span></span>
+<dt id="underworld3.ckdtree.KDTree"><code class="flex name class">
+<span>class <span class="ident">KDTree</span></span>
 <span>(</span><span>...)</span>
 </code></dt>
 <dd>
@@ -85,13 +85,13 @@ True
 </code></pre></div>
 <h3>Methods</h3>
 <dl>
-<dt id="underworld3.ckdtree.cKDTree.build_index"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.build_index"><code class="name flex">
 <span>def <span class="ident">build_index</span></span>(<span>self)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Build the kd-tree index.</p></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.find_closest_n_points"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.find_closest_n_points"><code class="name flex">
 <span>def <span class="ident">find_closest_n_points</span></span>(<span>self, nCount: numpy.int64, coords: numpy.ndarray)</span>
 </code></dt>
 <dd>
@@ -112,7 +112,7 @@ the nearest neighbour for the search coordinates. It will be of size (n_coords).
 points. It will be of size (n_coords).</dd>
 </dl></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.find_closest_point"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.find_closest_point"><code class="name flex">
 <span>def <span class="ident">find_closest_point</span></span>(<span>self, coords: numpy.ndarray)</span>
 </code></dt>
 <dd>
@@ -134,25 +134,25 @@ points. It will be of size (n_coords).</dd>
 coordinate. It will be of size (n_coords).</dd>
 </dl></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.kdtree_points"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.kdtree_points"><code class="name flex">
 <span>def <span class="ident">kdtree_points</span></span>(<span>self)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Returns a view of the points used to define the kd-tree</p></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.query"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.query"><code class="name flex">
 <span>def <span class="ident">query</span></span>(<span>self, coords: numpy.ndarray, k: numpy.int64, sqr_dists=True)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Find the n points closest to the provided coordinates.</p></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.rbf_interpolator_local"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.rbf_interpolator_local"><code class="name flex">
 <span>def <span class="ident">rbf_interpolator_local</span></span>(<span>self, coords, data, nnn=4, verbose=False)</span>
 </code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.rbf_interpolator_local_from_kdtree"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.rbf_interpolator_local_from_kdtree"><code class="name flex">
 <span>def <span class="ident">rbf_interpolator_local_from_kdtree</span></span>(<span>self, coords, data, nnn=4, verbose=False)</span>
 </code></dt>
 <dd>
@@ -162,7 +162,7 @@ This assumes all points are local to the same processor.
 If that is not the case, it is best to use a particle swarm
 to manage the distributed data.</p></div>
 </dd>
-<dt id="underworld3.ckdtree.cKDTree.rbf_interpolator_local_to_kdtree"><code class="name flex">
+<dt id="underworld3.ckdtree.KDTree.rbf_interpolator_local_to_kdtree"><code class="name flex">
 <span>def <span class="ident">rbf_interpolator_local_to_kdtree</span></span>(<span>self, coords, data, nnn=4, verbose=False, weights=None)</span>
 </code></dt>
 <dd>
@@ -190,16 +190,16 @@ to manage the distributed data.</p></div>
 <li><h3><a href="#header-classes">Classes</a></h3>
 <ul>
 <li>
-<h4><code><a title="underworld3.ckdtree.cKDTree" href="#underworld3.ckdtree.cKDTree">cKDTree</a></code></h4>
+<h4><code><a title="underworld3.ckdtree.KDTree" href="#underworld3.ckdtree.KDTree">KDTree</a></code></h4>
 <ul class="">
-<li><code><a title="underworld3.ckdtree.cKDTree.build_index" href="#underworld3.ckdtree.cKDTree.build_index">build_index</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.find_closest_n_points" href="#underworld3.ckdtree.cKDTree.find_closest_n_points">find_closest_n_points</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.find_closest_point" href="#underworld3.ckdtree.cKDTree.find_closest_point">find_closest_point</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.kdtree_points" href="#underworld3.ckdtree.cKDTree.kdtree_points">kdtree_points</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.query" href="#underworld3.ckdtree.cKDTree.query">query</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.rbf_interpolator_local" href="#underworld3.ckdtree.cKDTree.rbf_interpolator_local">rbf_interpolator_local</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.rbf_interpolator_local_from_kdtree" href="#underworld3.ckdtree.cKDTree.rbf_interpolator_local_from_kdtree">rbf_interpolator_local_from_kdtree</a></code></li>
-<li><code><a title="underworld3.ckdtree.cKDTree.rbf_interpolator_local_to_kdtree" href="#underworld3.ckdtree.cKDTree.rbf_interpolator_local_to_kdtree">rbf_interpolator_local_to_kdtree</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.build_index" href="#underworld3.ckdtree.KDTree.build_index">build_index</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.find_closest_n_points" href="#underworld3.ckdtree.KDTree.find_closest_n_points">find_closest_n_points</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.find_closest_point" href="#underworld3.ckdtree.KDTree.find_closest_point">find_closest_point</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.kdtree_points" href="#underworld3.ckdtree.KDTree.kdtree_points">kdtree_points</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.query" href="#underworld3.ckdtree.KDTree.query">query</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.rbf_interpolator_local" href="#underworld3.ckdtree.KDTree.rbf_interpolator_local">rbf_interpolator_local</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.rbf_interpolator_local_from_kdtree" href="#underworld3.ckdtree.KDTree.rbf_interpolator_local_from_kdtree">rbf_interpolator_local_from_kdtree</a></code></li>
+<li><code><a title="underworld3.ckdtree.KDTree.rbf_interpolator_local_to_kdtree" href="#underworld3.ckdtree.KDTree.rbf_interpolator_local_to_kdtree">rbf_interpolator_local_to_kdtree</a></code></li>
 </ul>
 </li>
 </ul>
