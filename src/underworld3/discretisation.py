@@ -1946,13 +1946,13 @@ class Mesh(Stateful, uw_object):
             for pt in range(0, face_num_points):
 
                 outside_control_point = (
-                    1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                    1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 )
                 control_points_list.append(outside_control_point)
                 control_point_sign_list.append(-1)
 
                 inside_control_point = (
-                    -1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                    -1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 )
                 control_points_list.append(inside_control_point)
                 control_point_sign_list.append(1)
@@ -2098,7 +2098,7 @@ class Mesh(Stateful, uw_object):
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroid_index.n
+        num_local_cells = self._centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
