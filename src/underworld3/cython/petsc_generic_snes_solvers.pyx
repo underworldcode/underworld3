@@ -391,47 +391,47 @@ class SolverBaseClass(uw_object):
             print(f"{name}.constitutive_model = uw.constitutive_models...")
 
         return
-    
-    def get_dof_partition(self, 
-                          section_type: str, 
-                          filename: Optional[str | None] = None, 
+
+    def get_dof_partition(self,
+                          section_type: str,
+                          filename: Optional[str | None] = None,
                           outputPath: Optional[str] = ""):
         """
-        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.
         Parameters
         ----------
         section_type:
-            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values.
         filename:
             Output file name. If None, will print out results; if set to a string, the final output file will be <filename>_<section_type>.u.h5.
         outputPath:
             Path of directory where data is saved. If left empty it will save the data in the current working directory.
         """
 
-        self.validate_solver()  # mainly check if self.u is properly set 
+        self.validate_solver()  # mainly check if self.u is properly set
 
         u_id = self.Unknowns.u.field_id
         fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
-        self._get_dof_partition_by_field_id(section_type    = section_type, 
-                                            field_id        = u_id, 
+        self._get_dof_partition_by_field_id(section_type    = section_type,
+                                            field_id        = u_id,
                                             filename        = fname,
                                             outputPath      = outputPath)
-        
+
         return
 
 
     def _get_dof_partition_by_field_id(self,
                                        section_type: str,
-                                       field_id: int,  
-                                       filename: Optional[str | None] = None, 
+                                       field_id: int,
+                                       filename: Optional[str | None] = None,
                                        outputPath: Optional[str] = ""):
         """
-        Private version of get_dof_partition with field_id as an additional parameter. 
+        Private version of get_dof_partition with field_id as an additional parameter.
         Parameters
         ----------
         section_type:
-            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values.
         field_id:
             The field id
         filename:
@@ -447,7 +447,7 @@ class SolverBaseClass(uw_object):
         # check if section type is valid
         if section_type not in ['local', 'global']:
             raise("'section_type' unknown. Value must be either 'local' or 'global'")
-        
+
         # check if path exists
         if os.path.exists(os.path.abspath(outputPath)):  # easier to debug abs
             pass
@@ -460,24 +460,24 @@ class SolverBaseClass(uw_object):
         else:
             raise RuntimeError(f"No write access to {os.path.abspath(outputPath)}")
 
-        
+
         # get all points in the DAG of this partition
         if section_type == "local":
             section = self.mesh.dm.getLocalSection()
         elif section_type == "global":
             section = self.mesh.dm.getGlobalSection()
-          
+
         # NOTE: negative DOFs mean that these are ghost ones and owned by a different process
-        
+
         ptStart, ptEnd = section.getChart() # will give all DOFs including ghosts
 
         fdofs = [section.getFieldDof(pt, field_id) for pt in range(ptStart, ptEnd)]
         fdofs = np.array(fdofs)
         pos_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs > 0].sum()])
-        
+
         if section_type == "global":
             neg_dof_data = np.array([field_id, uw.mpi.rank, fdofs[fdofs < 0].sum()])
-        
+
         comm = uw.mpi.comm
 
         # Gather the arrays on rank 0
@@ -503,11 +503,11 @@ class SolverBaseClass(uw_object):
                 print("\n", flush = True)
 
             else: # save
-                with h5py.File(f"{outputPath}/{filename}", "w") as f: 
+                with h5py.File(f"{outputPath}/{filename}", "w") as f:
                     f.create_dataset("field_id", data = gath_dof_data[:, 0])
                     f.create_dataset("rank", data = gath_dof_data[:, 1])
                     f.create_dataset("dof", data = gath_dof_data[:, 2])
-        
+
         return
 
 ## Specific to dimensionality
@@ -515,6 +515,8 @@ class SolverBaseClass(uw_object):
 
 class SNES_Scalar(SolverBaseClass):
     r"""
+    # Underworld / PETSc General Scalar Equation Solver
+
     The `SNES_Scalar` solver class provides functionality for solving the scalar conservation problem in the unknown $u$:
 
     $$
@@ -1054,7 +1056,7 @@ class SNES_Scalar(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"### Poisson system solver"),
+            Markdown(f"# Underworld / PETSc General Scalar Equation Solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -1071,7 +1073,7 @@ class SNES_Scalar(SolverBaseClass):
 
 
         display(
-            Markdown(fr"#### Boundary Conditions"),)
+            Markdown(fr"# Boundary Conditions"),)
 
         bc_table = "| Type   | Boundary | Expression | \n"
         bc_table += "|:------------------------ | -------- | ---------- | \n"
@@ -1096,6 +1098,8 @@ class SNES_Scalar(SolverBaseClass):
 
 class SNES_Vector(SolverBaseClass):
     r"""
+    # Underworld / PETSc General Vector Equation Solver
+
     The `SNES_Vector` solver class provides functionality for solving the vector conservation problem in the unknown $\mathbf{u}$:
 
     $$
@@ -1738,7 +1742,7 @@ class SNES_Vector(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"### Vector poisson solver"),
+            Markdown(f"# Underworld / PETSc General Vector Equation Solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
         )
@@ -1753,7 +1757,7 @@ class SNES_Vector(SolverBaseClass):
                 expr._object_viewer(description=False)
 
         display(
-            Markdown(fr"#### Boundary Conditions"),)
+            Markdown(fr"# Boundary Conditions"),)
 
         bc_table = "| Type   | Boundary | Expression | \n"
         bc_table += "|:------------------------ | -------- | ---------- | \n"
@@ -1771,7 +1775,9 @@ class SNES_Vector(SolverBaseClass):
 
 class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
-    The `SNES_Stokes` solver class provides functionality for solving the *constrained* vector
+    # Underworld / PETSc General Saddle Point Equation Solver
+
+    The `SNES_Stokes_SaddlePt` solver class provides functionality for solving the *constrained* vector
     conservation problem in the unknown $\mathbf{u}$ with the constraint parameter $\mathrm{p}$:
 
     $$
@@ -2139,7 +2145,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # feedback on this instance
         display(
-            Markdown(f"### Saddle point system solver"),
+            Markdown(f"# Underworld / PETSc General Saddle Point Equation Solver"),
             Markdown(f"Primary problem: "),
             Latex(eqF1), Latex(eqf0),
             Markdown(f"Constraint: "),
@@ -2157,7 +2163,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 expr._object_viewer(description=False)
 
         display(
-            Markdown(fr"#### Boundary Conditions"),)
+            Markdown(fr"# Boundary Conditions"),)
 
         bc_table = "| Type   | Boundary | Expression | \n"
         bc_table += "|:------------------------ | -------- | ---------- | \n"
@@ -2194,23 +2200,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise RuntimeError("Constitutive Model is required")
 
         return
-    
-    def get_dof_partition(self, 
-                          section_type: str, 
-                          filename: Optional[str | None] = None, 
+
+    def get_dof_partition(self,
+                          section_type: str,
+                          filename: Optional[str | None] = None,
                           outputPath: Optional[str] = ""):
         """
-        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.  
+        Obtains how the degrees of freedom (DOF) are distributed/divided among the processors and saves them in an h5 file.
         Parameters
         ----------
         section_type:
-            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values. 
+            Can be: "local" which includes DOFs from ghost points or "global" which differentiates DOFs from ghost points by having negative values.
         filename:
             Output file name. If None, will print out results; if set to a string, the output files will be <filename>_<section_type>.u.h5 and <filename>_<section_type>.p.h5.
         outputPath:
             Path of directory where data is saved. If left empty it will save the data in the current working directory.
         """
-        # NOTE: supposed to inherit get_dof_partition from SolverBaseClass 
+        # NOTE: supposed to inherit get_dof_partition from SolverBaseClass
         # NOTE: _get_dof_partition_by_field_id is defined in SolverBaseClass
 
         self.validate_solver()
@@ -2218,21 +2224,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         u_id = self.Unknowns.u.field_id
         fname = None if filename is None else f"{filename}_{section_type}.u.h5"
 
-        self._get_dof_partition_by_field_id(section_type    = section_type, 
-                                            field_id        = u_id, 
+        self._get_dof_partition_by_field_id(section_type    = section_type,
+                                            field_id        = u_id,
                                             filename        = fname,
                                             outputPath      = outputPath)
-        
+
         p_id = self.Unknowns.p.field_id
         fname = None if filename is None else f"{filename}_{section_type}.p.h5"
 
-        self._get_dof_partition_by_field_id(section_type    = section_type, 
-                                            field_id        = p_id, 
+        self._get_dof_partition_by_field_id(section_type    = section_type,
+                                            field_id        = p_id,
                                             filename        = fname,
                                             outputPath      = outputPath)
-        
+
         return
-    
+
     @timing.routine_timer_decorator
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy

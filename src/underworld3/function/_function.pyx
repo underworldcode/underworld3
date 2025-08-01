@@ -217,6 +217,7 @@ def evaluate(   expr,
                 if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
                     varfns.add(sub_exp)
                 else:
+                    # Recursively search for more functions
                     for arg in sub_exp.args:
                         unpack_var_fns(arg)
 
@@ -229,11 +230,9 @@ def evaluate(   expr,
 
     unpack_var_fns(expr)
 
-
     if verbose:
         for varfn in varfns:
             print(f"MeshVariable functions in evaluation: {varfns}")
-
 
     # Check the same mesh is used for all mesh variables
     mesh = None
@@ -251,12 +250,12 @@ def evaluate(   expr,
 
     if evalf==True or rbf==True:
         return rbf_evaluate( expr,
-                            coords,
-                                coord_sys,
-                                mesh,
-                                simplify=simplify,
-                                verbose=verbose,
-                                )
+                             coords,
+                            coord_sys,
+                            mesh,
+                            simplify=simplify,
+                            verbose=verbose,
+                            )
 
 
 
@@ -401,8 +400,8 @@ def petsc_interpolate(   expr,
     varfns = set()
     if mesh is not None and mesh.vars is not None:
         for v in mesh.vars.values():
-            for sub in v:
-                varfns.add(sub.sym)
+            for sub in v.sym:
+                varfns.add(sub)
 
     from collections import defaultdict
     interpolant_varfns = defaultdict(lambda : [])
@@ -709,9 +708,8 @@ def rbf_evaluate(  expr,
     varfns = set()
     if mesh is not None and mesh.vars is not None:
         for v in mesh.vars.values():
-            for sub in v:
-                varfns.add(sub.sym)
-
+            for sub in v.sym:
+                varfns.add(sub)
 
     # Get map of all variable functions (no cache)
     interpolated_results = {}

@@ -7,7 +7,6 @@ import numpy as np
 
 from libcpp cimport bool
 
-
 cdef extern from "kdtree_interface.hpp" nogil:
     cdef cppclass KDTree_Interface:
         KDTree_Interface()
@@ -16,7 +15,7 @@ cdef extern from "kdtree_interface.hpp" nogil:
         void find_closest_point( size_t  num_coords, const double* coords, long unsigned int* indices, double* out_dist_sqr, bool* found )
         size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr )
 
-cdef class cKDTree:
+cdef class KDTree:
     """
     KD-Tree indexes are data structures and algorithms for the efficient
     determination of nearest neighbours.
@@ -65,10 +64,20 @@ cdef class cKDTree:
             raise RuntimeError(f"Provided points array dimensionality must be 2 or 3, not {points.shape[1]}.")
         self.points = points
         self.index = new KDTree_Interface(<const double *> &points[0][0], points.shape[0], points.shape[1])
+
         super().__init__()
 
     def __dealloc__(self):
         del self.index
+
+    @property
+    def n(self):
+        return self.points.shape[0]
+
+    @property
+    def ndim(self):
+        return self.points.shape[1]
+
 
     @timing.routine_timer_decorator
     def build_index(self):
@@ -187,18 +196,23 @@ cdef class cKDTree:
         # return numpy data
         return n_indices, n_dist_sqr
 
+
     @timing.routine_timer_decorator
     def query(self,
-                  const double[: ,::1] coords not None:   numpy.ndarray,
-                  const int k                    :   numpy.int64,
-                  bool sqr_dists=True,
-
+             coords,
+             k=1,
+             sqr_dists=True,
     ):
         """
         Find the n points closest to the provided coordinates.
         """
 
-        i, d = self.find_closest_n_points(k, coords)
+        coords_contiguous = np.ascontiguousarray(coords)
+        i, d = self.find_closest_n_points(k, coords_contiguous)
+
+        # For consistency with pykdtree
+        if k==1:
+            i = i.reshape(-1)
 
         if sqr_dists:
             return numpy.sqrt(d), i
@@ -216,16 +230,15 @@ cdef class cKDTree:
             coords,
             data,
             nnn = 4,
+            p=2,
             verbose = False,
         ):
 
         return self.rbf_interpolator_local_from_kdtree(
-            coords, data, nnn, verbose,
+            coords, data, nnn, p, verbose,
         )
 
-
-
-    def rbf_interpolator_local_from_kdtree(self,
+    def old_rbf_interpolator_local_from_kdtree(self,
             coords,
             data,
             nnn = 4,
@@ -286,7 +299,7 @@ cdef class cKDTree:
 
         return Values
 
-    def rbf_interpolator_local_to_kdtree(self,
+    def old_rbf_interpolator_local_to_kdtree(self,
                     coords,
                     data,
                     nnn = 4,
@@ -352,3 +365,70 @@ cdef class cKDTree:
         del Weights
 
         return Values
+
+
+    def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
+        """
+        Performs an inverse distance (squared) mapping of data to the target `coords`.
+        User can controls the algorithm by altering the number of neighbours used, `nnn` or the
+        power factor `p` of the mapping weighting.
+
+        Args:
+        coords  : ndarray,
+                The target spatial coordinates to evaluate the data from.
+                coords.shape[1] == self.ndim
+        data    : ndarray
+                The known data to map from. Must be full described over kd-tree.
+                i.e., data.shape[0] == self.n
+        nnn     : int,
+                The number of neighbour points to sample from, if `1` no distance averaging is done.
+        p       : int,
+                The power index to calculate weights, ie. pow(distance, -p)
+        verbose : bool,
+                Print when mapping occurs
+        """
+
+        if coords.shape[1] != self.ndim:
+            raise RuntimeError(
+                f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.ndim})."
+            )
+        if data.shape[0] != self.n:
+            raise RuntimeError(
+                f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
+            )
+
+        coords_contiguous = np.ascontiguousarray(coords)
+        # query nnn points to the coords
+        # distance_n is a list of distance to the nearest neighbours for all coords_contiguous
+        # closest_n is the index of the neighbours from ncoords for all coords_contiguous
+        distance_n, closest_n = self.query(coords_contiguous, k=nnn)
+
+        if np.any(closest_n > self.n):
+            raise RuntimeError(
+                "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
+            )
+
+        if verbose and uw.mpi.rank == 0:
+            # For Debugging
+            # print(f"kd-tree diagnostics: d.shape - {distance_n.shape}, c.shape - {closest_n.shape}")
+            print(f"Mapping values with nnn - {nnn} & p {p}  ... start", flush=True)
+
+        if nnn == 1:
+            # only use nearest neighbour raw data
+            return data[closest_n]
+
+        # can decompose weighting vecotrs as IDW is a linear relationship
+        # build normalise weight vectors and multiply that with known data
+        epsilon = 1e-12
+        weights = 1 / np.power(epsilon + distance_n[:], p)
+        n_weights = (weights.T / np.sum(weights, axis=1)).T
+        kdata = data[closest_n[:]]
+
+        # magic with einstein summation power
+        vals = np.einsum("sdc,sd->sc", kdata, n_weights)
+        # print(valz)
+
+        if verbose and uw.mpi.rank == 0:
+            print(f"Mapping values  ... finished", flush=True)
+
+        return vals

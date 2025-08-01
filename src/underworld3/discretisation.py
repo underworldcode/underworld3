@@ -444,6 +444,12 @@ class Mesh(Stateful, uw_object):
         else:
             self.dm.setName(f"uw_{self.name}")
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc dmplex set-up complete",
+                flush=True,
+            )
+
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
@@ -534,8 +540,14 @@ class Mesh(Stateful, uw_object):
             else:
                 self._element = ElementInfo("hexahedron", (1, 6, 12, 8), (0, 1, 4, 4))
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc spatial discretisation",
+                flush=True,
+            )
+
         # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
+        self.nuke_coords_and_rebuild(verbose)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -616,32 +628,36 @@ class Mesh(Stateful, uw_object):
                 print(f"\n")
                 print(f"Mesh # {self.instance}: {self.name}\n")
 
-                uw.visualisation.plot_mesh(self)
+                # Only if notebook and serial
+                if uw.is_notebook and uw.mpi.size == 1:
+                    uw.visualisation.plot_mesh(self, window_size=(600, 400))
 
                 # Total number of cells
                 nstart, nend = self.dm.getHeightStratum(0)
                 num_cells = nend - nstart
-                print(f"Number of cells: {num_cells}\n")
 
-                if len(self.vars) > 0:
-                    print(
-                        f"| Variable Name       | component | degree |     type        |"
-                    )
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
-                    for vname in self.vars.keys():
-                        v = self.vars[vname]
+                if uw.mpi.rank == 0:
+                    print(f"Number of cells: {num_cells}\n")
+
+                    if len(self.vars) > 0:
                         print(
-                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                            f"| Variable Name       | component | degree |     type        |"
                         )
+                        print(
+                            f"| ---------------------------------------------------------- |"
+                        )
+                        for vname in self.vars.keys():
+                            v = self.vars[vname]
+                            print(
+                                f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                            )
 
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
-                    print("\n", flush=True)
-                else:
-                    print(f"No variables are defined on the mesh\n", flush=True)
+                        print(
+                            f"| ---------------------------------------------------------- |"
+                        )
+                        print("\n", flush=True)
+                    else:
+                        print(f"No variables are defined on the mesh\n", flush=True)
 
             ## Boundary information
 
@@ -878,13 +894,22 @@ class Mesh(Stateful, uw_object):
 
         return new_dm_hierarchy
 
-    def nuke_coords_and_rebuild(self):
+    def nuke_coords_and_rebuild(
+        self,
+        verbose,
+    ):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
 
         self.dm.clearDS()
         self.dm.createDS()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETScDS - (re) initialised",
+                flush=True,
+            )
 
         self._coord_array = {}
 
@@ -908,6 +933,12 @@ class Mesh(Stateful, uw_object):
             f"meshproj_{self.mesh_instances}_",
         )
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETScFE - (re) initialised",
+                flush=True,
+            )
+
         if (
             PETSc.Sys.getVersion() <= (3, 20, 5)
             and PETSc.Sys.getVersionInfo()["release"] == True
@@ -916,8 +947,13 @@ class Mesh(Stateful, uw_object):
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-        # now set copy of this array into dictionary
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"PETSc DM - coordinates",
+                flush=True,
+            )
 
+        # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
 
         key = (
@@ -929,8 +965,22 @@ class Mesh(Stateful, uw_object):
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        #
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"UW kD-Tree",
+                flush=True,
+            )
+
         self._index = None
         self._build_kd_tree_index()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"UW kD-Tree - constructed",
+                flush=True,
+            )
 
         (
             self._min_size,
@@ -940,6 +990,12 @@ class Mesh(Stateful, uw_object):
         ) = self._get_mesh_sizes()
 
         self.dm.copyDS(self.dm_hierarchy[-1])
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Mesh Spatial Discretisation Complete",
+                flush=True,
+            )
 
         return
 
@@ -1636,7 +1692,7 @@ class Mesh(Stateful, uw_object):
             control_points_cell_list.append(cell_id)
 
         self._indexCoords = numpy.array(control_points_list)
-        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
+        self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
@@ -1794,9 +1850,8 @@ class Mesh(Stateful, uw_object):
 
         self._mark_faces_inside_and_out()
 
+        cells = cells.reshape(-1)
         assert points.shape[0] == cells.shape[0]
-
-        mesh = self
 
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
@@ -1807,10 +1862,17 @@ class Mesh(Stateful, uw_object):
         for f in range(num_cell_faces):
             control_points_o = self.faces_outer_control_points[f, cells]
             control_points_i = self.faces_inner_control_points[f, cells]
-            inside = ((control_points_o - points) ** 2).sum(axis=1) - (
-                (control_points_i - points) ** 2
-            ).sum(axis=1) > 0
+            inside = (
+                ((control_points_o - points) ** 2).sum(axis=1)
+                - ((control_points_i - points) ** 2).sum(axis=1)
+            ) > 0
+
+            # print(f"CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}")
+            # print(f"CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}")
             insiders[:, f] = inside[:]
+
+            # print(f"{f},  {inside}")
+            # print(f"{f},  {insiders}")
 
         return numpy.all(insiders, axis=1)
 
@@ -2021,6 +2083,8 @@ class Mesh(Stateful, uw_object):
                 )
         else:
             return np.zeros((0,))
+
+        print(f"Closest points {closest_points.shape}", flush=True)
 
         # We need to filter points that lie outside the mesh but
         # still are allocated a nearby element by this distance-only check.
@@ -3339,8 +3403,10 @@ def checkpoint_xdmf(
     ## The mesh Var attributes
 
     def get_cell_field_size(h5_filename, mesh_var):
-        with h5py.File(h5_filename, 'r') as f:
-            size = f[f'cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}'].shape[0]
+        with h5py.File(h5_filename, "r") as f:
+            size = f[f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"].shape[
+                0
+            ]
         return size
 
     attributes = ""
@@ -3353,7 +3419,7 @@ def checkpoint_xdmf(
             variable_type = "Vector"
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
-        if not getattr(var, "continuous") or getattr(var, "degree")==0:
+        if not getattr(var, "continuous") or getattr(var, "degree") == 0:
             center = "Cell"
             numItems = get_cell_field_size(var_filename, var)
             field_group = "cell_fields"
