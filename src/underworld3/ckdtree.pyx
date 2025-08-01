@@ -16,7 +16,7 @@ cdef extern from "kdtree_interface.hpp" nogil:
         void find_closest_point( size_t  num_coords, const double* coords, long unsigned int* indices, double* out_dist_sqr, bool* found )
         size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr )
 
-cdef class cKDTree:
+cdef class KDTree:
     """
     KD-Tree indexes are data structures and algorithms for the efficient
     determination of nearest neighbours.
