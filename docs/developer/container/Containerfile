@@ -2,35 +2,36 @@
 
 ### how to build Underworld3 image
 ### MUST run from the underworld3 top directory
-#    $ podman build ./docs/development -f ./Containerfile \
-#        --rm --format docker  \
-#        -t underworldcode/underworld3:version_id
-### needs the --format tag to run on podman
+#   podman build . --rm \
+#       --format docker \
+#       -f ./docs/developer/container/Containerfile \ 
+#       -t underworldcode/underworld3:<version-id>
+#
+### requires the '--format docker' to run on podman, but no under docker.
+#
+#
+### Example usage
+# podman run   -it --rm   -p 10000:8888   -v "${HOME}/uw_space":/home/mambauser/host   --uidmap $uid:0:1 --uidmap 0:1:$uid --uidmap $(($uid+1)):$(($uid+1)):$(($subuidSize-$uid))   --gidmap $gid:0:1 --gidmap 0:1:$gid --gidmap $(($gid+1)):$(($gid+1)):$(($subgidSize-$gid)) underworldcode/underworld3:<version-id>
 
 FROM docker.io/mambaorg/micromamba:2.3.0
 
 # create the env
-COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/env.yaml
-RUN micromamba install -y -n base -f /tmp/env.yaml && \
+COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yaml /tmp/env.yaml
+RUN micromamba install -y -v -n base -f /tmp/env.yaml && \
     micromamba clean --all --yes
 
 # activate mamba env during podman build
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
 # install UW3
-WORKDIR /tmp
-COPY --exclude=**/.git \
-     --chown=$MAMBA_USER:$MAMBA_USER \
-     . /tmp/underworld3
-WORKDIR /tmp/underworld3
-
+COPY --chown=$MAMBA_USER:$MAMBA_USER \
+     --exclude=**/.git \
+     . /home/$MAMBA_USER/underworld3
+# asdasd
+WORKDIR /home/$MAMBA_USER/underworld3
 RUN pip install --no-build-isolation --no-cache-dir .
 
-# setup /uw_dir in container to run everything as the root user.
-ENV UW_DIR=/uw_dir
-COPY ./tests   $UW_DIR/tests
-WORKDIR $UW_DIR
+WORKDIR /home/$MAMBA_USER/
 
 EXPOSE 8888
-
-CMD ["jupyter-lab", "--no-browser", "--ip=0.0.0.0", "--allow-root", "--notebook-dir=$UW_DIR"]
+CMD ["jupyter-lab", "--no-browser", "--ip=0.0.0.0"]
