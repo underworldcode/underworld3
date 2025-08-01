@@ -437,6 +437,35 @@ window.Quarto = {
 <section id="more-information" class="level2">
 <h2 class="anchored" data-anchor-id="more-information">More information</h2>
 <p>The meshVariable code is described <a href="https://underworldcode.github.io/underworld3/development_api/underworld3/discretisation.html#underworld3.discretisation.MeshVariable"><strong>API docs</strong> here.</a></p>
+<div id="b13b41c5-8b5c-417f-b60e-0f82376ef686" class="cell" data-execution_count="9">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>mesh._mark_faces_inside_and_out()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="edfff92b-3b2c-4bd0-a370-66b7cdddef23" class="cell" data-execution_count="10">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>points <span class="op">=</span> np.array([(<span class="fl">0.0</span>,<span class="fl">0.75</span>,<span class="fl">0.0</span>), (<span class="fl">0.0</span>,<span class="fl">0.0</span>,<span class="fl">0.1</span>)])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div id="21cb51a3-f7d5-40d2-8f5f-0954cfe6dd01" class="cell" data-execution_count="11">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>mesh.get_closest_local_cells(points)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Closest points (2,)</code></pre>
+</div>
+<div class="cell-output cell-output-display" data-execution_count="11">
+<pre><code>array([2195,   -1])</code></pre>
+</div>
+</div>
+<div id="8cd55205-bdf0-4fe9-9821-1dd00671b468" class="cell" data-execution_count="12">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>mesh.test_if_points_in_cells( points, np.array([<span class="dv">2195</span>,</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>       <span class="dv">2829</span>]))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="12">
+<pre><code>array([ True, False])</code></pre>
+</div>
+</div>
+<div id="1b41f1e2-ae5c-40d4-93cf-9f3623215f2b" class="cell" data-execution_count="13">
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>mesh.faces_inner_control_points.shape</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="co"># (4, 7615, 3)</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="13">
+<pre><code>(4, 7615, 3)</code></pre>
+</div>
+</div>
 
 
 </section>
