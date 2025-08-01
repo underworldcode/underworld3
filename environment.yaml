@@ -1,8 +1,8 @@
-name: uw3
+name: base
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python <= 3.11
   - compilers
   - mpich
   - petsc=3.21.5
@@ -35,5 +35,4 @@ dependencies:
   - pip:
       - rich<14
       - meshio
-      - pygmsh
         # - gmsh-api # is this used still in UW?
