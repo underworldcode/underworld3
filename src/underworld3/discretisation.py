@@ -976,6 +976,12 @@ class Mesh(Stateful, uw_object):
         self._index = None
         self._build_kd_tree_index()
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"UW kD-Tree - constructed",
+                flush=True,
+            )
+
         (
             self._min_size,
             self._radii,
@@ -1686,7 +1692,7 @@ class Mesh(Stateful, uw_object):
             control_points_cell_list.append(cell_id)
 
         self._indexCoords = numpy.array(control_points_list)
-        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
+        self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
