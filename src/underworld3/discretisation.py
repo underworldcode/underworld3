@@ -1850,9 +1850,8 @@ class Mesh(Stateful, uw_object):
 
         self._mark_faces_inside_and_out()
 
+        cells = cells.reshape(-1)
         assert points.shape[0] == cells.shape[0]
-
-        mesh = self
 
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
@@ -1863,10 +1862,17 @@ class Mesh(Stateful, uw_object):
         for f in range(num_cell_faces):
             control_points_o = self.faces_outer_control_points[f, cells]
             control_points_i = self.faces_inner_control_points[f, cells]
-            inside = ((control_points_o - points) ** 2).sum(axis=1) - (
-                (control_points_i - points) ** 2
-            ).sum(axis=1) > 0
+            inside = (
+                ((control_points_o - points) ** 2).sum(axis=1)
+                - ((control_points_i - points) ** 2).sum(axis=1)
+            ) > 0
+
+            # print(f"CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}")
+            # print(f"CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}")
             insiders[:, f] = inside[:]
+
+            # print(f"{f},  {inside}")
+            # print(f"{f},  {insiders}")
 
         return numpy.all(insiders, axis=1)
 
@@ -2078,6 +2084,8 @@ class Mesh(Stateful, uw_object):
         else:
             return np.zeros((0,))
 
+        print(f"Closest points {closest_points.shape}", flush=True)
+
         # We need to filter points that lie outside the mesh but
         # still are allocated a nearby element by this distance-only check.
 
@@ -2090,7 +2098,7 @@ class Mesh(Stateful, uw_object):
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroid_index.data_pts.shape[0]
+        num_local_cells = self._centroid_index.n
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
