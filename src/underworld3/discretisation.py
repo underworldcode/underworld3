@@ -1867,12 +1867,12 @@ class Mesh(Stateful, uw_object):
                 - ((control_points_i - points) ** 2).sum(axis=1)
             ) > 0
 
-            # print(f"CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}")
-            # print(f"CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}")
+            
+            
             insiders[:, f] = inside[:]
 
-            # print(f"{f},  {inside}")
-            # print(f"{f},  {insiders}")
+            
+            
 
         return numpy.all(insiders, axis=1)
 
