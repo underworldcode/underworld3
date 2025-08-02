@@ -2272,12 +2272,12 @@ True: index into the local coordinate array</p>
                 - ((control_points_i - points) ** 2).sum(axis=1)
             ) &gt; 0
 
-            # print(f&#34;CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}&#34;)
-            # print(f&#34;CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}&#34;)
+            
+            
             insiders[:, f] = inside[:]
 
-            # print(f&#34;{f},  {inside}&#34;)
-            # print(f&#34;{f},  {insiders}&#34;)
+            
+            
 
         return numpy.all(insiders, axis=1)
 
@@ -3795,12 +3795,12 @@ are in a cell.</p></div>
             - ((control_points_i - points) ** 2).sum(axis=1)
         ) &gt; 0
 
-        # print(f&#34;CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}&#34;)
-        # print(f&#34;CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}&#34;)
+        
+        
         insiders[:, f] = inside[:]
 
-        # print(f&#34;{f},  {inside}&#34;)
-        # print(f&#34;{f},  {insiders}&#34;)
+        
+        
 
     return numpy.all(insiders, axis=1)</code></pre>
 </details>
