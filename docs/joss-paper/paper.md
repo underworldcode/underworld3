@@ -47,7 +47,7 @@ affiliations:
    index: 3
  - name: Computer Science and Engineering, University at Buffalo
    index: 4
- - name: Curtin University, Perth, Australia
+ - name: School of Earth and Planetary Sciences, Curtin University, Perth, WA, Australia
    index: 5
 
 date: 30 June 2024
@@ -147,7 +147,7 @@ Despite this symbolic, interactive layer, `underworld3` python scripts are inher
 
 AuScope provides direct support for the core development team behind the underworld codes and the underworld cloud suite of tools. AuScope is funded by the Australian Government through the National Collaborative Research Infrastructure Strategy, NCRIS.
 
-The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme.
+The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme and the Pawsey Supercomputing Research Centre’s Setonix Supercomputer (https://doi.org/10.48569/18sb-8s43), with funding from the Australian Government and the Government of Western Australia.
 
 The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
 
