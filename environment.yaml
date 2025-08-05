@@ -1,4 +1,4 @@
-name: base
+name: uw3
 channels:
   - conda-forge
 dependencies:
