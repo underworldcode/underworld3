@@ -10,7 +10,12 @@
 ### requires the '--format docker' to run on podman, but no under docker.
 #
 #
-### Example usage
+### Example usage (taken from - https://jupyter-docker-stacks.readthedocs.io/en/latest/using/running.html#using-the-podman-cli )
+# uid=57439
+# gid=57439
+
+# subuidSize=$(( $(podman info --format "{{ range .Host.IDMappings.UIDMap }}+{{.Size }}{{end }}" ) - 1 ))
+# subgidSize=$(( $(podman info --format "{{ range .Host.IDMappings.GIDMap }}+{{.Size }}{{end }}" ) - 1 ))
 # podman run   -it --rm   -p 10000:8888   -v "${HOME}/uw_space":/home/mambauser/host   --uidmap $uid:0:1 --uidmap 0:1:$uid --uidmap $(($uid+1)):$(($uid+1)):$(($subuidSize-$uid))   --gidmap $gid:0:1 --gidmap 0:1:$gid --gidmap $(($gid+1)):$(($gid+1)):$(($subgidSize-$gid)) underworldcode/underworld3:<version-id>
 
 FROM docker.io/mambaorg/micromamba:2.3.0
