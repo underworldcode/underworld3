@@ -25,7 +25,7 @@ jobs:
         with:
           environment-file: ./environment.yaml
           cache-downloads: true
-          cache-environment: true
+          cache-environment: false
 
       - name: Build UW3
         shell: bash -l {0}
