@@ -35,4 +35,3 @@ dependencies:
   - pip:
       - rich<14
       - meshio
-        # - gmsh-api # is this used still in UW?
