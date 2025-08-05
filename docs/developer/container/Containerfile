@@ -20,9 +20,10 @@
 
 FROM docker.io/mambaorg/micromamba:2.3.0
 
-# create the env
+# create the env 
+# see https://micromamba-docker.readthedocs.io/en/latest/quick_start.html#quick-start
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yaml /tmp/env.yaml
-RUN micromamba install -y -v -n base -f /tmp/env.yaml && \
+RUN micromamba install -y -n base -f /tmp/env.yaml && \
     micromamba clean --all --yes
 
 # activate mamba env during podman build
