@@ -20,22 +20,38 @@
 
 FROM docker.io/mambaorg/micromamba:2.3.0
 
-# create the env 
+# install os requirements for headless pyvista
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb \
+    libgl1-mesa-dev \
+    && rm -rf /var/lib/apt/lists/*
+USER $MAMBA_USER
+
+# create the conda environment with all dependencies 
 # see https://micromamba-docker.readthedocs.io/en/latest/quick_start.html#quick-start
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yaml /tmp/env.yaml
-RUN micromamba install -y -n base -f /tmp/env.yaml && \
+RUN micromamba install -y -v -n base -f /tmp/env.yaml && \
     micromamba clean --all --yes
 
 # activate mamba env during podman build
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
+# pyvista - taken from pyvista docker files
+# see https://github.com/pyvista/pyvista/tree/main/docker
+RUN pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa
+
 # install UW3
 COPY --chown=$MAMBA_USER:$MAMBA_USER \
      --exclude=**/.git \
      . /home/$MAMBA_USER/underworld3
-# asdasd
 WORKDIR /home/$MAMBA_USER/underworld3
 RUN pip install --no-build-isolation --no-cache-dir .
+
+# allow jupyterlab for ipyvtk
+ENV PYVISTA_OFF_SCREEN=true
+ENV JUPYTER_ENABLE_LAB=yes
+ENV PYVISTA_TRAME_SERVER_PROXY_PREFIX='/proxy/'
 
 WORKDIR /home/$MAMBA_USER/
 
