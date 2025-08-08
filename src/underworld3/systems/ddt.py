@@ -811,15 +811,6 @@ class SemiLagrangian(uw_object):
                         self.psi_star[i].data[...] - Imean0
                     ) * IL20 / IL2 + Imean0
 
-                # self.I.fn = self.psi_star[i].sym[0]
-                # Imean = self.I.evaluate()
-
-                # self.I.fn = (self.psi_star[0].sym[0] - Imean) ** 2
-                # IL2 = np.sqrt(self.I.evaluate())
-
-                # if uw.mpi.rank == 0:
-                #     print(f"Post advection: {Imean}, {IL2}", flush=True)
-
         return
 
     def bdf(self, order=None):
