@@ -896,7 +896,7 @@ class Mesh(Stateful, uw_object):
 
     def nuke_coords_and_rebuild(
         self,
-        verbose,
+        verbose=False,
     ):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
@@ -1867,12 +1867,7 @@ class Mesh(Stateful, uw_object):
                 - ((control_points_i - points) ** 2).sum(axis=1)
             ) > 0
 
-            # print(f"CPO {f}, {((control_points_o - points) ** 2).sum(axis=1)}")
-            # print(f"CPI {f}, {((control_points_i - points) ** 2).sum(axis=1)}")
             insiders[:, f] = inside[:]
-
-            # print(f"{f},  {inside}")
-            # print(f"{f},  {insiders}")
 
         return numpy.all(insiders, axis=1)
 
@@ -2083,8 +2078,6 @@ class Mesh(Stateful, uw_object):
                 )
         else:
             return np.zeros((0,))
-
-        print(f"Closest points {closest_points.shape}", flush=True)
 
         # We need to filter points that lie outside the mesh but
         # still are allocated a nearby element by this distance-only check.
@@ -2656,6 +2649,9 @@ class _MeshVariable(Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
+        # Setup public view of data
+        self._array = self._array_data_structure(self)
+
         return
 
     def _object_viewer(self):
@@ -2701,23 +2697,63 @@ class _MeshVariable(Stateful, uw_object):
 
         return newMeshVariable
 
-    def __getitem__(self, indices):
-        if not isinstance(indices, tuple):
-            if isinstance(indices, int) and self.shape[0] == 1:
-                i = 0
-                j = indices
-            else:
-                raise IndexError(
-                    "MeshVariable[i,j] access requires one or two indices "
-                )
+    # def __getitem__(self, indices):
+    #     if not isinstance(indices, tuple):
+    #         if isinstance(indices, int) and self.shape[0] == 1:
+    #             i = 0
+    #             j = indices
+    #         else:
+    #             raise IndexError(
+    #                 "MeshVariable[i,j] access requires one or two indices "
+    #             )
+    #     else:
+    #         i, j = indices
+
+    #     return self._data_container[i, j]
+
+    def pack(self, data_array):
+        """Convert an array in the correct shape for the underlying variable into something that can be loaded into
+        the flat storage structure used by PETSc in a numpy assigment (with index broadcasting etc)
+        """
+
+        import numpy as np
+
+        shape = self.shape
+        storage_size = self._data_layout(-1)
+        data_array_2d = np.atleast_2d(data_array)
+
+        with self.mesh.access(self):
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    self.data[:, ij] = data_array_2d[:, i, j]
+
+        return
+
+    def unpack(self, squeeze=True):
+        """Return an array in the correct shape for the underlying variable from
+        the flat storage structure used by PETSc. By default, use numpy squeeze to remove additional
+        dimensions (keep those dimensions to leave all data as 3D array - scalars being shape (1,1), vectors
+        being (1,dim) and so on)
+        """
+
+        import numpy as np
+
+        shape = self.shape
+
+        with self.mesh.access(self):
+            points = self._data.shape[0]
+            data_array_3d = np.empty(shape=(points, *shape))
+
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    data_array_3d[:, i, j] = self._data[:, ij]
+
+        if squeeze:
+            return data_array_3d.squeeze()
         else:
-            i, j = indices
-
-        return self._data_container[i, j]
-
-    # We should be careful - this is an INTERPOLATION
-    # that is stable when used for EXTRAPOLATION but
-    # not accurate.
+            return data_array_3d
 
     def rbf_interpolate(
         self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None
@@ -3032,28 +3068,46 @@ class _MeshVariable(Stateful, uw_object):
         if self.vtype == uw.VarType.SCALAR:
             return 0
         if self.vtype == uw.VarType.VECTOR:
-            if j is None:
-                return i
-            elif i == 0:
-                return j
+            if i < 0 or j < 0:
+                return self.mesh.dim
             else:
-                raise IndexError(
-                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
-                )
+                if j is None:
+                    return i
+                elif i == 0:
+                    return j
+                else:
+                    raise IndexError(
+                        f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
+                    )
         if self.vtype == uw.VarType.TENSOR:
             if self.mesh.dim == 2:
-                return ((0, 1), (2, 3))[i][j]
+                if i < 0 or j < 0:
+                    return 4
+                else:
+                    return ((0, 1), (2, 3))[i][j]
             else:
-                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+                if i < 0 or j < 0:
+                    return 9
+                else:
+                    return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
 
         if self.vtype == uw.VarType.SYM_TENSOR:
             if self.mesh.dim == 2:
-                return ((0, 2), (2, 1))[i][j]
+                if i < 0 or j < 0:
+                    return 3
+                else:
+                    return ((0, 2), (2, 1))[i][j]
             else:
-                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+                if i < 0 or j < 0:
+                    return 6
+                else:
+                    return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
 
         if self.vtype == uw.VarType.MATRIX:
-            return i + j * self.shape[0]
+            if i < 0 or j < 0:
+                return self.shape[0] * self.shape[1]
+            else:
+                return i + j * self.shape[0]
 
     def _setup_ds(self):
         options = PETSc.Options()
@@ -3126,6 +3180,37 @@ class _MeshVariable(Stateful, uw_object):
                 "Data must be accessed via the mesh `access()` context manager."
             )
         return self._data
+
+    class _array_data_structure(object):
+        """This is used to add getitem / setitem to the array property of the variable"""
+
+        def __init__(inner_self, owner):
+            inner_self.owner = owner
+
+        # Unreachable
+        # def __set__(inner_self, instance, array_value):
+        #     inner_self.owner.pack(array_value)
+
+        def __setitem__(inner_self, key, value):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            var_data_copy[key] = value
+            inner_self.owner.pack(var_data_copy)
+
+        def __getitem__(inner_self, key):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            return var_data_copy[key]
+
+        def __repr__(inner_self):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            return var_data_copy.__repr__()
+
+    @property
+    def array(self):
+        return self._array
+
+    @array.setter
+    def array(self, array_value):
+        self.pack(array_value)
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 
