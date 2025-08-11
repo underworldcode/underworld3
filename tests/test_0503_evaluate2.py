@@ -174,13 +174,16 @@ def test_many_many_scalar_mult_var():
 def test_polynomial_sympy():
     degree = 20
     mesh = uw.meshing.StructuredQuadBox()
+
+    print(tensor_product(degree, coords[:, 0], coords[:, 1]))
+
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
         uw.function.evaluate(
             tensor_product(degree, mesh.r[0], mesh.r[1]),
             coords,
             coord_sys=mesh.N,
-        ),
+        ).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -214,7 +217,9 @@ def test_polynomial_mesh_var_sympy():
     degree = 10
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(tensor_product(degree, xvar.fn, yvar.fn), coords),
+        uw.function.evaluate(
+            tensor_product(degree, xvar.fn, yvar.fn), coords
+        ).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -223,7 +228,7 @@ def test_polynomial_mesh_var_sympy():
         uw.function.evaluate(
             tensor_product(degree, xyvar.fn.dot(mesh.N.i), xyvar.fn.dot(mesh.N.j)),
             coords,
-        ),
+        ).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -246,13 +251,22 @@ def test_3d_cross_product():
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4,) * 3)
     name = "vector cross product test"
     var_vector1 = uw.discretisation.MeshVariable(
-        varname="var_vector1", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR
+        varname="var_vector1",
+        mesh=mesh,
+        num_components=3,
+        vtype=uw.VarType.VECTOR,
+        varsymbol="V_1",
     )
     var_vector2 = uw.discretisation.MeshVariable(
-        varname="var_vector2", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR
+        varname="var_vector2",
+        mesh=mesh,
+        num_components=3,
+        vtype=uw.VarType.VECTOR,
+        varsymbol="V_2",
     )
+
     with mesh.access(var_vector1, var_vector2):
         var_vector1.data[:] = (1.0, 2.0, 3.0)
         var_vector2.data[:] = (4.0, 5.0, 6.0)
-    result = uw.function.evaluate(var_vector1.fn.cross(var_vector2.fn), coords)
+    result = uw.function.evaluate(var_vector1.sym.cross(var_vector2.sym), coords)
     assert np.allclose(np.array(((-3, 6, -3),)), result, rtol=1e-05, atol=1e-08)

@@ -23,14 +23,13 @@ velocity = 1 / res  # /res
 
 
 t_start = 1e-4
-t_end   = 2e-4
+t_end = 2e-4
 
 # ### Set up the mesh
 xmin, xmax = 0, 1
 ymin, ymax = 0, 1
 
 u_degree = 2
-
 
 
 ### Quads
@@ -53,12 +52,13 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
 # ### setup analytical function
 
 # +
-u, t, x, x0, x1 = sp.symbols('u, t, x, x0, x1')
+u, t, x, x0, x1 = sp.symbols("u, t, x, x0, x1")
 
 
-U_a_x = 0.5 * ( sp.erf( (x1 - x + (u * t)) / (2 * sp.sqrt(kappa * t))) + sp.erf((-x0 + x - (u * t)) / (2 * sp.sqrt(kappa * t))) )
-
-
+U_a_x = 0.5 * (
+    sp.erf((x1 - x + (u * t)) / (2 * sp.sqrt(kappa * t)))
+    + sp.erf((-x0 + x - (u * t)) / (2 * sp.sqrt(kappa * t)))
+)
 
 
 # +
@@ -95,45 +95,42 @@ def test_advDiff_boxmesh(mesh):
     adv_diff.constitutive_model.Parameters.diffusivity = kappa
 
     ### fix temp of top and bottom walls
-    adv_diff.add_dirichlet_bc(0., "Left")
-    adv_diff.add_dirichlet_bc(0., "Right")
+    adv_diff.add_dirichlet_bc(0.0, "Left")
+    adv_diff.add_dirichlet_bc(0.0, "Right")
 
     with mesh.access(v):
         # initialise fields
         # v.data[:,0] = -1*v.coords[:,1]
         v.data[:, 1] = velocity
 
-    U_start = U_a_x.subs({u:velocity, t:t_start,x:mesh.X[0], x0:0.4, x1:0.6})
-    with mesh.access(T):
-        T.data[:,0] = uw.function.evaluate(U_start, T.coords)
+    U_start = U_a_x.subs({u: velocity, t: t_start, x: mesh.X[0], x0: 0.4, x1: 0.6})
 
+    T.array = uw.function.evaluate(U_start, T.coords)
 
     model_time = t_start
 
     #### Solve
     dt = adv_diff.estimate_dt()
 
-    while  model_time < t_end:
-    
+    while model_time < t_end:
+
         if model_time + dt > t_end:
             dt = t_end - model_time
 
         ### diffuse through underworld
         adv_diff.solve(timestep=dt)
-    
+
         model_time += dt
 
-    sample_x = np.arange(0,1,mesh.get_min_radius() )
+    sample_x = np.arange(0, 1, mesh.get_min_radius())
     sample_y = np.zeros_like(sample_x) + 0.5
     sample_points = np.column_stack([sample_x, sample_y])
 
     ### compare UW and 1D numerical solution
-    T_UW = uw.function.evaluate(T.sym[0], sample_points)
+    T_UW = uw.function.evaluate(T.sym[0], sample_points).squeeze()
 
-    U_end = U_a_x.subs({u:velocity, t:t_end,x:mesh.X[0], x0:0.4, x1:0.6})
-    T_analytical = uw.function.evaluate(U_end, sample_points)
-
-    
+    U_end = U_a_x.subs({u: velocity, t: t_end, x: mesh.X[0], x0: 0.4, x1: 0.6})
+    T_analytical = uw.function.evaluate(U_end, sample_points).squeeze()
 
     ### moderate atol due to evaluating onto points
     assert np.allclose(T_UW, T_analytical, atol=0.05)

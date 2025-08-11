@@ -14,12 +14,12 @@ nsteps = 20
 velocity = 1 / res  # /res
 
 # ### mesh coordinates
-xmin, xmax = 0., 1.
-ymin, ymax = 0., 1.
+xmin, xmax = 0.0, 1.0
+ymin, ymax = 0.0, 1.0
 
 sdev = 0.03
-x0 = 0.5*xmax
-y0 = 0.5*ymax
+x0 = 0.5 * xmax
+y0 = 0.5 * ymax
 
 # ### Set up the mesh
 ### Quads
@@ -38,6 +38,7 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     cellSize=1 / res, regular=True, qdegree=3, refinement=0
 )
 
+
 @pytest.mark.parametrize(
     "mesh",
     [
@@ -50,26 +51,26 @@ def test_SLVec_boxmesh(mesh):
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
     # Create mesh vars
-    Vdeg        = 2
-    sl_order    = 2
+    Vdeg = 2
+    sl_order = 2
 
-    v           = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=Vdeg)
-    vect_test   = uw.discretisation.MeshVariable("A", mesh, mesh.dim, degree=Vdeg)
+    v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=Vdeg)
+    vect_test = uw.discretisation.MeshVariable("A", mesh, mesh.dim, degree=Vdeg)
 
     # #### Create the SL object
     DuDt = uw.systems.ddt.SemiLagrangian(
-                                            mesh,
-                                            vect_test.sym,
-                                            v.sym,
-                                            vtype = uw.VarType.VECTOR,
-                                            degree = Vdeg,
-                                            continuous = vect_test.continuous,
-                                            varsymbol = vect_test.symbol,
-                                            verbose = False,
-                                            bcs = None,
-                                            order = sl_order,
-                                            smoothing = 0.0,
-                                        )
+        mesh,
+        vect_test.sym,
+        v.sym,
+        vtype=uw.VarType.VECTOR,
+        degree=Vdeg,
+        continuous=vect_test.continuous,
+        varsymbol=vect_test.symbol,
+        verbose=False,
+        bcs=None,
+        order=sl_order,
+        smoothing=0.0,
+    )
 
     # ### Set up:
     # - Velocity field
@@ -77,13 +78,17 @@ def test_SLVec_boxmesh(mesh):
     with mesh.access(v):
         v.data[:, 1] = velocity
 
-    x,y = mesh.X
+    x, y = mesh.X
 
     # vector components based on 2D Gaussian
     with mesh.access(vect_test):
-        gauss_2D             = sympy.exp(-((x - x0)**2 + (y - y0)**2)/(2*sdev**2))
-        vect_test.data[:, 0] = 2*velocity*uw.function.evaluate(gauss_2D, vect_test.coords)
-        vect_test.data[:, 1] = 2*velocity*uw.function.evaluate(gauss_2D, vect_test.coords)
+        gauss_2D = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sdev**2))
+        vect_test.data[:, 0] = (
+            2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
+        )
+        vect_test.data[:, 1] = (
+            2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
+        )
 
     # ### Create points to sample the UW results
     ### y coords to sample
@@ -92,7 +97,7 @@ def test_SLVec_boxmesh(mesh):
     )  ### Vertical profile
 
     ### x coords to sample
-    sample_x = 0.5*xmax*np.ones_like(sample_y)  ### middle of the box
+    sample_x = 0.5 * xmax * np.ones_like(sample_y)  ### middle of the box
 
     sample_points = np.empty((sample_x.shape[0], 2))
     sample_points[:, 0] = sample_x
@@ -106,8 +111,8 @@ def test_SLVec_boxmesh(mesh):
     dt = 0.001
 
     for i in range(nsteps):
-        DuDt.update_pre_solve(dt, verbose = False, evalf = False)
-        with mesh.access(vect_test): # update
+        DuDt.update_pre_solve(dt, verbose=False, evalf=False)
+        with mesh.access(vect_test):  # update
             vect_test.data[...] = DuDt.psi_star[0].data[...]
 
         model_time += dt
@@ -116,16 +121,20 @@ def test_SLVec_boxmesh(mesh):
     vec_prof_uw = uw.function.evaluate(vect_test.sym, sample_points)
 
     #### expected distance traveled in the vertical direction
-    travel_y    = (velocity * model_time)
+    travel_y = velocity * model_time
     y_ana_shift = travel_y + sample_y
-    y_peak_loc  = y0 + travel_y
+    y_peak_loc = y0 + travel_y
 
     # get points around 5 standard deviations from the expected Gaussian peak location
-    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5*sdev) & (np.around(y_ana_shift, 6) <= y_peak_loc + 5*sdev)
+    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5 * sdev) & (
+        np.around(y_ana_shift, 6) <= y_peak_loc + 5 * sdev
+    )
     anax_to_eval = vec_prof_init[cond, 0]
     anay_to_eval = vec_prof_init[cond, 1]
 
-    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5*sdev) & (np.around(y_ana_shift, 6) <= y_peak_loc + 5*sdev)
+    cond = (np.around(y_ana_shift, 6) >= y_peak_loc - 5 * sdev) & (
+        np.around(y_ana_shift, 6) <= y_peak_loc + 5 * sdev
+    )
     vx_to_eval = vec_prof_uw[cond, 0]
     vy_to_eval = vec_prof_uw[cond, 1]
 
@@ -135,6 +144,7 @@ def test_SLVec_boxmesh(mesh):
 
     del mesh
     del DuDt
+
 
 del meshStructuredQuadBox
 del unstructured_simplex_box_irregular

@@ -232,7 +232,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     coords = pv_mesh.points[:, 0:dim]
     vector_values = np.zeros_like(pv_mesh.points)
 
-    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True)
+    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True).squeeze()
 
     return vector_values
 

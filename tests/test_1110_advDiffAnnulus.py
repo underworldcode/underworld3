@@ -50,8 +50,8 @@ def test_adv_diff_annulus():
     v_y = r * theta_dot * sympy.cos(th)
 
     with mesh.access(v_soln):
-        v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords)
-        v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords)
+        v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords).squeeze()
+        v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords).squeeze()
 
     abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 

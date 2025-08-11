@@ -87,6 +87,14 @@ class CoordinateSystem:
         if self.mesh.cdim == 3:
             self._N[2]._latex_form = r"\mathrm{z}"
 
+        # This is a how we can find our way back to the
+        # originating coordinate system if we only know the base-scalars
+
+        self._N[0].CS = self
+        self._N[1].CS = self
+        if self.mesh.cdim == 3:
+            self._N[2].CS = self
+
         self._R = self._N.copy()
 
         # We need this to define zeros in the coordinate transforms
@@ -95,7 +103,7 @@ class CoordinateSystem:
 
         if self.mesh.cdim == 3:
             self.independent_of_N = expression(
-                r"0(x,y,z)",
+                r"\vec{0}",
                 underworld3.maths.functions.vanishing
                 * self._N[0]
                 * self._N[1]
@@ -104,7 +112,7 @@ class CoordinateSystem:
             )
         else:
             self.independent_of_N = expression(
-                r"0(x,y,z)",
+                r"\vec{0}",
                 underworld3.maths.functions.vanishing * self._N[0] * self._N[1],
                 "independent of N0, N1",
             )
@@ -479,6 +487,16 @@ class CoordinateSystem:
             return self._xRotN[dirn, :]
         else:
             return None
+
+    def zero_matrix(self, shape):
+        """Matrix of spatial coordinates equivalent to zeros (but still dependent on X) -
+        Add this when you have a matrix with a mix of constants and functions - sympy / numpy
+        can become upset if the constants are not spatial functions too.
+        """
+
+        Z = sympy.Matrix.ones(*shape) * self.independent_of_N
+
+        return Z
 
     ## Here we can add an ipython_display method to add the class documentation and a description of the
     ## entities that are defined (use sympy printing to make that work automatically)
