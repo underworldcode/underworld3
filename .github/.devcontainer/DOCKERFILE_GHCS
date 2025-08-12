@@ -4,8 +4,8 @@ RUN conda install -n base -c conda-forge mamba
 
 # Here we can install all the dependencies using mamba (as we do in the test scripts)
 
-COPY .devcontainer/uw_environment.yml  /tmp/conda-tmp/
-RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yml 
+COPY .devcontainer/uw_environment.yaml  /tmp/conda-tmp/
+RUN  mamba env update -n base --file /tmp/conda-tmp/uw_environment.yaml 
 
 # Add other dependencies that can't be installed correctly.
 
