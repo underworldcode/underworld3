@@ -6,8 +6,8 @@
            version="5.3.1"
            xsi:schemaLocation="http://www.crossref.org/schema/5.3.1 http://www.crossref.org/schemas/crossref5.3.1.xsd">
   <head>
-    <doi_batch_id>20250512120715-b69e4fcdb92ad9bd087cfbdeff82a67b2a9a6732</doi_batch_id>
-    <timestamp>20250512120715</timestamp>
+    <doi_batch_id>20250812005552-b69e4fcdb92ad9bd087cfbdeff82a67b2a9a6732</doi_batch_id>
+    <timestamp>20250812005552</timestamp>
     <depositor>
       <depositor_name>JOSS Admin</depositor_name>
       <email_address>admin@theoj.org</email_address>
@@ -270,6 +270,16 @@
             <cYear>2020</cYear>
             <unstructured_citation>Mansour, J., Giordani, J., Moresi, L., Beucher, R., Kaluza, O., Velic, M., Farrington, R., Quenette, S., &amp; Beall, A. (2020). Underworld2: Python Geodynamics Modelling for Desktop, HPC and Cloud. JOSS, 5(47), 1797. https://doi.org/10.21105/joss.01797</unstructured_citation>
           </citation>
+          <citation key="meurerSymPySymbolicComputing2017">
+            <article_title>SymPy: Symbolic computing in Python</article_title>
+            <author>Meurer</author>
+            <journal_title>PeerJ Computer Science</journal_title>
+            <volume>3</volume>
+            <doi>10.7717/peerj-cs.103</doi>
+            <issn>2376-5992</issn>
+            <cYear>2017</cYear>
+            <unstructured_citation>Meurer, A., Smith, C. P., Paprocki, M., Čertík, O., Kirpichev, S. B., Rocklin, M., Kumar, A., Ivanov, S., Moore, J. K., Singh, S., Rathnayake, T., Vig, S., Granger, B. E., Muller, R. P., Bonazzi, F., Gupta, H., Vats, S., Johansson, F., Pedregosa, F., … Scopatz, A. (2017). SymPy: Symbolic computing in Python. PeerJ Computer Science, 3, e103. https://doi.org/10.7717/peerj-cs.103</unstructured_citation>
+          </citation>
           <citation key="moresiComputationalApproachesStudying2007">
             <article_title>Computational approaches to studying non-linear dynamics of the crust and mantle</article_title>
             <author>Moresi</author>
@@ -305,10 +315,10 @@
           <citation key="zienkiewiczFiniteElementMethod2013">
             <volume_title>The finite element method: Its basis and fundamentals</volume_title>
             <author>Zienkiewicz</author>
-            <doi>10.1016/b978-1-85617-633-0.00019-7</doi>
+            <doi>10.1016/C2009-0-24909-9</doi>
             <isbn>978-1-85617-633-0</isbn>
             <cYear>2013</cYear>
-            <unstructured_citation>Zienkiewicz, O. C., Taylor, R. L., &amp; Zhu, J. Z. (2013). The finite element method: Its basis and fundamentals (Seventh edition). Elsevier, Butterworth-Heinemann. https://doi.org/10.1016/b978-1-85617-633-0.00019-7</unstructured_citation>
+            <unstructured_citation>Zienkiewicz, O. C., Taylor, R. L., &amp; Zhu, J. Z. (2013). The finite element method: Its basis and fundamentals (Seventh edition). Elsevier, Butterworth-Heinemann. https://doi.org/10.1016/C2009-0-24909-9</unstructured_citation>
           </citation>
         </citation_list>
       </journal_article>
