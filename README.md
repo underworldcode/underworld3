@@ -40,3 +40,10 @@ The `underworld3` module (API) documentation can be found online:
 The quickest option is **not to install** anything but try the binder demo above !
 
 If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](https://underworldcode.github.io/underworld3/development/_quickstart/Installation.html)
+
+## References 
+
+The canonical releases of the code can be found at [zenodo.org](10.5281/zenodo.16810746).
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16810747.svg)](https://doi.org/10.5281/zenodo.16810746)
+
