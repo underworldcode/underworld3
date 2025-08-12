@@ -945,14 +945,14 @@ True: index into the local coordinate array</p>
             else:
                 self._element = ElementInfo(&#34;hexahedron&#34;, (1, 6, 12, 8), (0, 1, 4, 4))
 
-        # Navigation / coordinates etc
-        self.nuke_coords_and_rebuild()
-
         if verbose and uw.mpi.rank == 0:
             print(
-                f&#34;PETSc spatial discretisation - complete&#34;,
+                f&#34;PETSc spatial discretisation&#34;,
                 flush=True,
             )
+
+        # Navigation / coordinates etc
+        self.nuke_coords_and_rebuild(verbose)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -1299,13 +1299,22 @@ True: index into the local coordinate array</p>
 
         return new_dm_hierarchy
 
-    def nuke_coords_and_rebuild(self):
+    def nuke_coords_and_rebuild(
+        self,
+        verbose,
+    ):
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
 
         self.dm.clearDS()
         self.dm.createDS()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETScDS - (re) initialised&#34;,
+                flush=True,
+            )
 
         self._coord_array = {}
 
@@ -1329,6 +1338,12 @@ True: index into the local coordinate array</p>
             f&#34;meshproj_{self.mesh_instances}_&#34;,
         )
 
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETScFE - (re) initialised&#34;,
+                flush=True,
+            )
+
         if (
             PETSc.Sys.getVersion() &lt;= (3, 20, 5)
             and PETSc.Sys.getVersionInfo()[&#34;release&#34;] == True
@@ -1337,8 +1352,13 @@ True: index into the local coordinate array</p>
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-        # now set copy of this array into dictionary
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;PETSc DM - coordinates&#34;,
+                flush=True,
+            )
 
+        # now set copy of this array into dictionary
         arr = self.dm.getCoordinatesLocal().array
 
         key = (
@@ -1350,8 +1370,22 @@ True: index into the local coordinate array</p>
         self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
         # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+        #
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;UW kD-Tree&#34;,
+                flush=True,
+            )
+
         self._index = None
         self._build_kd_tree_index()
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;UW kD-Tree - constructed&#34;,
+                flush=True,
+            )
 
         (
             self._min_size,
@@ -1361,6 +1395,12 @@ True: index into the local coordinate array</p>
         ) = self._get_mesh_sizes()
 
         self.dm.copyDS(self.dm_hierarchy[-1])
+
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f&#34;Mesh Spatial Discretisation Complete&#34;,
+                flush=True,
+            )
 
         return
 
@@ -2057,7 +2097,7 @@ True: index into the local coordinate array</p>
             control_points_cell_list.append(cell_id)
 
         self._indexCoords = numpy.array(control_points_list)
-        self._index = uw.kdtree.KDTree(self._indexCoords, leafsize=8)
+        self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
@@ -2215,9 +2255,8 @@ True: index into the local coordinate array</p>
 
         self._mark_faces_inside_and_out()
 
+        cells = cells.reshape(-1)
         assert points.shape[0] == cells.shape[0]
-
-        mesh = self
 
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
@@ -2228,10 +2267,17 @@ True: index into the local coordinate array</p>
         for f in range(num_cell_faces):
             control_points_o = self.faces_outer_control_points[f, cells]
             control_points_i = self.faces_inner_control_points[f, cells]
-            inside = ((control_points_o - points) ** 2).sum(axis=1) - (
-                (control_points_i - points) ** 2
-            ).sum(axis=1) &gt; 0
+            inside = (
+                ((control_points_o - points) ** 2).sum(axis=1)
+                - ((control_points_i - points) ** 2).sum(axis=1)
+            ) &gt; 0
+
+            
+            
             insiders[:, f] = inside[:]
+
+            
+            
 
         return numpy.all(insiders, axis=1)
 
@@ -2305,13 +2351,13 @@ True: index into the local coordinate array</p>
             for pt in range(0, face_num_points):
 
                 outside_control_point = (
-                    1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                    1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 )
                 control_points_list.append(outside_control_point)
                 control_point_sign_list.append(-1)
 
                 inside_control_point = (
-                    -1e-8 * normal + 0.8 * points[pt] + 0.2 * face_centroid
+                    -1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 )
                 control_points_list.append(inside_control_point)
                 control_point_sign_list.append(1)
@@ -2443,6 +2489,8 @@ True: index into the local coordinate array</p>
         else:
             return np.zeros((0,))
 
+        print(f&#34;Closest points {closest_points.shape}&#34;, flush=True)
+
         # We need to filter points that lie outside the mesh but
         # still are allocated a nearby element by this distance-only check.
 
@@ -2455,7 +2503,7 @@ True: index into the local coordinate array</p>
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroid_index.data_pts.shape[0]
+        num_local_cells = self._centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
@@ -3248,6 +3296,8 @@ shape (n_coords).</p></div>
     else:
         return np.zeros((0,))
 
+    print(f&#34;Closest points {closest_points.shape}&#34;, flush=True)
+
     # We need to filter points that lie outside the mesh but
     # still are allocated a nearby element by this distance-only check.
 
@@ -3260,7 +3310,7 @@ shape (n_coords).</p></div>
 
     # Part 2 - try to find the lost points by walking nearby cells
 
-    num_local_cells = self._centroid_index.data_pts.shape[0]
+    num_local_cells = self._centroids.shape[0]
     num_testable_neighbours = min(num_local_cells, 50)
 
     dist2, closest_centroids = self._centroid_index.query(
@@ -3422,20 +3472,29 @@ returns zero.</p></div>
 assumes a 1st order mesh. Cell labels are not respected in this function.</p></div>
 </dd>
 <dt id="underworld3.discretisation.Mesh.nuke_coords_and_rebuild"><code class="name flex">
-<span>def <span class="ident">nuke_coords_and_rebuild</span></span>(<span>self)</span>
+<span>def <span class="ident">nuke_coords_and_rebuild</span></span>(<span>self, verbose)</span>
 </code></dt>
 <dd>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def nuke_coords_and_rebuild(self):
+<pre><code class="python">def nuke_coords_and_rebuild(
+    self,
+    verbose,
+):
     # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
     #
     #
 
     self.dm.clearDS()
     self.dm.createDS()
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETScDS - (re) initialised&#34;,
+            flush=True,
+        )
 
     self._coord_array = {}
 
@@ -3459,6 +3518,12 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
         f&#34;meshproj_{self.mesh_instances}_&#34;,
     )
 
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETScFE - (re) initialised&#34;,
+            flush=True,
+        )
+
     if (
         PETSc.Sys.getVersion() &lt;= (3, 20, 5)
         and PETSc.Sys.getVersionInfo()[&#34;release&#34;] == True
@@ -3467,8 +3532,13 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     else:
         self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
-    # now set copy of this array into dictionary
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;PETSc DM - coordinates&#34;,
+            flush=True,
+        )
 
+    # now set copy of this array into dictionary
     arr = self.dm.getCoordinatesLocal().array
 
     key = (
@@ -3480,8 +3550,22 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     self._coord_array[key] = arr.reshape(-1, self.cdim).copy()
 
     # invalidate the cell-search k-d tree and the mesh centroid data / rebuild
+    #
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;UW kD-Tree&#34;,
+            flush=True,
+        )
+
     self._index = None
     self._build_kd_tree_index()
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;UW kD-Tree - constructed&#34;,
+            flush=True,
+        )
 
     (
         self._min_size,
@@ -3491,6 +3575,12 @@ assumes a 1st order mesh. Cell labels are not respected in this function.</p></d
     ) = self._get_mesh_sizes()
 
     self.dm.copyDS(self.dm_hierarchy[-1])
+
+    if verbose and uw.mpi.rank == 0:
+        print(
+            f&#34;Mesh Spatial Discretisation Complete&#34;,
+            flush=True,
+        )
 
     return</code></pre>
 </details>
@@ -3688,9 +3778,8 @@ are in a cell.</p></div>
 
     self._mark_faces_inside_and_out()
 
+    cells = cells.reshape(-1)
     assert points.shape[0] == cells.shape[0]
-
-    mesh = self
 
     cStart, cEnd = self.dm.getHeightStratum(0)
     num_cell_faces = self.dm.getConeSize(cStart)
@@ -3701,10 +3790,17 @@ are in a cell.</p></div>
     for f in range(num_cell_faces):
         control_points_o = self.faces_outer_control_points[f, cells]
         control_points_i = self.faces_inner_control_points[f, cells]
-        inside = ((control_points_o - points) ** 2).sum(axis=1) - (
-            (control_points_i - points) ** 2
-        ).sum(axis=1) &gt; 0
+        inside = (
+            ((control_points_o - points) ** 2).sum(axis=1)
+            - ((control_points_i - points) ** 2).sum(axis=1)
+        ) &gt; 0
+
+        
+        
         insiders[:, f] = inside[:]
+
+        
+        
 
     return numpy.all(insiders, axis=1)</code></pre>
 </details>
