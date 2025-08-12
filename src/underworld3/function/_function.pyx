@@ -278,6 +278,7 @@ def evaluate(   expr,
                                     mesh,
                                     simplify=simplify,
                                     verbose=verbose, )
+        evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
         if np.count_nonzero(in_or_not == False) > 0:
             evaluation_exterior = rbf_evaluate( expr,
@@ -297,7 +298,7 @@ def evaluate(   expr,
 
         evaluation[in_or_not] = evaluation_interior
         evaluation[~in_or_not] = evaluation_exterior
-
+        evaluation = evaluation.squeeze() # consistent behavior with mesh is None and only 1 coord input
 
     return evaluation
 
