@@ -47,7 +47,7 @@ affiliations:
    index: 3
  - name: Computer Science and Engineering, University at Buffalo
    index: 4
- - name: School of Earth and Planetary Sciences, Curtin University, Perth, WA, Australia
+ - name: Curtin University, Perth, Australia
    index: 5
 
 date: 30 June 2024
@@ -60,10 +60,9 @@ bibliography: paper.bib
 
  `Underworld3` inherits the design patterns of earlier versions of `underworld` including: (1) A python user interface that is inherently safe for parallel computation. (2) A symbolic interface based on `sympy` that allows users to construct and simplify combinations of mathematical functions, unknowns and the spatial gradients of unknowns on the fly. (3) Interchangeable Lagrangian, Semi-Lagrangian and Eulerian time derivatives with symbolic representations wrapping the underlying implementation. (4) Fast, robust, parallel numerical solvers based on `PETSc` [@balayPETScTAOUsers2024] and `petsc4py` [@dalcinpazklercosimo2011], (5) Flexible, Lagrangian "particle"  swarms for handling transport-dominated unknowns that are fully interchangeable with other data-types and can also be treated as symbolic quantities. (6) Unstructured and adaptive meshing that is fully compatible with the symbolic framework.
 
-The symbolic forms in (2,3) are used to construct a finite element representation using `sympy` [@meurer.etal.SymPy.2017] and `cython` [@behnel2011cython]. These forms are just-in-time (JIT) compiled as `C` functions libraries and pointers to these libraries are given to PETSc to describe the finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions.
+The symbolic forms in (2,3) are used to construct a finite element representation using `sympy` [@meurerSymPySymbolicComputing2017] and `cython` [@behnel2011cython]. These forms are just-in-time (JIT) compiled as `C` functions libraries and pointers to these libraries are given to PETSc to describe the finite element weak forms (surface and volume integrals), Jacobian derivatives and boundary conditions.
 
 Users of `underworld3` typically develop python scripts within `jupyter` notebooks and, in this environment, `underworld3` provides introspection of its native classes both as python objects as well as mathematical ones. This allows symbolic prototyping and validation of PDE solvers in scripts that can immediately be deployed in a parallel HPC environment.
-
 
 # Statement of need
 
@@ -131,7 +130,9 @@ The main benefits of combining `sympy` with the `PETSc` weak form template is a 
 
 # State of the Field
 
-`Underworld3` is one among a small number of codes for studying Earth deformation on medium to long geological time-scales. Early geodynamics codes, of which there were too many to recite individually, were highly specialised for specific tasks with little flexibility for user-defined problems. A subsequent generation of codes, currently in use, was built around generic partial differential equation solvers with scriptable interfaces.  These include: Aspect [C++ plugin architecture: @heisterHighAccuracyMantle2017], Underworld 1 and 2 [xml object composition / python scripting respectively, @mansourUnderworld2PythonGeodynamics2020; @moresiComputationalApproachesStudying2007], Fluidity [xml combined with python scripting, @daviesFluidityFullyUnstructured2011a], Milamin [Matlab front end, @dabrowskiMILAMINMATLABbasedFinite2008], LaMEM [julia scripting @boriskausLaMEM2024], TerraFERMA [Unified Form Language, @wilsonTerraFERMARansparent2017], GAdopt [Unified Form Language / python @daviesAutomaticFiniteelementMethods2022].
+`Underworld3` is one among a small number of codes for studying Earth deformation on medium to long geological time-scales. Early geodynamics codes, of which there were too many to recite individually, were highly specialised for specific tasks with little flexibility for user-defined problems. A subsequent generation of codes, currently in use, was built around generic partial differential equation solvers with scriptable interfaces.
+
+These include: Aspect [$\textrm{C\nolinebreak\hspace{-.05em}\raisebox{.4ex}{\tiny\bf +}\nolinebreak\hspace{-.10em}\raisebox{.4ex}{\tiny\bf +}}$ plugin architecture: @heisterHighAccuracyMantle2017], Underworld 1 and 2 [xml object composition / python scripting respectively, @mansourUnderworld2PythonGeodynamics2020; @moresiComputationalApproachesStudying2007], Fluidity [xml combined with python scripting, @daviesFluidityFullyUnstructured2011a], Milamin [Matlab front end, @dabrowskiMILAMINMATLABbasedFinite2008], LaMEM [julia scripting @boriskausLaMEM2024], TerraFERMA [Unified Form Language, @wilsonTerraFERMARansparent2017], GAdopt [Unified Form Language / python @daviesAutomaticFiniteelementMethods2022].
 
 `Underworld3` uses python and the python package `sympy` as the scripting interface that overlies the generic partial differential equation layer. The advantage of `sympy` is that it is a fully featured symbolic algebra package which allows much of the logic of the mathematical problem description to be defined symbolically and dynamically rather than as static relationships between objects. It also provides deep, mathematical introspection when developing and debugging models.
 
@@ -147,8 +148,9 @@ Despite this symbolic, interactive layer, `underworld3` python scripts are inher
 
 AuScope provides direct support for the core development team behind the underworld codes and the underworld cloud suite of tools. AuScope is funded by the Australian Government through the National Collaborative Research Infrastructure Strategy, NCRIS.
 
-The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme and the Pawsey Supercomputing Research Centre’s Setonix Supercomputer (https://doi.org/10.48569/18sb-8s43), with funding from the Australian Government and the Government of Western Australia.
+The development and testing of our codes is also supported by computational resources provided by the Australian Government through the National Computing Infrastructure (NCI) under the National Computational Merit Allocation Scheme (project m18). This work was also supported by resources provided by the Pawsey Supercomputing Research Centre’s
+[Setonix Supercomputer](https://doi.org/10.48569/18sb-8s43), with funding from the Australian Government and the Government of Western Australia.
 
-The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub)
+The Australian Research Council (ARC) supported the development of novel algorithms, computational methods and applications under the Discovery Project and Linkage Project programs. AuScope funding was used to make these methods widely and freely available in the underworld codes. Direct support for Underworld was provided by ARC Industrial Transformation Research Hub Program (The Basin Genesis Hub).
 
 # References
