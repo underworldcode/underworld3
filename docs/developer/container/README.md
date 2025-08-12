@@ -1,5 +1,5 @@
 The `Containerfile` is used to build the container and can be used with docker or podman. 
-At present only amd64 architecture is built, because vtk-osmesa isn't available for arm by default. This may change in future, or we could build vtk-osmesa from source.
+At present only amd64 architecture is built, because vtk-osmesa isn't available for arm by default. This may change in future, or we could build vtk-osmesa from source (see https://docs.pyvista.org/extras/building_vtk.html)
 
 Example use, must be run from repository root.
 ```bash
