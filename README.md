@@ -43,7 +43,7 @@ If do you want to install the code on your own machine, we recommend using `mini
 
 ## References 
 
-The canonical releases of the code can be found at [zenodo.org](10.5281/zenodo.16810746).
+The canonical releases of the code can be found at [zenodo.org](https://doi.org/10.5281/zenodo.16810746).
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16810747.svg)](https://doi.org/10.5281/zenodo.16810746)
 
