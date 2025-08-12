@@ -18,7 +18,7 @@
         {
             "name": "Matt Knepley",
             "orcid": "0000-0002-2292-0735",
-            "affiliation": "Computer Science and Engineering, University at Buffalo",
+            "affiliation": "Computer Science and Engineering, University at Buffalo"
         },
         {
             "name": "Ben Knight",
@@ -28,12 +28,12 @@
         {
             "name": "Juan Carlos Graciosa",
             "orcid": "0000-0003-0817-354X",
-            "affiliation": "Research School of Earth Sciences, The Australian National University",
+            "affiliation": "Research School of Earth Sciences, The Australian National University"
         },
         {
             "name": "Thyagarajulu Gollapalli",
             "orcid": "0000-0001-9394-4104",
-            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
+            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University"
         },
         {
             "name": "Neng Lu",
@@ -44,7 +44,7 @@
             "name": "Romain Beucher",
             "affiliation": "Research School of Earth Sciences, The Australian National University",
             "orcid": "0000-0003-3891-5444"
-        },
+        }
     ],
     "license": "lgpl-3.0",
     "title": "Underworld3: Mathematically Self-Describing Modelling in Python for Desktop, HPC and Cloud",
