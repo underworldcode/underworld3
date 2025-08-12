@@ -49,13 +49,11 @@
     "license": "lgpl-3.0",
     "title": "Underworld3: Mathematically Self-Describing Modelling in Python for Desktop, HPC and Cloud",
     "upload_type": "software",
-    "access_right": "open"
-
+    "access_right": "open",
     "keywords": [
         "geodynamics",
         "finite elements",
         "particle-in-cell",
         "symbolic computation"
-    ],
-    
+    ]
 }
