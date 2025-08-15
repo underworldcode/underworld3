@@ -443,3 +443,58 @@ class UWDerivativeExpression(UWexpression):
             message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute"
         )
         return self.sym
+
+
+def mesh_vars_in_expression(
+    expr,
+):
+
+    varfns = set()
+
+    def unpack_var_fns(exp):
+
+        if isinstance(exp, uw.function._function.UnderworldAppliedFunctionDeriv):
+            raise RuntimeError(
+                "Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable."
+            )
+
+        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
+        isMatrix = isinstance(exp, sympy.Matrix)
+
+        if isUW:
+            varfns.add(exp)
+            if exp.args != exp.meshvar().mesh.r:
+                raise RuntimeError(
+                    f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
+                    f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}."
+                )
+        elif isMatrix:
+            for sub_exp in exp:
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                    varfns.add(sub_exp)
+                else:
+                    # Recursively search for more functions
+                    for arg in sub_exp.args:
+                        unpack_var_fns(arg)
+
+        else:
+            # Recursively search for more functions
+            for arg in exp.args:
+                unpack_var_fns(arg)
+
+        return
+
+    unpack_var_fns(expr)
+
+    # Check the same mesh is used for all mesh variables
+    mesh = None
+    for varfn in varfns:
+        if mesh is None:
+            mesh = varfn.meshvar().mesh
+        else:
+            if mesh != varfn.meshvar().mesh:
+                raise RuntimeError(
+                    "In this expression there are functions defined on different meshes. This is not supported"
+                )
+
+    return mesh, varfns

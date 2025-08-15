@@ -60,7 +60,7 @@ def test_non_uw_variable_constant_evalf():
 
 def test_non_uw_variable_linear():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N)
+    result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N).squeeze()
     assert np.allclose(x, result, rtol=1e-05, atol=1e-08)
 
     del mesh
@@ -68,7 +68,7 @@ def test_non_uw_variable_linear():
 
 def test_non_uw_variable_sine():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N)
+    result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N).squeeze()
     assert np.allclose(np.sin(y), result, rtol=1e-05, atol=1e-08)
 
     del mesh

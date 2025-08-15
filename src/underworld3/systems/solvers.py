@@ -1111,14 +1111,12 @@ class SNES_Tensor_Projection(SNES_Projection):
 
                 self.uw_scalar_function = sympy.Matrix([[self.uw_function[i, j]]])
 
-                with self.mesh.access(self.u):
-                    self.u.data[:, 0] = self.t_field[i, j].data[:]
+                self.u.array[:, 0, 0] = self.t_field.array[:, i, j]
 
                 # solve the projection for the scalar sub-problem
                 super().solve(verbose=verbose)
 
-                with self.mesh.access(self.t_field):
-                    self.t_field[i, j].data[:] = self.u.data[:, 0]
+                self.t_field.array[:, i, j] = self.u.array[:, 0, 0]
 
         # That might be all ...
 
@@ -1452,7 +1450,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             dt_estimate = min(dt_diff, dt_adv)
 
-        return dt_estimate
+        return np.squeeze(dt_estimate)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1736,7 +1734,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         dt_estimate = dt_diff
 
-        return dt_estimate
+        return np.squeeze(dt_estimate)
 
     @timing.routine_timer_decorator
     def solve(
@@ -2254,4 +2252,4 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
-        return dt_diff, dt_adv
+        return np.squeeze(dt_diff), np.squeeze(dt_adv)

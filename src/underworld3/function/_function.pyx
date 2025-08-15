@@ -1,3 +1,4 @@
+# from mpi4py.MPI import DATATYPE_NULL
 from libc.stdlib cimport malloc, free
 from typing import Optional, Tuple, Union
 
@@ -164,6 +165,84 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
+
+def global_evaluate(   expr,
+                np.ndarray coords=None,
+                coord_sys=None,
+                other_arguments=None,
+                simplify=True,
+                verbose=False,
+                evalf=False,
+                rbf=False,
+                data_layout=None,):
+    """
+    Evaluate a given expression at a list of coordinates - parallel-safe version
+
+    Note it is not efficient to call this function to evaluate an expression at
+    a single coordinate. Instead the user should provide a numpy array of all
+    coordinates requiring evaluation.
+
+    Parameters
+    ----------
+    expr: sympy.Basic
+        Sympy expression requiring evaluation.
+    coords: numpy.ndarray
+        Numpy array of coordinates to evaluate expression at.
+    coord_sys: mesh.N vector coordinate system
+
+    other_arguments: dict
+        Dictionary of other arguments necessary to evaluate function.
+        Not yet implemented.
+
+    """
+
+    mesh, varfns = uw.expressions.mesh_vars_in_expression(expr)
+
+    if mesh is None:
+        print(f"No mesh needed in evaluation - no need for parallel, global mesh variable shenanigans")
+        return
+
+    if uw.mpi.size == 1 or mesh is None:
+        return evaluate(
+            expr,coords,
+            coord_sys,
+            other_arguments,
+            simplify,
+            verbose,
+            evalf,
+            rbf,
+            data_layout,
+        )
+
+    # If in parallel, define a swarm, migrate, evaluate, migrate back
+    # (this is the routine used in advection - see ddt.c / SemiLagrangian)
+
+    # Set up a swarm, add a variable to represent the result of the computation and an 'original_rank' variable
+    # so that we can recover the information. We should add a local-index variable so we know how to reorder the
+    # values when the particles come back.
+
+    sample_swarm = uw.swarm.Swarm(mesh)
+
+    original_rank = uw.swarm.SwarmVariable(
+        "rank",
+        sample_swarm,
+        vtype=uw.VarType.SCALAR,
+        dtype=int,
+        _proxy=False,
+        varsymbol=r"\cal{R}",
+    )
+
+    # We need to know what variable type expr returns
+    # This should be wrapped up for everyone to use !
+
+    test_evaluation = evaluate(expr , np.atleast_2d(mesh._get_domain_centroids()[uw.mpi.rank]),
+                               reshape_1d=reshape_1d,
+)
+    eval_shape = np.atleast_2d(test_evaluation).shape
+
+    return
+
+
 def evaluate(   expr,
                 np.ndarray coords=None,
                 coord_sys=None,
@@ -171,7 +250,8 @@ def evaluate(   expr,
                 simplify=True,
                 verbose=False,
                 evalf=False,
-                rbf=False,):
+                rbf=False,
+                data_layout=None):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -190,85 +270,30 @@ def evaluate(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
-
-
     """
 
+    dim = coords.shape[1]
+    mesh, varfns = uw.function.fn_mesh_vars_in_expression(expr)
 
-    # Extract all the mesh/swarm variables in the expression and check that they all live on the
-    # same mesh. If not, this evaluation is not valid.
-
-    varfns = set()
-    def unpack_var_fns(exp):
-
-        if isinstance(exp,uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError("Derivative functions are not handled in evaluations, a projection should be used first to create a mesh Variable.")
-
-        isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
-        isMatrix = isinstance(exp, sympy.Matrix)
-
-        if isUW:
-            varfns.add(exp)
-            if exp.args != exp.meshvar().mesh.r:
-                raise RuntimeError(f"Mesh Variable functions can only be evaluated as functions of '{exp.meshvar().mesh.r}'.\n"
-                                   f"However, mesh variable '{exp.meshvar().name}' appears to take the argument {exp.args}." )
-        elif isMatrix:
-            for sub_exp in exp:
-                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
-                    varfns.add(sub_exp)
-                else:
-                    # Recursively search for more functions
-                    for arg in sub_exp.args:
-                        unpack_var_fns(arg)
-
-        else:
-            # Recursively search for more functions
-            for arg in exp.args:
-                unpack_var_fns(arg)
-
-        return
-
-    unpack_var_fns(expr)
-
-    if verbose:
-        for varfn in varfns:
-            print(f"MeshVariable functions in evaluation: {varfns}")
-
-    # Check the same mesh is used for all mesh variables
-    mesh = None
-    for varfn in varfns:
-        if mesh is None:
-            mesh = varfn.meshvar().mesh
-        else:
-            if mesh != varfn.meshvar().mesh:
-                raise RuntimeError("In this expression there are functions defined on different meshes. This is not supported")
-
+    # coercion - make everything at least a 1x1 matrix for consistent evaluation results
+    try:
+        expr.shape
+    except AttributeError:
+        expr = sympy.Matrix(((expr,),))
 
     # If there are no mesh variables, then we have no need of a mesh to
-    # help us to evaluate the expression. The evalf flag will force rbf_evaluation and
-    # does not need mesh information
+    # help us to evaluate the expression. The evalf / rbf flag will force rbf_evaluation and
+    # does not need mesh information either.
 
-    if evalf==True or rbf==True:
-        return rbf_evaluate( expr,
-                             coords,
+    if evalf==True or rbf==True or mesh is None:
+        in_or_not = np.full((coords.shape[0]), True, dtype=bool )
+        evaluation = rbf_evaluate( expr,
+                            coords,
                             coord_sys,
                             mesh,
                             simplify=simplify,
                             verbose=verbose,
                             )
-
-
-
-    if mesh is None:
-        in_or_not = np.full((coords.shape[0]), True, dtype=bool )
-        return petsc_interpolate( expr,
-                                    coords[in_or_not],
-                                    coord_sys,
-                                    mesh,
-                                    simplify=simplify,
-                                    verbose=verbose, )
-
-
 
     else:
         in_or_not = mesh.points_in_domain(coords, strict_validation=False)
@@ -278,6 +303,7 @@ def evaluate(   expr,
                                     mesh,
                                     simplify=simplify,
                                     verbose=verbose, )
+
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
         if np.count_nonzero(in_or_not == False) > 0:
@@ -290,18 +316,39 @@ def evaluate(   expr,
         else:
             evaluation_exterior = None
 
-
         if len(evaluation_interior.shape) == 1:
             evaluation = np.empty(shape=(in_or_not.shape[0],))
         else:
-            evaluation = np.empty(shape=(in_or_not.shape[0],evaluation_interior.shape[1] ))
+            evaluation = np.empty(shape=(in_or_not.shape[0],)+tuple(evaluation_interior.shape[1::]))
 
         evaluation[in_or_not] = evaluation_interior
         evaluation[~in_or_not] = evaluation_exterior
         evaluation = evaluation.squeeze() # consistent behavior with mesh is None and only 1 coord input
 
-    return evaluation
+    ## We should change this so both evaluation routines return an array that has
+    ## shape == (N,i,j) where N is the number of points and where (i,j) is the shape of the evaluation type
+    ## (scalar == (1,1); vector= (1,dim); tensor=(dim,dim) - even if symmetric and internal storage is flat -
+    ## and so on. We can let the variables themselves handle the packing of data using their _data_layout
 
+
+    if not callable(data_layout):
+        return evaluation
+    else:
+        shape = evaluation.shape[1::]
+        if len(shape) <= 1:
+            return evaluation
+        else:
+            i_size = shape[0]
+            j_size = shape[1]
+            storage_size = data_layout(-1)
+            evaluation_1d = np.empty(shape=(evaluation.shape[0], storage_size))
+
+            for i in range(i_size):
+                for j in range(j_size):
+                    ij = data_layout(i,j)
+                    evaluation_1d[:,ij] = evaluation[:,i,j]
+
+            return evaluation_1d
 
 def petsc_interpolate(   expr,
                 np.ndarray coords=None,
@@ -359,11 +406,10 @@ def petsc_interpolate(   expr,
 
     sympy.core.cache.clear_cache()
 
-    ## special case
+    if uw.function.fn_is_constant_expr(expr):
+        constant_value = uw.function.expressions.unwrap(expr, keep_constants=False)
+        return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float))
 
-    ## fix to provide the correct shape
-    # if uw.function.fn_is_constant_expr(expr):
-    #     return uw.function.fn_substitute_expressions(expr, keep_constants=False)
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -379,6 +425,8 @@ def petsc_interpolate(   expr,
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
+
+
     ## Substitute any UWExpressions for their values before calculation
     expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
 
@@ -387,6 +435,18 @@ def petsc_interpolate(   expr,
 
     if verbose and uw.mpi.rank==0:
         print(f"Expression to be evaluated: {expr}")
+
+
+    # In general, non-constant expressions means that we have a matrix that has at least
+    # one spatially-variable function. That can cause a problem if other Matrix entries
+    # are not constants (numpy cannot see this as a uniform array). The mesh.CoordinateSystem.zero_matrix is
+    # the fix for this. We add it here (so it is not visible in the user-space)
+
+    if mesh is not None:
+        expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
+        expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+
+
 
     # if (len(varfns)==0) and (coords is None):
     #     raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -567,54 +627,44 @@ def petsc_interpolate(   expr,
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
 
-
-
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, docstring_limit=0 )
     # Leave out modules. This is equivalent to SYMPY_DECIDE and can then include scipy if available
 
     # 5. Eval generated lambda expression
     coords_list = [ coords[:,i] for i in range(dim) ]
+
     results = lambfn( coords_list, interpolated_results.values() )
-
-
-    # Check shape of original expression
 
     try:
         shape = expr.shape
     except AttributeError:
-        shape = (1,)
+        shape = (1,1)
+        expr = sympy.Matrix(((expr,)))
+
 
     try:
         results_shape = results.shape
     except AttributeError:
-        results_shape = (1,)
+        results_shape = (1,1)
 
     # If passed a constant / constant matrix, then the result will not span the coordinates
-    # and we'll need to address that explicitly
+    # and we'll need to broadcast the information explicitly
+
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
-        results = results_new.squeeze()
+        results = results_new # .squeeze()
 
     else:
-        results = np.moveaxis(results, -1, 0).squeeze()
-
-
-    # # Truncated out middle index for vector results
-    # if isinstance(results,np.ndarray):
-    #     results = results.T
-    #     if len(results.shape)==3 and results.shape[1]==1:
-    #         results = results[:,0,:]
-
+        results = np.moveaxis(results, -1, 0) # .squeeze()
 
     # 6. Return results
-    return results
+    return results # .squeeze()
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
 # we can pass in the `class_name` parameter.
 evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
-
 
 ### ------------------------------
 
@@ -678,7 +728,7 @@ def rbf_evaluate(  expr,
 
     if uw.function.fn_is_constant_expr(expr):
         constant_value = uw.function.expressions.unwrap(expr, keep_constants=False)
-        return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float).reshape(-1))
+        return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float))
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
@@ -700,6 +750,18 @@ def rbf_evaluate(  expr,
 
     if simplify:
         expr = sympy.simplify(expr)
+
+    if mesh is not None:
+        expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
+        expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+    else:
+        try:
+            any_basis_vector = tuple(expr.atoms(sympy.vector.scalar.BaseScalar))[0]
+            expr = expr + any_basis_vector.CS.zero_matrix(expr.shape)
+            expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+        except IndexError:
+            pass
+
 
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
@@ -748,19 +810,19 @@ def rbf_evaluate(  expr,
         N = mesh.N
 
     r = N.base_scalars()[0:dim]
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr )
+    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, docstring_limit=0 )
 
     # 5. Eval generated lambda expression
     coords_list = [ coords[:,i] for i in range(dim) ]
-    results = lambfn( coords_list, interpolated_results.values() )
-
+    results = lambfn( coords_list, interpolated_results.values())
 
     # Check shape of original expression
 
     try:
         shape = expr.shape
     except AttributeError:
-        shape = (1,)
+        shape = (1,1)
+        expr = sympy.Matrix(((expr,)))
 
     try:
         results_shape = results.shape
@@ -768,21 +830,19 @@ def rbf_evaluate(  expr,
         results_shape = (1,)
 
     # If passed a constant / constant matrix, then the result will not span the coordinates
-    # and we'll need to address that explicitly
+    # and we'll need to broadcast the information explicitly
 
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
-        results = results_new.squeeze()
+        results = results_new # .squeeze()
 
     else:
-        results = np.moveaxis(results, -1, 0).squeeze()
-
-    # Constant results are a special case (evaluate to a single value)
+        results = np.moveaxis(results, -1, 0) # .squeeze()
 
     # 6. Return results
 
-    return results
+    return results # .squeeze()
 
 
 # Go ahead and substitute for the timed version.

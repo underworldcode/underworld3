@@ -173,6 +173,7 @@ class SwarmVariable(Stateful, uw_object):
             )
 
         self._data = None
+        self._cached_data = None
         # add to swarms dict
 
         self.swarm._vars[self.clean_name] = self
@@ -204,51 +205,72 @@ class SwarmVariable(Stateful, uw_object):
 
         super().__init__()
 
+        self._array = self._array_data_structure(self)
+
         return
 
-    def __getitem__(self, indices):
-        if not isinstance(indices, tuple):
-            if isinstance(indices, int) and self.shape[0] == 1:
-                i = 0
-                j = indices
-            else:
-                raise IndexError(
-                    "SwarmVariable[i,j] access requires one or two indices "
-                )
-        else:
-            i, j = indices
+    # Deprecate this one
+    # def __getitem__(self, indices):
+    #     if not isinstance(indices, tuple):
+    #         if isinstance(indices, int) and self.shape[0] == 1:
+    #             i = 0
+    #             j = indices
+    #         else:
+    #             raise IndexError(
+    #                 "SwarmVariable[i,j] access requires one or two indices "
+    #             )
+    #     else:
+    #         i, j = indices
 
-        return self._data_container[i, j]
+    #     return self._data_container[i, j]
 
-    ## Should be a single master copy
+    ## Should be a single master copy (mesh variable / swarm variable)
     def _data_layout(self, i, j=None):
         # mapping
 
         if self.vtype == uw.VarType.SCALAR:
             return 0
         if self.vtype == uw.VarType.VECTOR:
-            if j is None:
-                return i
-            elif i == 0:
-                return j
+            if i < 0 or j < 0:
+                return self.swarm.dim
             else:
-                raise IndexError(
-                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
-                )
+                if j is None:
+                    return i
+                elif i == 0:
+                    return j
+                else:
+                    raise IndexError(
+                        f"Vectors have shape {self.swarm.dim} or {(1, self.swarm.dim)} "
+                    )
         if self.vtype == uw.VarType.TENSOR:
-            if self.swarm.mesh.dim == 2:
-                return ((0, 1), (2, 3))[i][j]
+            if self.swarm.dim == 2:
+                if i < 0 or j < 0:
+                    return 4
+                else:
+                    return ((0, 1), (2, 3))[i][j]
             else:
-                return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
+                if i < 0 or j < 0:
+                    return 9
+                else:
+                    return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
 
         if self.vtype == uw.VarType.SYM_TENSOR:
-            if self.swarm.mesh.dim == 2:
-                return ((0, 2), (2, 1))[i][j]
+            if self.swarm.dim == 2:
+                if i < 0 or j < 0:
+                    return 3
+                else:
+                    return ((0, 2), (2, 1))[i][j]
             else:
-                return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
+                if i < 0 or j < 0:
+                    return 6
+                else:
+                    return ((0, 3, 4), (3, 1, 5), (4, 5, 2))[i][j]
 
         if self.vtype == uw.VarType.MATRIX:
-            return i + j * self.shape[0]
+            if i < 0 or j < 0:
+                return self.shape[0] * self.shape[1]
+            else:
+                return i + j * self.shape[0]
 
     def _create_proxy_variable(self):
         # release if defined
@@ -359,6 +381,70 @@ class SwarmVariable(Stateful, uw_object):
 
         return
 
+    # Need to be able to unpack as well
+    def pack(self, data_array):
+        """Convert an array in the correct shape for the underlying variable into something that can be loaded into
+        the flat storage structure used by PETSc in a numpy assigment (with index broadcasting etc)
+        """
+
+        shape = self.shape
+        storage_size = self._data_layout(-1)
+        data_array_3d = data_array.reshape(-1, *self.shape)
+
+        with self.swarm.access(self):
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    self._data[:, ij] = data_array_3d[:, i, j]
+
+        return
+
+    def unpack(self, squeeze=True):
+        """Return an array in the correct shape for the underlying variable from
+        the flat storage structure used by PETSc. By default, use numpy squeeze to remove additional
+        dimensions (keep those dimensions to leave all data as 3D array - scalars being shape (1,1), vectors
+        being (1,dim) and so on)
+        """
+
+        shape = self.shape
+
+        with self.swarm.access(self):
+            points = self._data.shape[0]
+            data_array_3d = np.empty(shape=(points, *shape))
+
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    data_array_3d[:, i, j] = self._data[:, ij]
+
+        if squeeze:
+            return data_array_3d.squeeze()
+        else:
+            return data_array_3d
+
+    def _object_viewer(self):
+        """This will substitute specific information about this object"""
+        from IPython.display import Latex, Markdown, display
+        from textwrap import dedent
+
+        # feedback on this instance
+        #
+        display(
+            Markdown(
+                f"""**SwarmVariable:**
+  > symbol:  ${self.symbol}$\n
+  > shape:   ${self.shape}$\n
+  > proxy:   ${self._proxy}$\n
+  > proxy_degree:  ${self._proxy_degree}$\n
+  > proxy_continuous:  `{self._proxy_continuous}`\n
+  > type:    `{self.vtype.name}`"""
+            ),
+        )
+
+        with self.swarm.access():
+            display(self.data),
+        return
+
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
         # An inverse-distance mapping is quite robust here ... as long
         # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
@@ -382,13 +468,13 @@ class SwarmVariable(Stateful, uw_object):
         with self.swarm.access():
             if self.swarm.recycle_rate > 1:
                 not_remeshed = self.swarm._remeshed.data[:, 0] != 0
-                D = self.data[not_remeshed].copy()
+                D = self._data[not_remeshed].copy()
 
                 kdt = uw.kdtree.KDTree(
                     self.swarm.particle_coordinates.data[not_remeshed, :]
                 )
             else:
-                D = self.data.copy()
+                D = self._data.copy()
                 kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data[:, :])
 
             # kdt.build_index()
@@ -401,11 +487,49 @@ class SwarmVariable(Stateful, uw_object):
 
     @property
     def data(self):
+
         if self._data is None:
             raise RuntimeError(
                 "Data must be accessed via the swarm `access()` context manager."
             )
         return self._data
+
+    # @data.setter
+    # def data(self, data_array):
+    #     self._cached_data = None
+    #     self.pack(data_array)
+    #     return
+
+    class _array_data_structure(object):
+        """This is used to add getitem / setitem to the array property of the variable"""
+
+        def __init__(inner_self, owner):
+            inner_self.owner = owner
+
+        # Unreachable
+        # def __set__(inner_self, instance, array_value):
+        #     inner_self.owner.pack(array_value)
+
+        def __setitem__(inner_self, key, value):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            var_data_copy[key] = value
+            inner_self.owner.pack(var_data_copy)
+
+        def __getitem__(inner_self, key):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            return var_data_copy[key]
+
+        def __repr__(inner_self):
+            var_data_copy = inner_self.owner.unpack(squeeze=False)
+            return var_data_copy.__repr__()
+
+    @property
+    def array(self):
+        return self._array
+
+    @array.setter
+    def array(self, array_value):
+        self.pack(array_value)
 
     @property
     def sym(self):
@@ -533,9 +657,10 @@ class SwarmVariable(Stateful, uw_object):
             raise RuntimeError(f"{os.path.abspath(filename)} does not exist")
 
         ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
-        with h5py.File(f"{filename}", "r") as h5f_data, h5py.File(
-            f"{swarmFilename}", "r"
-        ) as h5f_swarm:
+        with (
+            h5py.File(f"{filename}", "r") as h5f_data,
+            h5py.File(f"{swarmFilename}", "r") as h5f_swarm,
+        ):
             with self.swarm.access(self):
                 var_dtype = self.data.dtype
                 file_dtype = h5f_data["data"][:].dtype
@@ -3067,12 +3192,12 @@ class Swarm(Stateful, uw_object):
                 # increment variable state
                 var._increment()
 
-            # make view for each var component
+            # make *view* for each var component
             if var._proxy:
                 for i in range(0, var.shape[0]):
                     for j in range(0, var.shape[1]):
                         var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=var.data[:, var._data_layout(i, j)],
+                            data=var._data[:, var._data_layout(i, j)],
                         )
 
         # if particles moving, update swarm state

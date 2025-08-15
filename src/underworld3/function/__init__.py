@@ -18,6 +18,7 @@ from .expressions import substitute_expr as fn_substitute_one_expression
 from .expressions import is_constant_expr as fn_is_constant_expr
 from .expressions import extract_expressions as fn_extract_expressions
 from .expressions import extract_expressions as fn_extract_expressions_and_functions
+from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
 
 # from .expressions import UWconstant_expression as constant
 
