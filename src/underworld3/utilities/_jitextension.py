@@ -122,9 +122,9 @@ def getext(
 
     fns = tuple(expanded_fns)
 
-    if debug and underworld3.mpi.rank==0:
+    if debug and underworld3.mpi.rank == 0:
         print(f"Expanded functions for compilation:")
-        for i,fn in enumerate(fns):
+        for i, fn in enumerate(fns):
             print(f"{i}: {fn}")
 
     import os
@@ -319,9 +319,9 @@ def _createext(
                     u_x_i += 1
             elif (
                 var.vtype == VarType.VECTOR
-                or var.vtype == VarType.COMPOSITE
                 or var.vtype == VarType.TENSOR
                 or var.vtype == VarType.SYM_TENSOR
+                or var.vtype == VarType.MATRIX
             ):
                 # Pull out individual sub components
                 for comp in var.sym_1d:
@@ -337,7 +337,7 @@ def _createext(
                         u_x_i += 1
             else:
                 raise RuntimeError(
-                    "Unsupported type for code generation. Please contact developers."
+                    f"Unsupported type {var.vtype} for code generation. Please contact developers."
                 )
 
     # Patch in `_code` methods. Note that the order here
@@ -416,7 +416,6 @@ def _createext(
         fn = underworld3.function.expressions.unwrap(
             fn, keep_constants=False, return_self=False
         )
-
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]

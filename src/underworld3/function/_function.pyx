@@ -754,10 +754,13 @@ def rbf_evaluate(  expr,
     if mesh is not None:
         expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
         expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
-
-    # else:
-    #     any_basis_vector = tuple(expr.atoms(sympy.vector.scalar.BaseScalar))[0]
-    #     expr = expr + any_basis_vector.CS.zero_matrix(expr.shape)
+    else:
+        try:
+            any_basis_vector = tuple(expr.atoms(sympy.vector.scalar.BaseScalar))[0]
+            expr = expr + any_basis_vector.CS.zero_matrix(expr.shape)
+            expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+        except IndexError:
+            pass
 
 
     # 2. Evaluate all mesh variables - there is no real
