@@ -1867,7 +1867,9 @@ class Mesh(Stateful, uw_object):
                 - ((control_points_i - points) ** 2).sum(axis=1)
             ) > 0
 
+
             insiders[:, f] = inside[:]
+
 
         return numpy.all(insiders, axis=1)
 
