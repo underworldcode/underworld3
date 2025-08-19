@@ -2115,7 +2115,7 @@ class Mesh(Stateful, uw_object):
 
     def _get_mesh_sizes(self, verbose=False):
         """
-        Obtain the (local) mesh radii and centroids using
+        Obtain the (local) mesh radii and centroids using kdtree distances
         This routine is called when the mesh is built / rebuilt
         """
 

@@ -235,8 +235,7 @@ def global_evaluate(   expr,
     # We need to know what variable type expr returns
     # This should be wrapped up for everyone to use !
 
-    test_evaluation = evaluate(expr , np.atleast_2d(mesh._get_domain_centroids()[uw.mpi.rank]),
-                               reshape_1d=reshape_1d,
+    test_evaluation = evaluate(expr , np.atleast_2d(mesh._get_domain_centroids()[uw.mpi.rank])
 )
     eval_shape = np.atleast_2d(test_evaluation).shape
 
