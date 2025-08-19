@@ -31,9 +31,9 @@ def test_single_coord(n, dim, coords):
     brute_id = np.argmin(brute_dist)
 
     # Build our index
-    index = KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
     # Use KDTree to find closest point to a coord
-    kd_dist, kd_id = index.query(coords)
+    kd_dist, kd_id = index.query(coords, sqr_dists = False)
 
     assert np.any(kd_id[0] > index.n) == False, "Some point weren't found. Error"
 
@@ -42,7 +42,7 @@ def test_single_coord(n, dim, coords):
     ), "KDTree and brute force method did not find the same point."
 
     assert np.allclose(kd_dist[0], brute_dist[brute_id]), (
-        "KDTree and Numpy did not find the same distance squared.\n"
+        "KDTree and Numpy did not find the same distance.\n"
         f"KDTree distance={kd_dist[0]} Numpy distance={brute_dist[brute_id]} "
     )
 
@@ -58,10 +58,10 @@ def test_self_points(n, dim):
     pts = np.random.random(size=(n, dim))
 
     # Build our index
-    index = KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
 
     # Use KDTree to find closest point to a coord
-    (dist, kdpt) = index.query(pts)
+    dist, kdpt = index.query(pts)
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
@@ -81,14 +81,15 @@ def test_mesh_verts(res, dim):
     to mesh verts.
     """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(res,) * dim)
-    index = KDTree(mesh.data)
+    index = uw.kdtree.KDTree(mesh.data)
+    #index = KDTree(mesh.data)
 
     # Get copy of mesh vertices, and add some noise, but only a small
     # amount such that the copied data points are still closest to the
     # original points.
     elsize = 1.0 / float(res)
     coords = mesh.data.copy() + 0.5 * elsize * np.random.random(mesh.data.shape)
-    (dist, kdpt) = index.query(coords)
+    dist, kdpt = index.query(coords, sqr_dists = False)
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
 
@@ -100,7 +101,7 @@ def test_mesh_verts(res, dim):
     # Calc distances
     diff = mesh.data - coords
     dot2 = np.sqrt(np.sum(np.multiply(diff, diff), 1))
-    assert np.allclose(dot2, dist), "Point distances weren't as expected."
+    assert np.allclose(dist.squeeze(), dot2), "Point distances weren't as expected."
 
 
 # Mesh centroid test
@@ -135,3 +136,4 @@ def test_mesh_centroid(res, dim, fill_param):
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
     assert np.allclose(cellid, kdpt), "Point indices weren't as expected."
+

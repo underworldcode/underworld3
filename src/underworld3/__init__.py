@@ -128,7 +128,7 @@ import underworld3.maths
 import underworld3.utilities
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
-# import underworld3.kdtree
+#import underworld3.kdtree
 import underworld3.ckdtree as kdtree
 import underworld3.cython
 import underworld3.scaling

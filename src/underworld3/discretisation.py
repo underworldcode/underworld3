@@ -1979,7 +1979,7 @@ class Mesh(Stateful, uw_object):
             return False
 
         dist2, closest_control_points_ext = (
-            self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
+            self.boundary_face_control_points_kdtree.query(points, k = 1, sqr_dists = True)
         )
         in_or_not = (
             self.boundary_face_control_points_sign[closest_control_points_ext] > 0
@@ -2030,7 +2030,7 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1)
+            dist, closest_points = self._index.query(coords, k = 1, sqr_dists = False)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
@@ -2073,7 +2073,7 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1)
+            dist, closest_points = self._index.query(coords, k = 1, sqr_dists = False)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
@@ -2097,7 +2097,7 @@ class Mesh(Stateful, uw_object):
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
-            coords[lost_points], k=num_testable_neighbours, sqr_dists=True
+            coords[lost_points], k=num_testable_neighbours, sqr_dists = False
         )
 
         # This number is close to the point-point coordination value in 3D unstructured
@@ -2137,7 +2137,7 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k = 1, sqr_dists = True)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())

@@ -161,7 +161,7 @@ cdef class KDTree:
             An integer array of indices into the `points` array (passed into the constructor) corresponding to
             the nearest neighbour for the search coordinates. It will be of size (n_coords).
         dist_sqr:
-            A float array of squred distances between the provided coords and the nearest neighbouring
+            A float array of squared distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
 
         """
@@ -205,6 +205,25 @@ cdef class KDTree:
     ):
         """
         Find the n points closest to the provided coordinates.
+        
+        Parameters
+        ----------
+        coords:
+            An array of coordinates for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords,dim).
+        k:
+            The number of nearest neighbour points to find for each `coords`. 
+        sqr_dists:
+            Set to True to return the squared distances, set to False to return the actual distances. 
+            
+        Returns
+        -------
+        d:
+            A float array of the squared (sqr_dists = True) or actual distances (sqr_dists = False) between the provided coords and the nearest neighbouring
+            points. It will be of size (n_coords).
+        i:
+            An integer array of indices into the `points` array (passed into the constructor) corresponding to
+            the nearest neighbour for the search coordinates. It will be of size (n_coords).
         """
 
         coords_contiguous = np.ascontiguousarray(coords)
@@ -215,9 +234,10 @@ cdef class KDTree:
             i = i.reshape(-1)
 
         if sqr_dists:
-            return numpy.sqrt(d), i
+            return d, i 
         else:
-            return d, i
+            return numpy.sqrt(d), i
+            
 
 
 ## A general point-to-point rbf interpolator here
