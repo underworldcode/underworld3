@@ -354,7 +354,7 @@ class SwarmVariable(Stateful, uw_object):
         kd = uw.kdtree.KDTree(meshVar.coords)
 
         with self.swarm.access():
-            d, n = kd.query(self.swarm.data, k=1)
+            d, n = kd.query(self.swarm.data, k=1, sqr_dists = False) # need actual distances
 
             node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
             w = np.zeros(meshVar.coords.shape[0])
@@ -718,7 +718,7 @@ class IndexSwarmVariable(SwarmVariable):
     ):
         self.indices = indices
         self.nnn = npoints
-        self.radius_s = radius**2
+        self.radius_s = radius #**2 # changed to radius
         self.update_type = update_type
         if self.update_type == 1:
             self.nnn_bc = npoints_bc
@@ -846,12 +846,12 @@ class IndexSwarmVariable(SwarmVariable):
 
             with self.swarm.access():
                 n_distance, n_indices = kd.query(
-                    self.swarm.particle_coordinates.data, k=self.nnn
+                    self.swarm.particle_coordinates.data, k = self.nnn, sqr_dists = False 
                 )
                 kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
                 d, n = kd_swarm.query(
-                    self._meshLevelSetVars[0].coords, k=1, sqr_dists=True
+                    self._meshLevelSetVars[0].coords, k = 1, sqr_dists = False
                 )
 
             for ii in range(self.indices):
@@ -888,7 +888,7 @@ class IndexSwarmVariable(SwarmVariable):
             with self.swarm.access():
                 kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
                 n_distance, n_indices = kd.query(
-                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=True
+                    self._meshLevelSetVars[0].coords, k = self.nnn, sqr_dists = False
                 )
 
             for ii in range(self.indices):
@@ -1890,7 +1890,7 @@ class PICSwarm(Stateful, uw_object):
         digest = h.intdigest()
         if digest not in self._nnmapdict:
             # self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
-            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1)[0]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1, sqr_dists = False)[0]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator
@@ -2623,6 +2623,7 @@ class Swarm(Stateful, uw_object):
                     dist, rank = mesh_domain_kdtree.query(
                         swarm_coord_array[not_my_points],
                         k=it + 1,
+                        sqr_dist = False
                     )
 
                     swarm_rank_array[not_my_points, 0] = rank.reshape(-1, it + 1)[:, it]
@@ -3327,7 +3328,7 @@ class Swarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1)[1]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords, k = 1, sqr_dists = False)[1]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator

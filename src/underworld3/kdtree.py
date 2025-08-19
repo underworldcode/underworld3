@@ -35,6 +35,43 @@ class KDTree(_oKDTree):
 
     #   def find_closest_points( self, coords, nnn )
 
+    # NOTE: Override query() method from pykdtree so it has the same interface as ckdtree. 
+    # another option is to eliminate the sqr_dist argument from both ckdtree and pykdtree. 
+    def query(self, coords, k = 1, sqr_dists = True):
+        """
+        Find the n points closest to the provided coordinates.
+        Wraps the pykdtree query() method and the only difference is the sqr_dists parameter. 
+        
+        Parameters
+        ----------
+        coords:
+            An array of coordinates for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords, dim).
+        k:
+            The number of nearest neighbour points to find for each `coords`. 
+        sqr_dists:
+            Set to True to return the squared distances, set to False to return the actual distances. 
+            
+        Returns
+        -------
+        d:
+            A float array of the squared (sqr_dists = True) or actual distances (sqr_dists = False) between the provided coords and the nearest neighbouring
+            points. It will be of size (n_coords).
+        i:
+            An integer array of indices into the `points` array (passed into the constructor) corresponding to
+            the nearest neighbour for the search coordinates. It will be of size (n_coords).
+        """
+
+        coords_contiguous = np.ascontiguousarray(coords)
+
+        distance_k, closest_k = super().query(query_pts = coords_contiguous, k = k)
+
+        if sqr_dists:
+            return distance_k**2, closest_k
+        else:
+            return distance_k, closest_k
+    
+
     def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
         """
         Performs an inverse distance (squared) mapping of data to the target `coords`.
@@ -65,11 +102,11 @@ class KDTree(_oKDTree):
                 f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
             )
 
-        coords_contiguous = np.ascontiguousarray(coords)
-        # query nnn points to the coords
+        
+        # query nnn points to the coords using wrapped query function
         # distance_n is a list of distance to the nearest neighbours for all coords_contiguous
         # closest_n is the index of the neighbours from ncoords for all coords_contiguous
-        distance_n, closest_n = self.query(coords_contiguous, k=nnn)
+        distance_n, closest_n = self.query(coords, k=nnn, sqr_dists = False)
 
         if np.any(closest_n > self.n):
             raise RuntimeError(
