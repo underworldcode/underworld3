@@ -239,7 +239,6 @@ cdef class KDTree:
             return numpy.sqrt(d), i
 
 
-
 ## A general point-to-point rbf interpolator here
 ## NOTE this is not using cython optimisation for numpy
 
