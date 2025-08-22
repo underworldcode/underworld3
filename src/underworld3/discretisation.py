@@ -2769,7 +2769,7 @@ class _MeshVariable(Stateful, uw_object):
             else:
                 nnn = 3
 
-        with self.mesh.access(self):
+        with self.mesh.access():
             D = self.data.copy()
 
         if verbose and uw.mpi.rank == 0:
