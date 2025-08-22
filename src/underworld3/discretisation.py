@@ -1867,9 +1867,7 @@ class Mesh(Stateful, uw_object):
                 - ((control_points_i - points) ** 2).sum(axis=1)
             ) > 0
 
-
             insiders[:, f] = inside[:]
-
 
         return numpy.all(insiders, axis=1)
 
@@ -1979,7 +1977,7 @@ class Mesh(Stateful, uw_object):
             return False
 
         dist2, closest_control_points_ext = (
-            self.boundary_face_control_points_kdtree.query(points, k = 1, sqr_dists = True)
+            self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
         )
         in_or_not = (
             self.boundary_face_control_points_sign[closest_control_points_ext] > 0
@@ -2030,7 +2028,7 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k = 1, sqr_dists = False)
+            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
@@ -2073,7 +2071,7 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k = 1, sqr_dists = False)
+            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
@@ -2097,7 +2095,7 @@ class Mesh(Stateful, uw_object):
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
-            coords[lost_points], k=num_testable_neighbours, sqr_dists = False
+            coords[lost_points], k=num_testable_neighbours, sqr_dists=False
         )
 
         # This number is close to the point-point coordination value in 3D unstructured
@@ -2137,7 +2135,7 @@ class Mesh(Stateful, uw_object):
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             cell_coords = self.data[cell_points - pStart]
 
-            distsq, _ = centroids_kd_tree.query(cell_coords, k = 1, sqr_dists = True)
+            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
@@ -2743,9 +2741,9 @@ class _MeshVariable(Stateful, uw_object):
 
         shape = self.shape
 
-        with self.mesh.access(self):
+        with self.mesh.access():
             points = self._data.shape[0]
-            data_array_3d = np.empty(shape=(points, *shape))
+            data_array_3d = np.empty(shape=(points, *shape), dtype=self._data.dtype)
 
             for i in range(shape[0]):
                 for j in range(shape[1]):
@@ -3490,11 +3488,16 @@ def checkpoint_xdmf(
     ## The mesh Var attributes
 
     def get_cell_field_size(h5_filename, mesh_var):
-        with h5py.File(h5_filename, "r") as f:
-            size = f[f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"].shape[
-                0
-            ]
-        return size
+        try:
+            with h5py.File(h5_filename, "r") as f:
+                size = f[
+                    f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"
+                ].shape[0]
+            return size
+        except:
+            with h5py.File(h5_filename, "r") as f:
+                size = f[f"fields/{mesh_var.clean_name}"].shape[0]
+            return size
 
     attributes = ""
     for var in meshVars:

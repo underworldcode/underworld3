@@ -164,8 +164,6 @@ class UnderworldFunction(sympy.Function):
 
         return ourcls
 
-
-
 def global_evaluate(   expr,
                 np.ndarray coords=None,
                 coord_sys=None,
@@ -174,7 +172,10 @@ def global_evaluate(   expr,
                 verbose=False,
                 evalf=False,
                 rbf=False,
-                data_layout=None,):
+                data_layout=None,
+                check_extrapolated=False
+            ):
+
     """
     Evaluate a given expression at a list of coordinates - parallel-safe version
 
@@ -196,15 +197,12 @@ def global_evaluate(   expr,
 
     """
 
-    mesh, varfns = uw.expressions.mesh_vars_in_expression(expr)
+    mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
-    if mesh is None:
-        print(f"No mesh needed in evaluation - no need for parallel, global mesh variable shenanigans")
-        return
-
-    if uw.mpi.size == 1 or mesh is None:
+    if  mesh is None: #  or uw.mpi.size==1:
         return evaluate(
-            expr,coords,
+            expr,
+            coords,
             coord_sys,
             other_arguments,
             simplify,
@@ -212,6 +210,7 @@ def global_evaluate(   expr,
             evalf,
             rbf,
             data_layout,
+            check_extrapolated=check_extrapolated,
         )
 
     # If in parallel, define a swarm, migrate, evaluate, migrate back
@@ -221,25 +220,100 @@ def global_evaluate(   expr,
     # so that we can recover the information. We should add a local-index variable so we know how to reorder the
     # values when the particles come back.
 
-    sample_swarm = uw.swarm.Swarm(mesh)
+
+    index = np.array(range(0, coords.shape[0])).reshape(-1,1,1)
+
+    evaluation_swarm = uw.swarm.Swarm(mesh)
 
     original_rank = uw.swarm.SwarmVariable(
         "rank",
-        sample_swarm,
+        evaluation_swarm,
         vtype=uw.VarType.SCALAR,
         dtype=int,
         _proxy=False,
         varsymbol=r"\cal{R}",
     )
 
-    # We need to know what variable type expr returns
-    # This should be wrapped up for everyone to use !
+    original_index = uw.swarm.SwarmVariable(
+        "index",
+        evaluation_swarm,
+        vtype=uw.VarType.SCALAR,
+        dtype=int,
+        _proxy=False,
+        varsymbol=r"\cal{I}",
+    )
 
-    test_evaluation = evaluate(expr , np.atleast_2d(mesh._get_domain_centroids()[uw.mpi.rank])
-)
-    eval_shape = np.atleast_2d(test_evaluation).shape
+    is_extrapolated = uw.swarm.SwarmVariable(
+        "is_extrapolated",
+        evaluation_swarm,
+        vtype=uw.VarType.SCALAR,
+        dtype=int,
+        _proxy=False,
+        varsymbol=r"\cal{X}",
+    )
 
-    return
+
+    try:
+        expr.shape
+    except AttributeError:
+        expr = sympy.Matrix(((expr,),))
+
+    expr_shape = expr.shape
+
+    data_container = uw.swarm.SwarmVariable(
+        "data",
+        evaluation_swarm,
+        vtype=uw.VarType.MATRIX,
+        size=expr.shape,
+        dtype=float,
+        _proxy=False,
+        varsymbol=r"\cal{D}",
+    )
+
+    # Populate with particles
+
+    points = evaluation_swarm.add_particles_with_global_coordinates(coords, migrate=False)
+
+    original_rank.array[...] = uw.mpi.rank
+    original_index.array[...] = index[...]
+
+    index = original_index.array[:,0,0]
+    ranks = original_rank.array[:,0,0]
+
+    evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
+
+    local_coords = evaluation_swarm.particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
+    values, extrapolated = evaluate(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
+
+    data_container.array[...] = values[...]
+    is_extrapolated.array[:,0,0] = extrapolated[:]
+
+    # set rank to old values and migrate back
+
+    evaluation_swarm._rank_var.array[...] = original_rank.array[...]
+
+    # index = original_index.array[:,0,0]
+    # ranks = original_rank.array[:,0,0]
+
+    # Bare bones migration - just move particles, no validation at all
+    # in the BASIC swarm, dm.migrate does not care about whether points
+    # lie inside the domain or not.
+    #
+    evaluation_swarm.dm.migrate(remove_sent_points=True)
+    uw.mpi.barrier()
+
+    index = original_index.array[:,0,0]
+
+    return_value = np.empty_like(data_container.array[...])
+    return_mask = np.empty_like(is_extrapolated.array[...], dtype=bool)
+
+    return_value[index] =  data_container.array[...]
+    return_mask[index] =  is_extrapolated.array[...]
+
+    if not check_extrapolated:
+        return return_value
+    else:
+        return return_value, return_mask
 
 
 def evaluate(   expr,
@@ -250,7 +324,8 @@ def evaluate(   expr,
                 verbose=False,
                 evalf=False,
                 rbf=False,
-                data_layout=None):
+                data_layout=None,
+                check_extrapolated=False):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -285,7 +360,7 @@ def evaluate(   expr,
     # does not need mesh information either.
 
     if evalf==True or rbf==True or mesh is None:
-        in_or_not = np.full((coords.shape[0]), True, dtype=bool )
+        in_or_not = np.full((coords.shape[0]), False, dtype=bool )
         evaluation = rbf_evaluate( expr,
                             coords,
                             coord_sys,
@@ -320,22 +395,27 @@ def evaluate(   expr,
         else:
             evaluation = np.empty(shape=(in_or_not.shape[0],)+tuple(evaluation_interior.shape[1::]))
 
-        evaluation[in_or_not] = evaluation_interior
-        evaluation[~in_or_not] = evaluation_exterior
-        evaluation = evaluation.squeeze() # consistent behavior with mesh is None and only 1 coord input
+        evaluation[in_or_not,...] = evaluation_interior
+        evaluation[~in_or_not,...] = evaluation_exterior
+        # evaluation = evaluation.squeeze() # consistent behavior with mesh is None and only 1 coord input
 
     ## We should change this so both evaluation routines return an array that has
     ## shape == (N,i,j) where N is the number of points and where (i,j) is the shape of the evaluation type
     ## (scalar == (1,1); vector= (1,dim); tensor=(dim,dim) - even if symmetric and internal storage is flat -
     ## and so on. We can let the variables themselves handle the packing of data using their _data_layout
 
-
     if not callable(data_layout):
-        return evaluation
+        if check_extrapolated:
+            return evaluation, ~in_or_not
+        else:
+            return evaluation
     else:
         shape = evaluation.shape[1::]
         if len(shape) <= 1:
-            return evaluation
+            if check_extrapolated:
+                return evaluation, ~in_or_not
+            else:
+                return evaluation
         else:
             i_size = shape[0]
             j_size = shape[1]
@@ -347,6 +427,9 @@ def evaluate(   expr,
                     ij = data_layout(i,j)
                     evaluation_1d[:,ij] = evaluation[:,i,j]
 
+        if check_extrapolated:
+            return evaluation_1d, ~in_or_not
+        else:
             return evaluation_1d
 
 def petsc_interpolate(   expr,
@@ -406,6 +489,7 @@ def petsc_interpolate(   expr,
     sympy.core.cache.clear_cache()
 
     if uw.function.fn_is_constant_expr(expr):
+
         constant_value = uw.function.expressions.unwrap(expr, keep_constants=False)
         return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float))
 
@@ -444,8 +528,6 @@ def petsc_interpolate(   expr,
     if mesh is not None:
         expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
         expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
-
-
 
     # if (len(varfns)==0) and (coords is None):
     #     raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -640,7 +722,6 @@ def petsc_interpolate(   expr,
         shape = (1,1)
         expr = sympy.Matrix(((expr,)))
 
-
     try:
         results_shape = results.shape
     except AttributeError:
@@ -652,13 +733,13 @@ def petsc_interpolate(   expr,
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
-        results = results_new # .squeeze()
-
+        results = results_new
     else:
-        results = np.moveaxis(results, -1, 0) # .squeeze()
-
+        results = np.moveaxis(results, -1, 0)
     # 6. Return results
-    return results # .squeeze()
+    #
+
+    return results.reshape(-1, *shape)
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
@@ -731,6 +812,8 @@ def rbf_evaluate(  expr,
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
         raise RuntimeError("`evaluate()` function parameter `input` does not appear to be a numpy array.")
+
+
 
     if coords.shape[1] not in [2,3]:
         raise ValueError("Provided `coords` must be 2 dimensional array of coordinates.\n"
@@ -834,14 +917,14 @@ def rbf_evaluate(  expr,
     if shape == results_shape:
         results_new = np.zeros((coords.shape[0], *shape))
         results_new[...] = results
-        results = results_new # .squeeze()
+        results = results_new
 
     else:
-        results = np.moveaxis(results, -1, 0) # .squeeze()
+        results = np.moveaxis(results, -1, 0)
 
     # 6. Return results
 
-    return results # .squeeze()
+    return results
 
 
 # Go ahead and substitute for the timed version.

@@ -1,6 +1,7 @@
 from . import analytic
 from ._function import (
     UnderworldFunction,
+    global_evaluate,
     evaluate,
     dm_swarm_get_migrate_type,
     dm_swarm_set_migrate_type,

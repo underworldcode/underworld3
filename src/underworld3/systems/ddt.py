@@ -730,7 +730,7 @@ class SemiLagrangian(uw_object):
                 #     print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
             # restore coords (will call dm.migrate after context manager releases)
-            # We need some modifications to dm.migrate to snapback
+            # We need some modifications to dm.migrate to snap-back
             # to original location without substepping
 
             og_mig_type = uw.function.dm_swarm_get_migrate_type(

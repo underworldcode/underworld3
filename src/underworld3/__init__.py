@@ -82,6 +82,9 @@ from petsc4py import PETSc
 
 PETSc.Sys.popErrorHandler()
 
+options = PETSc.Options()
+options["options_left"] = 0
+
 try:
     from ._version import __version__
 except ImportError:
@@ -128,7 +131,7 @@ import underworld3.maths
 import underworld3.utilities
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
-#import underworld3.kdtree
+# import underworld3.kdtree
 import underworld3.ckdtree as kdtree
 import underworld3.cython
 import underworld3.scaling
