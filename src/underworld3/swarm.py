@@ -606,11 +606,13 @@ class SwarmVariable(Stateful, uw_object):
                 comm.barrier()
                 for proc in range(1, comm.size):
                     if comm.rank == proc:
-                        with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
-                            h5f["data"].resize(
-                                (h5f["data"].shape[0] + self.data.shape[0]), axis=0
-                            )
-                            h5f["data"][-self.data.shape[0] :] = self.data[:]
+                        if self.data.shape[0] > 0:
+                            with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                                incoming_size = h5f["data"].shape[0]
+                                h5f["data"].resize(
+                                    (h5f["data"].shape[0] + self.data.shape[0]), axis=0
+                                )
+                                h5f["data"][incoming_size:] = self.data[:, ...]
                     comm.barrier()
                 comm.barrier()
 
@@ -2756,7 +2758,10 @@ class Swarm(Stateful, uw_object):
         self.dm.addNPoints(npoints=npoints)
 
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        ranks = self.dm.getField("DMSwarm_rank")
         coords[swarm_size::, :] = valid_coordinates[:, :]
+        ranks[swarm_size::, :] = uw.mpi.rank
+        self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
 
         # Here we update the swarm cycle values as required
