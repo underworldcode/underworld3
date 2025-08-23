@@ -135,7 +135,7 @@ def test_polynomial_mesh_var_degree():
         result = uw.function.evaluate(var.sym[0], coords)
         assert np.allclose(
             tensor_product(var.degree, coords[:, 0], coords[:, 1]),
-            result,
+            result.squeeze(),
             rtol=1e-05,
             atol=1e-08,
         )
@@ -161,7 +161,7 @@ def test_many_many_scalar_mult_var():
     multexpr = vars[0].fn
     for var in vars[1:]:
         multexpr *= var.fn
-    result = uw.function.evaluate(multexpr, coords)
+    result = uw.function.evaluate(multexpr, coords).squeeze()
     assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)
 
 
