@@ -111,7 +111,7 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     xcoords = np.full_like(ycoords, -0.5)
     xy_coords = np.column_stack([xcoords, ycoords])
 
-    pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
+    pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
 
     # #### Get analytical solution
     La = -1.0 * interfaceY
@@ -151,7 +151,7 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
     darcy.solve()
 
-    pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
+    pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
 
     # ### Compare analytical and numerical solution
     assert np.allclose(pressure_analytic, pressure_interp, atol=0.1)

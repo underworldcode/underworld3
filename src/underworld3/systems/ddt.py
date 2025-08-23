@@ -710,13 +710,14 @@ class SemiLagrangian(uw_object):
             # else:
             #
 
+            # SWITCH TO .array pattern / remove squeeze()
             with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
                 for d in range(self.psi_star[i].shape[1]):
                     self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
                         self.psi_star[i].sym[d],
                         self._nswarm_psi.data,
                         evalf=evalf,
-                    )
+                    ).squeeze()
 
             if self.preserve_moments and self._workVar.num_components == 1:
 

@@ -105,7 +105,7 @@ def test_SLVec_boxmesh(mesh):
     # -
 
     ### get the initial vector profile
-    vec_prof_init = uw.function.evaluate(vect_test.sym, sample_points)
+    vec_prof_init = uw.function.evaluate(vect_test.sym, sample_points).squeeze()
 
     model_time = 0.0
     dt = 0.001
@@ -118,7 +118,7 @@ def test_SLVec_boxmesh(mesh):
         model_time += dt
 
     ### compare UW and 1D numerical solution
-    vec_prof_uw = uw.function.evaluate(vect_test.sym, sample_points)
+    vec_prof_uw = uw.function.evaluate(vect_test.sym, sample_points).squeeze()
 
     #### expected distance traveled in the vertical direction
     travel_y = velocity * model_time
