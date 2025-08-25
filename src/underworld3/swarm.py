@@ -2824,7 +2824,7 @@ class Swarm(Stateful, uw_object):
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
         ranks = self.dm.getField("DMSwarm_rank")
         coords[swarm_size::, :] = globalCoordinatesArray[:, :]
-        ranks[swarm_size::, :] = uw.mpi.rank
+        ranks[swarm_size::] = uw.mpi.rank
         self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
 
