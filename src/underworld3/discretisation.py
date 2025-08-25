@@ -2065,8 +2065,6 @@ class Mesh(Stateful, uw_object):
         """
         import numpy as np
 
-        import numpy as np
-
         # Create index if required
         self._build_kd_tree_index()
 

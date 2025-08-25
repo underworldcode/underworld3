@@ -199,7 +199,7 @@ def global_evaluate(   expr,
 
     mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
-    if  mesh is None: #  or uw.mpi.size==1:
+    if mesh is None: #  or uw.mpi.size==1:
         return evaluate(
             expr,
             coords,
@@ -220,7 +220,6 @@ def global_evaluate(   expr,
     # so that we can recover the information. We should add a local-index variable so we know how to reorder the
     # values when the particles come back.
 
-
     index = np.array(range(0, coords.shape[0])).reshape(-1,1,1)
 
     evaluation_swarm = uw.swarm.Swarm(mesh)
@@ -231,7 +230,7 @@ def global_evaluate(   expr,
         vtype=uw.VarType.SCALAR,
         dtype=int,
         _proxy=False,
-        varsymbol=r"\cal{R}",
+        varsymbol=r"\cal{R}_o",
     )
 
     original_index = uw.swarm.SwarmVariable(
@@ -281,7 +280,6 @@ def global_evaluate(   expr,
     ranks = original_rank.array[:,0,0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
-
     local_coords = evaluation_swarm.particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
     values, extrapolated = evaluate(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
@@ -289,32 +287,28 @@ def global_evaluate(   expr,
     is_extrapolated.array[:,0,0] = extrapolated[:]
 
     # set rank to old values and migrate back
-
     evaluation_swarm._rank_var.array[...] = original_rank.array[...]
-
-    # index = original_index.array[:,0,0]
-    # ranks = original_rank.array[:,0,0]
 
     # Bare bones migration - just move particles, no validation at all
     # in the BASIC swarm, dm.migrate does not care about whether points
     # lie inside the domain or not.
-    #
+
     evaluation_swarm.dm.migrate(remove_sent_points=True)
     uw.mpi.barrier()
+
 
     index = original_index.array[:,0,0]
 
     return_value = np.empty_like(data_container.array[...])
-    return_mask = np.empty_like(is_extrapolated.array[...], dtype=bool)
+    return_value[index,:,:] =  data_container.array[:,:,:]
 
-    return_value[index] =  data_container.array[...]
-    return_mask[index] =  is_extrapolated.array[...]
+    return_mask = np.empty_like(is_extrapolated.array[...], dtype=bool)
+    return_mask[index] =  is_extrapolated.array[:]
 
     if not check_extrapolated:
         return return_value
     else:
         return return_value, return_mask
-
 
 def evaluate(   expr,
                 np.ndarray coords=None,
@@ -414,7 +408,6 @@ def evaluate(   expr,
         if len(shape) <= 1:
             if check_extrapolated:
                 return evaluation, ~in_or_not
-            else:
                 return evaluation
         else:
             i_size = shape[0]

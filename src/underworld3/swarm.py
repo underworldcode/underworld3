@@ -2587,19 +2587,20 @@ class Swarm(Stateful, uw_object):
 
         from time import time
 
-        time_c = time()
         centroids = self.mesh._get_domain_centroids()
         mesh_domain_kdtree = uw.kdtree.KDTree(centroids)
-
-        time0 = time()
-        time1 = time()
 
         # This will only worry about particles that are not already claimed !
         #
 
-        swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
-        in_or_not = self.mesh.points_in_domain(swarm_coord_array)
+        swarm_coord_array = (
+            self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        ).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
+
+        in_or_not = self.mesh.points_in_domain(
+            swarm_coord_array,
+        )
 
         num_points_in_domain = np.count_nonzero(in_or_not == True)
         num_points_not_in_domain = np.count_nonzero(in_or_not == False)
@@ -2622,9 +2623,7 @@ class Swarm(Stateful, uw_object):
         if global_unclaimed_points == 0:
             return
 
-        # Migrate particles between processors if appropriate
-        # Otherwise skip the next step and just remove missing points
-        # and tidy up.
+        # Migrate particles between processes (if there are more than one of them)
 
         if uw.mpi.size > 1:
             for it in range(0, min(max_its, uw.mpi.size)):
@@ -2633,27 +2632,25 @@ class Swarm(Stateful, uw_object):
 
                 swarm_rank_array = self.dm.getField("DMSwarm_rank")
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
-                    (-1, self.dim)
+                    -1, self.dim
                 )
 
-                if len(swarm_coord_array > 0):
+                if not_my_points.shape[0] > 0:
                     dist, rank = mesh_domain_kdtree.query(
                         swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
                     )
-
                     swarm_rank_array[not_my_points, 0] = rank.reshape(-1, it + 1)[:, it]
 
-                self.dm.restoreField("DMSwarmPIC_coor")
                 self.dm.restoreField("DMSwarm_rank")
+                self.dm.restoreField("DMSwarmPIC_coor")
 
                 # Now we send the points (basic migration)
                 self.dm.migrate(remove_sent_points=True)
                 uw.mpi.barrier()
 
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(
-                    (-1, self.dim)
+                    -1, self.dim
                 )
-
                 in_or_not = self.mesh.points_in_domain(swarm_coord_array)
                 self.dm.restoreField("DMSwarmPIC_coor")
 
@@ -2663,6 +2660,8 @@ class Swarm(Stateful, uw_object):
 
                 unclaimed_points_last_iteration = global_unclaimed_points
                 claimed_points_last_iteration = global_claimed_points
+
+                uw.mpi.barrier()
 
                 global_unclaimed_points = int(
                     uw.utilities.gather_data(
@@ -2678,6 +2677,9 @@ class Swarm(Stateful, uw_object):
                     ).sum()
                 )
 
+                if global_unclaimed_points == 0:
+                    break
+
                 if (
                     global_unclaimed_points == unclaimed_points_last_iteration
                     and global_claimed_points == claimed_points_last_iteration
@@ -2687,21 +2689,11 @@ class Swarm(Stateful, uw_object):
         # Missing points for deletion if required
         if delete_lost_points:
 
-            # print(
-            #     f"{uw.mpi.rank} - Delete {len(not_my_points)} from swarm size {self.dm.getLocalSize()}",
-            #     flush=True,
-            # )
-
             uw.mpi.barrier()
             if len(not_my_points > 0):
                 indices = np.sort(not_my_points)[::-1]
                 for index in indices:
                     self.dm.removePointAtIndex(index)
-
-            # print(
-            #     f"{uw.mpi.rank} - final swarm size {self.dm.getLocalSize()}",
-            #     flush=True,
-            # )
 
         return
 
@@ -2757,12 +2749,13 @@ class Swarm(Stateful, uw_object):
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
 
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
-        ranks = self.dm.getField("DMSwarm_rank")
-        coords[swarm_size::, :] = valid_coordinates[:, :]
-        ranks[swarm_size::, :] = uw.mpi.rank
-        self.dm.restoreField("DMSwarm_rank")
-        self.dm.restoreField("DMSwarmPIC_coor")
+        if npoints > 0:
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            ranks = self.dm.getField("DMSwarm_rank")
+            coords[swarm_size::, :] = valid_coordinates[:, :]
+            ranks[swarm_size::, :] = uw.mpi.rank
+            self.dm.restoreField("DMSwarm_rank")
+            self.dm.restoreField("DMSwarmPIC_coor")
 
         # Here we update the swarm cycle values as required
 
@@ -2776,7 +2769,10 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def add_particles_with_global_coordinates(
-        self, globalCoordinatesArray, migrate=True
+        self,
+        globalCoordinatesArray,
+        migrate=True,
+        delete_lost_points=True,
     ) -> int:
         """
         Add particles to the swarm using particle coordinates provided
@@ -2822,8 +2818,14 @@ class Swarm(Stateful, uw_object):
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
 
+        # Add new points with provided coords
+        # Record the current rank (migration needs to know where we start from !)
+
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        ranks = self.dm.getField("DMSwarm_rank")
         coords[swarm_size::, :] = globalCoordinatesArray[:, :]
+        ranks[swarm_size::, :] = uw.mpi.rank
+        self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
 
         # Here we update the swarm cycle values as required
@@ -2834,7 +2836,7 @@ class Swarm(Stateful, uw_object):
                 self._remeshed.data[...] = 0
 
         if migrate:
-            self.migrate(remove_sent_points=True)
+            self.migrate(remove_sent_points=True, delete_lost_points=delete_lost_points)
 
         return npoints
 
@@ -2944,6 +2946,7 @@ class Swarm(Stateful, uw_object):
         swarm_id: str,
         index: int,
         outputPath: Optional[str] = "",
+        migrate=True,
     ):
         output_base_name = os.path.join(outputPath, base_filename)
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
@@ -2952,8 +2955,11 @@ class Swarm(Stateful, uw_object):
         with h5py.File(f"{swarm_file}", "r") as h5f:
             coordinates = h5f["coordinates"][:]
 
-        #### utilises the UW function for adding a swarm by an array
-        self.add_particles_with_coordinates(coordinates)
+        # We make it possible not to migrate the swarm because this
+        # will also delete points outside the mesh. We may not want to do
+        # that (either for debugging / visualisation, or when adapting the mesh)
+
+        self.add_particles_with_global_coordinates(coordinates, migrate=migrate)
 
         return
 

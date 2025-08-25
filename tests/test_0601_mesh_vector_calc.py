@@ -82,10 +82,11 @@ def test_ijk(mesh, v1, v2, p):
     assert mesh.vector.to_vector(v1.sym) == v1.ijk
 
 
-@pytest.mark.xfail(raises=AttributeError)
-def test_no_ijk():
-    # This object should not exist - Attribute error
-    v13.ijk
+# This is to be lit up after we properly deprecate .ijk
+# @pytest.mark.xfail(raises=AttributeError)
+# def test_no_ijk():
+#     # This object should not exist - Attribute error
+#     v13.ijk
 
 
 # tests for dot, div, grad, curl
