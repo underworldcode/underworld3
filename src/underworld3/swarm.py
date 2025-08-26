@@ -3722,7 +3722,9 @@ class NodalPointUWSwarm(Swarm):
 
         # cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
+        ranks = nswarm.dm.getField("DMSwarm_rank").reshape((-1, 1))
         coords[...] = trackedVariable.coords[...]
+        ranks[...] = uw.mpi.rank
 
         cellid = self.mesh.get_closest_cells(
             coords,
@@ -3735,7 +3737,7 @@ class NodalPointUWSwarm(Swarm):
         coords[:, :] = (1.0 - shift) * coords[:, :] + shift * centroid_coords[:, :]
 
         nswarm.dm.restoreField("DMSwarmPIC_coor")
-        # nswarm.dm.restoreField("DMSwarm_cellid")
+        nswarm.dm.restoreField("DMSwarm_rank")
 
         nswarm.dm.migrate(remove_sent_points=True)
 
