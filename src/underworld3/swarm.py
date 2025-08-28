@@ -2642,7 +2642,7 @@ class Swarm(Stateful, uw_object):
                     dist, rank = mesh_domain_kdtree.query(
                         swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
                     )
-                    swarm_rank_array[not_my_points, 0] = rank.reshape(-1, it + 1)[:, it]
+                    swarm_rank_array[not_my_points] = rank.reshape(-1, it + 1)[:, it]
 
                 self.dm.restoreField("DMSwarm_rank")
                 self.dm.restoreField("DMSwarmPIC_coor")

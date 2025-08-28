@@ -1974,7 +1974,7 @@ class Mesh(Stateful, uw_object):
         max_radius = self.get_max_radius()
 
         if points.shape[0] == 0:
-            return False
+            return numpy.array([], dtype = bool)
 
         dist2, closest_control_points_ext = (
             self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
