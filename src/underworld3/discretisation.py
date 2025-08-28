@@ -1985,7 +1985,7 @@ class Mesh(Stateful, uw_object):
 
         ## This choice of distance needs some more thought
 
-        near_boundary = numpy.where(dist2 < max_radius**2)[0]
+        near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = points[near_boundary]
 
         in_or_not[near_boundary] = (

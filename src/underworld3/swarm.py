@@ -2523,8 +2523,11 @@ class Swarm(Stateful, uw_object):
         self.dm.addNPoints(newp_coords.shape[0] + 1)
 
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        ranks = self.dm.getField("DMSwarm_rank")
         coords[...] = newp_coords[...]
+        ranks[...] = uw.mpi.rank
         self.dm.restoreField("DMSwarmPIC_coor")
+        self.dm.restoreField("DMSwarm_rank")
 
         if self.recycle_rate > 1:
             with self.access():

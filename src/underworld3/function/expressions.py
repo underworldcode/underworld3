@@ -405,7 +405,6 @@ class UWDerivativeExpression(UWexpression):
     ):
 
         self.symbol = self._given_name
-        self.diff_variable = None
 
         self._sym = expr  # Accept anything, sympify is overly opinionated if we try to `sympify`
         self._diff_variable = diff_variable
@@ -417,9 +416,15 @@ class UWDerivativeExpression(UWexpression):
 
         return
 
+    def doit(self):
+        return uw.function.derivative(self._sym, self.diff_variable)
+
     @property
     def sym(self):
-        return uw.function.derivative(self._sym, self.diff_variable)
+        try:
+            return self._sym.sym.diff(self._diff_variable)
+        except:
+            return self._sym.diff(self._diff_variable)
 
     @property
     def expr(self):

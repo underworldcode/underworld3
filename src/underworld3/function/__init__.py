@@ -58,8 +58,9 @@ def deferred_derivative(expr, diff_variable):
         r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
     )
 
-    if isinstance(diff_variable, expression):
-        diff_variable = diff_variable.sym
+    # Is this what we want ?
+    # if isinstance(diff_variable, expression):
+    #     diff_variable = diff_variable.sym
 
     # We need to return a Matrix of \partial Expr \partial {diff_variable_i}
 
@@ -68,7 +69,7 @@ def deferred_derivative(expr, diff_variable):
     except TypeError:
         rows, cols = (1, 1)
 
-    # Good question: should we return a 1x1 matrix or the actual derivative ?
+    # Question: should we return a 1x1 matrix or the actual derivative ?
     if rows == 1 and cols == 1:
         # ddx = sympy.Matrix((_derivative_expression(latex, expr, diff_variable),))
         ddx = _derivative_expression(latex, expr, diff_variable)
