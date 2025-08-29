@@ -2642,7 +2642,7 @@ class Swarm(Stateful, uw_object):
                     dist, rank = mesh_domain_kdtree.query(
                         swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
                     )
-                    swarm_rank_array[not_my_points] = rank.reshape(-1, it + 1)[:, it]
+                    swarm_rank_array[not_my_points, 0] = rank.reshape(-1, it + 1)[:, it]
 
                 self.dm.restoreField("DMSwarm_rank")
                 self.dm.restoreField("DMSwarmPIC_coor")
@@ -3384,7 +3384,7 @@ class Swarm(Stateful, uw_object):
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
-        # during timestepping.
+        # during timestepping. Probably not needed - use global evaluation instead
 
         X0 = self._X0
 
@@ -3442,62 +3442,42 @@ class Swarm(Stateful, uw_object):
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.particle_coordinates.data)
 
-                    ##
-                    ## Here we should check for particles which are interpolated and
-                    ## those which can only be extrapolated. For the former, evalf is
-                    ## not needed but for the latter it is essential
-                    ##
+                    # First evaluate the velocity at the particle locations
+                    # (this is a local operation)
 
-                    # if evalf:
-                    #     for d in range(self.dim):
-                    #         v_at_Vpts[:, d] = uw.function.evalf(
-                    #             V_fn_matrix[d], self.particle_coordinates.data
-                    #         ).reshape(-1)
-                    # else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d],
-                            self.particle_coordinates.data,
-                            evalf=evalf,
-                        ).reshape(-1)
+                    v_at_Vpts[...] = uw.function.evaluate(
+                        V_fn_matrix, self.particle_coordinates.data
+                    )[:, 0, :]
 
                     mid_pt_coords = (
                         self.particle_coordinates.data[...]
                         + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
+                    # This will re-position particles in periodic domains (etc)
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                    self.particle_coordinates.data[...] = mid_pt_coords[...]
+                    # Don't need to move them, just global evaluation ...
+                    # self.particle_coordinates.data[...] = mid_pt_coords[...]
+                    # del mid_pt_coords
+                    # v_at_Vpts = np.zeros_like(self.data)
+                    #
 
-                    del mid_pt_coords
+                    # Now do a **Global** evaluation
+                    # (since the mid-points might have moved off-proc)
+                    #
 
-                    ## Let the swarm be updated, and then move the rest of the way
-
-                    v_at_Vpts = np.zeros_like(self.data)
-
-                    # if evalf:
-                    #     for d in range(self.dim):
-                    #         v_at_Vpts[:, d] = uw.function.evalf(
-                    #             V_fn_matrix[d], self.particle_coordinates.data
-                    #         ).reshape(-1)
-                    # else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d],
-                            self.particle_coordinates.data,
-                            evalf=evalf,
-                        ).reshape(-1)
-
-                    # if (uw.mpi.rank == 0):
-                    #     print("Re-launch from X0", flush=True)
+                    v_at_Vpts[...] = uw.function.global_evaluate(
+                        V_fn_matrix, mid_pt_coords
+                    )[:, 0, :]
 
                     new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
+                    # Set the new particle positions (and automatically migrate)
                     self.particle_coordinates.data[...] = new_coords[...]
 
                     del new_coords
@@ -3509,25 +3489,16 @@ class Swarm(Stateful, uw_object):
                 with self.access(self.particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
-                    # if evalf:
-                    #     for d in range(self.dim):
-                    #         v_at_Vpts[:, d] = uw.function.evalf(
-                    #             V_fn_matrix[d], self.data
-                    #         ).reshape(-1)
-                    # else:
-                    for d in range(self.dim):
-                        v_at_Vpts[:, d] = uw.function.evaluate(
-                            V_fn_matrix[d],
-                            self.data,
-                            evalf=evalf,
-                        ).reshape(-1)
+                    v_at_Vpts[...] = uw.function.evaluate(
+                        V_fn_matrix, self.particle_coordinates.data
+                    )[:, 0, :]
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
 
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
-                    self.data[...] = new_coords[...].copy()
+                    self.data[...] = new_coords[...]
 
         ## End of substepping loop
 
