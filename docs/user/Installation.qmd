@@ -17,7 +17,7 @@ The `underworld3` build / run-time dependencies can be installed using
 ```bash
     (base) % git clone -b development --single-branch https://github.com/underworldcode/underworld3 /path/to/underworld3
     (base) % cd /path/to/underworld3
-    (base) % mamba env create -n uw3 -f environment.yml
+    (base) % mamba env create -n uw3 -f environment.yaml
     (base) % mamba activate uw3
 
     (uw3) % compile.sh
@@ -32,7 +32,7 @@ installed `PETSc` and `petsc4py`.
 ```bash
     (base) % git clone -b development --single-branch https://github.com/underworldcode/underworld3 /path/to/underworld3
     (base) % cd /path/to/underworld3
-    (base) % mamba env create -n uw3p -f environment.yml
+    (base) % mamba env create -n uw3p -f environment.yaml
     (base) % mamba activate uw3p
 
     (uw3p) % mamba remove petsc4py
