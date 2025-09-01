@@ -35,9 +35,9 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
     initialise(jupyter_backend)
 
-    import os
-    import shutil
-    import tempfile
+    # import os
+    # import shutil
+    # import tempfile
     import pyvista as pv
     import numpy as np
 
