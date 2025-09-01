@@ -556,7 +556,7 @@ class SemiLagrangian(uw_object):
         )
 
         # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointUWSwarm(self._workVar, verbose)
+        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
         self._nswarm_psi = nswarm
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
@@ -700,15 +700,6 @@ class SemiLagrangian(uw_object):
                     self._psi_star_projection_solver.uw_function = self.psi_fn
                     self._psi_star_projection_solver.smoothing = 0.0
                     self._psi_star_projection_solver.solve(verbose=verbose)
-
-            # if evalf:
-            #     with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-            #         for d in range(self.psi_star[i].shape[1]):
-            #             self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-            #                 self.psi_star[i].sym[d], self._nswarm_psi.data
-            #             )
-            # else:
-            #
 
             # SWITCH TO .array pattern / remove squeeze()
             with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):

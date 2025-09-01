@@ -2260,7 +2260,7 @@ class Swarm(Stateful, uw_object):
             return None
 
 
-class NodalPointUWSwarm(Swarm):
+class NodalPointSwarm(Swarm):
     r"""BASIC_Swarm with particles located at the coordinate points of a meshVariable
 
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
