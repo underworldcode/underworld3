@@ -2085,12 +2085,6 @@ class Swarm(Stateful, uw_object):
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                    # Don't need to move them, just global evaluation ...
-                    # self.particle_coordinates.data[...] = mid_pt_coords[...]
-                    # del mid_pt_coords
-                    # v_at_Vpts = np.zeros_like(self.data)
-                    #
-
                     # Now do a **Global** evaluation
                     # (since the mid-points might have moved off-proc)
                     #
