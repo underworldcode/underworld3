@@ -113,7 +113,7 @@ class PICSwarm(Stateful, uw_object):
 
     Access automatic coordinate and cell ID fields:
 
-    >>> coords = swarm.particle_coordinates.data
+    >>> coords = swarm._particle_coordinates.data
     >>> cell_ids = swarm.particle_cellid.data
 
     Create a streak swarm with recycling:
@@ -234,7 +234,7 @@ class PICSwarm(Stateful, uw_object):
 
     @property
     def data(self):
-        return self.particle_coordinates.data
+        return self._particle_coordinates.data
 
     @property
     def particle_coordinates(self):
@@ -361,13 +361,13 @@ class PICSwarm(Stateful, uw_object):
                 # This is a mesh-local quantity, so let's just
                 # store it on the mesh in an ad_hoc fashion for now
 
-                self.mesh.particle_X_orig = self.particle_coordinates.data.copy()
+                self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
                 self.mesh.particle_CellID_orig = self._cellid_var.data.copy()
 
             with self.access():
-                swarm_orig_size = self.particle_coordinates.data.shape[0]
+                swarm_orig_size = self._particle_coordinates.data.shape[0]
                 all_local_coords = np.vstack(
-                    (self.particle_coordinates.data,) * (self.recycle_rate)
+                    (self._particle_coordinates.data,) * (self.recycle_rate)
                 )
                 all_local_cells = np.vstack(
                     (self._cellid_var.data,) * (self.recycle_rate)
@@ -858,7 +858,7 @@ class PICSwarm(Stateful, uw_object):
                         )
 
         # if particles moving, update swarm state
-        if self.particle_coordinates in writeable_vars:
+        if self._particle_coordinates in writeable_vars:
             self._increment()
 
         # Create a class which specifies the required context
@@ -885,7 +885,7 @@ class PICSwarm(Stateful, uw_object):
                     var._is_accessed = False
                 # do particle migration if coords changes
 
-                if self.em_swarm.particle_coordinates in writeable_vars:
+                if self.em_swarm._particle_coordinates in writeable_vars:
                     # let's use the mesh index to update the particles owning cells.
                     # note that the `petsc4py` interface is more convenient here as the
                     # `SwarmVariable.data` interface is controlled by the context manager
@@ -921,7 +921,7 @@ class PICSwarm(Stateful, uw_object):
                 for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all.
                     # if var updated, update var.
-                    if (self.em_swarm.particle_coordinates in writeable_vars) or (
+                    if (self.em_swarm._particle_coordinates in writeable_vars) or (
                         var in writeable_vars
                     ):
                         var._update()
@@ -1034,7 +1034,7 @@ class PICSwarm(Stateful, uw_object):
         # Also: how does this interact with the particle restoration function ?
 
         # if corrector == True and not self._X0_uninitialised:
-        #     with self.access(self.particle_coordinates):
+        #     with self.access(self._particle_coordinates):
         #         v_at_Vpts = np.zeros_like(self.data)
 
         #         if evalf:
@@ -1074,29 +1074,29 @@ class PICSwarm(Stateful, uw_object):
         for step in range(0, substeps):
 
             with self.access(X0):
-                X0.data[...] = self.particle_coordinates.data[...]
+                X0.data[...] = self._particle_coordinates.data[...]
 
             # Mid point algorithm (2nd order)
 
             if order == 2:
-                with self.access(self.particle_coordinates):
-                    v_at_Vpts = np.zeros_like(self.particle_coordinates.data)
+                with self.access(self._particle_coordinates):
+                    v_at_Vpts = np.zeros_like(self._particle_coordinates.data)
 
                     # if evalf:
                     #     for d in range(self.dim):
                     #         v_at_Vpts[:, d] = uw.function.evalf(
-                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #             V_fn_matrix[d], self._particle_coordinates.data
                     #         ).reshape(-1)
                     # else:
                     for d in range(self.dim):
                         v_at_Vpts[:, d] = uw.function.evaluate(
                             V_fn_matrix[d],
-                            self.particle_coordinates.data,
+                            self._particle_coordinates.data,
                             evalf=evalf,
                         ).reshape(-1)
 
                     mid_pt_coords = (
-                        self.particle_coordinates.data[...]
+                        self._particle_coordinates.data[...]
                         + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
@@ -1105,7 +1105,7 @@ class PICSwarm(Stateful, uw_object):
                     if restore_points_to_domain_func is not None:
                         mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
 
-                    self.particle_coordinates.data[...] = mid_pt_coords[...]
+                    self._particle_coordinates.data[...] = mid_pt_coords[...]
 
                     del mid_pt_coords
 
@@ -1116,14 +1116,14 @@ class PICSwarm(Stateful, uw_object):
                     # if evalf:
                     #     for d in range(self.dim):
                     #         v_at_Vpts[:, d] = uw.function.evalf(
-                    #             V_fn_matrix[d], self.particle_coordinates.data
+                    #             V_fn_matrix[d], self._particle_coordinates.data
                     #         ).reshape(-1)
                     # else:
                     #
                     for d in range(self.dim):
                         v_at_Vpts[:, d] = uw.function.evaluate(
                             V_fn_matrix[d],
-                            self.particle_coordinates.data,
+                            self._particle_coordinates.data,
                             evalf=evalf,
                         ).reshape(-1)
 
@@ -1136,14 +1136,14 @@ class PICSwarm(Stateful, uw_object):
                     if restore_points_to_domain_func is not None:
                         new_coords = restore_points_to_domain_func(new_coords)
 
-                    self.particle_coordinates.data[...] = new_coords[...]
+                    self._particle_coordinates.data[...] = new_coords[...]
 
                     del new_coords
                     del v_at_Vpts
 
             # forward Euler (1st order)
             else:
-                with self.access(self.particle_coordinates):
+                with self.access(self._particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
                     # if evalf:
@@ -1180,7 +1180,7 @@ class PICSwarm(Stateful, uw_object):
             # Remove remesh points and recreate a new set at the mesh-local
             # locations that we already have stored.
 
-            with self.access(self.particle_coordinates, self._remeshed):
+            with self.access(self._particle_coordinates, self._remeshed):
                 remeshed = self._remeshed.data[:, 0] == 0
                 # This is one way to do it ... we can do this better though
                 self.data[remeshed, 0] = 1.0e100
@@ -1257,7 +1257,7 @@ class PICSwarm(Stateful, uw_object):
         import math
 
         with self.access():
-            vel = uw.function.evaluate(V_fn, self.particle_coordinates.data, evalf=True)
+            vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:

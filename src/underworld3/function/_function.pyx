@@ -280,7 +280,7 @@ def global_evaluate(   expr,
     ranks = original_rank.array[:,0,0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
-    local_coords = evaluation_swarm.particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
+    local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
     values, extrapolated = evaluate(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
     data_container.array[...] = values[...]

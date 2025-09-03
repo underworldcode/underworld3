@@ -746,7 +746,7 @@ class SemiLagrangian(uw_object):
 
             # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
 
-            with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
+            with self._nswarm_psi.access(self._nswarm_psi._particle_coordinates):
                 self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
 
             # reset to original migrate type

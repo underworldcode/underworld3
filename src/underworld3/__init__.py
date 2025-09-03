@@ -25,7 +25,6 @@ The development branch has similar documentation:
 - https://underworldcode.github.io/underworld3/development/index.html
 - https://underworldcode.github.io/underworld3/development_api/underworld3/index.html
 
-
 ## Building / installation
 
 Refer to the Dockerfile for uw3 build instructions.

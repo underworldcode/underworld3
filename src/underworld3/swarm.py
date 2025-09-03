@@ -462,11 +462,11 @@ class SwarmVariable(Stateful, uw_object):
                 D = self._data[not_remeshed].copy()
 
                 kdt = uw.kdtree.KDTree(
-                    self.swarm.particle_coordinates.data[not_remeshed, :]
+                    self.swarm._particle_coordinates.data[not_remeshed, :]
                 )
             else:
                 D = self._data.copy()
-                kdt = uw.kdtree.KDTree(self.swarm.particle_coordinates.data[:, :])
+                kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[:, :])
 
             # kdt.build_index()
 
@@ -839,9 +839,9 @@ class IndexSwarmVariable(SwarmVariable):
 
             with self.swarm.access():
                 n_distance, n_indices = kd.query(
-                    self.swarm.particle_coordinates.data, k=self.nnn, sqr_dists=False
+                    self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
                 )
-                kd_swarm = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+                kd_swarm = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
                 d, n = kd_swarm.query(
                     self._meshLevelSetVars[0].coords, k=1, sqr_dists=False
@@ -879,7 +879,7 @@ class IndexSwarmVariable(SwarmVariable):
                             meshVar.data[ind_w0[ind_]] = 1.0
         elif self.update_type == 1:
             with self.swarm.access():
-                kd = uw.kdtree.KDTree(self.swarm.particle_coordinates.data)
+                kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
                 n_distance, n_indices = kd.query(
                     self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
                 )
@@ -1116,7 +1116,7 @@ class Swarm(Stateful, uw_object):
 
     @property
     def data(self):
-        return self.particle_coordinates.data
+        return self._particle_coordinates.data
 
     @property
     def particle_coordinates(self):
@@ -1161,12 +1161,12 @@ class Swarm(Stateful, uw_object):
                 # This is a mesh-local quantity, so let's just
                 # store it on the mesh in an ad_hoc fashion for now
 
-                self.mesh.particle_X_orig = self.particle_coordinates.data.copy()
+                self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
 
             with self.access():
-                swarm_orig_size = self.particle_coordinates.data.shape[0]
+                swarm_orig_size = self._particle_coordinates.data.shape[0]
                 all_local_coords = np.vstack(
-                    (self.particle_coordinates.data,) * (self.recycle_rate)
+                    (self._particle_coordinates.data,) * (self.recycle_rate)
                 )
 
                 swarm_new_size = all_local_coords.data.shape[0]
@@ -1856,7 +1856,7 @@ class Swarm(Stateful, uw_object):
                         )
 
         # if particles moving, update swarm state
-        if self.particle_coordinates in writeable_vars:
+        if self._particle_coordinates in writeable_vars:
             self._increment()
 
         # Create a class which specifies the required context
@@ -1883,7 +1883,7 @@ class Swarm(Stateful, uw_object):
                     var._is_accessed = False
                 # do particle migration if coords changes
 
-                if self.em_swarm.particle_coordinates in writeable_vars:
+                if self.em_swarm._particle_coordinates in writeable_vars:
                     # let's use the mesh index to update the particles owning cells.
                     # note that the `petsc4py` interface is more convenient here as the
                     # `SwarmVariable.data` interface is controlled by the context manager
@@ -1910,7 +1910,7 @@ class Swarm(Stateful, uw_object):
                 for var in self.em_swarm.vars.values():
                     # if swarm migrated, update all.
                     # if var updated, update var.
-                    if (self.em_swarm.particle_coordinates in writeable_vars) or (
+                    if (self.em_swarm._particle_coordinates in writeable_vars) or (
                         var in writeable_vars
                     ):
                         var._update()
@@ -2023,7 +2023,7 @@ class Swarm(Stateful, uw_object):
         # Also: how does this interact with the particle restoration function ?
 
         # if corrector == True and not self._X0_uninitialised:
-        #     with self.access(self.particle_coordinates):
+        #     with self.access(self._particle_coordinates):
         #         v_at_Vpts = np.zeros_like(self.data)
 
         #         if evalf:
@@ -2061,29 +2061,29 @@ class Swarm(Stateful, uw_object):
         for step in range(0, substeps):
 
             with self.access(X0):
-                X0.data[...] = self.particle_coordinates.data[...]
+                X0.data[...] = self._particle_coordinates.data[...]
 
             # Mid point algorithm (2nd order)
 
             if order == 2:
-                with self.access(self.particle_coordinates):
-                    v_at_Vpts = np.zeros_like(self.particle_coordinates.data)
+                with self.access(self._particle_coordinates):
+                    v_at_Vpts = np.zeros_like(self._particle_coordinates.data)
 
                     # First evaluate the velocity at the particle locations
                     # (this is a local operation)
 
                     v_at_Vpts[...] = uw.function.evaluate(
-                        V_fn_matrix, self.particle_coordinates.data
+                        V_fn_matrix, self._particle_coordinates.data
                     )[:, 0, :]
 
                     mid_pt_coords = (
-                        self.particle_coordinates.data[...]
+                        self._particle_coordinates.data[...]
                         + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
                     # This will re-position particles in periodic domains (etc)
-                    if restore_points_to_domain_func is not None:
-                        mid_pt_coords = restore_points_to_domain_func(mid_pt_coords)
+                    if self.mesh.return_coords_to_bounds is not None:
+                        mid_pt_coords = self.mesh.return_coords_to_bounds(mid_pt_coords)
 
                     # Now do a **Global** evaluation
                     # (since the mid-points might have moved off-proc)
@@ -2095,11 +2095,11 @@ class Swarm(Stateful, uw_object):
 
                     new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
 
-                    if restore_points_to_domain_func is not None:
-                        new_coords = restore_points_to_domain_func(new_coords)
+                    if self.mesh.return_coords_to_bounds is not None:
+                        new_coords = self.mesh.return_coords_to_bounds(new_coords)
 
                     # Set the new particle positions (and automatically migrate)
-                    self.particle_coordinates.data[...] = new_coords[...]
+                    self._particle_coordinates.data[...] = new_coords[...]
 
                     del new_coords
                     del v_at_Vpts
@@ -2107,17 +2107,17 @@ class Swarm(Stateful, uw_object):
             # forward Euler (1st order)
             else:
 
-                with self.access(self.particle_coordinates):
+                with self.access(self._particle_coordinates):
                     v_at_Vpts = np.zeros_like(self.data)
 
                     v_at_Vpts[...] = uw.function.evaluate(
-                        V_fn_matrix, self.particle_coordinates.data
+                        V_fn_matrix, self._particle_coordinates.data
                     )[:, 0, :]
 
                     new_coords = self.data + delta_t * v_at_Vpts / substeps
 
-                    if restore_points_to_domain_func is not None:
-                        new_coords = restore_points_to_domain_func(new_coords)
+                    if self.mesh.return_coords_to_bounds is not None:
+                        new_coords = self.mesh.return_coords_to_bounds(new_coords)
 
                     self.data[...] = new_coords[...]
 
@@ -2133,7 +2133,7 @@ class Swarm(Stateful, uw_object):
             # Remove remesh points and recreate a new set at the mesh-local
             # locations that we already have stored.
 
-            with self.access(self.particle_coordinates, self._remeshed):
+            with self.access(self._particle_coordinates, self._remeshed):
                 remeshed = self._remeshed.data[:, 0] == 0
                 # This is one way to do it ... we can do this better though
                 self.data[remeshed, 0] = 1.0e100
@@ -2227,7 +2227,7 @@ class Swarm(Stateful, uw_object):
         import math
 
         with self.access():
-            vel = uw.function.evaluate(V_fn, self.particle_coordinates.data, evalf=True)
+            vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:

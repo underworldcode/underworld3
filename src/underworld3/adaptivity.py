@@ -145,7 +145,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     """
 
     with swarm0.access():
-        swarm_data = swarm0.particle_coordinates.data.copy()
+        swarm_data = swarm0._particle_coordinates.data.copy()
         for swarmVar in swarmVarList:
             swarm_data = np.hstack(
                 (swarm_data, np.ascontiguousarray(swarmVar.data.astype(float)))
@@ -397,7 +397,7 @@ def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
 
     with tmp_swarm.access(tmp_varS):
         tmp_varS.data[...] = meshVar0.rbf_interpolate(
-            tmp_swarm.particle_coordinates.data
+            tmp_swarm._particle_coordinates.data
         )
 
     # print(f"Distribute swarm", flush=True)
