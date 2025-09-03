@@ -42,21 +42,47 @@ def test_create_swarmvariable(setup_data):
     var.save("var.h5")
     assert shape == (elements * 6, 2)
 
+
 def test_addNPoints(setup_data):
-    
+
     from underworld3 import swarm
 
     swarm2 = setup_data
-    var = swarm.SwarmVariable(name = "test", swarm = swarm2, size = 1)
+    var = swarm.SwarmVariable(name="test", swarm=swarm2, size=1)
     swarm2.dm.finalizeFieldRegister()
 
-    swarm2.dm.addNPoints(10) # since swarm is initially empty, will add (10 - 1) points
+    swarm2.dm.addNPoints(10)  # since swarm is initially empty, will add (10 - 1) points
     with swarm2.access():
         npts = swarm2.data.shape[0]
     assert npts == 9
 
-    swarm2.dm.addNPoints(1) # already has particles, so will add 1 point
+    swarm2.dm.addNPoints(1)  # already has particles, so will add 1 point
     with swarm2.access():
         npts = swarm2.data.shape[0]
     assert npts == 10
 
+
+def test_particle_position_setter(setup_data):
+    import numpy as np
+
+    swarm = setup_data
+    swarm.populate(fill_param=2)
+
+    # Get original positions
+    original_positions = swarm.data.copy()
+    npts = swarm.data.shape[0]
+
+    # Create new positions (shift all particles by 0.1 in x and y)
+    new_positions = original_positions + 10.0
+
+    # Test the data setter
+
+    swarm.data = new_positions
+    updated_positions = swarm.data
+
+    # Verify the positions were updated correctly
+    np.testing.assert_allclose(updated_positions, new_positions, rtol=1e-15)
+    assert updated_positions.shape == (npts, 2)
+
+    # Verify positions actually changed
+    assert not np.allclose(original_positions, updated_positions)

@@ -1116,10 +1116,19 @@ class Swarm(Stateful, uw_object):
 
     @property
     def data(self):
-        return self._particle_coordinates.data
+        return self._particle_coordinates.array[:, 0, :]
+
+    @data.setter
+    def data(self, data_array):
+
+        # Note: this can be adapted later to remove the ability to access the
+        # _particle_coordinates variable (alias, actually) directly, and to handle the updating
+        # of variables.
+
+        self._particle_coordinates.array[:, 0, :] = data_array
 
     @property
-    def particle_coordinates(self):
+    def _particle_coordinates(self):
         return self._coord_var
 
     @timing.routine_timer_decorator
@@ -1892,7 +1901,6 @@ class Swarm(Stateful, uw_object):
                     #
 
                     if uw.mpi.size > 1:
-
                         coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
                             (-1, self.em_swarm.dim)
                         )
@@ -2227,7 +2235,9 @@ class Swarm(Stateful, uw_object):
         import math
 
         with self.access():
-            vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
+            vel = uw.function.evaluate(
+                V_fn, self._particle_coordinates.data, evalf=True
+            )
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:

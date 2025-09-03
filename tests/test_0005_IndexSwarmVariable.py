@@ -59,11 +59,11 @@ def test_IndexSwarmVariable(mesh):
         with swarm.access(material):
             perturbation = (
                 offset
-                + amplitude * np.cos(k * swarm.particle_coordinates.data[:, 0])
+                + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0])
                 + 0.01
             )
             material.data[:, 0] = np.where(
-                swarm.particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index
+                swarm._particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index
             )
 
         P0, P1 = 1, 10

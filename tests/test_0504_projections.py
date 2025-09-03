@@ -46,7 +46,7 @@ def test_scalar_projection():
     # Set the values on the swarm variable
     s_values.array = uw.function.evaluate(
         s_fn,
-        swarm.particle_coordinates.array[...].squeeze(),
+        swarm._particle_coordinates.array[...].squeeze(),
         coord_sys=mesh.N,
         evalf=True,
     )
@@ -67,7 +67,7 @@ def test_vector_projection():
     # Set the values on the swarm variable
     v_values.array = uw.function.evaluate(
         sympy.Matrix(((s_fn_x, s_fn_y))),
-        swarm.particle_coordinates.array[...].squeeze(),
+        swarm._particle_coordinates.array[...].squeeze(),
         coord_sys=mesh.N,
         rbf=True,
     )
