@@ -930,10 +930,6 @@ class _MeshVariable(Stateful, uw_object):
         def __init__(inner_self, owner):
             inner_self.owner = owner
 
-        # Unreachable
-        # def __set__(inner_self, instance, array_value):
-        #     inner_self.owner.pack(array_value)
-
         def __setitem__(inner_self, key, value):
             var_data_copy = inner_self.owner.unpack(squeeze=False)
             var_data_copy[key] = value

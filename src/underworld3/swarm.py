@@ -351,7 +351,7 @@ class SwarmVariable(Stateful, uw_object):
             w = np.zeros(meshVar.coords.shape[0])
 
             if not self._nn_proxy:
-                for i in range(self.data.shape[0]):
+                for i in range(self.local_size):
                     # if b[i]:
                     node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
                     w[n[i]] += 1.0 / (1.0e-24 + d[i])
@@ -485,21 +485,11 @@ class SwarmVariable(Stateful, uw_object):
             )
         return self._data
 
-    # @data.setter
-    # def data(self, data_array):
-    #     self._cached_data = None
-    #     self.pack(data_array)
-    #     return
-
     class _array_data_structure(object):
         """This is used to add getitem / setitem to the array property of the variable"""
 
         def __init__(inner_self, owner):
             inner_self.owner = owner
-
-        # Unreachable
-        # def __set__(inner_self, instance, array_value):
-        #     inner_self.owner.pack(array_value)
 
         def __setitem__(inner_self, key, value):
             var_data_copy = inner_self.owner.unpack(squeeze=False)
@@ -509,6 +499,12 @@ class SwarmVariable(Stateful, uw_object):
         def __getitem__(inner_self, key):
             var_data_copy = inner_self.owner.unpack(squeeze=False)
             return var_data_copy[key]
+
+        def shape(inner_self):
+            swarm_size = inner_self.owner.swarm.size
+            data_size = inner_self.local_size
+            shape = (swarm_size, *data_size)
+            return shape
 
         def __repr__(inner_self):
             var_data_copy = inner_self.owner.unpack(squeeze=False)
@@ -595,11 +591,11 @@ class SwarmVariable(Stateful, uw_object):
                 comm.barrier()
                 for proc in range(1, comm.size):
                     if comm.rank == proc:
-                        if self.data.shape[0] > 0:
+                        if self.local_size > 0:
                             with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
                                 incoming_size = h5f["data"].shape[0]
                                 h5f["data"].resize(
-                                    (h5f["data"].shape[0] + self.data.shape[0]), axis=0
+                                    (h5f["data"].shape[0] + self.local_size), axis=0
                                 )
                                 h5f["data"][incoming_size:] = self.data[:, ...]
                     comm.barrier()
@@ -654,36 +650,33 @@ class SwarmVariable(Stateful, uw_object):
             h5py.File(f"{filename}", "r") as h5f_data,
             h5py.File(f"{swarmFilename}", "r") as h5f_swarm,
         ):
-            with self.swarm.access(self):
-                var_dtype = self.data.dtype
-                file_dtype = h5f_data["data"][:].dtype
-                file_length = h5f_data["data"][:].shape[0]
 
-                if var_dtype != file_dtype:
-                    if comm.rank == 0:
-                        warnings.warn(
-                            f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.",
-                            stacklevel=2,
-                        )
+            # with self.swarm.access(self):
+            var_dtype = self.dtype
+            file_dtype = h5f_data["data"][:].dtype
+            file_length = h5f_data["data"][:].shape[0]
 
-                # First work out which are local points and ignore the rest
-                # This might help speed up the load by dropping lots of particles
+            if var_dtype != file_dtype:
+                if comm.rank == 0:
+                    warnings.warn(
+                        f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.",
+                        stacklevel=2,
+                    )
 
-                all_coords = h5f_swarm["coordinates"][()]
-                all_data = h5f_data["data"][()]
+            # First work out which are local points and ignore the rest
+            # This might help speed up the load by dropping lots of particles
 
-                # cell = self.swarm.mesh.get_closest_local_cells(all_coords)
-                # local = np.where(cell >= 0)[0]
-                # # not_not_local = np.where(cell == -1)[0]
+            all_coords = h5f_swarm["coordinates"][()]
+            all_data = h5f_data["data"][()]
 
-                local_coords = all_coords  # [local]
-                local_data = all_data  # [local]
+            local_coords = all_coords  # [local]
+            local_data = all_data  # [local]
 
-                kdt = uw.kdtree.KDTree(local_coords)
+            kdt = uw.kdtree.KDTree(local_coords)
 
-                self.data[:] = kdt.rbf_interpolator_local(
-                    self.swarm.data, local_data, nnn=1
-                )
+            self.array[:, 0, :] = kdt.rbf_interpolator_local(
+                self.swarm.points, local_data, nnn=1
+            )
 
         return
 
@@ -854,7 +847,7 @@ class IndexSwarmVariable(SwarmVariable):
                     node_values = np.zeros((meshVar.data.shape[0],))
                     w = np.zeros((meshVar.data.shape[0],))
 
-                    for i in range(self.data.shape[0]):
+                    for i in range(self.swarm.local_size):
                         tem = np.isclose(n_distance[i, :], n_distance[i, 0])
                         dist = n_distance[i, tem]
                         indices = n_indices[i, tem]
@@ -1041,10 +1034,19 @@ class Swarm(Stateful, uw_object):
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
+        self._clip_to_mesh = True
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
         self._data = None
+
+        # Add data structure to hold point location information in
+        # an array with a callback that resets the relevant parts of the
+        # swarm variable stack when the data structure is modified.
+
+        self._points = None
+
+        ####
 
         # Is the swarm a streak-swarm ?
         self.recycle_rate = recycle_rate
@@ -1107,6 +1109,7 @@ class Swarm(Stateful, uw_object):
         self._X0_uninitialised = True
         self._index = None
         self._nnmapdict = {}
+        self._migration_disabled = False
 
         super().__init__()
 
@@ -1115,21 +1118,191 @@ class Swarm(Stateful, uw_object):
         return self._mesh
 
     @property
+    def local_size(self):
+        return self.dm.getLocalSize()
+
+    # We could probably use a global_size property too
+
+    @property
     def data(self):
-        return self._particle_coordinates.array[:, 0, :]
+        return self.points
 
-    @data.setter
-    def data(self, data_array):
+    @property
+    def points(self):
+        # Get current coordinate data from PETSc
+        # coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
+        # self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Note: this can be adapted later to remove the ability to access the
-        # _particle_coordinates variable (alias, actually) directly, and to handle the updating
-        # of variables.
+        with self.access():
+            coords = self._coord_var.data[...].copy()
 
-        self._particle_coordinates.array[:, 0, :] = data_array
+        # Cache and reuse NDArray_With_Callback object for consistent object identity
+        if not hasattr(self, "_points") or self._points is None:
+            # First access: create new NDArray_With_Callback object
+            self._points = uw.utilities.NDArray_With_Callback(
+                coords,
+                owner=self,
+                disable_inplace_operators=True,
+            )
+
+            # Define the callback function (only once)
+            def swarm_update_callback(array, change_context):
+                print(
+                    f"Swarm update callback - {self.dm.getLocalSize()}",
+                    flush=True,
+                )
+                print(f"Swarm update callback - {array.shape[0]}", flush=True)
+
+                with self.migration_disabled():
+                    # Check if sizes match before attempting to copy back
+                    petsc_size = self.dm.getLocalSize()
+                    points_size = array.shape[0]
+
+                    print(
+                        f"Swarm update callback - {self.dm.getLocalSize()}",
+                        flush=True,
+                    )
+                    print(f"Swarm update callback - {array.shape[0]}", flush=True)
+
+                    if petsc_size == points_size:
+                        # Sizes match: points array reflects current PETSc state, safe to write back
+                        self._coord_var.array[:, 0, :] = array[...]
+                        print(
+                            f"Swarm update callback 2 - synced {points_size} coords to PETSc"
+                        )
+                    else:
+                        # Size mismatch: points array is STALE
+                        # This happens when parallel operations (migration) modified PETSc between
+                        # when the points cache was created and when this callback executes.
+                        # PETSc swarm is the authoritative source, so we SKIP the writeback.
+                        print(
+                            f"Size mismatch: PETSc={petsc_size}, Points={points_size}"
+                        )
+                        print(
+                            "Skipping writeback - points cache is stale after parallel operations"
+                        )
+                        print(
+                            "Next access to swarm.points will refresh from current PETSc state"
+                        )
+
+                        # Mark cache as stale so next property access refreshes from PETSc
+                        # We don't need to set self._points=None here because the next property
+                        # access will call sync_data() which will handle the size change properly
+                        pass
+
+                self.migrate()
+
+                for var in self._vars.values():
+                    var._update()
+
+                print(f"Swarm update callback 3 - move coords {self.dm.getLocalSize()}")
+                print(f"Swarm update callback 3 - points arr  {array.shape[0]}")
+
+                return
+
+            # Add callback to the cached object
+            self._points.add_callback(swarm_update_callback)
+        else:
+            # Subsequent accesses: efficiently sync new coordinate data
+            # This preserves callbacks and delay contexts, updating object reference if size changed
+            self._points = self._points.sync_data(coords)
+
+        return self._points
+
+    @points.setter
+    def points(self, value):
+
+        if value.shape[0] != self.local_size:
+            raise TypeError(
+                f"Points must be a numpy array with the same size as the swarm",
+                f"  - partial allocation to the swarm may trigger migration or point removal",
+                f"  - either change all the swarm points at once or use the `with migration_disabled()` manager",
+            )
+
+        self._points[...] = value[...]
+
+    @points.setter
+    def points(self, value):
+
+        if isinstance(value, np.ndarray):
+            if value.shape[0] != self.local_size:
+                message = (
+                    "Points must be a numpy array with the same size as the swarm."
+                    + "Partial allocation to the swarm may trigger particle migration"
+                    + "either change all the swarm points at once or use the `with migration_disabled()` manager",
+                )
+                raise TypeError(message)
+
+        self._points[...] = value[...]
 
     @property
     def _particle_coordinates(self):
         return self._coord_var
+
+    @property
+    def clip_to_mesh(self):
+        return self._clip_to_mesh
+
+    @clip_to_mesh.setter
+    def clip_to_mesh(self, value):
+        self._clip_to_mesh = bool(value)
+
+    def dont_clip_to_mesh(self):
+        """
+        Context manager that temporarily disables mesh clipping for the swarm.
+        `swarm.migrate` is called automatically when exiting the context.
+
+        Usage:
+            with swarm.dont_clip_to_mesh():
+                # swarm operations that should not be clipped to mesh
+                swarm.data = new_positions
+
+        """
+
+        class _ClipToggleContext:
+            def __init__(self, swarm):
+                self.swarm = swarm
+                self.original_value = None
+
+            def __enter__(self):
+                self.original_value = self.swarm._clip_to_mesh
+                self.swarm._clip_to_mesh = False
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self.swarm._clip_to_mesh = self.original_value
+                self.swarm.migrate()
+
+        return _ClipToggleContext(self)
+
+    def migration_disabled(self):
+        """
+        Context manager that temporarily disables particle migration for the swarm.
+        Migration is NOT called when exiting the context.
+
+        Usage:
+            with swarm.migration_disabled():
+                # swarm operations that should not trigger migration
+                swarm.data = new_positions
+                # ... other operations ...
+                # migrate() will be skipped during these operations
+
+        """
+
+        class _MigrationToggleContext:
+            def __init__(self, swarm):
+                self.swarm = swarm
+                self.original_value = None
+
+            def __enter__(self):
+                self.original_value = self.swarm._migration_disabled
+                self.swarm._migration_disabled = True
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self.swarm._migration_disabled = self.original_value
+
+        return _MigrationToggleContext(self)
 
     @timing.routine_timer_decorator
     def populate(
@@ -1173,12 +1346,12 @@ class Swarm(Stateful, uw_object):
                 self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
 
             with self.access():
-                swarm_orig_size = self._particle_coordinates.data.shape[0]
+                swarm_orig_size = self.local_size
                 all_local_coords = np.vstack(
                     (self._particle_coordinates.data,) * (self.recycle_rate)
                 )
 
-                swarm_new_size = all_local_coords.data.shape[0]
+                swarm_new_size = all_local_coords.shape[0]
 
             self.dm.addNPoints(swarm_new_size - swarm_orig_size)
 
@@ -1207,7 +1380,7 @@ class Swarm(Stateful, uw_object):
     def migrate(
         self,
         remove_sent_points=True,
-        delete_lost_points=True,
+        delete_lost_points=None,
         max_its=10,
     ):
         """
@@ -1224,7 +1397,13 @@ class Swarm(Stateful, uw_object):
             which has this field pre-defined. (We'd need to add a cellid field as well, and re-compute it upon landing)
         """
 
+        if self._migration_disabled:
+            return
+
         from time import time
+
+        if delete_lost_points is None:
+            delete_lost_points = self.clip_to_mesh
 
         centroids = self.mesh._get_domain_centroids()
         mesh_domain_kdtree = uw.kdtree.KDTree(centroids)
@@ -1519,45 +1698,43 @@ class Swarm(Stateful, uw_object):
             # when there are many active cores. This is probably why the parallel
             # h5py write hangs
 
-            with self.access():
-                data_copy = self.data[:].copy()
+            points_data_copy = self.points[:].copy()
 
             with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 if compression == True:
                     h5f.create_dataset(
                         "coordinates",
-                        data=data_copy[:],
+                        data=points_data_copy,
                         compression=compressionType,
                     )
                 else:
-                    h5f.create_dataset("coordinates", data=data_copy[:])
+                    h5f.create_dataset("coordinates", data=points_data_copy)
 
-            del data_copy
+            del points_data_copy
 
         else:
             # It seems to be a bad idea to mix mpi barriers with the access
             # context manager so the copy-free version of this seems to hang
             # when there are many active cores
 
-            with self.access():
-                data_copy = self.data[:].copy()
+            points_data_copy = self.points[:].copy()
 
             if comm.rank == 0:
                 with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
                     if compression == True:
                         h5f.create_dataset(
                             "coordinates",
-                            data=data_copy,
+                            data=points_data_copy,
                             chunks=True,
-                            maxshape=(None, data_copy.shape[1]),
+                            maxshape=(None, points_data_copy.shape[1]),
                             compression=compressionType,
                         )
                     else:
                         h5f.create_dataset(
                             "coordinates",
-                            data=data_copy,
+                            data=points_data_copy,
                             chunks=True,
-                            maxshape=(None, data_copy.shape[1]),
+                            maxshape=(None, points_data_copy.shape[1]),
                         )
 
             comm.barrier()
@@ -1565,16 +1742,18 @@ class Swarm(Stateful, uw_object):
                 if comm.rank == i:
                     with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
                         h5f["coordinates"].resize(
-                            (h5f["coordinates"].shape[0] + data_copy.shape[0]),
+                            (h5f["coordinates"].shape[0] + points_data_copy.shape[0]),
                             axis=0,
                         )
                         # passive swarm, zero local particles is not unusual
                         if data_copy.shape[0] > 0:
-                            h5f["coordinates"][-data_copy.shape[0] :] = data_copy[:]
+                            h5f["coordinates"][-points_data_copy.shape[0] :] = (
+                                points_data_copy[:]
+                            )
                 comm.barrier()
             comm.barrier()
 
-            del data_copy
+            del points_data_copy
 
         return
 
@@ -1825,7 +2004,7 @@ class Swarm(Stateful, uw_object):
 
         >>> import underworld3 as uw
         >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh.deform_mesh():
+        >>> with someMesh._deform_mesh():
         ...     someMesh.data[0] = [0.1,0.1]
         >>> someMesh.data[0]
         array([ 0.1,  0.1])
@@ -1899,16 +2078,25 @@ class Swarm(Stateful, uw_object):
                     # that we are currently within, and it is therefore too easy to
                     # get things wrong that way.
                     #
+                    #
 
-                    if uw.mpi.size > 1:
-                        coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
-                            (-1, self.em_swarm.dim)
-                        )
+                    # if uw.mpi.size > 1:
+                    #     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
+                    #         (-1, self.em_swarm.dim)
+                    #     )
 
-                        self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
+                    #     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
 
-                        ## We'll need to identify the new processes here and update the particle rank value accordingly
-                        self.em_swarm.migrate(remove_sent_points=True)
+                    #     ## We'll need to identify the new processes here and update the particle rank value accordingly
+                    #
+
+                    # Even if only on one process, migrate needs to be called to remove particles that are
+                    # not in the domain.
+
+                    self.em_swarm.migrate(
+                        remove_sent_points=True,
+                        delete_lost_points=self.em_swarm._clip_to_mesh,
+                    )
 
                     # void these things too
                     self.em_swarm._index = None

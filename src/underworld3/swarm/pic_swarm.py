@@ -365,7 +365,7 @@ class PICSwarm(Stateful, uw_object):
                 self.mesh.particle_CellID_orig = self._cellid_var.data.copy()
 
             with self.access():
-                swarm_orig_size = self._particle_coordinates.data.shape[0]
+                swarm_orig_size = self.local_size
                 all_local_coords = np.vstack(
                     (self._particle_coordinates.data,) * (self.recycle_rate)
                 )
@@ -373,7 +373,7 @@ class PICSwarm(Stateful, uw_object):
                     (self._cellid_var.data,) * (self.recycle_rate)
                 )
 
-                swarm_new_size = all_local_coords.data.shape[0]
+                swarm_new_size = all_local_coords.shape[0]
 
             self.dm.addNPoints(swarm_new_size - swarm_orig_size)
 
@@ -818,7 +818,7 @@ class PICSwarm(Stateful, uw_object):
 
         >>> import underworld3 as uw
         >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh.deform_mesh():
+        >>> with someMesh._deform_mesh():
         ...     someMesh.data[0] = [0.1,0.1]
         >>> someMesh.data[0]
         array([ 0.1,  0.1])

@@ -31,7 +31,7 @@ Example
 >>> import underworld as uw
 >>> uw.timing.start()
 >>> someMesh = uw.discretisation.FeMesh_Cartesian()
->>> with someMesh.deform_mesh():
+>>> with someMesh._deform_mesh():
 ...     someMesh.data[0] = [0.1,0.1]
 >>> uw.timing.stop()
 >>> # uw.timing.print_table()   # This will print the data.

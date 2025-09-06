@@ -450,6 +450,27 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
+        # Expose mesh points through special numpy array class with a callback
+        # on all setter operations
+
+        self._points = uw.utilities.NDArray_With_Callback(
+            numpy.ndarray.view(
+                self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+            ),
+            owner=self,
+        )
+
+        # The callback is to rebuild the mesh data structures - we already have a routine
+        # to handle that so we just wrap it here.
+
+        def mesh_update_callback(array, change_context):
+            print(f"Mesh update callback - mesh deform")
+            coords = array.reshape(-1, array.owner.cdim)
+            self._deform_mesh(coords, verbose=True)
+            return
+
+        self._points.add_callback(mesh_update_callback)
+
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
@@ -1053,7 +1074,7 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
-    def deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
+    def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
         """
         This method will update the mesh coordinates and reset any cached coordinates in
         the mesh and in equation systems that are registered on the mesh.
@@ -1067,13 +1088,6 @@ class Mesh(Stateful, uw_object):
 
         self.dm.setCoordinatesLocal(coord_vec)
         self.nuke_coords_and_rebuild()
-
-        # This should not be necessary any more as we now check the
-        # coordinates on the DM to see if they have changed (and we rebuild the
-        # discretisation as needed)
-        #
-        # for eq_system in self._equation_systems_register:
-        #     eq_system._rebuild_after_mesh_update(verbose)
 
         return
 
@@ -1094,7 +1108,7 @@ class Mesh(Stateful, uw_object):
         -------
         >>> import underworld3 as uw
         >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh.deform_mesh():
+        >>> with someMesh._deform_mesh():
         ...     someMesh.data[0] = [0.1,0.1]
         >>> someMesh.data[0]
         array([ 0.1,  0.1])
@@ -1245,9 +1259,15 @@ class Mesh(Stateful, uw_object):
         """
         The array of mesh element vertex coordinates.
         """
-        # get flat array
-        arr = self.dm.getCoordinatesLocal().array
-        return arr.reshape(-1, self.cdim)
+        return self._points
+
+    @property
+    def points(self):
+        return self._points
+
+    @points.setter
+    def points(self, value):
+        self._points = value
 
     @timing.routine_timer_decorator
     def write_timestep(

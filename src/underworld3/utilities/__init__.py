@@ -2,6 +2,7 @@
 
 from . import _api_tools
 
+
 def _append_petsc_path():
     # get/import petsc_gen_xdmf from the original petsc installation
     import sys
@@ -12,6 +13,7 @@ def _append_petsc_path():
     if not petsc_dir + "/lib/petsc/bin" in sys.path:
         sys.path.append(petsc_dir + "/lib/petsc/bin")
 
+
 _append_petsc_path()
 
 from .uw_petsc_gen_xdmf import Xdmf, generateXdmf, generate_uw_Xdmf
@@ -21,3 +23,4 @@ from ._utils import CaptureStdout, h5_scan, mem_footprint, gather_data, auditor,
 from .read_medit_ascii import read_medit_ascii, print_medit_mesh_info
 from .create_dmplex_from_medit import create_dmplex_from_medit
 from .geometry_tools import *
+from .nd_array_callback import NDArray_With_Callback

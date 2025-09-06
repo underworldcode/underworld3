@@ -140,14 +140,13 @@ def swarm_to_pv_cloud(swarm):
     import numpy as np
     import pyvista as pv
 
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        if swarm.mesh.dim == 2:
-            points[:, 2] = 0.0
-        else:
-            points[:, 2] = swarm.data[:, 2]
+    points = np.zeros((swarm.local_size, 3))
+    points[:, 0] = swarm.data[:, 0]
+    points[:, 1] = swarm.data[:, 1]
+    if swarm.mesh.dim == 2:
+        points[:, 2] = 0.0
+    else:
+        points[:, 2] = swarm.points[:, 2]
 
     point_cloud = pv.PolyData(points)
 

@@ -33,7 +33,7 @@ def test_single_coord(n, dim, coords):
     # Build our index
     index = uw.kdtree.KDTree(pts)
     # Use KDTree to find closest point to a coord
-    kd_dist, kd_id = index.query(coords, sqr_dists = False)
+    kd_dist, kd_id = index.query(coords, sqr_dists=False)
 
     assert np.any(kd_id[0] > index.n) == False, "Some point weren't found. Error"
 
@@ -81,25 +81,25 @@ def test_mesh_verts(res, dim):
     to mesh verts.
     """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(res,) * dim)
-    index = uw.kdtree.KDTree(mesh.data)
-    #index = KDTree(mesh.data)
+    index = uw.kdtree.KDTree(mesh.data[...])
+    # index = KDTree(mesh.data[...])
 
     # Get copy of mesh vertices, and add some noise, but only a small
     # amount such that the copied data points are still closest to the
     # original points.
     elsize = 1.0 / float(res)
-    coords = mesh.data.copy() + 0.5 * elsize * np.random.random(mesh.data.shape)
-    dist, kdpt = index.query(coords, sqr_dists = False)
+    coords = mesh.data[...] + 0.5 * elsize * np.random.random(mesh.data[...].shape)
+    dist, kdpt = index.query(coords, sqr_dists=False)
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
 
     # assert np.allclose(True, found), "All points should have been found."
     # `find_closest_point` should return index of pts.
     assert np.allclose(
-        np.arange(mesh.data.shape[0]), kdpt
+        np.arange(mesh.data[...].shape[0]), kdpt
     ), "Point indices weren't as expected."
     # Calc distances
-    diff = mesh.data - coords
+    diff = mesh.data[...] - coords
     dot2 = np.sqrt(np.sum(np.multiply(diff, diff), 1))
     assert np.allclose(dist.squeeze(), dot2), "Point distances weren't as expected."
 
@@ -131,9 +131,8 @@ def test_mesh_centroid(res, dim, fill_param):
     index = uw.kdtree.KDTree(centroids)
 
     with swarm.access():
-        dist, kdpt = index.query(swarm.data)
+        dist, kdpt = index.query(swarm.data[...])
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
     assert np.allclose(cellid, kdpt), "Point indices weren't as expected."
-
