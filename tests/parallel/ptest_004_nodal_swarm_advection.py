@@ -39,17 +39,26 @@ DuDt = uw.systems.ddt.SemiLagrangian(
                                     )
 
 # initialize variables
-with mesh.access(v):
-    v.data[:, 0] = velocity
+#TODO: DELETE remove swarm.access / data, replace with direct array assignment
+# with mesh.access(v):
+#     v.data[:, 0] = velocity
+
+v.array[:, 0, 0] = velocity
 
 # we are only interested in monitoring the number of nodal swarm particles
 # before and after advection
-with mesh.access(vec_tst):
-    vec_tst.data[:, 0] = 1.
+#TODO: DELETE remove swarm.access / data, replace with direct array assignment
+# with mesh.access(vec_tst):
+#     vec_tst.data[:, 0] = 1.
+
+vec_tst.array[:, 0, 0] = 1.
 
 # get the number of nodal swarm particles BEFORE advection
-with DuDt._nswarm_psi.access(DuDt._nswarm_psi):
-    before_adv_swarm_num = len(DuDt._nswarm_psi.data)
+#TODO: DELETE remove swarm.access / data, replace with direct array assignment
+# with DuDt._nswarm_psi.access(DuDt._nswarm_psi):
+#     before_adv_swarm_num = len(DuDt._nswarm_psi.data)
+
+before_adv_swarm_num = len(DuDt._nswarm_psi.data)
 
 comm = uw.mpi.comm
 
@@ -59,12 +68,18 @@ before_total = comm.allreduce(before_adv_swarm_num, op = MPI.SUM)
 
 # do one huge timestep
 DuDt.update_pre_solve(dt, verbose = False, evalf = False)
-with mesh.access(vec_tst):
-    vec_tst.data[...] = DuDt.psi_star[0].data[...]
+#TODO: DELETE remove swarm.access / data, replace with direct array assignment
+# with mesh.access(vec_tst):
+#     vec_tst.data[...] = DuDt.psi_star[0].data[...]
+
+vec_tst.array[...] = DuDt.psi_star[0].array[...]
 
 # get the number of nodal swarm particles AFTER advection
-with DuDt._nswarm_psi.access(DuDt._nswarm_psi):
-    after_adv_swarm_num = len(DuDt._nswarm_psi.data)
+#TODO: DELETE remove swarm.access / data, replace with direct array assignment
+# with DuDt._nswarm_psi.access(DuDt._nswarm_psi):
+#     after_adv_swarm_num = len(DuDt._nswarm_psi.data)
+
+after_adv_swarm_num = len(DuDt._nswarm_psi.data)
 
 after_total = comm.allreduce(after_adv_swarm_num, op = MPI.SUM)
 

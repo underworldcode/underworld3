@@ -75,20 +75,29 @@ def test_SLVec_boxmesh(mesh):
     # ### Set up:
     # - Velocity field
     # - Initial vector distribution
-    with mesh.access(v):
-        v.data[:, 1] = velocity
+    #TODO: DELETE remove swarm.access / data, replace with direct array assignment
+    # with mesh.access(v):
+    #     v.data[:, 1] = velocity
+    
+    v.array[:, 1, 1] = velocity
 
     x, y = mesh.X
 
     # vector components based on 2D Gaussian
-    with mesh.access(vect_test):
-        gauss_2D = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sdev**2))
-        vect_test.data[:, 0] = (
-            2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
-        )
-        vect_test.data[:, 1] = (
-            2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
-        )
+    #TODO: DELETE remove swarm.access / data, replace with direct array assignment
+    # with mesh.access(vect_test):
+    #     gauss_2D = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sdev**2))
+    #     vect_test.data[:, 0] = (
+    #         2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
+    #     )
+    #     vect_test.data[:, 1] = (
+    #         2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
+    #     )
+    
+    gauss_2D = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sdev**2))
+    gauss_vals = 2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
+    vect_test.array[:, 0, 0] = gauss_vals
+    vect_test.array[:, 1, 1] = gauss_vals
 
     # ### Create points to sample the UW results
     ### y coords to sample
@@ -112,9 +121,11 @@ def test_SLVec_boxmesh(mesh):
 
     for i in range(nsteps):
         DuDt.update_pre_solve(dt, verbose=False, evalf=False)
-        with mesh.access(vect_test):  # update
-            vect_test.data[...] = DuDt.psi_star[0].data[...]
-
+        #TODO: DELETE remove swarm.access / data, replace with direct array assignment
+        # with mesh.access(vect_test):  # update
+        #     vect_test.data[...] = DuDt.psi_star[0].data[...]
+        
+        vect_test.array[...] = DuDt.psi_star[0].array[...]
         model_time += dt
 
     ### compare UW and 1D numerical solution

@@ -484,7 +484,7 @@ class NDArray_With_Callback(np.ndarray):
         return GlobalDelayCallbackContext(context_info)
 
     def _trigger_callback(
-        self, operation: str, indices=None, old_value=None, new_value=None
+        self, operation: str, indices=None, old_value=None, new_value=None, data_has_changed=True
     ):
         """
         Internal method to trigger all registered callbacks.
@@ -499,6 +499,8 @@ class NDArray_With_Callback(np.ndarray):
             Previous value(s) at the modified location
         new_value : array-like, optional
             New value(s) at the modified location
+        data_has_changed : bool, optional
+            Whether this operation may have changed the array data (default True)
         """
         if not self._callback_enabled or not self._callbacks:
             return
@@ -510,6 +512,7 @@ class NDArray_With_Callback(np.ndarray):
             "new_value": new_value,
             "array_shape": self.shape,
             "array_dtype": self.dtype,
+            "data_has_changed": data_has_changed,
         }
 
         # Check if we're in a delay callback context
@@ -877,7 +880,8 @@ class NDArray_With_Callback(np.ndarray):
                 "sync_data", 
                 old_value=old_data, 
                 new_value=new_array,
-                indices=None  # Full array update
+                indices=None,  # Full array update
+                data_has_changed=False  # Sync operation doesn't represent user data change
             )
             
             return self
@@ -900,7 +904,8 @@ class NDArray_With_Callback(np.ndarray):
                 "sync_data",
                 old_value=old_data,
                 new_value=new_array,
-                indices=None
+                indices=None,
+                data_has_changed=False  # Sync operation doesn't represent user data change
             )
             
             return new_obj

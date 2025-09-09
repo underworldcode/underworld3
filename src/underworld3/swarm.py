@@ -1027,14 +1027,14 @@ class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
-    def __init__(self, mesh, recycle_rate=0, verbose=False):
+    def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
         Swarm.instances += 1
 
         self.verbose = verbose
+        self._clip_to_mesh = clip_to_mesh
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
-        self._clip_to_mesh = True
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
@@ -1130,11 +1130,11 @@ class Swarm(Stateful, uw_object):
     @property
     def points(self):
         # Get current coordinate data from PETSc
-        # coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
-        # self.dm.restoreField("DMSwarmPIC_coor")
+        coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
+        self.dm.restoreField("DMSwarmPIC_coor")
 
-        with self.access():
-            coords = self._coord_var.data[...].copy()
+        # with self.access():
+        #     coords = self._coord_var.data[...].copy()
 
         # Cache and reuse NDArray_With_Callback object for consistent object identity
         if not hasattr(self, "_points") or self._points is None:
@@ -1147,56 +1147,46 @@ class Swarm(Stateful, uw_object):
 
             # Define the callback function (only once)
             def swarm_update_callback(array, change_context):
-                print(
-                    f"Swarm update callback - {self.dm.getLocalSize()}",
-                    flush=True,
-                )
-                print(f"Swarm update callback - {array.shape[0]}", flush=True)
+                # print(
+                #     f"Swarm update callback - {self.dm.getLocalSize()}",
+                #     flush=True,
+                # )
+
+                # Check if this operation may have changed data
+                # Skip expensive operations for read-only sync operations
+                data_changed = change_context.get("data_has_changed", True)
+
+                if not data_changed:
+                    # print(
+                    #     "Swarm callback: Skipping migration - read-only sync operation"
+                    # )
+                    return
 
                 with self.migration_disabled():
                     # Check if sizes match before attempting to copy back
                     petsc_size = self.dm.getLocalSize()
                     points_size = array.shape[0]
 
-                    print(
-                        f"Swarm update callback - {self.dm.getLocalSize()}",
-                        flush=True,
-                    )
-                    print(f"Swarm update callback - {array.shape[0]}", flush=True)
-
                     if petsc_size == points_size:
-                        # Sizes match: points array reflects current PETSc state, safe to write back
+                        # Update PETSc state
+                        # We could do this directly which would be more efficient and bypass the access manager (appropriately, here)
                         self._coord_var.array[:, 0, :] = array[...]
-                        print(
-                            f"Swarm update callback 2 - synced {points_size} coords to PETSc"
-                        )
+
+                        # Now migrate / update
+                        self.migrate()
+                        for var in self._vars.values():
+                            var._update()
+
                     else:
-                        # Size mismatch: points array is STALE
-                        # This happens when parallel operations (migration) modified PETSc between
-                        # when the points cache was created and when this callback executes.
-                        # PETSc swarm is the authoritative source, so we SKIP the writeback.
+                        # This means a migration call has been made before we have
+                        # had a chance to update the swarm consistently. This is an error
+                        # condition. We raise an exception to prevent further errors.
+
                         print(
-                            f"Size mismatch: PETSc={petsc_size}, Points={points_size}"
+                            f"Size mismatch: PETSc={petsc_size}, Points={points_size}\n",
+                            f"The swarm migration state has become corrupted",
                         )
-                        print(
-                            "Skipping writeback - points cache is stale after parallel operations"
-                        )
-                        print(
-                            "Next access to swarm.points will refresh from current PETSc state"
-                        )
-
-                        # Mark cache as stale so next property access refreshes from PETSc
-                        # We don't need to set self._points=None here because the next property
-                        # access will call sync_data() which will handle the size change properly
-                        pass
-
-                self.migrate()
-
-                for var in self._vars.values():
-                    var._update()
-
-                print(f"Swarm update callback 3 - move coords {self.dm.getLocalSize()}")
-                print(f"Swarm update callback 3 - points arr  {array.shape[0]}")
+                        raise RuntimeError
 
                 return
 
@@ -1204,7 +1194,9 @@ class Swarm(Stateful, uw_object):
             self._points.add_callback(swarm_update_callback)
         else:
             # Subsequent accesses: efficiently sync new coordinate data
-            # This preserves callbacks and delay contexts, updating object reference if size changed
+            # This preserves callbacks and delay contexts, updating object reference if size
+            # changed as a result of migration operations
+
             self._points = self._points.sync_data(coords)
 
         return self._points
@@ -2256,66 +2248,76 @@ class Swarm(Stateful, uw_object):
         # Wrap this whole thing in sub-stepping loop
         for step in range(0, substeps):
 
-            with self.access(X0):
-                X0.data[...] = self._particle_coordinates.data[...]
+            X0.array[:, 0, :] = self.points[...]
 
             # Mid point algorithm (2nd order)
 
             if order == 2:
-                with self.access(self._particle_coordinates):
-                    v_at_Vpts = np.zeros_like(self._particle_coordinates.data)
+                print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
 
-                    # First evaluate the velocity at the particle locations
-                    # (this is a local operation)
+                # with self.access(self._particle_coordinates):
+                v_at_Vpts = np.zeros_like(self.points[...])
 
-                    v_at_Vpts[...] = uw.function.evaluate(
-                        V_fn_matrix, self._particle_coordinates.data
-                    )[:, 0, :]
+                # First evaluate the velocity at the particle locations
+                # (this is a local operation)
 
-                    mid_pt_coords = (
-                        self._particle_coordinates.data[...]
-                        + 0.5 * delta_t * v_at_Vpts / substeps
-                    )
+                v_at_Vpts[...] = uw.function.evaluate(
+                    V_fn_matrix, self._particle_coordinates.data
+                )[:, 0, :]
 
-                    # This will re-position particles in periodic domains (etc)
-                    if self.mesh.return_coords_to_bounds is not None:
-                        mid_pt_coords = self.mesh.return_coords_to_bounds(mid_pt_coords)
+                mid_pt_coords = self.points[...] + 0.5 * delta_t * v_at_Vpts / substeps
 
-                    # Now do a **Global** evaluation
-                    # (since the mid-points might have moved off-proc)
-                    #
+                # This will re-position particles in periodic domains (etc)
+                if self.mesh.return_coords_to_bounds is not None:
+                    mid_pt_coords = self.mesh.return_coords_to_bounds(mid_pt_coords)
 
-                    v_at_Vpts[...] = uw.function.global_evaluate(
-                        V_fn_matrix, mid_pt_coords
-                    )[:, 0, :]
+                # Now do a **Global** evaluation
+                # (since the mid-points might have moved off-proc)
+                #
 
-                    new_coords = X0.data[...] + delta_t * v_at_Vpts / substeps
+                v_at_Vpts[...] = uw.function.global_evaluate(
+                    V_fn_matrix, mid_pt_coords
+                )[:, 0, :]
 
-                    if self.mesh.return_coords_to_bounds is not None:
-                        new_coords = self.mesh.return_coords_to_bounds(new_coords)
+                new_coords = X0.array[:, 0, :] + delta_t * v_at_Vpts / substeps
 
-                    # Set the new particle positions (and automatically migrate)
-                    self._particle_coordinates.data[...] = new_coords[...]
+                if self.mesh.return_coords_to_bounds is not None:
+                    new_coords = self.mesh.return_coords_to_bounds(new_coords)
 
-                    del new_coords
-                    del v_at_Vpts
+                # Set the new particle positions (and automatically migrate)
+                self.points[...] = new_coords[...]
+
+                del new_coords
+                del v_at_Vpts
 
             # forward Euler (1st order)
             else:
+                print(
+                    f"1. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    flush=True,
+                )
 
-                with self.access(self._particle_coordinates):
-                    v_at_Vpts = np.zeros_like(self.data)
+                v_at_Vpts = np.zeros_like(self.points)
+                v_at_Vpts[...] = uw.function.global_evaluate(
+                    V_fn_matrix, self.points[...]
+                )[:, 0, :]
 
-                    v_at_Vpts[...] = uw.function.evaluate(
-                        V_fn_matrix, self._particle_coordinates.data
-                    )[:, 0, :]
+                print(
+                    f"2. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    flush=True,
+                )
 
-                    new_coords = self.data + delta_t * v_at_Vpts / substeps
+                new_coords = self.points[...] + delta_t * v_at_Vpts / substeps
 
-                    if self.mesh.return_coords_to_bounds is not None:
-                        new_coords = self.mesh.return_coords_to_bounds(new_coords)
+                print(
+                    f"3. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    flush=True,
+                )
 
-                    self.data[...] = new_coords[...]
+                if self.mesh.return_coords_to_bounds is not None:
+                    new_coords = self.mesh.return_coords_to_bounds(new_coords)
+
+                self.points[...] = new_coords[...]
 
         ## End of substepping loop
 
@@ -2401,6 +2403,7 @@ class Swarm(Stateful, uw_object):
 
             ## End of cycle_swarm loop
             #
+            #
 
         # Remove points no longer in the domain
         self.migrate(
@@ -2472,7 +2475,7 @@ class NodalPointSwarm(Swarm):
         mesh = trackedVariable.mesh
 
         # Set up a standard swarm
-        super().__init__(mesh, verbose)
+        super().__init__(mesh, verbose, clip_to_mesh=False)
 
         nswarm = self
 
@@ -2488,8 +2491,6 @@ class NodalPointSwarm(Swarm):
             nswarm,
             vtype=trackedVariable.vtype,
             _proxy=False,
-            # proxy_degree=trackedVariable.degree,
-            # proxy_continuous=trackedVariable.continuous,
             varsymbol=symbol,
         )
 
@@ -2513,7 +2514,6 @@ class NodalPointSwarm(Swarm):
             trackedVariable.coords.shape[0] + 1
         )  # why + 1 ? That's the number of spots actually allocated
 
-        # cellid = nswarm.dm.getField("DMSwarm_cellid")
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         ranks = nswarm.dm.getField("DMSwarm_rank").reshape((-1, 1))
         coords[...] = trackedVariable.coords[...]

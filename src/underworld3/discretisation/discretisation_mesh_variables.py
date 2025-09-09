@@ -620,9 +620,6 @@ class _MeshVariable(Stateful, uw_object):
         dmnew.localToGlobal(lvec, gvec, addv=False)
         gvec.setName("coordinates")
 
-        # Check that this is also synchronised
-        # self.mesh.dm.localToGlobal(self._lvec, self._gvec, addv=False)
-
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self._gvec)
         viewer(gvec)
