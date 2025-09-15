@@ -937,7 +937,7 @@ class SemiLagrangian(uw_object):
 
             if order == 0:
                 am = self.psi_fn
-
+f
             elif order == 1:
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 

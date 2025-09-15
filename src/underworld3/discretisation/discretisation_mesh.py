@@ -2,6 +2,8 @@ from typing import Optional, Tuple, Union
 from enum import Enum
 
 import os
+import weakref
+import threading
 from mpi4py.MPI import Info
 import numpy
 import sympy
@@ -180,6 +182,11 @@ class Mesh(Stateful, uw_object):
     ):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
+
+        # Mesh coordinate version tracking for swarm coordination
+        self._mesh_version = 0
+        self._registered_swarms = weakref.WeakSet()
+        self._mesh_update_lock = threading.RLock()
 
         comm = PETSc.COMM_WORLD
 
@@ -467,6 +474,12 @@ class Mesh(Stateful, uw_object):
             print(f"Mesh update callback - mesh deform")
             coords = array.reshape(-1, array.owner.cdim)
             self._deform_mesh(coords, verbose=True)
+            
+            # Increment mesh version to notify registered swarms of coordinate changes
+            with self._mesh_update_lock:
+                self._mesh_version += 1
+                print(f"Mesh version incremented to {self._mesh_version}")
+            
             return
 
         self._points.add_callback(mesh_update_callback)
@@ -2309,6 +2322,26 @@ class Mesh(Stateful, uw_object):
                 meshVar.data[point_indices] = 1.0
 
         return meshVar
+
+
+    def register_swarm(self, swarm):
+        """Register swarm as dependent on this mesh for coordinate change notifications"""
+        self._registered_swarms.add(swarm)
+        
+    def unregister_swarm(self, swarm):
+        """Unregister swarm (called during swarm cleanup)"""
+        # WeakSet handles weak references internally, just remove the swarm directly
+        self._registered_swarms.discard(swarm)
+
+    def _increment_mesh_version(self):
+        """
+        Manually increment mesh version to notify swarms of coordinate changes.
+        This is called automatically when mesh.points is modified, but can be
+        called manually if coordinates are changed through other means.
+        """
+        with self._mesh_update_lock:
+            self._mesh_version += 1
+            print(f"Mesh version manually incremented to {self._mesh_version}")
 
 
 ## This is a temporary replacement for the PETSc xdmf generator

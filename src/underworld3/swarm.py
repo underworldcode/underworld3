@@ -1035,6 +1035,13 @@ class Swarm(Stateful, uw_object):
         self._mesh = mesh
         self.dim = mesh.dim
         self.cdim = mesh.cdim
+        
+        # Mesh version tracking for coordinate change detection
+        self._mesh_version = mesh._mesh_version
+        
+        # Register this swarm with the mesh for coordinate change notifications
+        mesh.register_swarm(self)
+        
         self.dm = PETSc.DMSwarm().create()
         self.dm.setDimension(self.dim)
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
@@ -1113,6 +1120,15 @@ class Swarm(Stateful, uw_object):
 
         super().__init__()
 
+    def __del__(self):
+        """Cleanup swarm by unregistering from mesh to prevent memory leaks"""
+        try:
+            if hasattr(self, 'mesh') and self.mesh is not None:
+                self.mesh.unregister_swarm(self)
+        except (AttributeError, ReferenceError):
+            # Mesh may have already been garbage collected, which is fine
+            pass
+
     @property
     def mesh(self):
         return self._mesh
@@ -1129,6 +1145,13 @@ class Swarm(Stateful, uw_object):
 
     @property
     def points(self):
+        # Check for mesh coordinate changes and trigger migration if needed
+        if hasattr(self, '_mesh_version') and self._mesh_version != self.mesh._mesh_version:
+            # Mesh coordinates have changed, force migration to update swarm
+            self._force_migration_after_mesh_change()
+            # Update our mesh version to match
+            self._mesh_version = self.mesh._mesh_version
+
         # Get current coordinate data from PETSc
         coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
@@ -1506,6 +1529,25 @@ class Swarm(Stateful, uw_object):
                     self.dm.removePointAtIndex(index)
 
         return
+
+    def _force_migration_after_mesh_change(self):
+        """
+        Force migration of swarm particles after mesh coordinate changes.
+        
+        This method bypasses the normal migration_disabled check since mesh 
+        coordinate changes require swarm particles to be re-distributed 
+        regardless of migration disabled state.
+        """
+        # Temporarily override migration disabled state
+        original_migration_disabled = self._migration_disabled
+        self._migration_disabled = False
+        
+        try:
+            # Perform standard migration
+            self.migrate(remove_sent_points=True, delete_lost_points=True)
+        finally:
+            # Restore original migration disabled state
+            self._migration_disabled = original_migration_disabled
 
     @timing.routine_timer_decorator
     def add_particles_with_coordinates(self, coordinatesArray) -> int:

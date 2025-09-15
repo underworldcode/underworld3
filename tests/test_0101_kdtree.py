@@ -130,8 +130,7 @@ def test_mesh_centroid(res, dim, fill_param):
 
     index = uw.kdtree.KDTree(centroids)
 
-    with swarm.access():
-        dist, kdpt = index.query(swarm.data[...])
+    dist, kdpt = index.query(swarm.points[...])
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.

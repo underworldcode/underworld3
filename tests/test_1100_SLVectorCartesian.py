@@ -82,11 +82,11 @@ def test_SLVec_boxmesh(mesh):
     # ### Set up:
     # - Velocity field
     # - Initial vector distribution
-    #TODO: DELETE remove swarm.access / data, replace with direct array assignment
+    # TODO: DELETE remove swarm.access / data, replace with direct array assignment
     # with mesh.access(v):
     #     v.data[:, 1] = velocity
-    
-    v.array[:, 1, 1] = velocity
+
+    v.array[:, 0, 1] = velocity
 
     # distance field will travel
     dist_travel = velocity * dt * nsteps
@@ -96,46 +96,28 @@ def test_SLVec_boxmesh(mesh):
     gauss_fn = lambda alpha, xC, yC: sympy.exp(
         -alpha * ((x - xC) ** 2 + (y - yC) ** 2 + 0.000001)
     )  # Gaussian envelope
-    #TODO: DELETE remove swarm.access / data, replace with direct array assignment
-    # with mesh.access(vec_tst, vec_ana):
-    #     vec_tst.data[:, :] = uw.function.evaluate(
-    #         sympy.Matrix(
-    #             [-gauss_fn(33, x0, y0) * (y - y0), gauss_fn(33, x0, y0) * (x - x0)]
-    #         ),
-    #         vec_tst.coords,
-    #     ).squeeze()
-    #     vec_ana.data[:, :] = uw.function.evaluate(
-    #         sympy.Matrix(
-    #             [
-    #                 -gauss_fn(33, x0, y0 + dist_travel) * (y - (y0 + dist_travel)),
-    #                 gauss_fn(33, x0, y0 + dist_travel) * (x - x0),
-    #             ]
-    #         ),
-    #         vec_ana.coords,
-    #     ).squeeze()
-    
-    vec_tst.array[...] = uw.function.evaluate(
+
+    vec_tst.array = uw.function.evaluate(
         sympy.Matrix(
-            [-gauss_fn(33, x0, y0) * (y - y0), gauss_fn(33, x0, y0) * (x - x0)]
-        ),
+            [
+                -gauss_fn(33, x0, y0) * (y - y0),
+                gauss_fn(33, x0, y0) * (x - x0),
+            ]
+        ).T,
         vec_tst.coords,
     )
-    vec_ana.array[...] = uw.function.evaluate(
+    vec_ana.array = uw.function.evaluate(
         sympy.Matrix(
             [
                 -gauss_fn(33, x0, y0 + dist_travel) * (y - (y0 + dist_travel)),
                 gauss_fn(33, x0, y0 + dist_travel) * (x - x0),
             ]
-        ),
+        ).T,
         vec_ana.coords,
     )
 
     for i in range(nsteps):
         DuDt.update_pre_solve(dt, verbose=False, evalf=False)
-        #TODO: DELETE remove swarm.access / data, replace with direct array assignment
-        # with mesh.access(vec_tst):  # update
-        #     vec_tst.data[...] = DuDt.psi_star[0].data[...]
-        
         vec_tst.array[...] = DuDt.psi_star[0].array[...]
 
     ### compare UW3 and analytical solution

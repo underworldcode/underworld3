@@ -69,13 +69,11 @@ def test_swarmvariable_save_and_load(tmp_path):
 
     swarm.populate(fill_param=2)
 
-    with swarm.access(var):
-        var.data[:, 0] = swarm.data[:, 0]
+    var.array[:, 0, 0] = swarm.points[:, 0]
 
     swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath=tmp_path, index=0)
 
-    with swarm.access(var2):
-        var2.read_timestep("test", "swarm", "X", 0, outputPath=tmp_path)
+    var2.read_timestep("test", "swarm", "X", 0, outputPath=tmp_path)
 
     with swarm.access():
         assert np.allclose(var.data, var2.data)
