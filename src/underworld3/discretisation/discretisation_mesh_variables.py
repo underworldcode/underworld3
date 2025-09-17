@@ -16,7 +16,7 @@ from underworld3.utilities._utils import gather_data
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
-from underworld3.cython import petsc_discretisation
+# from underworld3.cython import petsc_discretisation
 import underworld3.timing as timing
 
 ## Introduce these two specific types of coordinate tracking vector objects
@@ -115,7 +115,8 @@ def MeshVariable(
 
         mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
 
-        mesh._lvec.destroy()
+        if mesh._lvec is not None:
+            mesh._lvec.destroy()
         mesh._lvec = dm1.createLocalVec()
         new_gvec = dm1.getGlobalVec()
         new_gvec_sub = new_gvec.getSubVector(mdm_is)
@@ -392,10 +393,51 @@ class _MeshVariable(Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
-        # Setup public view of data
-        self._array = self._array_data_structure(self)
+        # Setup public view of data - using NDArray_With_Callback (following mesh.points pattern)
+        # Use lazy initialization to avoid calling unpack during constructor
+        self._array_cache = None  # Will be created lazily when first accessed
 
         return
+
+    def _create_variable_array(self, initial_data=None):
+        """
+        Factory function to create NDArray_With_Callback for variable data.
+        Follows the same pattern as mesh.points implementation.
+        
+        Parameters
+        ----------
+        initial_data : numpy.ndarray, optional
+            Initial data for the array. If None, fetches current data from PETSc.
+            
+        Returns
+        -------
+        NDArray_With_Callback
+            Array object with callback for automatic PETSc synchronization
+        """
+        if initial_data is None:
+            initial_data = self.unpack_uw_data_to_petsc(squeeze=False, sync=True)
+        
+        # Create NDArray_With_Callback (following mesh._points pattern)
+        array_obj = uw.utilities.NDArray_With_Callback(
+            initial_data,
+            owner=self,
+            disable_inplace_operators=False  # Allow operations like existing arrays
+        )
+        
+        # Single callback function (following mesh_update_callback pattern)
+        def variable_update_callback(array, change_context):
+            """Callback to sync variable changes back to PETSc (like mesh.points)"""
+            # Only act on data-changing operations (following mesh.points pattern)
+            data_changed = change_context.get("data_has_changed", True)
+            if not data_changed:
+                return
+                
+            # Persist changes to PETSc (like mesh callback updates coordinates)
+            self.pack_uw_data_to_petsc(array, sync=True)
+        
+        # Register the callback (following mesh.points pattern)
+        array_obj.add_callback(variable_update_callback)
+        return array_obj
 
     def _object_viewer(self):
         """This will substitute specific information about this object"""
@@ -454,7 +496,7 @@ class _MeshVariable(Stateful, uw_object):
 
     #     return self._data_container[i, j]
 
-    def pack(self, data_array):
+    def pack_raw_data_to_petsc(self, data_array):
         """Convert an array in the correct shape for the underlying variable into something that can be loaded into
         the flat storage structure used by PETSc in a numpy assigment (with index broadcasting etc)
         """
@@ -473,7 +515,45 @@ class _MeshVariable(Stateful, uw_object):
 
         return
 
-    def unpack(self, squeeze=True):
+    def pack_uw_data_to_petsc(self, data_array, sync=True):
+        """
+        Enhanced pack method that directly accesses mesh data without access() context.
+        Designed for the new meshVariable.array interface.
+        
+        Parameters
+        ----------
+        data_array : numpy.ndarray
+            Array data to pack into mesh field
+        sync : bool
+            Whether to sync parallel operations (default True)
+        """
+        import numpy as np
+        
+        shape = self.shape
+        data_array_2d = np.atleast_2d(data_array)
+        
+        # Create a temporary access context internally to get data access
+        # This replicates the access() functionality without requiring external context
+        temp_access_manager = self.mesh.access(self)
+        temp_access_manager.__enter__()
+        
+        try:
+            # Pack data using same layout as original method
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    self.data[:, ij] = data_array_2d[:, i, j]
+                    
+            # Sync parallel operations if requested
+            if sync:
+                # TODO: Add parallel sync logic here if needed
+                pass
+                
+        finally:
+            # Clean up access context
+            temp_access_manager.__exit__(None, None, None)
+
+    def unpack_raw_data_to_petsc(self, squeeze=True):
         """Return an array in the correct shape for the underlying variable from
         the flat storage structure used by PETSc. By default, use numpy squeeze to remove additional
         dimensions (keep those dimensions to leave all data as 3D array - scalars being shape (1,1), vectors
@@ -493,6 +573,56 @@ class _MeshVariable(Stateful, uw_object):
                     ij = self._data_layout(i, j)
                     data_array_3d[:, i, j] = self._data[:, ij]
 
+        if squeeze:
+            return data_array_3d.squeeze()
+        else:
+            return data_array_3d
+
+    def unpack_uw_data_to_petsc(self, squeeze=True, sync=True):
+        """
+        Enhanced unpack method that directly accesses mesh data without access() context.
+        Designed for the new meshVariable.array interface.
+        
+        Parameters
+        ----------
+        squeeze : bool
+            Whether to remove singleton dimensions (default True)
+        sync : bool
+            Whether to sync parallel operations (default True)
+            
+        Returns
+        -------
+        numpy.ndarray
+            Array data in correct shape for the variable
+        """
+        import numpy as np
+        
+        shape = self.shape
+        
+        # Create a temporary access context internally to get data access
+        # This replicates the access() functionality without requiring external context
+        temp_access_manager = self.mesh.access()
+        temp_access_manager.__enter__()
+        
+        try:
+            points = self._data.shape[0]
+            data_array_3d = np.empty(shape=(points, *shape), dtype=self._data.dtype)
+            
+            # Unpack data using same layout as original method
+            for i in range(shape[0]):
+                for j in range(shape[1]):
+                    ij = self._data_layout(i, j)
+                    data_array_3d[:, i, j] = self._data[:, ij]
+                    
+            # Sync parallel operations if requested
+            if sync:
+                # TODO: Add parallel sync logic here if needed
+                pass
+                
+        finally:
+            # Clean up access context
+            temp_access_manager.__exit__(None, None, None)
+        
         if squeeze:
             return data_array_3d.squeeze()
         else:
@@ -921,32 +1051,24 @@ class _MeshVariable(Stateful, uw_object):
             )
         return self._data
 
-    class _array_data_structure(object):
-        """This is used to add getitem / setitem to the array property of the variable"""
-
-        def __init__(inner_self, owner):
-            inner_self.owner = owner
-
-        def __setitem__(inner_self, key, value):
-            var_data_copy = inner_self.owner.unpack(squeeze=False)
-            var_data_copy[key] = value
-            inner_self.owner.pack(var_data_copy)
-
-        def __getitem__(inner_self, key):
-            var_data_copy = inner_self.owner.unpack(squeeze=False)
-            return var_data_copy[key]
-
-        def __repr__(inner_self):
-            var_data_copy = inner_self.owner.unpack(squeeze=False)
-            return var_data_copy.__repr__()
-
     @property
     def array(self):
-        return self._array
+        """
+        Access variable data as NDArray_With_Callback.
+        Follows the simple mesh.points pattern - returns cached object with lazy creation.
+        """
+        # Lazy creation: create array cache on first access
+        if self._array_cache is None:
+            self._array_cache = self._create_variable_array()
+        return self._array_cache
 
     @array.setter
     def array(self, array_value):
-        self.pack(array_value)
+        """
+        Set variable data using pack method to handle shape transformation.
+        """
+        # Use pack method to handle proper data transformation and shape conversion
+        self.pack_uw_data_to_petsc(array_value, sync=True)
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 

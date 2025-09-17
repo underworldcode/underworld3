@@ -14,6 +14,7 @@ from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
 from underworld3.discretisation import _from_gmsh as gmsh2dmplex
 import underworld3.timing as timing
+import underworld3.cython.petsc_discretisation
 
 import sympy
 

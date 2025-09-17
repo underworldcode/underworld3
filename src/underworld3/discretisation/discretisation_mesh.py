@@ -18,7 +18,8 @@ from underworld3.utilities._utils import gather_data
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
-from underworld3.cython import petsc_discretisation
+# from underworld3.cython import petsc_discretisation
+import underworld3.cython
 import underworld3.timing as timing
 
 ## Introduce these two specific types of coordinate tracking vector objects
@@ -474,12 +475,12 @@ class Mesh(Stateful, uw_object):
             print(f"Mesh update callback - mesh deform")
             coords = array.reshape(-1, array.owner.cdim)
             self._deform_mesh(coords, verbose=True)
-            
+
             # Increment mesh version to notify registered swarms of coordinate changes
             with self._mesh_update_lock:
                 self._mesh_version += 1
                 print(f"Mesh version incremented to {self._mesh_version}")
-            
+
             return
 
         self._points.add_callback(mesh_update_callback)
@@ -2323,11 +2324,10 @@ class Mesh(Stateful, uw_object):
 
         return meshVar
 
-
     def register_swarm(self, swarm):
         """Register swarm as dependent on this mesh for coordinate change notifications"""
         self._registered_swarms.add(swarm)
-        
+
     def unregister_swarm(self, swarm):
         """Unregister swarm (called during swarm cleanup)"""
         # WeakSet handles weak references internally, just remove the swarm directly
