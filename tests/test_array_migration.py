@@ -78,17 +78,17 @@ def test_both_interfaces_use_direct_methods():
     
     # Use direct methods explicitly
     scalar_var.pack_uw_data_to_petsc(direct_test_values, sync=True)
-    direct_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=True)
+    direct_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=True)
     
     # Use legacy interface
     scalar_var.use_legacy_array()
     scalar_var.array[...] = direct_result
-    legacy_interface_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=True)
+    legacy_interface_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=True)
     
     # Use enhanced interface
     scalar_var.use_enhanced_array()
     scalar_var.array[...] = direct_result
-    enhanced_interface_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=True)
+    enhanced_interface_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=True)
     
     # All should be identical
     np.testing.assert_array_almost_equal(

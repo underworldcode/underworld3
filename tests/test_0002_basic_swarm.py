@@ -35,8 +35,7 @@ def test_create_swarmvariable(setup_data):
 
     # Fill param 2 -> 6 particles per triangle
     swarm.populate(fill_param=2)
-    with swarm.access():
-        shape = var.data.shape
+    shape = var.data.shape
 
     elements = swarm.mesh._centroids.shape[0]
     var.save("var.h5")
@@ -52,13 +51,11 @@ def test_addNPoints(setup_data):
     swarm2.dm.finalizeFieldRegister()
 
     swarm2.dm.addNPoints(10)  # since swarm is initially empty, will add (10 - 1) points
-    with swarm2.access():
-        npts = swarm2.local_size
+    npts = swarm2.local_size
     assert npts == 9
 
     swarm2.dm.addNPoints(1)  # already has particles, so will add 1 point
-    with swarm2.access():
-        npts = swarm2.local_size
+    npts = swarm2.local_size
     assert npts == 10
 
 

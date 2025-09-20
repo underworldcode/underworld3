@@ -711,7 +711,6 @@ class SemiLagrangian(uw_object):
 
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
-            #
 
             v_at_node_pts = uw.function.evaluate(
                 self.V_fn,
@@ -734,57 +733,7 @@ class SemiLagrangian(uw_object):
 
             self.psi_star[i].array[...] = value_at_end_points
 
-            # orig_index = self._nswarm_psi._nI0.array[...].reshape(-1)
-            # self._workVar.array[orig_index, :] = self._nswarm_psi.swarmVariable.array[
-            #     ...
-            # ]
-
-            # self._nswarm_psi._X0.array[:, 0, :] = self._nswarm_psi.data[
-            #    ...
-            # ]  # Note: swarm.data is coordinate data
-
-            # # march nodes backwards along characteristics
-            # self._nswarm_psi.advection(
-            #     self.V_fn,
-            #     -dt,
-            #     order=1,
-            #     corrector=False,
-            #     restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-            #     evalf=evalf,
-            #     step_limit=False,
-            #     #! substepping: this seems to be too diffusive if left on.
-            #     #! Check the code carefully !
-            # )
-
-            # if i == 0:
-            #     # Recalculate psi_star from psi_fn. If psi_fn containts
-            #     # derivatives, the evaluation will fail and a projection
-            #     # is required instead.
-
-            #     try:
-
-            #         self.psi_star[0].array[...] = uw.function.evaluate(
-            #             self.psi_fn,
-            #             self.psi_star[0].coords,
-            #             evalf=evalf,
-            #         )
-            #     except:
-            #         self._psi_star_projection_solver.uw_function = self.psi_fn
-            #         self._psi_star_projection_solver.smoothing = 0.0
-            #         self._psi_star_projection_solver.solve(verbose=verbose)
-
-            # self._nswarm_psi.swarmVariable.array[...] = uw.function.evaluate(
-            #     self.psi_star[i].sym,
-            #     self._nswarm_psi.data,
-            #     evalf=evalf,
-            # )
-
-            # self._nswarm_psi._X0.array[:, 0, :] = self._nswarm_psi.data[
-            #     ...
-
-            # ]  # Note: swarm.data is coordinate data
-
-            # disable this for now
+            # disable this for now - Compute moments before update
             if 0 and self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]
@@ -796,78 +745,7 @@ class SemiLagrangian(uw_object):
                 # if uw.mpi.rank == 0:
                 #     print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
-            # restore coords (will call dm.migrate after context manager releases)
-            # We need some modifications to dm.migrate to snap-back
-            # to original location without substepping
-
-            # og_mig_type = uw.function.dm_swarm_get_migrate_type(
-            #     self._nswarm_psi
-            # )  # get original migrate type
-            # uw.function.dm_swarm_set_migrate_type(
-            #     self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC
-            # )
-
-            # # change the rank in DMSwarm_rank with the rank before advection
-            # nR0_field_name = self._nswarm_psi._nR0.name
-            # nI0_field_name = self._nswarm_psi._nI0.name
-
-            # orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
-            # node_ranks = self._nswarm_psi.dm.getField("DMSwarm_rank")
-
-            # node_ranks[...] = orig_ranks[...]
-
-            # self._nswarm_psi.dm.restoreField(nR0_field_name)
-            # self._nswarm_psi.dm.restoreField("DMSwarm_rank")
-
-            # self._nswarm_psi.data[...] = self._nswarm_psi._nX0.array[:, 0, :]
-
-            # # reset to original migrate type
-            # uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
-
-            # Push data from swarm back to _workVar.data.
-            # Note: particles are removed when sent and added to the
-            # end of the swarm when received, so we need to re-order
-            # the data when we put it back onto the nodes
-
-            # TODO: DELETE remove swarm.access / data, replace with direct array assignment
-            # with self._nswarm_psi.access():
-            #     orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
-            #
-            #     with self.mesh.access(self._workVar):
-            #         self._workVar.data[orig_index, :] = (
-            #             self._nswarm_psi.swarmVariable.data[:, :]
-            #         )
-
-            # orig_index = self._nswarm_psi._nI0.array[...].reshape(-1)
-            # self._workVar.array[orig_index, :] = self._nswarm_psi.swarmVariable.array[
-            #     ...
-            # ]
-
-            # Project / Copy from advected swarm to semi-Lagrangian variables.
-
-            # if self._workVar.coords.shape == self.psi_star[i].coords.shape:
-            #     # TODO: DELETE remove swarm.access / data, replace with direct array assignment
-            #     # with self.mesh.access(self.psi_star[i]):
-            #     #     self.psi_star[i].data[...] = self._workVar.data[...]
-
-            #     self.psi_star[i].array[...] = self._workVar.array[...]
-            # else:
-            #     self._psi_star_projection_solver.uw_function = self._workVar.sym
-            #     self._psi_star_projection_solver.smoothing = 0.0
-            #     self._psi_star_projection_solver.solve()
-
-            # Copy data from the projection operator if i!=0
-            # if i != 0:
-            #     # TODO: DELETE remove swarm.access / data, replace with direct array assignment
-            #     # with self.mesh.access(self.psi_star[i]):
-            #     #     self.psi_star[i].data[...] = self.psi_star[0].data[...]
-
-            #     self.psi_star[i].array[...] = self.psi_star[0].array[...]
-
-            # Optional: Conserve moments for scalar fields
-            # (could extend this to other field types but not
-            #  sure if this is wanted / warranted at all )
-
+            # disable this for now - Restore moments after update
             if 0 and self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]

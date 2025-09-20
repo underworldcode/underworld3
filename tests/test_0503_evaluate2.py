@@ -36,8 +36,7 @@ def test_number_vector_mult():
         vtype=uw.VarType.VECTOR,
         varsymbol=r"V",
     )
-    with mesh.access(var_vector):
-        var_vector.data[:, :] = (4.0, 5.0)
+    var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(3 * var_vector.sym[0], coords)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -56,8 +55,7 @@ def test_number_vector_mult_evalf():
         vtype=uw.VarType.VECTOR,
         varsymbol=r"V",
     )
-    with mesh.access(var_vector):
-        var_vector.data[:, :] = (4.0, 5.0)
+    var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(3 * var_vector.sym[0], coords, evalf=True)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -75,9 +73,9 @@ def test_scalar_vector_mult():
     var_vector = uw.discretisation.MeshVariable(
         varname="var_vector_2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var_scalar, var_vector):
-        var_scalar.data[:] = 3.0
-        var_vector.data[:, :] = (4.0, 5.0)
+    with uw.synchronised_array_update():
+        var_scalar.array[...] = 3.0
+        var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(var_scalar.sym[0] * var_vector.sym[0], coords)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -95,9 +93,9 @@ def test_vector_dot_product():
     var_vector2 = uw.discretisation.MeshVariable(
         varname="var_vector2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var_vector1, var_vector2):
-        var_vector1.data[:] = (1.0, 2.0)
-        var_vector2.data[:] = (3.0, 4.0)
+    with uw.synchronised_array_update():
+        var_vector1.array[...] = (1.0, 2.0)
+        var_vector2.array[...] = (3.0, 4.0)
     result = uw.function.evaluate(
         var_vector1.sym.dot(var_vector2.sym), coords, evalf=True
     )
@@ -126,9 +124,8 @@ def test_polynomial_mesh_var_degree():
 
     # Set variable data to represent polynomial function.
     for var in vars:
-        with mesh.access(var):
-            vcoords = var.coords
-            var.data[:, 0] = tensor_product(var.degree, vcoords[:, 0], vcoords[:, 1])
+        vcoords = var.coords
+        var.array[:, 0, 0] = tensor_product(var.degree, vcoords[:, 0], vcoords[:, 1])
 
     # Test that interpolated variables reproduce exactly polymial function of associated degree.
     for var in vars:
@@ -154,9 +151,9 @@ def test_many_many_scalar_mult_var():
             )
         )
     factorial = 1.0
-    with mesh.access(*vars):
+    with uw.synchronised_array_update():
         for i, var in enumerate(vars):
-            var.data[:] = float(i)
+            var.array[...] = float(i)
             factorial *= float(i)
     multexpr = vars[0].fn
     for var in vars[1:]:
@@ -208,12 +205,12 @@ def test_polynomial_mesh_var_sympy():
     xyvar = uw.discretisation.MeshVariable(
         varname="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(xvar, yvar, xyvar):
+    with uw.synchronised_array_update():
         # Note that all the `coords` arrays should actually reduce to an identical array,
         # as all vars have identical degree and layout.
-        xvar.data[:, 0] = xvar.coords[:, 0]
-        yvar.data[:, 0] = yvar.coords[:, 1]
-        xyvar.data[:] = xyvar.coords[:]
+        xvar.array[:, 0, 0] = xvar.coords[:, 0]
+        yvar.array[:, 0, 0] = yvar.coords[:, 1]
+        xyvar.array[:, 0, :] = xyvar.coords
     degree = 10
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
@@ -265,8 +262,8 @@ def test_3d_cross_product():
         varsymbol="V_2",
     )
 
-    with mesh.access(var_vector1, var_vector2):
-        var_vector1.data[:] = (1.0, 2.0, 3.0)
-        var_vector2.data[:] = (4.0, 5.0, 6.0)
+    with uw.synchronised_array_update():
+        var_vector1.array[...] = (1.0, 2.0, 3.0)
+        var_vector2.array[...] = (4.0, 5.0, 6.0)
     result = uw.function.evaluate(var_vector1.sym.cross(var_vector2.sym), coords)
     assert np.allclose(np.array(((-3, 6, -3),)), result, rtol=1e-05, atol=1e-08)

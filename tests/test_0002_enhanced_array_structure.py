@@ -20,7 +20,7 @@ def test_enhanced_array_classes_exist():
         # Check that the direct methods exist
         required_methods = [
             "pack_uw_data_to_petsc",
-            "unpack_uw_data_to_petsc",
+            "unpack_uw_data_from_petsc",
             "use_enhanced_array",  # Now deprecated but preserved
             "use_legacy_array",    # Now deprecated but preserved
             "sync_disabled",
@@ -45,7 +45,7 @@ def test_swarm_variable_enhanced_methods():
         # Check that SwarmVariable has the new methods
         required_methods = [
             "pack_uw_data_to_petsc",
-            "unpack_uw_data_to_petsc",
+            "unpack_uw_data_from_petsc",
             "use_enhanced_array",
             "use_legacy_array",
             "sync_disabled",
@@ -72,12 +72,12 @@ def test_enhanced_array_method_signatures():
         assert "sync" in pack_params, "pack_uw_data_to_petsc missing sync parameter"
         print("✅ pack_uw_data_to_petsc has correct signature")
 
-        # Test unpack_uw_data_to_petsc signature
-        unpack_sig = inspect.signature(SwarmVariable.unpack_uw_data_to_petsc)
+        # Test unpack_uw_data_from_petsc signature
+        unpack_sig = inspect.signature(SwarmVariable.unpack_uw_data_from_petsc)
         unpack_params = list(unpack_sig.parameters.keys())
-        assert "squeeze" in unpack_params, "unpack_uw_data_to_petsc missing squeeze parameter"
-        assert "sync" in unpack_params, "unpack_uw_data_to_petsc missing sync parameter"
-        print("✅ unpack_uw_data_to_petsc has correct signature")
+        assert "squeeze" in unpack_params, "unpack_uw_data_from_petsc missing squeeze parameter"
+        assert "sync" in unpack_params, "unpack_uw_data_from_petsc missing sync parameter"
+        print("✅ unpack_uw_data_from_petsc has correct signature")
 
     except ImportError as e:
         pytest.skip(f"Cannot import underworld3.swarm due to dependencies: {e}")
@@ -93,8 +93,8 @@ def test_array_interface_documentation():
             SwarmVariable.pack_uw_data_to_petsc.__doc__ is not None
         ), "pack_uw_data_to_petsc missing docstring"
         assert (
-            SwarmVariable.unpack_uw_data_to_petsc.__doc__ is not None
-        ), "unpack_uw_data_to_petsc missing docstring"
+            SwarmVariable.unpack_uw_data_from_petsc.__doc__ is not None
+        ), "unpack_uw_data_from_petsc missing docstring"
         assert (
             SwarmVariable.sync_disabled.__doc__ is not None
         ), "sync_disabled missing docstring"
@@ -108,13 +108,13 @@ def test_array_interface_documentation():
             "access()" in pack_doc
         ), "pack_uw_data_to_petsc docstring should mention access() avoidance"
 
-        unpack_doc = SwarmVariable.unpack_uw_data_to_petsc.__doc__
+        unpack_doc = SwarmVariable.unpack_uw_data_from_petsc.__doc__
         assert (
             "Enhanced unpack method" in unpack_doc
-        ), "unpack_uw_data_to_petsc docstring missing description"
+        ), "unpack_uw_data_from_petsc docstring missing description"
         assert (
             "access()" in unpack_doc
-        ), "unpack_uw_data_to_petsc docstring should mention access() avoidance"
+        ), "unpack_uw_data_from_petsc docstring should mention access() avoidance"
 
         sync_doc = SwarmVariable.sync_disabled.__doc__
         assert (
@@ -138,7 +138,7 @@ class TestEnhancedArrayStructure:
             # Test that the unified interface methods exist
             assert hasattr(SwarmVariable, "_create_variable_array")
             assert hasattr(SwarmVariable, "pack_uw_data_to_petsc")
-            assert hasattr(SwarmVariable, "unpack_uw_data_to_petsc")
+            assert hasattr(SwarmVariable, "unpack_uw_data_from_petsc")
             
             # Test that legacy methods are preserved (but deprecated)
             assert hasattr(SwarmVariable, "use_legacy_array")
@@ -176,7 +176,7 @@ def test_implementation_completeness():
         # Create a checklist of all unified interface features
         features = {
             "Enhanced pack method": hasattr(SwarmVariable, "pack_uw_data_to_petsc"),
-            "Enhanced unpack method": hasattr(SwarmVariable, "unpack_uw_data_to_petsc"),
+            "Enhanced unpack method": hasattr(SwarmVariable, "unpack_uw_data_from_petsc"),
             "Unified array factory": hasattr(SwarmVariable, "_create_variable_array"),
             "Legacy method compatibility": hasattr(SwarmVariable, "use_enhanced_array")
             and hasattr(SwarmVariable, "use_legacy_array"),

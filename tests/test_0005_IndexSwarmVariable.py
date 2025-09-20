@@ -56,29 +56,27 @@ def test_IndexSwarmVariable(mesh):
 
         M0Index = 0
         M1Index = 1
-        with swarm.access(material):
-            perturbation = (
-                offset
-                + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0])
-                + 0.01
-            )
-            material.data[:, 0] = np.where(
-                swarm._particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index
-            )
+        perturbation = (
+            offset
+            + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0])
+            + 0.01
+        )
+        material.array[:, 0, 0] = np.where(
+            swarm._particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index
+        )
 
         P0, P1 = 1, 10
         P_fn = material.createMask([P0, P1])
 
         ## compare the value on the Symmetrical Point on the left and riht wall
-        with mesh.access(Pmesh):
-            Pmesh.data[:, 0] = uw.function.evaluate(P_fn, Pmesh.coords).squeeze()
-            assert np.allclose(Pmesh.data[0], Pmesh.data[1], atol=0.01)
-            assert np.allclose(Pmesh.data[2], Pmesh.data[3], atol=0.01)
-            assert np.allclose(Pmesh.data[6], Pmesh.data[7], atol=0.01)
+        Pmesh.array[:, 0, 0] = uw.function.evaluate(P_fn, Pmesh.coords).squeeze()
+        assert np.allclose(Pmesh.data[0], Pmesh.data[1], atol=0.01)
+        assert np.allclose(Pmesh.data[2], Pmesh.data[3], atol=0.01)
+        assert np.allclose(Pmesh.data[6], Pmesh.data[7], atol=0.01)
         del swarm
         del material
 
 
-del meshStructuredQuadBox
+# del meshStructuredQuadBox
 # del meshUnstructuredSimplexbox_regular
 # del meshUnstructuredSimplexbox_irregular

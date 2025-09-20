@@ -79,8 +79,7 @@ def test_single_scalar_variable():
     var = uw.discretisation.MeshVariable(
         varname="scalar_var_3", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
     )
-    with mesh.access(var):
-        var.data[:] = 1.1
+    var.array[...] = 1.1
 
     result = fn.evaluate(var.sym[0], coords, evalf=True)
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
@@ -93,8 +92,7 @@ def test_single_vector_variable():
     var = uw.discretisation.MeshVariable(
         varname="vector_var_4", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var):
-        var.data[:] = (1.1, 1.2)
+    var.array[...] = (1.1, 1.2)
     result = uw.function.evaluate(var.sym, coords, evalf=True)
     assert np.allclose(np.array(((1.1, 1.2),)), result, rtol=1e-05, atol=1e-08)
 

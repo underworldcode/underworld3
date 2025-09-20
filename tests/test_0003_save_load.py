@@ -27,8 +27,7 @@ def test_meshvariable_save_and_read(tmp_path):
     X = underworld3.discretisation.MeshVariable("X", mesh, 1, degree=2)
     X2 = underworld3.discretisation.MeshVariable("X2", mesh, 1, degree=2)
 
-    with mesh.access(X):
-        X.data[:, 0] = X.coords[:, 0]
+    X.array[:, 0, 0] = X.coords[:, 0]
 
     mesh.write_timestep(
         "test", meshUpdates=False, meshVars=[X], outputPath=tmp_path, index=0
@@ -36,8 +35,7 @@ def test_meshvariable_save_and_read(tmp_path):
 
     X2.read_timestep("test", "X", 0, outputPath=tmp_path)
 
-    with mesh.access():
-        assert np.allclose(X.data, X2.data)
+    assert np.allclose(X.array, X2.array)
 
 
 def test_swarm_save_and_load(tmp_path):
@@ -75,5 +73,4 @@ def test_swarmvariable_save_and_load(tmp_path):
 
     var2.read_timestep("test", "swarm", "X", 0, outputPath=tmp_path)
 
-    with swarm.access():
-        assert np.allclose(var.data, var2.data)
+    assert np.allclose(var.array, var2.array)

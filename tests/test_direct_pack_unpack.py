@@ -13,7 +13,7 @@ import numpy as np
 
 
 def test_swarm_variable_direct_methods():
-    """Test that SwarmVariable.array uses pack_uw_data_to_petsc/unpack_uw_data_to_petsc correctly"""
+    """Test that SwarmVariable.array uses pack_uw_data_to_petsc/unpack_uw_data_from_petsc correctly"""
     print("🧪 Testing SwarmVariable direct pack/unpack methods...")
 
     from underworld3 import swarm
@@ -85,11 +85,11 @@ def test_swarm_variable_direct_methods():
 
     # Use direct method
     scalar_var.pack_uw_data_to_petsc(direct_test_values, sync=False)
-    direct_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+    direct_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
 
     # Use array interface (should call direct methods internally)
     scalar_var.array[...] = direct_test_values.reshape(n_particles, 1, 1)
-    array_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+    array_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
 
     np.testing.assert_array_almost_equal(
         direct_result,
@@ -109,7 +109,7 @@ def test_swarm_variable_direct_methods():
     for _ in range(10):
         test_data = np.random.rand(n_particles, 1) * 25.0
         scalar_var.pack_uw_data_to_petsc(test_data, sync=False)
-        _ = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        _ = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
     direct_time = (time.time() - start_time) / 10
 
     # Time array interface

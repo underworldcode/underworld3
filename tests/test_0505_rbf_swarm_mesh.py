@@ -19,11 +19,11 @@ def test_rbf_NearestNeighbQuad(dim, nnn, p):
     f1 = lambda x0, x1:     1. + np.cos(np.pi/4*x0)
     f2 = lambda x0, x1, x2: x0 + x1**2 +x2
     # evaluate functions on the var vector componets
-    with mesh.access(var):
-        var.data[:,0] = f0( mesh.data[:,0],mesh.data[:,1] )
-        var.data[:,1] = f1( mesh.data[:,0],mesh.data[:,1] )
+    with uw.synchronised_array_update():
+        var.array[:, 0, 0] = f0( mesh.data[:,0],mesh.data[:,1] )
+        var.array[:, 0, 1] = f1( mesh.data[:,0],mesh.data[:,1] )
         if dim == 3:
-            var.data[:,2] = f2(mesh.data[:,0],mesh.data[:,1],mesh.data[:,2])
+            var.array[:, 0, 2] = f2(mesh.data[:,0],mesh.data[:,1],mesh.data[:,2])
 
     # uncommennt for small perturbations from mesh verticies
     # small_fac = 0.1 * mesh._search_lengths[0]

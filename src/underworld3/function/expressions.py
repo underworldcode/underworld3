@@ -309,6 +309,59 @@ class UWexpression(uw_object, Symbol):
         self_s = substitute_expr(self, expr, keep_constants=keep_constants)
 
         return self_s
+    
+    def diff(self, *symbols, **kwargs):
+        """
+        Override diff to handle wrapped expressions properly.
+        
+        When differentiating a UWexpression, we need to differentiate
+        the wrapped symbolic value (.sym), not the expression symbol itself.
+        
+        This enables natural derivative syntax:
+            rho = UWexpression(r'\rho', sym=1000*(1 + 0.01*x))
+            drho_dx = rho.diff(x)  # Evaluated derivative
+            drho_dx_deferred = rho.diff(x, evaluate=False)  # Deferred derivative
+        
+        Args:
+            *symbols: Variables to differentiate with respect to
+            **kwargs: Additional options including:
+                - evaluate (bool): If False, return a deferred derivative object
+                - Other SymPy diff assumptions
+            
+        Returns:
+            The derivative of the wrapped expression (evaluated or deferred)
+        """
+        # Check for evaluate flag
+        evaluate = kwargs.pop('evaluate', True)
+        
+        if not evaluate:
+            # Return deferred derivative for lazy evaluation
+            if len(symbols) != 1:
+                raise NotImplementedError("Deferred derivatives only support single variables currently")
+            
+            diff_variable = symbols[0]
+            latex_expr = sympy.latex(self)
+            latex_diff_variable = sympy.latex(diff_variable)
+            latex = (
+                r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+            )
+            
+            return UWDerivativeExpression(latex, self, diff_variable)
+        
+        # Evaluated derivative (original implementation)
+        if self._sym is not None:
+            # Differentiate the wrapped symbolic value
+            result = sympy.diff(self._sym, *symbols, **kwargs)
+            
+            # If the result contains nested UWexpressions, unwrap them
+            for atom in result.atoms():
+                if isinstance(atom, UWexpression) and atom._sym is not None:
+                    result = result.subs(atom, atom.sym)
+            
+            return result
+        else:
+            # If no wrapped value, behave like a regular Symbol
+            return super().diff(*symbols, **kwargs)
 
     def dependencies(self, keep_constants=True):
         return extract_expressions(self)
@@ -417,10 +470,12 @@ class UWDerivativeExpression(UWexpression):
         return
 
     def doit(self):
+        """Evaluate the deferred derivative"""
         return uw.function.derivative(self._sym, self.diff_variable)
 
     @property
     def sym(self):
+        """Return the evaluated derivative for the sym property"""
         try:
             return self._sym.sym.diff(self._diff_variable)
         except:
@@ -428,15 +483,61 @@ class UWDerivativeExpression(UWexpression):
 
     @property
     def expr(self):
+        """The expression being differentiated"""
         return self._sym
 
     @property
     def diff_variable(self):
+        """The variable with respect to which we're differentiating"""
         return self._diff_variable
 
     @diff_variable.setter
     def diff_variable(self, value):
         self._diff_variable = value
+    
+    def diff(self, *symbols, **kwargs):
+        """
+        Enable chained derivatives on deferred derivative objects.
+        
+        This allows natural syntax for higher-order derivatives:
+            d2f_dx2 = f.diff(x, evaluate=False).diff(x)
+            d2f_dxdy = f.diff(x, evaluate=False).diff(y, evaluate=False)
+        
+        Args:
+            *symbols: Variables to differentiate with respect to
+            **kwargs: Additional options including evaluate flag
+            
+        Returns:
+            A new derivative expression (evaluated or deferred)
+        """
+        evaluate = kwargs.pop('evaluate', True)
+        
+        if not evaluate:
+            # Create a nested deferred derivative
+            if len(symbols) != 1:
+                raise NotImplementedError("Deferred derivatives only support single variables currently")
+            
+            diff_variable = symbols[0]
+            latex_expr = sympy.latex(self)
+            latex_diff_variable = sympy.latex(diff_variable)
+            latex = (
+                r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+            )
+            
+            # Create a new deferred derivative of this deferred derivative
+            return UWDerivativeExpression(latex, self, diff_variable)
+        else:
+            # Evaluate this derivative first, then differentiate the result
+            evaluated = self.doit()
+            return sympy.diff(evaluated, *symbols, **kwargs)
+    
+    def unwrap(self, keep_constants=True, return_self=True):
+        """
+        Unwrap and evaluate the deferred derivative.
+        
+        This is called by the JIT system to get the actual derivative expression.
+        """
+        return self.doit()
 
     # TODO: DEPRECATION
     # The value attribute is no longer needed in the offical release of Underworld3

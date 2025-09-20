@@ -6,7 +6,7 @@ This test file validates that the enhanced SwarmVariable.array interface produce
 identical results to the legacy swarm.access() / data interface during migration.
 
 Purpose:
-1. Ensure pack/pack_uw_data_to_petsc and unpack/unpack_uw_data_to_petsc give identical results
+1. Ensure pack/pack_uw_data_to_petsc and unpack/unpack_uw_data_from_petsc give identical results
 2. Validate that legacy interfaces can be replaced with dummy wrappers
 3. Provide safety checks during gradual migration process
 
@@ -79,7 +79,7 @@ class TestPackUnpackConsistency:
         legacy_result = scalar_var.unpack(squeeze=False)
         
         scalar_var.pack_uw_data_to_petsc(test_values, sync=False)
-        enhanced_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result, enhanced_result, decimal=10,
@@ -107,7 +107,7 @@ class TestPackUnpackConsistency:
         legacy_result = vector_var.unpack(squeeze=False)
         
         vector_var.pack_uw_data_to_petsc(test_values, sync=False)
-        enhanced_result = vector_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = vector_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result, enhanced_result, decimal=10,
@@ -135,7 +135,7 @@ class TestPackUnpackConsistency:
         legacy_result = matrix_var.unpack(squeeze=False)
         
         matrix_var.pack_uw_data_to_petsc(test_values, sync=False)
-        enhanced_result = matrix_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = matrix_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result, enhanced_result, decimal=10,
@@ -172,7 +172,7 @@ class TestLegacyInterfaceCompatibility:
         # Enhanced pattern (target)
         scalar_var.use_enhanced_array()
         scalar_var.array[:, 0, 0] = test_values
-        enhanced_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result[:, 0], enhanced_result[:, 0], decimal=10,
@@ -253,7 +253,7 @@ class TestMigrationScenarios:
         # Enhanced approach
         scalar_var.use_enhanced_array()
         scalar_var.array[:, 0, 0] = original_values
-        enhanced_result = scalar_var.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = scalar_var.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result, enhanced_result, decimal=10,
@@ -296,7 +296,7 @@ class TestMigrationScenarios:
         var1.use_enhanced_array()
         var2.use_enhanced_array()
         var1.array[...] = var2.array[...]
-        enhanced_result = var1.unpack_uw_data_to_petsc(squeeze=False, sync=False)
+        enhanced_result = var1.unpack_uw_data_from_petsc(squeeze=False, sync=False)
         
         np.testing.assert_array_almost_equal(
             legacy_result, enhanced_result, decimal=10,

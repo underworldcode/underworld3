@@ -51,8 +51,8 @@ def test_integrate_sympy():
 
 def test_integrate_meshvar():
 
-    with mesh.access(s_soln):
-        s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
+    # Direct access - no context manager needed
+    s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_soln.sym[0])
     value = calculator.evaluate()
@@ -64,8 +64,8 @@ def test_integrate_meshvar():
 
 def test_integrate_derivative():
 
-    with mesh.access(s_soln):
-        s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
+    # Direct access - no context manager needed
+    s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_soln.sym.diff(x))
     value = calculator.evaluate()
@@ -79,8 +79,8 @@ def test_integrate_derivative():
 
 def test_integrate_swarmvar_O1():
 
-    with swarm.access(s_values):
-        s_values.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 0])
+    # Direct access using public API
+    s_values.data[:, 0] = np.cos(np.pi * swarm.points[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_values.sym[0])
     value = calculator.evaluate()
@@ -92,8 +92,8 @@ def test_integrate_swarmvar_O1():
 
 def test_integrate_swarmvar_deriv_O1():
 
-    with swarm.access(s_values):
-        s_values.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 1])
+    # Direct access using public API
+    s_values.data[:, 0] = np.cos(np.pi * swarm.points[:, 1])
 
     calculator = uw.maths.Integral(mesh, fn=s_values.sym.diff(y))
     value = calculator.evaluate()
@@ -105,8 +105,8 @@ def test_integrate_swarmvar_deriv_O1():
 
 def test_integrate_swarmvar_O3():
 
-    with swarm.access(s_values_3):
-        s_values_3.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 0])
+    # Direct access using public API
+    s_values_3.data[:, 0] = np.cos(np.pi * swarm.points[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_values_3.sym[0])
     value = calculator.evaluate()
@@ -118,8 +118,8 @@ def test_integrate_swarmvar_O3():
 
 def test_integrate_swarmvar_deriv_03():
 
-    with swarm.access(s_values_3):
-        s_values_3.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 1])
+    # Direct access using public API
+    s_values_3.data[:, 0] = np.cos(np.pi * swarm.points[:, 1])
 
     calculator = uw.maths.Integral(mesh, fn=s_values_3.sym.diff(y))
     value = calculator.evaluate()
@@ -131,8 +131,8 @@ def test_integrate_swarmvar_deriv_03():
 
 def test_integrate_swarmvar_O0():
 
-    with swarm.access(s_values_0):
-        s_values_0.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 0])
+    # Direct access using public API
+    s_values_0.data[:, 0] = np.cos(np.pi * swarm.points[:, 0])
 
     calculator = uw.maths.Integral(mesh, fn=s_values_0.sym[0])
     value = calculator.evaluate()
@@ -146,8 +146,8 @@ def test_integrate_swarmvar_O0():
 def test_integrate_swarmvar_deriv_00():
 
     # ass s_values_0's proxy variable is a of order 0 is should be constant
-    with swarm.access(s_values_0):
-        s_values_0.data[:, 0] = np.sin(np.pi * swarm._particle_coordinates.data[:, 1])
+    # Direct access using public API
+    s_values_0.data[:, 0] = np.sin(np.pi * swarm.points[:, 1])
 
     calculator = uw.maths.Integral(mesh, fn=s_values_0.sym.diff(y))
     value = calculator.evaluate()

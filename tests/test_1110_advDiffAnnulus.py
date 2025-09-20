@@ -49,9 +49,9 @@ def test_adv_diff_annulus():
     v_x = -r * theta_dot * sympy.sin(th)
     v_y = r * theta_dot * sympy.cos(th)
 
-    with mesh.access(v_soln):
-        v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords).squeeze()
-        v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords).squeeze()
+    with uw.synchronised_array_update():
+        v_soln.array[:, 0, 0] = uw.function.evaluate(v_x, v_soln.coords).squeeze()
+        v_soln.array[:, 0, 1] = uw.function.evaluate(v_y, v_soln.coords).squeeze()
 
     abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 
@@ -60,12 +60,11 @@ def test_adv_diff_annulus():
     adv_diff.add_dirichlet_bc(0.0, "Lower")
     adv_diff.add_dirichlet_bc(0.0, "Upper")
 
-    with mesh.access(t_0, t_soln):
-        t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
-        t_soln.data[...] = t_0.data[...]
+    with uw.synchronised_array_update():
+        t_0.array[...] = uw.function.evaluate(init_t, t_0.coords).reshape(t_0.array.shape)
+        t_soln.array[...] = t_0.array[...]
 
-    with mesh.access(t_soln):
-        t_soln.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+    t_soln.array[...] = uw.function.evaluate(init_t, t_0.coords).reshape(t_soln.array.shape)
 
     scalar_projection_solver = uw.systems.solvers.SNES_Projection(mesh, t_0)
     scalar_projection_solver.uw_function = t_soln.sym[0]

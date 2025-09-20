@@ -137,6 +137,34 @@ import underworld3.scaling
 import underworld3.visualisation
 import numpy as _np
 
+
+def synchronised_array_update(context_info="user operations"):
+    """
+    Context manager for synchronised array updates across multiple variables.
+    
+    Batches multiple array assignments together and defers PETSc synchronization
+    until the end of the context, ensuring atomic updates and better performance.
+    
+    Example
+    -------
+    with uw.synchronised_array_update():
+        velocity.array[...] = new_velocity_values
+        pressure.array[...] = new_pressure_values
+        temperature.array[...] = new_temperature_values
+    # All arrays are synchronized here
+    
+    Parameters
+    ----------
+    context_info : str
+        Optional description of the update context for debugging
+        
+    Returns
+    -------
+    Context manager for delayed callback execution
+    """
+    return utilities.NDArray_With_Callback.delay_callbacks_global(context_info)
+
+
 # get the id for this installation of uw, if not there, create it
 try:
     from ._uwid import uwid as _id

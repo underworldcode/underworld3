@@ -543,7 +543,7 @@ class Mesh(Stateful, uw_object):
 
         self._evaluation_hash = None
         self._evaluation_interpolated_results = None
-        self._accessed = False
+        self._dm_initialized = False
         self._quadrature = False
         self._stale_lvec = True
         self._lvec = None
@@ -1054,14 +1054,15 @@ class Mesh(Stateful, uw_object):
             # The field decomposition seems to fail if coarse DMs are present
             names, isets, dms = self.dm.createFieldDecomposition()
 
-            with self.access():
-                # traverse subdms, taking user generated data in the subdm
-                # local vec, pushing it into a global sub vec
-                for var, subiset, subdm in zip(self.vars.values(), isets, dms):
+            # traverse subdms, taking user generated data in the subdm
+            # local vec, pushing it into a global sub vec
+            for var, subiset, subdm in zip(self.vars.values(), isets, dms):
+                # Use access pattern to ensure vector is available
+                with self.access(var):
                     lvec = var.vec
-                    subvec = a_global.getSubVector(subiset)
-                    subdm.localToGlobal(lvec, subvec, addv=False)
-                    a_global.restoreSubVector(subiset, subvec)
+                subvec = a_global.getSubVector(subiset)
+                subdm.localToGlobal(lvec, subvec, addv=False)
+                a_global.restoreSubVector(subiset, subvec)
 
             for iset in isets:
                 iset.destroy()
@@ -1105,7 +1106,7 @@ class Mesh(Stateful, uw_object):
 
         return
 
-    def access(self, *writeable_vars: "MeshVariable"):
+    def _legacy_access(self, *writeable_vars: "MeshVariable"):
         """
         This context manager makes the underlying mesh variables data available to
         the user. The data should be accessed via the variables `data` handle.
@@ -1137,7 +1138,7 @@ class Mesh(Stateful, uw_object):
             self._evaluation_hash = None
             self._evaluation_interpolated_results = None
 
-        self._accessed = True
+        self._dm_initialized = True
         deaccess_list = []
         for var in self.vars.values():
             # if already accessed within higher level context manager, continue.
@@ -1215,6 +1216,55 @@ class Mesh(Stateful, uw_object):
                 timing.log_result(time.time() - stime, "Mesh.access", 1)
 
         return exit_manager(self)
+
+    def access(self, *writeable_vars: "MeshVariable"):
+        """
+        Dummy access manager that provides deferred sync for backward compatibility.
+        Uses NDArray_With_Callback.delay_callbacks_global() internally.
+
+        This is a compatibility wrapper that allows existing code using the access()
+        context manager to work with the new direct-access variable interfaces.
+        All variable modifications are deferred and synchronized at context exit.
+
+        Parameters
+        ----------
+        writeable_vars
+            Variables that will be modified (ignored - all variables are writable
+            with the new interface, this parameter is kept for API compatibility)
+
+        Returns
+        -------
+        Context manager that defers variable synchronization until exit
+
+        Notes
+        -----
+        This method is deprecated. New code should access variable.data or
+        variable.array directly without requiring an access context.
+        """
+        import underworld3.utilities
+
+        class DummyAccessContext:
+            def __init__(self, mesh, writeable_vars):
+                self.mesh = mesh
+                self.writeable_vars = writeable_vars
+                self.delay_context = None
+
+            def __enter__(self):
+                # Use NDArray_With_Callback global delay context for deferred sync
+                self.delay_context = (
+                    underworld3.utilities.NDArray_With_Callback.delay_callbacks_global(
+                        "mesh.access compatibility"
+                    )
+                )
+                return self.delay_context.__enter__()
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                # This triggers all accumulated callbacks from all variables
+                if self.delay_context:
+                    return self.delay_context.__exit__(exc_type, exc_val, exc_tb)
+                return False
+
+        return DummyAccessContext(self, writeable_vars)
 
     @property
     def N(self) -> sympy.vector.CoordSys3D:
@@ -2281,11 +2331,9 @@ class Mesh(Stateful, uw_object):
         from petsc4py.PETSc import NormType
 
         tmp = uw_meshVariable
-
-        with self.access(tmp):
-            tmp.data[...] = uw.function.evaluate(
-                uw_function, tmp.coords, basis
-            ).reshape(-1, 1)
+        tmp.data[...] = uw.function.evaluate(uw_function, tmp.coords, basis).reshape(
+            -1, 1
+        )
 
         vsize = tmp._gvec.getSize()
         vmean = tmp.mean()
@@ -2317,10 +2365,9 @@ class Mesh(Stateful, uw_object):
             sectionIndex=False,
         )
 
-        with self.access(meshVar):
-            meshVar.data[...] = 0.0
-            if point_indices is not None:
-                meshVar.data[point_indices] = 1.0
+        meshVar.data[...] = 0.0
+        if point_indices is not None:
+            meshVar.data[point_indices] = 1.0
 
         return meshVar
 

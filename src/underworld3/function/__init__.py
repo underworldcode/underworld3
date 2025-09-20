@@ -25,8 +25,20 @@ from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
 
 
 def derivative(expression, variable, evaluate=True):
-    """Obtain symbolic derivatives of any underworld function, correctly handling sub-expressions / constants"""
-
+    """
+    Obtain symbolic derivatives of any underworld function, correctly handling sub-expressions / constants.
+    
+    Note: This function is maintained for backward compatibility. The recommended approach 
+    is to use the natural syntax: expression.diff(variable, evaluate=evaluate)
+    
+    Args:
+        expression: The expression to differentiate
+        variable: The variable to differentiate with respect to
+        evaluate (bool): If True, evaluate immediately. If False, return deferred derivative.
+        
+    Returns:
+        The derivative (evaluated SymPy expression or UWDerivativeExpression)
+    """
     import sympy
 
     if evaluate:
@@ -43,46 +55,36 @@ def derivative(expression, variable, evaluate=True):
         )
 
     else:
-        derivative = deferred_derivative(expression, variable)
+        # Use the new natural syntax internally for deferred derivatives
+        if hasattr(expression, 'diff'):
+            derivative = expression.diff(variable, evaluate=False)
+        else:
+            # Fallback for non-UWexpression objects
+            import sympy
+            latex_expr = sympy.latex(expression)
+            latex_diff_variable = sympy.latex(variable)
+            latex = (
+                r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+            )
+            
+            # Handle vector derivatives
+            try:
+                rows, cols = sympy.Matrix(variable).shape
+            except TypeError:
+                rows, cols = (1, 1)
+
+            if rows == 1 and cols == 1:
+                derivative = _derivative_expression(latex, expression, variable)
+            else:
+                derivative = sympy.Matrix.zeros(rows=rows, cols=cols)
+                for i in range(rows):
+                    for j in range(cols):
+                        latex = (
+                            r"\partial \left["
+                            + sympy.latex(expression)
+                            + r"\right] / \partial "
+                            + sympy.latex(variable[i, j])
+                        )
+                        derivative[i, j] = _derivative_expression(latex, expression, variable[i, j])
 
     return derivative
-
-
-def deferred_derivative(expr, diff_variable):
-
-    import sympy
-
-    latex_expr = sympy.latex(expr)
-    latex_diff_variable = sympy.latex(diff_variable)
-    latex = (
-        r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
-    )
-
-    # Is this what we want ?
-    # if isinstance(diff_variable, expression):
-    #     diff_variable = diff_variable.sym
-
-    # We need to return a Matrix of \partial Expr \partial {diff_variable_i}
-
-    try:
-        rows, cols = sympy.Matrix(diff_variable).shape
-    except TypeError:
-        rows, cols = (1, 1)
-
-    # Question: should we return a 1x1 matrix or the actual derivative ?
-    if rows == 1 and cols == 1:
-        # ddx = sympy.Matrix((_derivative_expression(latex, expr, diff_variable),))
-        ddx = _derivative_expression(latex, expr, diff_variable)
-    else:
-        ddx = sympy.Matrix.zeros(rows=rows, cols=cols)
-        for i in range(rows):
-            for j in range(cols):
-                latex = (
-                    r"\partial \left["
-                    + sympy.latex(expr)
-                    + r"\right] / \partial "
-                    + sympy.latex(diff_variable[i, j])
-                )
-                ddx[i, j] = _derivative_expression(latex, expr, diff_variable[i, j])
-
-    return ddx

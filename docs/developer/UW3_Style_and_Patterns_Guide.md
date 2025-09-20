@@ -32,6 +32,12 @@ from underworld3.utilities import NDArray_With_Callback
 import underworld3 as uw
 if hasattr(uw, 'mpi') and hasattr(uw.mpi, 'barrier'):
     uw.mpi.barrier()
+
+# Synchronised updates pattern
+import underworld3 as uw
+with uw.synchronised_array_update():
+    # Batch operations here
+    pass
 ```
 
 ### Naming Conventions
@@ -150,14 +156,35 @@ def callback(array: NDArray_With_Callback, change_info: dict) -> None:
     pass
 ```
 
+### Array vs Data Property Shapes
+```python
+# Array property: (N, a, b) format - PREFERRED
+scalar.array.shape      # (N, 1, 1)
+vector.array.shape      # (N, 1, dim)  
+tensor.array.shape      # (N, dim, dim)
+
+# Data property: (-1, components) format - BACKWARD COMPATIBILITY
+scalar.data.shape       # (N, 1)
+vector.data.shape       # (N, dim)
+tensor.data.shape       # (N, 6) for symmetric
+
+# Indexing patterns
+scalar.array[:, 0, 0] = values        # Scalar assignment
+vector.array[:, 0, i] = component_i   # Vector component
+vector.array[:, 0, :] = all_components # Full vector
+```
+
 ### Data Access Patterns
 ```python
-# Preferred: Direct array access
-mesh.data[0] = new_position
-swarm.data += displacement
+# Preferred: Direct array access with proper indexing
+temperature.array[:, 0, 0] = temp_values  # Scalar
+velocity.array[:, 0, :] = vel_field      # Vector
+mesh.data[0] = new_position               # Mesh coordinates
+swarm.data += displacement                # Swarm positions
 
-# Avoid: Property without indexing (when using array-like wrapper)
-# coords = mesh.data  # May not work as expected with new array-like properties
+# Avoid: Incorrect indexing
+# scalar.array[:, 0] = values  # Missing third index!
+# vector.array[:, i] = values  # Missing middle index!
 ```
 
 ### Coordinate System Transformations
@@ -173,15 +200,29 @@ swarm.data += displacement
 
 ## Context Managers
 
-### Access Context Pattern
-For expensive operations requiring careful state management:
+### Direct Array Access Pattern (Preferred)
+For most operations, use direct array access without context managers:
 
 ```python
-with swarm.access():
-    # Expensive setup occurs here
-    data = swarm.data
-    data[0] = new_value
-# Cleanup and finalization occurs here
+# Single variable - no context needed
+temperature.array[:, 0, 0] = initial_values
+velocity.array[:, 0, :] = velocity_field
+
+# Multiple variables - use synchronised update
+with uw.synchronised_array_update():
+    temperature.array[:, 0, 0] = temp_values
+    velocity.array[:, 0, :] = vel_values
+    pressure.array[:, 0, 0] = press_values
+# All arrays synchronized here
+```
+
+### Legacy Access Context (Deprecated)
+The old pattern still works but is no longer recommended:
+
+```python
+# OLD - Still works but deprecated
+with mesh.access(var):
+    var.data[...] = values
 ```
 
 ### Delay Callback Pattern
@@ -383,4 +424,4 @@ This guide should be updated as new patterns emerge and existing patterns evolve
 
 ---
 
-*Last updated: Based on NDArray_With_Callback implementation and Underworld3 development session*
+*Last updated: After NDArray migration and synchronised_array_update implementation*

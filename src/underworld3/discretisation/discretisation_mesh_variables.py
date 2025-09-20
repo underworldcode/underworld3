@@ -13,6 +13,7 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
@@ -92,7 +93,7 @@ def MeshVariable(
         print(f"Variable with name {name} already exists on the mesh - Skipping.")
         return mesh.vars[clean_name]
 
-    if mesh._accessed:
+    if mesh._dm_initialized:
         ## Before adding a new variable, we first snapshot the data from the mesh.dm
         ## (if not accessed, then this will not be necessary and may break)
 
@@ -105,7 +106,7 @@ def MeshVariable(
         name, mesh, num_components, vtype, degree, continuous, varsymbol
     )
 
-    if mesh._accessed:
+    if mesh._dm_initialized:
         ## Recreate the mesh variable dm and restore the data
 
         dm0 = mesh.dm
@@ -141,7 +142,7 @@ def MeshVariable(
     return new_meshVariable
 
 
-class _MeshVariable(Stateful, uw_object):
+class _MeshVariable(MathematicalMixin, Stateful, uw_object):
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
     underlying sympy representation that makes it possible to construct expressions that
@@ -232,7 +233,9 @@ class _MeshVariable(Stateful, uw_object):
         self._data = None
 
         self._is_accessed = False
-        self._available = False
+        self._available = (
+            True  # Make vectors available by default for solver compatibility
+        )
 
         ## Note sympy needs a unique symbol even across different meshes
         ## or it will get confused when it clones objects. We try this: add
@@ -396,6 +399,7 @@ class _MeshVariable(Stateful, uw_object):
         # Setup public view of data - using NDArray_With_Callback (following mesh.points pattern)
         # Use lazy initialization to avoid calling unpack during constructor
         self._array_cache = None  # Will be created lazily when first accessed
+        self._data_cache = None  # Will be created lazily when first accessed
 
         return
 
@@ -403,27 +407,27 @@ class _MeshVariable(Stateful, uw_object):
         """
         Factory function to create NDArray_With_Callback for variable data.
         Follows the same pattern as mesh.points implementation.
-        
+
         Parameters
         ----------
         initial_data : numpy.ndarray, optional
             Initial data for the array. If None, fetches current data from PETSc.
-            
+
         Returns
         -------
         NDArray_With_Callback
             Array object with callback for automatic PETSc synchronization
         """
         if initial_data is None:
-            initial_data = self.unpack_uw_data_to_petsc(squeeze=False, sync=True)
-        
+            initial_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
+
         # Create NDArray_With_Callback (following mesh._points pattern)
         array_obj = uw.utilities.NDArray_With_Callback(
             initial_data,
             owner=self,
-            disable_inplace_operators=False  # Allow operations like existing arrays
+            disable_inplace_operators=False,  # Allow operations like existing arrays
         )
-        
+
         # Single callback function (following mesh_update_callback pattern)
         def variable_update_callback(array, change_context):
             """Callback to sync variable changes back to PETSc (like mesh.points)"""
@@ -431,12 +435,75 @@ class _MeshVariable(Stateful, uw_object):
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
-                
-            # Persist changes to PETSc (like mesh callback updates coordinates)
-            self.pack_uw_data_to_petsc(array, sync=True)
-        
+
+            # Skip updates during mesh coordinate changes to prevent corruption
+            # Check if mesh is currently being updated
+            if hasattr(self.mesh, "_mesh_update_lock"):
+                # Try to acquire lock without blocking - if we can't, skip update
+                if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                    return
+                try:
+                    # Persist changes to PETSc (like mesh callback updates coordinates)
+                    self.pack_uw_data_to_petsc(array, sync=True)
+                finally:
+                    self.mesh._mesh_update_lock.release()
+            else:
+                # Fallback if no lock exists
+                self.pack_uw_data_to_petsc(array, sync=True)
+
         # Register the callback (following mesh.points pattern)
         array_obj.add_callback(variable_update_callback)
+        return array_obj
+
+    def _create_flat_data_array(self, initial_data=None):
+        """
+        Factory function to create NDArray_With_Callback for backward-compatible flat data.
+        Returns data in shape (-1, num_components) using pack_raw/unpack_raw methods.
+
+        Parameters
+        ----------
+        initial_data : numpy.ndarray, optional
+            Initial data for the array. If None, fetches current data from PETSc.
+
+        Returns
+        -------
+        NDArray_With_Callback
+            Array object with callback for automatic PETSc synchronization
+        """
+        if initial_data is None:
+            # Use unpack_raw to get flat format (-1, num_components)
+            initial_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=True)
+
+        # Create NDArray_With_Callback for flat data
+        array_obj = uw.utilities.NDArray_With_Callback(
+            initial_data,
+            owner=self,
+            disable_inplace_operators=False,  # Allow operations like existing arrays
+        )
+
+        # Callback for flat data format
+        def flat_data_update_callback(array, change_context):
+            """Callback to sync flat data changes back to PETSc"""
+            # Only act on data-changing operations
+            data_changed = change_context.get("data_has_changed", True)
+            if not data_changed:
+                return
+
+            # Skip updates during mesh coordinate changes to prevent corruption
+            if hasattr(self.mesh, "_mesh_update_lock"):
+                if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                    return
+                try:
+                    # Use pack_raw for flat data format
+                    self.pack_raw_data_to_petsc(array, sync=True)
+                finally:
+                    self.mesh._mesh_update_lock.release()
+            else:
+                # Fallback if no lock exists
+                self.pack_raw_data_to_petsc(array, sync=True)
+
+        # Register the callback
+        array_obj.add_callback(flat_data_update_callback)
         return array_obj
 
     def _object_viewer(self):
@@ -464,8 +531,7 @@ class _MeshVariable(Stateful, uw_object):
             ),
         )
 
-        with self.mesh.access():
-            display(self.data),
+        display(self.array),
 
         return
 
@@ -482,36 +548,57 @@ class _MeshVariable(Stateful, uw_object):
 
         return newMeshVariable
 
-    # def __getitem__(self, indices):
-    #     if not isinstance(indices, tuple):
-    #         if isinstance(indices, int) and self.shape[0] == 1:
-    #             i = 0
-    #             j = indices
-    #         else:
-    #             raise IndexError(
-    #                 "MeshVariable[i,j] access requires one or two indices "
-    #             )
-    #     else:
-    #         i, j = indices
-
-    #     return self._data_container[i, j]
-
-    def pack_raw_data_to_petsc(self, data_array):
-        """Convert an array in the correct shape for the underlying variable into something that can be loaded into
-        the flat storage structure used by PETSc in a numpy assigment (with index broadcasting etc)
+    def pack_raw_data_to_petsc(self, data_array, sync=True):
         """
+        Pack data array to PETSc using traditional data shape (-1, num_components).
+        Direct PETSc access without access() context for backward compatibility.
 
+        Parameters
+        ----------
+        data_array : numpy.ndarray
+            Array data in traditional flat format (-1, num_components)
+        sync : bool
+            Whether to sync parallel operations (default True)
+        """
         import numpy as np
 
-        shape = self.shape
-        storage_size = self._data_layout(-1)
-        data_array_2d = np.atleast_2d(data_array)
+        # Convert to expected shape: (-1, num_components)
+        data_array = np.atleast_2d(data_array)
+        if data_array.shape[1] != self.num_components:
+            raise ValueError(
+                f"Data array must have shape (-1, {self.num_components}), got {data_array.shape}"
+            )
 
-        with self.mesh.access(self):
-            for i in range(shape[0]):
-                for j in range(shape[1]):
-                    ij = self._data_layout(i, j)
-                    self.data[:, ij] = data_array_2d[:, i, j]
+        # Direct PETSc access (following mesh.access pattern)
+        # Ensure vector is available
+        self._set_vec(available=True)
+
+        # Mark mesh DM as initialized (replaces old _accessed flag logic)
+        self.mesh._dm_initialized = True
+
+        try:
+            # Direct assignment to PETSc vec (like mesh.access does at line 1156)
+            vec_data = self.vec.array.reshape(-1, self.num_components)
+            vec_data[:] = data_array
+
+            # Increment variable state to track changes
+            self._increment()
+
+            # Mark mesh local vector as stale so update_lvec() will rebuild it
+            self.mesh._stale_lvec = True
+
+            # Sync parallel operations if requested
+            if sync:
+                # Sync ghost values (following lines 1191-1203 pattern)
+                indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+                subdm.localToGlobal(self.vec, self._gvec, addv=False)
+                subdm.globalToLocal(self._gvec, self.vec, addv=False)
+                indexset.destroy()
+                subdm.destroy()
+
+        finally:
+            # Keep vector available for future access
+            pass
 
         return
 
@@ -519,7 +606,7 @@ class _MeshVariable(Stateful, uw_object):
         """
         Enhanced pack method that directly accesses mesh data without access() context.
         Designed for the new meshVariable.array interface.
-        
+
         Parameters
         ----------
         data_array : numpy.ndarray
@@ -528,101 +615,150 @@ class _MeshVariable(Stateful, uw_object):
             Whether to sync parallel operations (default True)
         """
         import numpy as np
-        
+
         shape = self.shape
         data_array_2d = np.atleast_2d(data_array)
-        
-        # Create a temporary access context internally to get data access
-        # This replicates the access() functionality without requiring external context
-        temp_access_manager = self.mesh.access(self)
-        temp_access_manager.__enter__()
-        
+
+        # Direct PETSc access (following mesh.access pattern)
+        # Ensure vector is available
+        self._set_vec(available=True)
+
+        # Mark mesh DM as initialized (replaces old _accessed flag logic)
+        self.mesh._dm_initialized = True
+
         try:
+            # Get data directly from PETSc vec (like mesh.access does at line 1156)
+            flat_data = self.vec.array.reshape(-1, self.num_components)
+
             # Pack data using same layout as original method
             for i in range(shape[0]):
                 for j in range(shape[1]):
                     ij = self._data_layout(i, j)
-                    self.data[:, ij] = data_array_2d[:, i, j]
-                    
+                    flat_data[:, ij] = data_array_2d[:, i, j]
+
+            # Increment variable state to track changes
+            self._increment()
+
+            # Mark mesh local vector as stale so update_lvec() will rebuild it
+            self.mesh._stale_lvec = True
+
             # Sync parallel operations if requested
             if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-                
+                # Sync ghost values (following lines 1191-1203 pattern)
+                indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+                subdm.localToGlobal(self.vec, self._gvec, addv=False)
+                subdm.globalToLocal(self._gvec, self.vec, addv=False)
+                indexset.destroy()
+                subdm.destroy()
+
         finally:
-            # Clean up access context
-            temp_access_manager.__exit__(None, None, None)
+            # Clean up
+            # Keep vector available for future access
+            pass
 
-    def unpack_raw_data_to_petsc(self, squeeze=True):
-        """Return an array in the correct shape for the underlying variable from
-        the flat storage structure used by PETSc. By default, use numpy squeeze to remove additional
-        dimensions (keep those dimensions to leave all data as 3D array - scalars being shape (1,1), vectors
-        being (1,dim) and so on)
+    def unpack_raw_data_from_petsc(self, squeeze=True, sync=True):
         """
+        Unpack data from PETSc in traditional data shape (-1, num_components).
+        Direct PETSc access without access() context for backward compatibility.
 
-        import numpy as np
-
-        shape = self.shape
-
-        with self.mesh.access():
-            points = self._data.shape[0]
-            data_array_3d = np.empty(shape=(points, *shape), dtype=self._data.dtype)
-
-            for i in range(shape[0]):
-                for j in range(shape[1]):
-                    ij = self._data_layout(i, j)
-                    data_array_3d[:, i, j] = self._data[:, ij]
-
-        if squeeze:
-            return data_array_3d.squeeze()
-        else:
-            return data_array_3d
-
-    def unpack_uw_data_to_petsc(self, squeeze=True, sync=True):
-        """
-        Enhanced unpack method that directly accesses mesh data without access() context.
-        Designed for the new meshVariable.array interface.
-        
         Parameters
         ----------
         squeeze : bool
             Whether to remove singleton dimensions (default True)
         sync : bool
             Whether to sync parallel operations (default True)
-            
+
+        Returns
+        -------
+        numpy.ndarray
+            Array data in traditional flat format (-1, num_components)
+        """
+        import numpy as np
+
+        # Direct PETSc access (following mesh.access pattern at line 1156)
+        # Ensure vector is available
+        self._set_vec(available=True)
+
+        # Mark mesh DM as initialized (replaces old _accessed flag logic)
+        self.mesh._dm_initialized = True
+
+        try:
+            # Get data directly from PETSc vec (like mesh.access does)
+            result = self.vec.array.reshape(-1, self.num_components).copy()
+
+            # Sync parallel operations if requested
+            if sync:
+                # Sync ghost values (following lines 1191-1203 pattern)
+                indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+                subdm.localToGlobal(self.vec, self._gvec, addv=False)
+                subdm.globalToLocal(self._gvec, self.vec, addv=False)
+                indexset.destroy()
+                subdm.destroy()
+
+        finally:
+            # Clean up
+            # Keep vector available for future access
+            pass
+
+        if squeeze:
+            return result.squeeze()
+        else:
+            return result
+
+    def unpack_uw_data_from_petsc(self, squeeze=True, sync=True):
+        """
+        Enhanced unpack method that directly accesses mesh data without access() context.
+        Designed for the new meshVariable.array interface.
+
+        Parameters
+        ----------
+        squeeze : bool
+            Whether to remove singleton dimensions (default True)
+        sync : bool
+            Whether to sync parallel operations (default True)
+
         Returns
         -------
         numpy.ndarray
             Array data in correct shape for the variable
         """
         import numpy as np
-        
+
         shape = self.shape
-        
-        # Create a temporary access context internally to get data access
-        # This replicates the access() functionality without requiring external context
-        temp_access_manager = self.mesh.access()
-        temp_access_manager.__enter__()
-        
+
+        # Direct PETSc access (following mesh.access pattern at line 1156)
+        # Ensure vector is available
+        self._set_vec(available=True)
+
+        # Mark mesh DM as initialized (replaces old _accessed flag logic)
+        self.mesh._dm_initialized = True
+
         try:
-            points = self._data.shape[0]
-            data_array_3d = np.empty(shape=(points, *shape), dtype=self._data.dtype)
-            
+            # Get data directly from PETSc vec (like mesh.access does)
+            flat_data = self.vec.array.reshape(-1, self.num_components)
+            points = flat_data.shape[0]
+            data_array_3d = np.empty(shape=(points, *shape), dtype=flat_data.dtype)
+
             # Unpack data using same layout as original method
             for i in range(shape[0]):
                 for j in range(shape[1]):
                     ij = self._data_layout(i, j)
-                    data_array_3d[:, i, j] = self._data[:, ij]
-                    
+                    data_array_3d[:, i, j] = flat_data[:, ij]
+
             # Sync parallel operations if requested
             if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-                
+                # Sync ghost values (following lines 1191-1203 pattern)
+                indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+                subdm.localToGlobal(self.vec, self._gvec, addv=False)
+                subdm.globalToLocal(self._gvec, self.vec, addv=False)
+                indexset.destroy()
+                subdm.destroy()
+
         finally:
-            # Clean up access context
-            temp_access_manager.__exit__(None, None, None)
-        
+            # Clean up
+            # Keep vector available for future access
+            pass
+
         if squeeze:
             return data_array_3d.squeeze()
         else:
@@ -642,8 +778,7 @@ class _MeshVariable(Stateful, uw_object):
             else:
                 nnn = 3
 
-        with self.mesh.access():
-            D = self.data.copy()
+        D = self.data.copy()
 
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
@@ -681,7 +816,8 @@ class _MeshVariable(Stateful, uw_object):
             might correspond to the timestep (for example).
         """
 
-        self._set_vec(available=False)
+        # Keep vector available for future access
+        pass
 
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
@@ -717,7 +853,8 @@ class _MeshVariable(Stateful, uw_object):
             The filename of the mesh checkpoint file
         """
 
-        self._set_vec(available=False)
+        # Keep vector available for future access
+        pass
 
         # Variable coordinates - let's put those in the file to
         # make it a standalone "swarm"
@@ -797,7 +934,8 @@ class _MeshVariable(Stateful, uw_object):
         import h5py
         import numpy as np
 
-        self._set_vec(available=False)
+        # Keep vector available for future access
+        pass
 
         ## Sub functions that are used to read / interpolate the mesh.
         def field_from_checkpoint(
@@ -836,8 +974,7 @@ class _MeshVariable(Stateful, uw_object):
             # the kdtree does not have enough neighbours to allocate
             # values for every point. We handle that here.
 
-            with mesh.access(mesh_variable):
-                mesh_variable.data[...] = Values[...]
+            mesh_variable.data[...] = Values[...]
 
             return
 
@@ -864,19 +1001,24 @@ class _MeshVariable(Stateful, uw_object):
         if data_name is None:
             data_name = self.clean_name
 
-        with self.mesh.access(self):
-            indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        # Ensure vectors are initialized
+        if self._lvec is None:
+            self._set_vec(available=True)
+            
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
-            old_name = self._gvec.getName()
-            viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
+        old_name = self._gvec.getName()
+        viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
 
-            self._gvec.setName(data_name)
-            self._gvec.load(viewer)
-            self._gvec.setName(old_name)
+        self._gvec.setName(data_name)
+        self._gvec.load(viewer)
+        self._gvec.setName(old_name)
 
-            subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+        subdm.globalToLocal(self._gvec, self._lvec, addv=False)
 
-            viewer.destroy()
+        viewer.destroy()
+        indexset.destroy()
+        subdm.destroy()
 
         return
 
@@ -1033,11 +1175,17 @@ class _MeshVariable(Stateful, uw_object):
             raise RuntimeError(
                 "Vector must be accessed via the mesh `access()` context manager."
             )
+
+        # Ensure vector is initialized when accessed
+        if self._lvec is None:
+            self._set_vec(available=self._available)
+
         return self._lvec
 
     @property
-    def data(self) -> numpy.ndarray:
+    def old_data(self) -> numpy.ndarray:
         """
+        TESTING: Original data property implementation.
         Numpy proxy array to underlying variable data.
         Note that the returned array is a proxy for all the *local* nodal
         data, and is provided as 1d list.
@@ -1061,6 +1209,67 @@ class _MeshVariable(Stateful, uw_object):
         if self._array_cache is None:
             self._array_cache = self._create_variable_array()
         return self._array_cache
+
+    @property
+    def data(self):
+        """
+        Backward-compatible data property that returns flat array shape (-1, num_components).
+        This property provides the legacy interface for compatibility with existing code.
+
+        Returns
+        -------
+        NDArray_With_Callback
+            Array with shape (-1, num_components) with automatic PETSc synchronization
+
+        Notes
+        -----
+        This interface is deprecated. Use the `array` property instead for the new
+        interface with proper tensor shape (N, a, b).
+        """
+        # Check if we have a cached data array
+        if hasattr(self, "_data_cache") and self._data_cache is not None:
+            return self._data_cache
+
+        # For symmetric tensors, we need to access PETSc data directly in packed format
+        # rather than reshaping the array (which has different component count)
+
+        # Ensure PETSc vector is available
+        self._set_vec(available=True)
+        self.mesh._dm_initialized = True
+
+        # Get direct access to PETSc vector in packed format
+        flat_petsc_data = self.vec.array.reshape(-1, self.num_components)
+
+        # Create NDArray_With_Callback with proper shape and data
+        from underworld3.utilities import NDArray_With_Callback
+
+        flat_view = NDArray_With_Callback(flat_petsc_data)
+
+        def flat_data_update_callback(array, change_context):
+            """Callback to sync flat data changes back to PETSc using raw pack method"""
+            # Only act on data-changing operations
+            data_changed = change_context.get("data_has_changed", True)
+            if not data_changed:
+                return
+
+            # Skip updates during mesh coordinate changes to prevent corruption
+            if hasattr(self.mesh, "_mesh_update_lock"):
+                if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                    return
+                try:
+                    # Use pack_raw for flat data format
+                    self.pack_raw_data_to_petsc(array, sync=True)
+                finally:
+                    self.mesh._mesh_update_lock.release()
+            else:
+                # Fallback if no lock exists
+                self.pack_raw_data_to_petsc(array, sync=True)
+
+        flat_view.add_callback(flat_data_update_callback)
+
+        # Cache the data array for future access
+        self._data_cache = flat_view
+        return flat_view
 
     @array.setter
     def array(self, array_value):

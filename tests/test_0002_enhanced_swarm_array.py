@@ -51,7 +51,7 @@ class TestEnhancedSwarmArray:
         assert hasattr(scalar_var, "use_legacy_array")
         assert hasattr(scalar_var, "sync_disabled")
         assert hasattr(scalar_var, "pack_uw_data_to_petsc")
-        assert hasattr(scalar_var, "unpack_uw_data_to_petsc")
+        assert hasattr(scalar_var, "unpack_uw_data_from_petsc")
 
         # Check that unified array interface exists
         assert hasattr(scalar_var, "_create_variable_array")
@@ -89,7 +89,7 @@ class TestEnhancedSwarmArray:
 
         # Test direct unpack (should not require access() context)
         try:
-            result = scalar_var.unpack_uw_data_to_petsc(
+            result = scalar_var.unpack_uw_data_from_petsc(
                 squeeze=False, sync=False
             )  # Disable sync for test
             assert result.shape == (
@@ -97,9 +97,9 @@ class TestEnhancedSwarmArray:
                 1,
                 1,
             ), f"Expected shape ({n_particles}, 1), got {result.shape}"
-            print("✅ unpack_uw_data_to_petsc works without access() context")
+            print("✅ unpack_uw_data_from_petsc works without access() context")
         except Exception as e:
-            pytest.fail(f"unpack_uw_data_to_petsc failed: {e}")
+            pytest.fail(f"unpack_uw_data_from_petsc failed: {e}")
 
     def test_enhanced_array_basic_operations(self, setup_enhanced_array_test):
         """Test basic array operations with enhanced interface"""

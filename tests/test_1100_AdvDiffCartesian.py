@@ -98,10 +98,9 @@ def test_advDiff_boxmesh(mesh):
     adv_diff.add_dirichlet_bc(0.0, "Left")
     adv_diff.add_dirichlet_bc(0.0, "Right")
 
-    with mesh.access(v):
-        # initialise fields
-        # v.data[:,0] = -1*v.coords[:,1]
-        v.data[:, 1] = velocity
+    # initialise fields
+    # v.array[:, 0, 0] = -1*v.coords[:,1]
+    v.array[:, 0, 0] = velocity
 
     U_start = U_a_x.subs({u: velocity, t: t_start, x: mesh.X[0], x0: 0.4, x1: 0.6})
 
