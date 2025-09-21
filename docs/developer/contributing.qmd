@@ -1,0 +1,36 @@
+---
+title: "Contributing to Underworld3"
+---
+
+# Contributing Guidelines
+
+::: {.callout-note}
+## Coming Soon
+
+This section will cover:
+- Development workflow and Git practices
+- Pull request guidelines  
+- Code review process
+- Community standards
+- Issue reporting and feature requests
+
+**Priority**: Medium  
+**Current Status**: Placeholder - needs development
+:::
+
+## Quick Start
+
+For now, see the [Style Guide](UW3_Style_and_Patterns_Guide.qmd) for coding standards and the [README](UW3_Developers_README.md) for basic development guidelines.
+
+## Areas Needing Contribution
+
+Based on our architecture analysis, these areas need immediate attention:
+
+1. **Expressions & Functions** - Critical user-facing documentation gap
+2. **Cython Bridge** - No documentation for Python-C interface  
+3. **Meshing Parameters** - Geometric setup guidance missing
+4. **Mathematical Module Consistency** - Standardize documentation quality
+
+---
+
+*This document will be expanded to include comprehensive contributing guidelines.*

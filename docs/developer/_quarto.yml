@@ -1,0 +1,132 @@
+project:
+  type: book
+  title: "Underworld3 Developer Documentation"
+  
+book:
+  title: "Underworld3 Developer Documentation"
+  subtitle: "Architecture, Implementation, and Development Guide"
+  author: "Underworld Development Team"
+  date: today
+  chapters:
+    - index.qmd
+    
+    - part: "Getting Started"
+      chapters:
+        - UW3_Developers_README.md
+        - UW3_Architecture_and_Documentation_Overview.qmd
+        - contributing.qmd
+        - development-setup.qmd
+    
+    - part: "Core Computational Systems"
+      chapters:
+        - subsystems/meshing.qmd
+        - subsystems/discretisation.qmd  
+        - subsystems/solvers.qmd
+        - subsystems/constitutive-models.qmd
+    
+    - part: "Data Management Systems"
+      chapters:
+        - UW3_Developers_NDArrays.qmd
+        - subsystems/swarm-system.qmd
+        - subsystems/variables.qmd
+        - subsystems/parallel-data.qmd
+    
+    - part: "Mathematical & Symbolic Systems"
+      chapters:
+        - UW3_Developers_MathematicalObjects.qmd
+        - subsystems/expressions-functions.qmd
+        - subsystems/mathematics.qmd
+        - subsystems/coordinate-systems.qmd
+    
+    - part: "Utility & Extension Systems"
+      chapters:
+        - subsystems/visualization.qmd
+        - subsystems/scaling.qmd
+        - subsystems/cython-integration.qmd
+        - subsystems/jit-compilation.qmd
+    
+    - part: "Development Guidelines"
+      chapters:
+        - UW3_Style_and_Patterns_Guide.qmd
+        - guidelines/testing-patterns.qmd
+        - guidelines/performance-optimization.qmd
+        - guidelines/debugging-techniques.qmd
+    
+    - part: "Advanced Topics"
+      chapters:
+        - advanced/solver-development.qmd
+        - advanced/petsc-integration.qmd
+        - advanced/mpi-parallelism.qmd
+        - advanced/migration-guides.qmd
+    
+    - part: "Reference"
+      chapters:
+        - reference/api-patterns.qmd
+        - reference/build-system.qmd
+        - reference/troubleshooting.qmd
+        - reference/glossary.qmd
+
+format:
+  html:
+    theme: 
+      - cosmo
+      - custom.scss
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    number-depth: 3
+    code-fold: show
+    code-tools: true
+    code-copy: true
+    highlight-style: github
+    css: styles.css
+    include-in-header: |
+      <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        }
+      };
+      </script>
+    
+  pdf:
+    documentclass: report
+    geometry: 
+      - margin=1in
+      - paperwidth=8.5in
+      - paperheight=11in
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    number-depth: 3
+    highlight-style: github
+    include-in-header: |
+      \usepackage{fancyhdr}
+      \pagestyle{fancy}
+      \fancyhead[LE,RO]{\thepage}
+      \fancyhead[LO,RE]{Underworld3 Developer Documentation}
+
+execute:
+  freeze: auto
+  echo: true
+  warning: true
+  error: true
+
+filters:
+  - quarto
+
+crossref:
+  chapters: true
+  
+citation:
+  url: https://underworldcode.github.io/underworld3/developer/
+  
+repository-url: https://github.com/underworldcode/underworld3
+edit-page: true
+
+comments:
+  hypothesis: true

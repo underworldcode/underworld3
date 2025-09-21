@@ -1,8 +1,28 @@
-# Underworld3 House Style
+# Underworld3 Developer Guide
 
-Developers, we welcome contributions to Underworld3 and have put together this style guide to help you
+Developers, we welcome contributions to Underworld3 and have put together this guide to help you
 adhere to the patterns of coding and documentation that we have adopted and which we find makes the experience
 for users much more predictable.
+
+## Developer Documentation
+
+The Underworld3 developer documentation is now organized in **Quarto markdown format** for consistency and enhanced features:
+
+### Core Developer Documents
+
+| Document | Purpose | Status |
+|----------|---------|--------|
+| [**Architecture Overview**](UW3_Architecture_and_Documentation_Overview.qmd) | Comprehensive subsystem analysis and documentation strategy | ✅ Complete |
+| [**Mathematical Objects**](UW3_Developers_MathematicalObjects.qmd) | Natural mathematical syntax implementation and design philosophy | ✅ Complete |
+| [**NDArray System**](UW3_Developers_NDArrays.qmd) | Data access patterns and migration from legacy contexts | ✅ Complete |
+| [**Style and Patterns**](UW3_Style_and_Patterns_Guide.qmd) | Coding standards, patterns, and conventions | ✅ Complete |
+
+### Quick Navigation
+
+- **New to UW3 development?** → Start with [Architecture Overview](UW3_Architecture_and_Documentation_Overview.qmd)
+- **Working with mathematical expressions?** → See [Mathematical Objects](UW3_Developers_MathematicalObjects.qmd)
+- **Dealing with data access and arrays?** → Check [NDArray System](UW3_Developers_NDArrays.qmd)
+- **Need coding standards?** → Reference [Style and Patterns](UW3_Style_and_Patterns_Guide.qmd)
 
 ## Python formatting
 

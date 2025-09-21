@@ -1,61 +1,76 @@
 ---
-jupytext:
-  formats: md:myst
-  text_representation:
-    extension: .md
-    format_name: myst
-    format_version: 0.13
-    jupytext_version: 1.16.6
-kernelspec:
-  display_name: Python 3 (ipykernel)
-  language: python
-  name: python3
+title: "Underworld3 NDArray Data Access System"
+subtitle: "Implementation and Migration Guide"
+author: "Underworld Development Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    theme: cosmo
+  pdf:
+    documentclass: report
+    geometry: margin=1in
+    toc: true
+    number-sections: true
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .qmd
+      format_name: quarto
+      format_version: '1.0'
+      jupytext_version: 1.16.6
+  kernelspec:
+    display_name: Python 3 (ipykernel)
+    language: python
+    name: python3
 ---
 
-# Underworld3 NDArray Data Access System
+::: {.callout-note}
+## Document Purpose
 
-```{admonition} Document Purpose
-:class: note
-This document describes the NDArray_With_Callback system implementation, 
-the migration from legacy access patterns, and guidelines for developers 
-working with Underworld3 data structures.
-```
+This document describes the NDArray_With_Callback system implementation, the migration from legacy access patterns, and guidelines for developers working with Underworld3 data structures.
+:::
 
-## Executive Summary
+# Executive Summary {#sec-summary}
 
-### The Challenge
+## The Challenge
+
 - Legacy `with mesh.access()` patterns created friction for users
 - Users needed to understand PETSc locking semantics to write correct code
 - Multiple nested contexts led to verbose, hard-to-read code
 - Performance overhead from redundant synchronization operations
 - **Tensor data format mismatch**: PETSc stores tensors in packed 1D format (6 components for 3D symmetric tensors), but users expect intuitive 2D tensor shapes for SymPy integration
 
-### The Solution
+## The Solution
+
 - **NDArray_With_Callback**: NumPy subclass with automatic modification callbacks
 - **Direct array access**: Simple `var.array[...] = values` pattern
 - **Batch operations**: `with uw.synchronised_array_update()` for multiple variables
 - **Dual format support**: `array` property for intuitive tensor shapes, `data` property for efficient PETSc-native access
 - **Backward compatibility**: Old patterns continue to work during transition
 
-### The Outcome
+## The Outcome
+
 ✅ **Cleaner user code**: No more nested context managers  
 ✅ **Better performance**: 70-85% faster for batch operations  
 ✅ **Preserved solver stability**: No changes to benchmarked solvers  
 ✅ **Smooth migration path**: Both patterns work during transition
 
-## Architecture Deep Dive
+# Architecture Deep Dive {#sec-architecture}
 
-### Core Design Principles
+## Core Design Principles
 
-```{important}
-**Solver Stability is Paramount**
-The PETSc-based solvers (Stokes, advection-diffusion, etc.) are the heart of Underworld3. 
-They have been carefully optimized, benchmarked, and validated over many years. 
-Our migration preserves their integrity completely - solvers continue to use 
-direct PETSc vector access (`vec` property) unchanged.
-```
+::: {.callout-important}
+## Solver Stability is Paramount
 
-### Component Hierarchy
+The PETSc-based solvers (Stokes, advection-diffusion, etc.) are the heart of Underworld3. They have been carefully optimized, benchmarked, and validated over many years. Our migration preserves their integrity completely - solvers continue to use direct PETSc vector access (`vec` property) unchanged.
+:::
+
+## Component Hierarchy
 
 ```{mermaid}
 graph TD
@@ -75,9 +90,9 @@ graph TD
     style J fill:#f9f,stroke:#333,stroke-width:4px
 ```
 
-### Array Shape Formats
+## Array Shape Formats
 
-#### Understanding the Duality
+### Understanding the Duality
 
 The system maintains two complementary views of the same underlying data, each optimized for different use cases:
 
@@ -85,7 +100,9 @@ The system maintains two complementary views of the same underlying data, each o
 
 **User Experience Motivation**: The `array` property provides intuitive tensor shapes that match SymPy expectations, making mathematical operations and tensor manipulation natural and readable.
 
-```python
+```{python}
+#| eval: false
+
 # Array property: (N, a, b) format
 # N = number of nodes/particles
 # a = spatial dimension for tensors (1 for scalars/vectors, dim for tensors)
@@ -119,14 +136,15 @@ stress_tensor.data[:, 0]       # Direct access to xx component
 stress_tensor.data[:, 3]       # Direct access to xy component (Voigt notation)
 ```
 
-## Implementation Details
+# Implementation Details {#sec-implementation}
 
-### NDArray_With_Callback Factory
+## NDArray_With_Callback Factory
 
-The array property creates an NDArray_With_Callback instance that automatically 
-synchronizes with PETSc when modified:
+The array property creates an NDArray_With_Callback instance that automatically synchronizes with PETSc when modified:
 
-```python
+```{python}
+#| eval: false
+
 @property
 def array(self):
     """Array interface with automatic PETSc synchronization."""
@@ -152,11 +170,13 @@ def array(self):
     return self._array_with_callback
 ```
 
-### Global Synchronization Context
+## Global Synchronization Context
 
 The `synchronised_array_update()` function provides a context for batch operations:
 
-```python
+```{python}
+#| eval: false
+
 def synchronised_array_update(context_info="user operations"):
     """
     Batch multiple array updates with deferred synchronization.
@@ -175,11 +195,13 @@ def synchronised_array_update(context_info="user operations"):
     return utilities.NDArray_With_Callback.delay_callbacks_global(context_info)
 ```
 
-### Lazy Evaluation Strategy
+## Lazy Evaluation Strategy
 
 Swarm proxy variables use lazy evaluation to avoid PETSc field conflicts:
 
-```python
+```{python}
+#| eval: false
+
 class SwarmVariable:
     def _update_proxy_if_stale(self):
         """Update mesh proxy only when actually needed."""
@@ -194,11 +216,13 @@ class SwarmVariable:
         return self._symbolic_representation
 ```
 
-## Migration Patterns
+# Migration Patterns {#sec-migration}
 
-### Pattern 1: Single Variable Assignment
+## Pattern 1: Single Variable Assignment
 
-```{code-block} python
+```{python}
+#| eval: false
+
 # ❌ OLD PATTERN
 with mesh.access(temperature):
     temperature.data[...] = initial_temp
@@ -207,9 +231,11 @@ with mesh.access(temperature):
 temperature.array[:, 0, 0] = initial_temp
 ```
 
-### Pattern 2: Multiple Variable Updates
+## Pattern 2: Multiple Variable Updates
 
-```{code-block} python
+```{python}
+#| eval: false
+
 # ❌ OLD PATTERN
 with mesh.access(velocity, pressure, temperature):
     velocity.data[:, :] = vel_field
@@ -223,9 +249,11 @@ with uw.synchronised_array_update():
     temperature.array[:, 0, 0] = temp_field
 ```
 
-### Pattern 3: Component Updates
+## Pattern 3: Component Updates
 
-```{code-block} python
+```{python}
+#| eval: false
+
 # ❌ OLD PATTERN
 with mesh.access(velocity):
     velocity.data[:, 0] = v_x
@@ -237,9 +265,11 @@ with uw.synchronised_array_update():
     velocity.array[:, 0, 1] = v_y
 ```
 
-### Pattern 4: Reading Values
+## Pattern 4: Reading Values
 
-```{code-block} python
+```{python}
+#| eval: false
+
 # Array property: (N, 1, 1) shape
 array_values = temperature.array[:, 0, 0]  # Shape: (N,)
 print(f"Array access shape: {array_values.shape}")
@@ -257,9 +287,9 @@ vel_x_data = velocity.data[:, 0]            # X-component: (N,)
 vel_full_data = velocity.data[:, :]         # All components: (N, dim)
 ```
 
-## Developer Guidelines
+# Developer Guidelines {#sec-guidelines}
 
-### When to Use Each Access Method
+## When to Use Each Access Method
 
 | Scenario | Recommended Pattern | Example |
 |----------|-------------------|---------|
@@ -272,46 +302,54 @@ vel_full_data = velocity.data[:, :]         # All components: (N, dim)
 | Legacy code | Works but migrate | `with mesh.access(var):` |
 | Tight loops | Use synchronised context | Batch updates for performance |
 
-### Common Pitfalls and Solutions
+## Common Pitfalls and Solutions
 
-````{warning}
-**Array Indexing Error**
-```python
+::: {.callout-warning}
+## Array Indexing Error
+```{python}
+#| eval: false
+
 # ❌ WRONG - Missing middle index
 scalar.array[:, 0] = values  
 
 # ✅ CORRECT - Three indices for array property
 scalar.array[:, 0, 0] = values
 ```
-````
+:::
 
-````{warning}
-**Vector Component Error**
-```python
+::: {.callout-warning}
+## Vector Component Error
+```{python}
+#| eval: false
+
 # ❌ WRONG - Incorrect index position
 vector.array[:, i] = component_values  
 
 # ✅ CORRECT - Component is third index
 vector.array[:, 0, i] = component_values
 ```
-````
+:::
 
-````{tip}
-**Performance Optimization**
+::: {.callout-tip}
+## Performance Optimization
 Use synchronised updates even for single variables in tight loops:
-```python
+```{python}
+#| eval: false
+
 with uw.synchronised_array_update():
     for step in range(1000):
         velocity.array[:, 0, :] = compute_velocity(step)
         # Deferred sync improves performance by 70-85%
 ```
-````
+:::
 
-## Testing Strategy
+# Testing Strategy {#sec-testing}
 
-### Unit Test Pattern
+## Unit Test Pattern
 
-```python
+```{python}
+#| eval: false
+
 def test_array_access_pattern():
     mesh = uw.meshing.UnstructuredSimplexBox(...)
     var = uw.discretisation.MeshVariable("test", mesh, 1)
@@ -326,9 +364,11 @@ def test_array_access_pattern():
     assert np.allclose(var.array[:, 0, 0], 99.0)
 ```
 
-### Integration Test Pattern
+## Integration Test Pattern
 
-```python
+```{python}
+#| eval: false
+
 def test_multi_variable_sync():
     velocity = MeshVariable("v", mesh, 2, vtype=VECTOR)
     pressure = MeshVariable("p", mesh, 1, vtype=SCALAR)
@@ -341,52 +381,56 @@ def test_multi_variable_sync():
     assert verify_coupling(velocity, pressure)
 ```
 
-## User Communication Strategy
+# User Communication Strategy {#sec-communication}
 
-### Documentation Updates
+## Documentation Updates
 
 1. **Getting Started Guide**: Show new patterns first
 2. **Migration Guide**: Side-by-side comparisons  
 3. **Performance Guide**: When to use batch updates
 4. **API Reference**: Clear examples for each method
 
-### Example Migration Guide Entry
+## Example Migration Guide Entry
 
-`````{admonition} Migrating Your Code
-:class: tip
+::: {.callout-tip}
+## Migrating Your Code
 
 **If you have code like this:**
-````python
+```{python}
+#| eval: false
+
 with mesh.access(T, v, p):
     T.data[...] = temperature
     v.data[:, 0] = velocity_x
     v.data[:, 1] = velocity_y
     p.data[...] = pressure
-````
+```
 
 **Change it to:**
-````python
+```{python}
+#| eval: false
+
 with uw.synchronised_array_update():
     T.array[:, 0, 0] = temperature
     v.array[:, 0, 0] = velocity_x
     v.array[:, 0, 1] = velocity_y
     p.array[:, 0, 0] = pressure
-````
-`````
+```
+:::
 
-### Deprecation Timeline
+## Deprecation Timeline
 
-```{admonition} Gentle Transition Strategy
-:class: info
+::: {.callout-note}
+## Gentle Transition Strategy
 - **Phase 1** (v3.0, Current): Both patterns work, new patterns recommended
 - **Phase 2** (v3.1): Soft deprecation warnings in development mode
 - **Phase 3** (v3.2): Documentation shows only new patterns
 - **Phase 4** (v4.0): Consider removing legacy patterns (if community ready)
-```
+:::
 
-## Performance Impact
+# Performance Impact {#sec-performance}
 
-### Benchmarks
+## Benchmarks
 
 | Operation | Legacy Pattern | New Pattern | Improvement |
 |-----------|---------------|-------------|-------------|
@@ -400,13 +444,13 @@ The performance improvement comes from:
 - Batch synchronization with single MPI barrier
 - Elimination of redundant vector assembly
 
-### Memory Usage
+## Memory Usage
 
 - **No change** in steady-state memory footprint
 - **Lazy initialization** reduces startup memory by ~10%
 - **Weak references** prevent memory leaks in callbacks
 
-### Parallel Performance
+## Parallel Performance
 
 MPI barriers in `synchronised_array_update()` ensure:
 - All processes enter context together
@@ -414,13 +458,15 @@ MPI barriers in `synchronised_array_update()` ensure:
 - Callbacks fire in coordinated fashion
 - Clean exit across all ranks
 
-## Technical Deep Dives
+# Technical Deep Dives {#sec-technical}
 
-### How Callbacks Work
+## How Callbacks Work
 
 The NDArray_With_Callback system intercepts NumPy operations:
 
-```python
+```{python}
+#| eval: false
+
 def __setitem__(self, key, value):
     # Capture old value for callback info
     old_value = self[key].copy() if self._track_changes else None
@@ -439,11 +485,13 @@ def __setitem__(self, key, value):
         self._trigger_callback(change_info)
 ```
 
-### PETSc Synchronization Details
+## PETSc Synchronization Details
 
 The pack/unpack methods handle data format conversion between user-friendly shapes and PETSc's internal format:
 
-```python
+```{python}
+#| eval: false
+
 def pack_to_petsc(self):
     """Pack array data to PETSc vector format."""
     if self.vtype == VarType.SYMMETRIC_TENSOR:
@@ -472,11 +520,13 @@ def data(self):
         return self.vec.array.reshape(-1, self.num_components)
 ```
 
-### MPI Coordination
+## MPI Coordination
 
 The global delay context ensures parallel safety:
 
-```python
+```{python}
+#| eval: false
+
 class GlobalDelayCallbackContext:
     def __enter__(self):
         # MPI barrier - all processes enter together
@@ -499,25 +549,25 @@ class GlobalDelayCallbackContext:
             callback()
 ```
 
-## Future Roadmap
+# Future Roadmap {#sec-future}
 
-### Potential Enhancements
+## Potential Enhancements
 
 1. **Auto-batching**: Automatic detection of multiple updates
 2. **Smart synchronization**: Adaptive sync based on operation patterns
 3. **Debug mode**: Enhanced error messages with operation history
 4. **Performance profiling**: Built-in timing and bottleneck detection
 
-### Research Directions
+## Research Directions
 
 - **GPU arrays**: Investigate CuPy/JAX integration
 - **Asynchronous updates**: Non-blocking synchronization
 - **JIT compilation**: Numba/JAX acceleration for callbacks
 - **Distributed arrays**: Better support for domain decomposition
 
-## Appendices
+# Appendices {#sec-appendices}
 
-### A. Complete Migration Checklist
+## A. Complete Migration Checklist
 
 - [x] Core NDArray_With_Callback implementation
 - [x] Array property on MeshVariable
@@ -531,7 +581,7 @@ class GlobalDelayCallbackContext:
 - [ ] Add soft deprecation warnings
 - [ ] Performance validation at scale
 
-### B. Code References
+## B. Code References
 
 Key files in the implementation:
 
@@ -541,7 +591,7 @@ Key files in the implementation:
 - `__init__.py`: synchronised_array_update function
 - `CLAUDE.md`: Historical context and design decisions
 
-### C. Testing Coverage
+## C. Testing Coverage
 
 Test files validating the new patterns:
 
@@ -552,18 +602,20 @@ Test files validating the new patterns:
 - `test_1110_advDiffAnnulus.py`: Complex field updates
 - `test_0003_save_load.py`: Array persistence
 
-### D. Related Documents
+## D. Related Documents
 
-- {doc}`CLAUDE.md`: Historical context and implementation notes
-- {doc}`UW3_Style_and_Patterns_Guide.md`: Coding standards and patterns
-- {doc}`UW3_Developers_README.md`: General development guide
+- [CLAUDE.md](../../CLAUDE.md): Historical context and implementation notes
+- [UW3_Style_and_Patterns_Guide.qmd](UW3_Style_and_Patterns_Guide.qmd): Coding standards and patterns
+- [UW3_Developers_README.md](UW3_Developers_README.md): General development guide
 
 ---
 
-*Document version: 1.0*  
+::: {.callout-tip}
+## Contributing
+
+For questions, bug reports, or contributions to the NDArray system, please see the Contributing Guidelines or open an issue on the Underworld3 repository.
+
+*Document version: 2.0*  
 *Last updated: 2025*  
 *Authors: Underworld3 Development Team*
-
-```{code-cell} ipython3
-
-```
+:::

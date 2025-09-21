@@ -138,22 +138,77 @@ class MathematicalMixin:
         """
         return self.sym.diff(*args, **kwargs)
     
-    # Arithmetic operations
+    # Arithmetic operations with smart scalar broadcasting
     def __add__(self, other):
-        """Addition: var + other"""
-        return self.sym + other
+        """
+        Addition with scalar broadcasting: var + other
+        
+        Enables natural addition with scalars:
+        - velocity + 2  # Broadcasts scalar to matrix shape
+        - temperature + 273.15  # Add offset to all components
+        
+        For non-scalar addition, falls back to SymPy's normal behavior.
+        """
+        try:
+            # Try normal SymPy addition first
+            return self.sym + other
+        except (TypeError, ValueError):
+            # If that fails, try scalar broadcasting
+            other_sym = sympy.sympify(other)
+            if other_sym.is_number and hasattr(self.sym, 'shape'):
+                # Broadcast scalar to matrix shape
+                broadcasted = other_sym * sympy.ones(*self.sym.shape)
+                return self.sym + broadcasted
+            # If broadcasting doesn't apply, re-raise the original error
+            return self.sym + other
     
     def __radd__(self, other):
-        """Right addition: other + var"""
-        return other + self.sym
+        """
+        Right addition with scalar broadcasting: other + var
+        
+        Since addition is commutative, delegate to __add__.
+        """
+        return self.__add__(other)
     
     def __sub__(self, other):
-        """Subtraction: var - other"""
-        return self.sym - other
+        """
+        Subtraction with scalar broadcasting: var - other
+        
+        Enables natural subtraction with scalars:
+        - pressure - 101325  # Subtract atmospheric pressure
+        - temperature - 273.15  # Convert to Celsius
+        """
+        try:
+            # Try normal SymPy subtraction first
+            return self.sym - other
+        except (TypeError, ValueError):
+            # If that fails, try scalar broadcasting
+            other_sym = sympy.sympify(other)
+            if other_sym.is_number and hasattr(self.sym, 'shape'):
+                # Broadcast scalar to matrix shape
+                broadcasted = other_sym * sympy.ones(*self.sym.shape)
+                return self.sym - broadcasted
+            # If broadcasting doesn't apply, re-raise the original error
+            return self.sym - other
     
     def __rsub__(self, other):
-        """Right subtraction: other - var"""
-        return other - self.sym
+        """
+        Right subtraction with scalar broadcasting: other - var
+        
+        Enables expressions like: 100 - temperature
+        """
+        try:
+            # Try normal SymPy subtraction first
+            return other - self.sym
+        except (TypeError, ValueError):
+            # If that fails, try scalar broadcasting
+            other_sym = sympy.sympify(other)
+            if other_sym.is_number and hasattr(self.sym, 'shape'):
+                # Broadcast scalar to matrix shape
+                broadcasted = other_sym * sympy.ones(*self.sym.shape)
+                return broadcasted - self.sym
+            # If broadcasting doesn't apply, re-raise the original error
+            return other - self.sym
     
     def __mul__(self, other):
         """Multiplication: var * other"""
@@ -206,30 +261,58 @@ class MathematicalMixin:
     
     def __getattr__(self, name):
         """
-        Delegate any missing attributes to the symbolic form.
+        Delegate any missing attributes to the symbolic form with smart argument conversion.
         
         This enables full SymPy Matrix functionality without having to
         implement every method individually. Methods like .dot(), .T, 
         .norm(), .cross(), etc. are automatically available.
         
+        For callable methods, arguments that are MathematicalMixin objects
+        are automatically converted to their .sym form.
+        
         Args:
             name: Attribute name being accessed
             
         Returns:
-            The attribute from self.sym, or raises AttributeError
+            The attribute from self.sym, or a wrapper for callable methods
             
         Example:
             velocity = MeshVariable("velocity", mesh, 2)
-            velocity.T          # Returns velocity.sym.T (transpose)
-            velocity.dot(other) # Returns velocity.sym.dot(other)
-            velocity.norm()     # Returns velocity.sym.norm()
+            velocity.T             # Returns velocity.sym.T (transpose)
+            velocity.dot(velocity) # Works! Converts to velocity.sym.dot(velocity.sym)
+            velocity.norm()        # Returns velocity.sym.norm()
         """
         # Only delegate if the attribute exists on the symbolic form
         if hasattr(self.sym, name):
             attr = getattr(self.sym, name)
-            # If it's a callable method, return it directly so it can be called
-            # If it's a property, return its value
-            return attr
+            
+            # If it's a callable method, wrap it to handle MathematicalMixin arguments
+            if callable(attr):
+                def method_wrapper(*args, **kwargs):
+                    # Convert any MathematicalMixin arguments to their .sym form
+                    converted_args = []
+                    for arg in args:
+                        if hasattr(arg, '_sympify_'):
+                            # This is a MathematicalMixin object, use its symbolic form
+                            converted_args.append(arg.sym)
+                        else:
+                            converted_args.append(arg)
+                    
+                    converted_kwargs = {}
+                    for key, value in kwargs.items():
+                        if hasattr(value, '_sympify_'):
+                            converted_kwargs[key] = value.sym
+                        else:
+                            converted_kwargs[key] = value
+                    
+                    # Call the original method with converted arguments
+                    return attr(*converted_args, **converted_kwargs)
+                
+                return method_wrapper
+            else:
+                # If it's a property, return its value directly
+                return attr
+        
         # If attribute doesn't exist on sym, raise AttributeError normally
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -273,9 +356,25 @@ def test_mathematical_mixin():
     expected_rmul = test_sym * 3
     assert result_rmul.equals(expected_rmul)
     
+    # Test scalar broadcasting for addition
     result_add = mock_var + 1
-    expected_add = test_sym + 1
+    expected_add = test_sym + sympy.ones(*test_sym.shape)
     assert result_add.equals(expected_add)
+    
+    # Test right addition broadcasting
+    result_radd = 2 + mock_var  
+    expected_radd = test_sym + 2 * sympy.ones(*test_sym.shape)
+    assert result_radd.equals(expected_radd)
+    
+    # Test scalar broadcasting for subtraction
+    result_sub = mock_var - 3
+    expected_sub = test_sym - 3 * sympy.ones(*test_sym.shape)
+    assert result_sub.equals(expected_sub)
+    
+    # Test right subtraction broadcasting  
+    result_rsub = 5 - mock_var
+    expected_rsub = 5 * sympy.ones(*test_sym.shape) - test_sym
+    assert result_rsub.equals(expected_rsub)
     
     result_neg = -mock_var
     expected_neg = -test_sym
@@ -292,14 +391,23 @@ def test_mathematical_mixin():
     expected_norm = test_sym.norm()
     assert result_norm.equals(expected_norm)
     
-    # Test dot product with itself
-    result_dot = mock_var.dot(mock_var)
-    expected_dot = test_sym.dot(test_sym)
+    # Test dot product with another matrix
+    other_matrix = sympy.Matrix([1, 2])  # Compatible for dot product
+    result_dot = mock_var.dot(other_matrix)
+    expected_dot = test_sym.dot(other_matrix)
     assert result_dot.equals(expected_dot)
+    
+    # Test dot product with another MathematicalMixin object (the key test!)
+    mock_var2 = MockVariable("test2", test_sym)
+    result_dot_self = mock_var.dot(mock_var2)
+    expected_dot_self = test_sym.dot(test_sym)
+    assert result_dot_self.equals(expected_dot_self)
     
     print("MathematicalMixin tests passed!")
     print("✓ Basic arithmetic operations")
+    print("✓ Scalar broadcasting for addition and subtraction")  
     print("✓ Matrix methods via __getattr__ delegation")
+    print("✓ Smart argument conversion for methods (T.dot(T) works!)")
     
     return True
 

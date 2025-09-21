@@ -1,0 +1,29 @@
+---
+title: "Constitutive Models"
+---
+
+# Constitutive Models Documentation
+
+::: {.callout-success}
+## Well-Documented Subsystem
+
+**Module**: `constitutive_models.py` (1,967 lines)  
+**Priority**: =â Low - already well documented  
+**Current Status**: Good documentation 
+:::
+
+## Overview
+
+Material physics and rheology implementations with 10 material models covering various physical behaviors.
+
+### Documentation Status
+-  Mathematical formulations documented
+-  Physical parameters explained  
+-  Unit requirements documented
+-   Could use parameter selection guidance
+
+This subsystem already has good documentation and serves as a model for documenting complex physics implementations.
+
+---
+
+*Reference existing constitutive models documentation in main codebase.*

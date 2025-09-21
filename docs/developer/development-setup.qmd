@@ -1,0 +1,46 @@
+---
+title: "Development Environment Setup"
+---
+
+# Setting Up Underworld3 Development Environment
+
+::: {.callout-note}
+## Coming Soon
+
+This section will cover:
+- Pixi environment setup and management
+- Required dependencies and versions
+- IDE configuration and tools
+- Building from source
+- Docker development containers
+
+**Priority**: High - needed for new developer onboarding  
+**Current Status**: Placeholder - needs development
+:::
+
+## Quick Commands
+
+For now, the essential commands are:
+
+```bash
+# Build Underworld3
+pixi run underworld-build
+
+# Run tests
+pixi run underworld-test
+
+# Python environment  
+pixi run -e default python script.py
+```
+
+## Environment Information
+
+From CLAUDE.md context:
+- Uses pixi for environment management
+- Key dependencies: underworld3, petsc4py, numpy, scipy
+- Must use `pixi run underworld-build` after ANY source code changes
+- No in-place builds due to Cython/PETSc complexity
+
+---
+
+*This document will be expanded to include complete setup instructions.*
