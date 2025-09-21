@@ -1571,7 +1571,7 @@ class SNES_Diffusion(SNES_Scalar):
         self.theta = theta
 
         # These are unique to the advection solver
-        self._delta_t = uw.function.expression(
+        self._delta_t = expression(
             R"\Delta t", 0, "Physically motivated timestep"
         )
         self.is_setup = False
@@ -1641,7 +1641,7 @@ class SNES_Diffusion(SNES_Scalar):
     @property
     def F0(self):
 
-        f0 = uw.function.expression(
+        f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
@@ -1655,7 +1655,7 @@ class SNES_Diffusion(SNES_Scalar):
     @property
     def F1(self):
 
-        F1_val = uw.function.expression(
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
             "Diffusion pointwise flux term: F_1(u)",

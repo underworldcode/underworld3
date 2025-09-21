@@ -79,16 +79,43 @@ class MathematicalMixin:
     
     def __repr__(self):
         """
-        String representation preserves original object view.
+        String representation returns the symbolic form.
         
-        Maintains the original computational object display while enabling
-        mathematical operations. Use .sym or str(var.sym) for symbolic form.
+        When variables are typed out in notebooks, users expect to see
+        the mathematical symbol, not the computational object details.
         
         Returns:
-            String representation from the parent class (computational view)
+            String representation of the symbolic form (self.sym)
         """
-        # Use parent class __repr__ to preserve original behavior
-        return super().__repr__()
+        return repr(self.sym)
+    
+    def _repr_latex_(self):
+        """
+        Jupyter notebook LaTeX representation.
+        
+        Returns the LaTeX representation of the symbol for pretty display
+        in Jupyter notebooks.
+        
+        Returns:
+            LaTeX string representation of the symbolic form
+        """
+        from sympy import latex
+        return f"$${latex(self.sym)}$$"
+    
+    def _ipython_display_(self):
+        """
+        IPython/Jupyter display hook.
+        
+        Override the default display behavior to show the mathematical symbol
+        instead of the object details view.
+        
+        This is what gets called when a variable is evaluated in a notebook cell.
+        """
+        from IPython.display import display, Math
+        from sympy import latex
+        
+        # Display the LaTeX representation of the symbol
+        display(Math(latex(self.sym)))
     
     
     def diff(self, *args, **kwargs):
