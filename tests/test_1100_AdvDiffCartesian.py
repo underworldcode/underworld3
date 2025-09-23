@@ -55,10 +55,10 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
 u, t, x, x0, x1 = sp.symbols("u, t, x, x0, x1")
 
 
-U_a_x = 0.5 * (
+U_a_x = (
     sp.erf((x1 - x + (u * t)) / (2 * sp.sqrt(kappa * t)))
     + sp.erf((-x0 + x - (u * t)) / (2 * sp.sqrt(kappa * t)))
-)
+) / 2
 
 
 # +

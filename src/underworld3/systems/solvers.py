@@ -1571,9 +1571,7 @@ class SNES_Diffusion(SNES_Scalar):
         self.theta = theta
 
         # These are unique to the advection solver
-        self._delta_t = expression(
-            R"\Delta t", 0, "Physically motivated timestep"
-        )
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
         self.is_setup = False
 
         ### Setup the history terms ... This version should not build anything

@@ -23,6 +23,8 @@ book:
         - subsystems/discretisation.qmd  
         - subsystems/solvers.qmd
         - subsystems/constitutive-models.qmd
+        - subsystems/constitutive-models-theory.qmd
+        - subsystems/constitutive-models-anisotropy.qmd
     
     - part: "Data Management Systems"
       chapters:

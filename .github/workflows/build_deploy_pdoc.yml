@@ -44,7 +44,7 @@ jobs:
           export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
-          ./compile.sh
+          ./scripts/compile.sh
 
       - name: Build docs with pdoc
         shell: bash -l {0}
@@ -53,7 +53,7 @@ jobs:
           echo "VERSION=$(echo $VERSION)" >> $GITHUB_ENV
           # mkdir -p docs
           pip install pdoc3
-          ./build_api_docs.sh
+          ./scripts/build_api_docs.sh
 
       # There is an action to build the jupyter book to a different directory
       # and then they can be uploaded side by side

@@ -112,7 +112,7 @@ towards release 3.1.0.
 
 ## Testing
 
-The 'test.sh' script  can be used to execute the pytest framework.
+The 'scripts/test.sh' script  can be used to execute the pytest framework.
 Individual tests are found in the `tests` directory. These are small collections
 of unit tests that address parcels of functionality in the code. Tests need to be
 small and fast, and should be orthogonal to other tests as far as possible.

@@ -993,8 +993,8 @@ class SNES_Scalar(SolverBaseClass):
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            with self.mesh.access():
-                self.dm.localToGlobal(self.u.vec, gvec)
+            # with self.mesh.access():
+            self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.0
 
@@ -1019,11 +1019,12 @@ class SNES_Scalar(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        with self.mesh.access(self.u,):
-            self.dm.globalToLocal(gvec, lvec)
-            # add back boundaries.
-            ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-            self.u.vec.array[:] = lvec.array[:]
+        # with self.mesh.access(self.u,):
+        self.dm.globalToLocal(gvec, lvec)
+        # add back boundaries.
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+        self.u.vec.array[:] = lvec.array[:]
+        self.mesh._stale_lvec = True
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
@@ -1665,8 +1666,8 @@ class SNES_Vector(SolverBaseClass):
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            with self.mesh.access():
-                self.dm.localToGlobal(self.u.vec, gvec)
+            # with self.mesh.access():
+            self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.
 
@@ -1698,18 +1699,20 @@ class SNES_Vector(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        with self.mesh.access(self.u):
-            self.dm.globalToLocal(gvec, lvec)
-            if verbose:
-                print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
+        # with self.mesh.access(self.u):
 
-            # add back boundaries.
-            # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-            # derived from the system-dm (as opposed to the var.vec local vector), else
-            # failures can occur.
+        self.dm.globalToLocal(gvec, lvec)
+        if verbose:
+            print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
 
-            ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-            self.u.vec.array[:] = lvec.array[:]
+        # add back boundaries.
+        # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
+        # derived from the system-dm (as opposed to the var.vec local vector), else
+        # failures can occur.
+
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+        self.u.vec.array[:] = lvec.array[:]
+        self.mesh._stale_lvec = True
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
@@ -2815,12 +2818,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-            with self.mesh.access():
-                for name,var in self.fields.items():
-                    sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-                    subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
-                    subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
-                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            # with self.mesh.access():
+            for name,var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
+                subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
+                subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
+                gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
             self.atol = self.snes.getFunctionNorm() * self.tolerance
 
@@ -2918,12 +2921,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
 
         # Copy solution back into pressure and velocity variables
-        with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-             for name, var in self.fields.items():
-                 if name=='velocity':
-                     var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
-                 elif name=='pressure':
-                     var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
+        # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
+        for name, var in self.fields.items():
+            if name=='velocity':
+                var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+            elif name=='pressure':
+                var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
+        self.mesh._stale_lvec = True
 
 
         self.dm.restoreGlobalVec(clvec)
@@ -2955,13 +2959,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # first let's extract a max global velocity magnitude
         import math
 
-        with self.mesh.access():
-            vel = self.u.data
-            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
-            if self.mesh.dim == 3:
-                magvel_squared += vel[:, 2] ** 2
+        # with self.mesh.access():
+        vel = self.u.data
+        magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+        if self.mesh.dim == 3:
+            magvel_squared += vel[:, 2] ** 2
 
-            max_magvel = math.sqrt(magvel_squared.max())
+        max_magvel = math.sqrt(magvel_squared.max())
 
         from mpi4py import MPI
 

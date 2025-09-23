@@ -10,6 +10,7 @@ maths.c
 swarm.c
 *_debug.txt
 compile.log
+*.log
 .env
 **/__pycache__
 *.so
@@ -27,8 +28,7 @@ old
 keep/*
 *.swp
 nohup.out
-src/underworld3/_uwid.py
-*.png # Add these explicitly if you want to keep them 
+src/underworld3/_uwid.py 
 
 # quarto build relics
 
@@ -61,14 +61,34 @@ joss-paper/paper.pdf
 .ash_history
 
 
-# Mesh files etc
+# Example output files (comprehensive exclusion)
 
+# Mesh files
 uw_*.msh
-*.msh # unless we really want to add some examples
+*.msh
 *.h5
 *.xdmf
 *.vtk
 *.pbin
+
+# Visualization outputs (exclude generated, allow curated assets)
+docs/examples/**/output/**
+docs/examples/**/*.png
+docs/examples/**/*.jpg
+docs/examples/**/*.gif
+docs/examples/**/*.mp4
+docs/examples/**/*.html
+# But allow curated documentation images
+!docs/examples/assets/**
+
+# Additional example artifacts
+docs/examples/**/*.txt
+docs/examples/**/*.dat
+docs/examples/**/*.csv
+docs/examples/**/*.log
+docs/examples/**/checkpoint_*
+docs/examples/**/restart_*
+docs/examples/**/.meshes/
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -105,3 +125,18 @@ Documentation/index.aux
 # Claude Code files
 CLAUDE.md
 .claude/
+
+# Temporary test files (can be deleted)
+temp_tests_deletable/
+debug_*.py
+test_*.py
+
+# IDE and editor artifacts
+.ropeproject/
+.vscode/
+
+# Mesh cache directory
+.meshes/
+
+# Additional cache directories
+.pytest_cache/

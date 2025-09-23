@@ -45,6 +45,11 @@ Examples are organized by physics domain with progressive complexity:
 - **Intermediate**: Adaptive refinement, parallel processing
 - **Advanced**: Custom mesh generation, performance optimization
 
+### 🚧 Work in Progress (`WIP/`)
+- **Developer tools**: PETSc/DMPlex internals, performance benchmarking
+- **Advanced techniques**: Specialized meshing, advanced I/O, research methods
+- **Legacy examples**: Recovered from underworld3-documentation, under integration
+
 ## Navigation
 
 Each physics domain contains:
@@ -66,6 +71,34 @@ All examples follow the Python percent format (Jupytext compatible):
 1. **New to computational geophysics?** Start with `heat_transfer/basic/`
 2. **Familiar with finite elements?** Jump to your physics domain of interest
 3. **Research applications?** Check `advanced/` examples in relevant domains
+
+## Output Management
+
+### Generated Files (`output/`)
+Examples create temporary files that are **automatically excluded from version control**:
+- **Mesh files**: `*.msh`, `*.h5`, `*.vtk`, `*.xdmf`
+- **Visualizations**: `*.png`, `*.html`, `*.mp4`  
+- **Data files**: `*.txt`, `*.csv`, `checkpoint_*`
+
+Configure examples to save to the `output/` directory:
+```python
+output_dir = "../output"  # Relative to example location
+mesh_file = f"{output_dir}/simulation.msh"
+```
+
+### Documentation Images (`assets/`)
+**Curated images for documentation** are version controlled:
+- Concept diagrams and illustrations
+- Expected benchmark results
+- Reference visualizations
+
+### Cleanup
+```bash
+# Clean all generated output
+rm -rf docs/examples/output/*
+
+# Examples will regenerate files when run
+```
 
 ## Example Dependencies
 

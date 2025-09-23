@@ -31,11 +31,11 @@ Refer to the Dockerfile for uw3 build instructions.
 
 To install from the repository
 ```shell
-./compile.sh
+./scripts/compile.sh
 ```
 
 An in-place installation may be helpful for developers (as distinct from above)
-(`compile.sh` is a convenience wrapper to `pip install`)
+(`scripts/compile.sh` is a convenience wrapper to `pip install`)
 
 ```shell
 pip install -e . --no-build-isolation
@@ -43,19 +43,19 @@ pip install -e . --no-build-isolation
 
 To clean the git repository or all files ... be careful.
 ```shell
-./clean.sh
+./scripts/clean.sh
 ```
 
 ## Testing and documentation
 
 Run the `pytest` testing suite with
 ```shell
-./test.sh
+./scripts/test.sh
 ```
 
 This API documentation is build with
 ```shell
-./docs.sh
+./scripts/build_api_docs.sh
 ```
 Open `uw3_api_docs/index.html` to browse.
 
@@ -128,6 +128,12 @@ import underworld3.swarm
 import underworld3.systems
 import underworld3.maths
 import underworld3.utilities
+import underworld3.model
+import underworld3.parameters
+import underworld3.materials
+from .model import Model, create_model
+from .parameters import ParameterRegistry, ParameterType
+from .materials import MaterialRegistry, MaterialProperty
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree

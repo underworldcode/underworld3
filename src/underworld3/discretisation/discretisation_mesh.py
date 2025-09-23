@@ -533,7 +533,8 @@ class Mesh(Stateful, uw_object):
         except:
             self.isSimplex = simplex
 
-        self._vars = {}
+        # Using WeakValueDictionary to prevent circular references
+        self._vars = weakref.WeakValueDictionary()
         self._block_vars = {}
 
         # a list of equation systems that will

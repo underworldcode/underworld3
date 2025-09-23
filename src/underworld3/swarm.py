@@ -6,6 +6,7 @@ import sympy
 import h5py
 import os
 import warnings
+import weakref
 from typing import Optional, Tuple
 
 import underworld3 as uw
@@ -95,7 +96,7 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
         self.symbol = varsymbol
 
-        self.swarm = swarm
+        self._swarm_ref = weakref.ref(swarm)
         self.shape = size
 
         mesh = swarm.mesh
@@ -799,6 +800,23 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         return values
 
     @property
+    def swarm(self):
+        """
+        The swarm this variable belongs to (accessed via weak reference).
+        Raises RuntimeError if the swarm has been garbage collected.
+        """
+        if self._swarm_ref is None:
+            raise RuntimeError("SwarmVariable has no swarm reference (internal error)")
+        
+        swarm = self._swarm_ref()
+        if swarm is None:
+            raise RuntimeError(
+                f"Swarm for variable '{self.clean_name}' has been garbage collected. "
+                "Variables cannot outlive their parent swarm."
+            )
+        return swarm
+
+    @property
     def old_data(self):
         """TESTING: Original data property implementation."""
         if self._data is None:
@@ -1398,10 +1416,8 @@ class Swarm(Stateful, uw_object):
         self.cycle = 0
 
         # dictionary for variables
-
-        # import weakref (not helpful as garbage collection does not remove the fields from the DM)
-        # self._vars = weakref.WeakValueDictionary()
-        self._vars = {}
+        # Using WeakValueDictionary to prevent circular references
+        self._vars = weakref.WeakValueDictionary()
 
         # add variable to handle particle coords - match name from PIC_Swarm for consistency
         self._coord_var = SwarmVariable(

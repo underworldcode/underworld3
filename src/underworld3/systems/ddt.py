@@ -12,11 +12,6 @@ from underworld3.utilities._api_tools import uw_object
 
 from petsc4py import PETSc
 
-## We need a pure Eulerian one of these too
-
-# class Eulerian(uw_object):
-# etc etc...
-
 
 class Symbolic(uw_object):
     r"""
@@ -785,7 +780,7 @@ class SemiLagrangian(uw_object):
             order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(True):
-            if order == 1:
+            if order == 0 or order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:

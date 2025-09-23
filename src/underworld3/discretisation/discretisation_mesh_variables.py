@@ -2,6 +2,7 @@ from typing import Optional, Tuple, Union
 from enum import Enum
 
 import os
+import weakref
 from mpi4py.MPI import Info
 import numpy
 import sympy
@@ -133,7 +134,7 @@ def MeshVariable(
         dm0.restoreGlobalVec(old_gvec)
 
         # destroy old dm
-        dm0.destroy
+        dm0.destroy()
 
         # Set new dm on mesh
         mesh.dm = dm1
@@ -274,7 +275,7 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
             )
 
         self.vtype = vtype
-        self.mesh = mesh
+        self._mesh_ref = weakref.ref(mesh)
         self.shape = size
         self.degree = degree
         self.continuous = continuous
@@ -1165,6 +1166,23 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
             self._lvec.destroy()
         if self._gvec:
             self._gvec.destroy()
+
+    @property
+    def mesh(self):
+        """
+        The mesh this variable belongs to (accessed via weak reference).
+        Raises RuntimeError if the mesh has been garbage collected.
+        """
+        if self._mesh_ref is None:
+            raise RuntimeError("MeshVariable has no mesh reference (internal error)")
+        
+        mesh = self._mesh_ref()
+        if mesh is None:
+            raise RuntimeError(
+                f"Mesh for variable '{self.clean_name}' has been garbage collected. "
+                "Variables cannot outlive their parent mesh."
+            )
+        return mesh
 
     @property
     def vec(self) -> PETSc.Vec:
